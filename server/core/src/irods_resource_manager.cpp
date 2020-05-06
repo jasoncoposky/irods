@@ -115,9 +115,7 @@ namespace irods {
                     _plugin_name.c_str(),
                     _context.c_str(),
                     ret.result().c_str());
-                _plugin.reset(
-                    new impostor_resource(
-                        "impostor_resource", "" ) );
+                _plugin.reset(new impostor_resource("impostor_resource", ""));
             } else {
                 return PASS( ret );
             }
