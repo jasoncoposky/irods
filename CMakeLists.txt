@@ -533,6 +533,55 @@ set(
   $<TARGET_OBJECTS:irods_filesystem_client>
   $<TARGET_OBJECTS:irods_user_administration_client>
   )
+
+
+add_library(
+  irods_client_static
+  STATIC
+  ${IRODS_LIBIRODS_CLIENT_SOURCES}
+  )
+target_link_libraries(
+  irods_client_static
+  PRIVATE
+  irods_plugin_dependencies_static
+  irods_common_static
+  ${IRODS_EXTERNALS_FULLPATH_BOOST}/lib/libboost_chrono.a
+  ${IRODS_EXTERNALS_FULLPATH_BOOST}/lib/libboost_filesystem.a
+  ${IRODS_EXTERNALS_FULLPATH_BOOST}/lib/libboost_regex.a
+  ${IRODS_EXTERNALS_FULLPATH_BOOST}/lib/libboost_system.a
+  ${IRODS_EXTERNALS_FULLPATH_BOOST}/lib/libboost_thread.a
+  ${IRODS_EXTERNALS_FULLPATH_FMT}/lib/libfmt.a
+  ${OPENSSL_SSL_LIBRARY}
+  ${OPENSSL_CRYPTO_LIBRARY}
+  ${CMAKE_THREAD_LIBS_INIT}
+  )
+target_include_directories(
+  irods_client_static
+  PRIVATE
+  ${CMAKE_BINARY_DIR}/lib/core/include
+  ${CMAKE_SOURCE_DIR}/lib/core/include
+  ${CMAKE_SOURCE_DIR}/lib/api/include
+  ${CMAKE_SOURCE_DIR}/lib/hasher/include
+  ${CMAKE_SOURCE_DIR}/lib/rbudp/include
+  ${CMAKE_SOURCE_DIR}/lib/filesystem/include
+  ${CMAKE_SOURCE_DIR}/plugins/api/include
+  ${CMAKE_SOURCE_DIR}/server/core/include
+  ${CMAKE_SOURCE_DIR}/server/icat/include
+  ${CMAKE_SOURCE_DIR}/server/re/include
+  ${CMAKE_SOURCE_DIR}/server/drivers/include
+  ${IRODS_EXTERNALS_FULLPATH_BOOST}/include
+  ${OPENSSL_INCLUDE_DIR}
+  )
+set_property(TARGET irods_client_static PROPERTY CXX_STANDARD ${IRODS_CXX_STANDARD})
+set_property(TARGET irods_client_static PROPERTY VERSION ${IRODS_VERSION})
+set_property(TARGET irods_client_static PROPERTY SOVERSION ${IRODS_VERSION})
+target_compile_options(irods_client_static PRIVATE -Wno-write-strings)
+target_compile_definitions(irods_client_static PRIVATE ${IRODS_COMPILE_DEFINITIONS})
+
+
+
+
+
 add_library(
   irods_client
   SHARED
@@ -575,6 +624,8 @@ set_property(TARGET irods_client PROPERTY VERSION ${IRODS_VERSION})
 set_property(TARGET irods_client PROPERTY SOVERSION ${IRODS_VERSION})
 target_compile_options(irods_client PRIVATE -Wno-write-strings)
 target_compile_definitions(irods_client PRIVATE ${IRODS_COMPILE_DEFINITIONS})
+
+
 
 set(
   IRODS_LIBIRODS_SERVER_SOURCES
@@ -795,6 +846,67 @@ set(
   $<TARGET_OBJECTS:irods_filesystem_server>
   $<TARGET_OBJECTS:irods_user_administration_server>
   )
+
+add_library(
+  irods_server_static
+  STATIC
+  ${IRODS_LIBIRODS_SERVER_SOURCES}
+  ${IRODS_LIBIRODS_CLIENT_SOURCES}
+  )
+target_link_libraries(
+  irods_server_static
+  PRIVATE
+  irods_common_static
+  irods_plugin_dependencies_static
+  ${IRODS_EXTERNALS_FULLPATH_BOOST}/lib/libboost_chrono.a
+  ${IRODS_EXTERNALS_FULLPATH_BOOST}/lib/libboost_filesystem.a
+  ${IRODS_EXTERNALS_FULLPATH_BOOST}/lib/libboost_thread.a
+  ${IRODS_EXTERNALS_FULLPATH_BOOST}/lib/libboost_regex.a
+  ${IRODS_EXTERNALS_FULLPATH_BOOST}/lib/libboost_system.a
+  ${IRODS_EXTERNALS_FULLPATH_FMT}/lib/libfmt.a
+  ${IRODS_EXTERNALS_FULLPATH_AVRO}/lib/libavrocpp_s.a
+  ${IRODS_EXTERNALS_FULLPATH_NANODBC}/lib/libnanodbc.a
+  ${IRODS_EXTERNALS_FULLPATH_ZMQ}/lib/libzmq-static.a
+  ${OPENSSL_SSL_LIBRARY}
+  ${OPENSSL_CRYPTO_LIBRARY}
+  ${CMAKE_DL_LIBS}
+  rt
+  ${CMAKE_THREAD_LIBS_INIT}
+  )
+target_include_directories(
+  irods_server_static
+  PRIVATE
+  ${CMAKE_BINARY_DIR}/lib/core/include
+  ${CMAKE_SOURCE_DIR}/lib/api/include
+  ${CMAKE_SOURCE_DIR}/lib/core/include
+  ${CMAKE_SOURCE_DIR}/lib/hasher/include
+  ${CMAKE_SOURCE_DIR}/lib/rbudp/include
+  ${CMAKE_SOURCE_DIR}/lib/filesystem/include
+  ${CMAKE_SOURCE_DIR}/plugins/api/include
+  ${CMAKE_SOURCE_DIR}/server/api/include
+  ${CMAKE_SOURCE_DIR}/server/core/include
+  ${CMAKE_SOURCE_DIR}/server/drivers/include
+  ${CMAKE_SOURCE_DIR}/server/icat/include
+  ${CMAKE_SOURCE_DIR}/server/re/include
+  ${IRODS_EXTERNALS_FULLPATH_AVRO}/include
+  ${IRODS_EXTERNALS_FULLPATH_BOOST}/include
+  ${IRODS_EXTERNALS_FULLPATH_CPPZMQ}/include
+  ${IRODS_EXTERNALS_FULLPATH_FMT}/include
+  ${IRODS_EXTERNALS_FULLPATH_NANODBC}/include
+  ${IRODS_EXTERNALS_FULLPATH_ZMQ}/include
+  ${OPENSSL_INCLUDE_DIR}
+  )
+set_property(TARGET irods_server_static PROPERTY CXX_STANDARD ${IRODS_CXX_STANDARD})
+set_property(TARGET irods_server_static PROPERTY VERSION ${IRODS_VERSION})
+set_property(TARGET irods_server_static PROPERTY SOVERSION ${IRODS_VERSION})
+target_compile_definitions(irods_server_static PRIVATE ENABLE_RE RODS_CLERVER IRODS_ENABLE_SYSLOG ${IRODS_COMPILE_DEFINITIONS})
+# TODO: remove -Wno-ignored-qualifiers on resolution of https://github.com/nanodbc/nanodbc/pull/234
+target_compile_options(irods_server_static PRIVATE -Wno-write-strings -Wno-ignored-qualifiers)
+
+
+
+
+
 add_library(
   irods_server
   SHARED
@@ -903,6 +1015,51 @@ set(
   ${CMAKE_SOURCE_DIR}/lib/rbudp/src/QUANTAnet_rbudpSender_c.cpp
   ${CMAKE_SOURCE_DIR}/server/core/src/irods_logger.cpp
   )
+
+add_library(
+  irods_common_static
+  STATIC
+  ${IRODS_LIBIRODS_COMMON_SOURCES}
+  $<TARGET_OBJECTS:irods_filesystem_path>
+  )
+target_link_libraries(
+  irods_common_static
+  PRIVATE
+  ${IRODS_EXTERNALS_FULLPATH_BOOST}/lib/libboost_filesystem.a
+  ${IRODS_EXTERNALS_FULLPATH_BOOST}/lib/libboost_program_options.a
+  ${IRODS_EXTERNALS_FULLPATH_BOOST}/lib/libboost_random.a
+  ${IRODS_EXTERNALS_FULLPATH_BOOST}/lib/libboost_regex.a
+  ${IRODS_EXTERNALS_FULLPATH_BOOST}/lib/libboost_system.a
+  ${IRODS_EXTERNALS_FULLPATH_FMT}/lib/libfmt.a
+  ${OPENSSL_SSL_LIBRARY}
+  ${OPENSSL_CRYPTO_LIBRARY}
+  ${CMAKE_DL_LIBS}
+  )
+target_include_directories(
+  irods_common_static
+  PRIVATE
+  ${CMAKE_BINARY_DIR}/lib/core/include
+  ${CMAKE_SOURCE_DIR}/lib/core/include
+  ${CMAKE_SOURCE_DIR}/lib/api/include
+  ${CMAKE_SOURCE_DIR}/lib/hasher/include
+  ${CMAKE_SOURCE_DIR}/lib/filesystem/include
+  ${CMAKE_SOURCE_DIR}/lib/rbudp/include
+  ${CMAKE_SOURCE_DIR}/server/core/include
+  ${CMAKE_SOURCE_DIR}/server/icat/include
+  ${CMAKE_SOURCE_DIR}/server/re/include
+  ${CMAKE_SOURCE_DIR}/server/drivers/include
+  ${IRODS_EXTERNALS_FULLPATH_BOOST}/include
+  ${IRODS_EXTERNALS_FULLPATH_FMT}/include
+  )
+set_property(TARGET irods_common_static PROPERTY CXX_STANDARD ${IRODS_CXX_STANDARD})
+set_property(TARGET irods_common_static PROPERTY VERSION ${IRODS_VERSION})
+set_property(TARGET irods_common_static PROPERTY SOVERSION ${IRODS_VERSION})
+target_compile_definitions(irods_common_static PRIVATE ${IRODS_COMPILE_DEFINITIONS} IRODS_ENABLE_SYSLOG)
+target_compile_options(irods_common_static PRIVATE -Wno-write-strings -fPIC)
+
+
+
+
 add_library(
   irods_common
   SHARED
@@ -963,6 +1120,43 @@ set(
   ${CMAKE_SOURCE_DIR}/lib/core/src/irods_ssl_object.cpp
   ${CMAKE_SOURCE_DIR}/lib/core/src/irods_tcp_object.cpp
   )
+
+add_library(
+  irods_plugin_dependencies_static
+  STATIC
+  ${IRODS_LIBIRODS_PLUGIN_DEPENDENCIES_SOURCES}
+  )
+target_link_libraries(
+  irods_plugin_dependencies_static
+  PRIVATE
+  irods_common_static
+  ${IRODS_EXTERNALS_FULLPATH_BOOST}/lib/libboost_filesystem.a
+  ${IRODS_EXTERNALS_FULLPATH_BOOST}/lib/libboost_random.a
+  ${IRODS_EXTERNALS_FULLPATH_BOOST}/lib/libboost_system.a
+  ${CMAKE_DL_LIBS}
+  )
+target_include_directories(
+  irods_plugin_dependencies_static
+  PRIVATE
+  ${CMAKE_BINARY_DIR}/lib/core/include
+  ${CMAKE_SOURCE_DIR}/lib/core/include
+  ${CMAKE_SOURCE_DIR}/lib/api/include
+  ${CMAKE_SOURCE_DIR}/lib/hasher/include
+  ${CMAKE_SOURCE_DIR}/lib/rbudp/include
+  ${CMAKE_SOURCE_DIR}/server/core/include
+  ${CMAKE_SOURCE_DIR}/server/icat/include
+  ${CMAKE_SOURCE_DIR}/server/re/include
+  ${CMAKE_SOURCE_DIR}/server/drivers/include
+  ${IRODS_EXTERNALS_FULLPATH_BOOST}/include
+  )
+set_property(TARGET irods_plugin_dependencies_static PROPERTY CXX_STANDARD ${IRODS_CXX_STANDARD})
+set_property(TARGET irods_plugin_dependencies_static PROPERTY VERSION ${IRODS_VERSION})
+set_property(TARGET irods_plugin_dependencies_static PROPERTY SOVERSION ${IRODS_VERSION})
+target_compile_definitions(irods_plugin_dependencies_static PRIVATE ${IRODS_COMPILE_DEFINITIONS})
+target_compile_options(irods_plugin_dependencies_static PRIVATE -Wno-write-strings -fPIC)
+
+
+
 add_library(
   irods_plugin_dependencies
   SHARED
@@ -1406,6 +1600,52 @@ target_include_directories(
 set_property(TARGET irodsReServer PROPERTY CXX_STANDARD ${IRODS_CXX_STANDARD})
 target_compile_definitions(irodsReServer PRIVATE ${IRODS_COMPILE_DEFINITIONS} IRODS_ENABLE_SYSLOG)
 target_compile_options(irodsReServer PRIVATE -Wno-write-strings)
+
+
+
+
+
+
+
+
+
+
+add_executable(
+  irods_cloud_agent
+  ${CMAKE_SOURCE_DIR}/server/core/src/irods_cloud_agent.cpp
+  )
+target_link_libraries(
+  irods_cloud_agent
+  PRIVATE
+  irods_server_static
+  irods_common_static
+  rt
+  m
+  )
+target_include_directories(
+  irods_cloud_agent
+  PRIVATE
+  ${CMAKE_SOURCE_DIR}/server/re/include
+  ${CMAKE_SOURCE_DIR}/server/core/include
+  ${CMAKE_SOURCE_DIR}/server/drivers/include
+  ${CMAKE_SOURCE_DIR}/server/icat/include
+  ${CMAKE_BINARY_DIR}/lib/core/include
+  ${CMAKE_SOURCE_DIR}/lib/core/include
+  ${CMAKE_SOURCE_DIR}/lib/api/include
+  ${IRODS_EXTERNALS_FULLPATH_BOOST}/include
+  ${IRODS_EXTERNALS_FULLPATH_FMT}/include
+  )
+set_property(TARGET irods_cloud_agent PROPERTY CXX_STANDARD ${IRODS_CXX_STANDARD})
+target_compile_definitions(irods_cloud_agent PRIVATE ${IRODS_COMPILE_DEFINITIONS} IRODS_ENABLE_SYSLOG)
+target_compile_options(irods_cloud_agent PRIVATE -Wno-write-strings)
+
+
+
+
+
+
+
+
 
 add_executable(
   irods_api_test_harness
