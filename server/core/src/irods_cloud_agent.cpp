@@ -23,7 +23,7 @@
 #include "irods_network_factory.hpp"
 #include "irods_re_plugin.hpp"
 #include "irods_server_properties.hpp"
-// XXXX - JMC #include "irods_server_control_plane.hpp"
+#include "irods_server_control_plane.hpp"
 #include "initServer.hpp"
 #include "procLog.h"
 #include "rsGlobalExtern.hpp"
@@ -440,8 +440,8 @@ int serverMain(
     // =-=-=-=-=-=-=-
     // Launch the Control Plane
     try {
-        //XXXX - JMC irods::server_control_plane ctrl_plane(
-        //    irods::CFG_SERVER_CONTROL_PLANE_PORT );
+        irods::server_control_plane ctrl_plane(
+            irods::CFG_SERVER_CONTROL_PLANE_PORT );
 
         status = startProcConnReqThreads();
         if(status < 0) {
@@ -463,7 +463,6 @@ int serverMain(
 
         irods::server_state& server_state = irods::server_state::instance();
         while ( true ) {
-#if 0 // XXXX - JMC
             std::string the_server_state = server_state();
             if ( irods::server_state::STOPPED == the_server_state ) {
                 procChildren( &ConnectedAgentHead );
@@ -495,7 +494,7 @@ int serverMain(
                 }
 
             }
-#endif
+
             FD_SET( svrComm.sock, &sockMask );
 
             int numSock = 0;
