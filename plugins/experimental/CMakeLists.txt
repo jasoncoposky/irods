@@ -21,10 +21,34 @@ set(
   )
 
 set(
+  IRODS_EXPERIMENTAL_API_PLUGIN_QUERY_SOURCES
+  ${CMAKE_SOURCE_DIR}/plugins/experimental/genquery_parser_bison_generated.cpp
+  ${CMAKE_SOURCE_DIR}/plugins/experimental/genquery_flex_output.cpp
+  ${CMAKE_SOURCE_DIR}/plugins/experimental/genquery_wrapper.cpp
+  ${CMAKE_SOURCE_DIR}/plugins/experimental/genquery_stringify.cpp
+  ${CMAKE_SOURCE_DIR}/plugins/experimental/query.cpp
+  )
+
+add_custom_command(
+    OUTPUT ${CMAKE_SOURCE_DIR}/plugins/experimental/genquery_parser_bison_generated.cpp
+    #INPUT  ${CMAKE_SOURCE_DIR}/plugins/experimental/genquery_bison_input.y
+    COMMAND bison -o ${CMAKE_SOURCE_DIR}/plugins/experimental/genquery_parser_bison_generated.cpp ${CMAKE_SOURCE_DIR}/plugins/experimental/genquery_bison_input.y
+    MAIN_DEPENDENCY ${CMAKE_SOURCE_DIR}/plugins/experimental/genquery_bison_input.y
+)
+
+add_custom_command(
+    OUTPUT ${CMAKE_SOURCE_DIR}/plugins/experimental/genquery_flex_output.cpp
+    #INPUT  ${CMAKE_SOURCE_DIR}/plugins/experimental/genquery_flex_input.l
+    COMMAND flex -o ${CMAKE_SOURCE_DIR}/plugins/experimental/genquery_flex_output.cpp ${CMAKE_SOURCE_DIR}/plugins/experimental/genquery_flex_input.l
+    MAIN_DEPENDENCY ${CMAKE_SOURCE_DIR}/plugins/experimental/genquery_flex_input.l
+)
+
+set(
   IRODS_EXPERIMENTAL_API_PLUGINS
   copy
   remove
   replicate
+  query
   )
 
 foreach(PLUGIN ${IRODS_EXPERIMENTAL_API_PLUGINS})
@@ -66,8 +90,8 @@ foreach(PLUGIN ${IRODS_EXPERIMENTAL_API_PLUGINS})
     dl
     )
 
-  target_compile_definitions(${PLUGIN} PRIVATE ENABLE_RE ${IRODS_COMPILE_DEFINITIONS} BOOST_SYSTEM_NO_DEPRECATED IRODS_ENABLE_SYSLOG)
-  target_compile_options(${PLUGIN} PRIVATE -Wno-write-strings)
+target_compile_definitions(${PLUGIN} PRIVATE ENABLE_RE ${IRODS_COMPILE_DEFINITIONS} BOOST_SYSTEM_NO_DEPRECATED IRODS_ENABLE_SYSLOG)
+target_compile_options(${PLUGIN} PRIVATE -Wno-write-strings -Wno-sign-compare) # flex bug
   set_property(TARGET ${PLUGIN} PROPERTY CXX_STANDARD ${IRODS_CXX_STANDARD})
 endforeach()
 
