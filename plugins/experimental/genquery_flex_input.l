@@ -35,9 +35,11 @@ between                return Genquery::Parser::make_BETWEEN(Genquery::location(
 begin_of               return Genquery::Parser::make_BEGINNING_OF(Genquery::location());
 parent_of              return Genquery::Parser::make_PARENT_OF(Genquery::location());
 "||"                   return Genquery::Parser::make_CONDITION_OR(Genquery::location());
+"||="                  return Genquery::Parser::make_CONDITION_OR_EQUAL(Genquery::location());
 "&&"                   return Genquery::Parser::make_CONDITION_AND(Genquery::location());
 not                    return Genquery::Parser::make_CONDITION_NOT(Genquery::location());
 and                    return Genquery::Parser::make_AND(Genquery::location());
+or                     return Genquery::Parser::make_CONDITION_OR(Genquery::location());
 ,                      return Genquery::Parser::make_COMMA(Genquery::location());
 "("                    return Genquery::Parser::make_OPEN_PAREN(Genquery::location());
 ")"                    return Genquery::Parser::make_CLOSE_PAREN(Genquery::location());

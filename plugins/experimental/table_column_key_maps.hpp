@@ -6,7 +6,7 @@
 
 namespace irods {
 
-    std::map<std::string, std::tuple<std::string, int>> table_alias_cycler_map {
+    const std::map<std::string, std::tuple<std::string, int>> table_alias_cycler_map {
         {"R_USER_PASSWORD", {"R_USER_PASSWORD", 0 }},
         {"R_USER_SESSION_KEY", {"R_USER_SESSION_KEY", 0 }},
         {"R_TOKN_MAIN", {"R_TOKN_MAIN", 0 }},
@@ -154,7 +154,7 @@ namespace irods {
 
     /* Map the #define values to tables and columns */
 
-    std::map<std::string, std::tuple<std::string, std::string>> column_table_alias_map {
+    const std::map<std::string, std::tuple<std::string, std::string>> column_table_alias_map {
         {"ZONE_ID", {"R_ZONE_MAIN", "zone_id" }},
         {"ZONE_NAME", {"R_ZONE_MAIN", "zone_name" }},
         {"ZONE_TYPE", {"R_ZONE_MAIN", "zone_type_name" }},
@@ -538,7 +538,7 @@ namespace irods {
 
     /* Define the Foreign Key links between tables */
 
-    std::vector<std::tuple<std::string, std::tuple<std::string, std::string>>> foreign_key_link_map {
+    const std::vector<std::tuple<std::string, std::tuple<std::string, std::string>>> foreign_key_link_map {
         {"R_COLL_MAIN", {"R_DATA_MAIN", "R_COLL_MAIN.coll_id = R_DATA_MAIN.coll_id" }},
         {"R_RESC_GROUP", {"R_RESC_MAIN", "R_RESC_GROUP.resc_id = R_RESC_MAIN.resc_id" }},
         {"R_RESC_MAIN", {"r_resc_metamap", "R_RESC_MAIN.resc_id = r_resc_metamap.object_id" }},

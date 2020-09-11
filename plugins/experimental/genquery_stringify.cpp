@@ -70,7 +70,6 @@ namespace Genquery {
     stringify(const Selections& selections) {
         tables.clear();
 
-jeb::api::info("XXXX - {};{}", __FILE__, __LINE__);
         if(selections.empty()) {
             THROW(SYS_INVALID_INPUT_PARAM, "selections are empty");
         }
@@ -97,24 +96,10 @@ jeb::api::info("XXXX - {};{}", __FILE__, __LINE__);
             THROW(SYS_INVALID_INPUT_PARAM, "selection string is empty");
         }
 
-        if(tables.empty()) {
-            THROW(SYS_INVALID_INPUT_PARAM, "from tables is empty");
-        }
-
         if(std::string::npos != ret.find_last_of(",")) {
             ret.erase(ret.find_last_of(","));
         }
 
-        std::string from{" from "};
-        for(auto&& t : tables) {
-            from += t +  ", ";
-        }
-
-        if(std::string::npos != from.find_last_of(",")) {
-            from.erase(from.find_last_of(","));
-        }
-
-        ret.append(from);
         return ret;
     }
 
@@ -308,14 +293,31 @@ jeb::api::info("XXXX - {};{}", __FILE__, __LINE__);
                   "error : no columns selected");
         }
 
-        root += sel + " WHERE ";
-
         auto con = stringify(select.conditions);
         if(con.empty()) {
             THROW(SYS_INVALID_INPUT_PARAM,
                   "error : no conditions provided");
         }
 
+        if(tables.empty()) {
+            THROW(SYS_INVALID_INPUT_PARAM, "from tables is empty");
+        }
+
+        // guarantee a unique list of tables to join
+        std::sort(tables.begin(), tables.end());
+        auto last = std::unique(tables.begin(), tables.end());
+        tables.erase(last, tables.end());
+
+        std::string from{" from "};
+        for(auto&& t : tables) {
+            from += t +  ", ";
+        }
+
+        if(std::string::npos != from.find_last_of(",")) {
+            from.erase(from.find_last_of(","));
+        }
+
+        root += sel + from + " WHERE ";
         root += con + compute_join_constraints();
 
         return root;

@@ -75,8 +75,8 @@ foreach(PLUGIN ${IRODS_EXPERIMENTAL_API_PLUGINS})
     ${IRODS_EXTERNALS_FULLPATH_ARCHIVE}/include
     ${IRODS_EXTERNALS_FULLPATH_BOOST}/include
     ${IRODS_EXTERNALS_FULLPATH_FMT}/include
+    ${IRODS_EXTERNALS_FULLPATH_NANODBC}/include
     )
-
   target_link_libraries(
     ${PLUGIN}
     PRIVATE
@@ -86,12 +86,13 @@ foreach(PLUGIN ${IRODS_EXPERIMENTAL_API_PLUGINS})
     ${IRODS_EXTERNALS_FULLPATH_BOOST}/lib/libboost_filesystem.so
     ${IRODS_EXTERNALS_FULLPATH_BOOST}/lib/libboost_system.so
     ${IRODS_EXTERNALS_FULLPATH_FMT}/lib/libfmt.so
+    ${IRODS_EXTERNALS_FULLPATH_NANODBC}/lib/libnanodbc.so
     ${OPENSSL_CRYPTO_LIBRARY}
     dl
     )
 
 target_compile_definitions(${PLUGIN} PRIVATE ENABLE_RE ${IRODS_COMPILE_DEFINITIONS} BOOST_SYSTEM_NO_DEPRECATED IRODS_ENABLE_SYSLOG)
-target_compile_options(${PLUGIN} PRIVATE -Wno-write-strings -Wno-sign-compare) # flex bug
+target_compile_options(${PLUGIN} PRIVATE -Wno-write-strings -Wno-sign-compare -Wno-ignored-qualifiers) # flex, nanodbc bugs
   set_property(TARGET ${PLUGIN} PROPERTY CXX_STANDARD ${IRODS_CXX_STANDARD})
 endforeach()
 
