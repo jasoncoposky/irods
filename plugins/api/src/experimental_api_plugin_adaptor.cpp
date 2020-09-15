@@ -8,6 +8,7 @@
 #include "irods_re_plugin.hpp"
 #include "irods_re_ruleexistshelper.hpp"
 #include "irods_at_scope_exit.hpp"
+#include "irods_logger.hpp"
 
 #ifdef RODS_SERVER
 #include "plugin_lifetime_manager.hpp"
@@ -129,6 +130,8 @@ namespace {
     int adapter(rsComm_t* comm, bytesBuf_t* bb_req, bytesBuf_t** bb_resp)
     {
 #ifdef RODS_SERVER
+        using log = irods::experimental::log::rule_engine;
+
         const std::string plugin_type{"server"};
 
         if(parameters_are_invalid(comm, bb_req)) {
@@ -175,7 +178,7 @@ namespace {
                                                request_dump);
 
                 if (!finally_err.ok()) {
-                    irods::log(PASS(finally_err));
+                    log::error(finally_err.result());
                 }
             }};
 
@@ -198,7 +201,7 @@ namespace {
                                                   request_dump);
 
                     if (!except_err.ok()) {
-                        irods::log(PASS(except_err));
+                        log::error(except_err.result());
                     }
 
                     *bb_resp = error_to_bbuf(pre_err);

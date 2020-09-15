@@ -9,11 +9,8 @@
 #include "irods_logger.hpp"
 #include "irods_exception.hpp"
 
-using jeb = irods::experimental::log;
+namespace irods::experimental::api::genquery {
 
-namespace ix = irods;
-
-namespace Genquery {
     template <typename Iterable>
     std::string
     iterableToString(Iterable const& iterable) {
@@ -23,6 +20,7 @@ namespace Genquery {
             v += element;
             v += "', ";
         }
+        v.erase(v.find_last_of(","));
         v += " ) ";
         return v;
     }
@@ -40,12 +38,12 @@ namespace Genquery {
     stringify(const Column& column) {
         const auto& key = column.name;
 
-        if(ix::column_table_alias_map.find(key) == ix::column_table_alias_map.end()) {
+        if(column_table_alias_map.find(key) == column_table_alias_map.end()) {
             THROW(SYS_INVALID_INPUT_PARAM,
-                  fmt::format("error: failed to find column key [{}]", key));
+                  fmt::format("failed to find column named [{}]", key));
         }
 
-        const auto& tup = ix::column_table_alias_map[key];
+        const auto& tup = column_table_alias_map.at(key);
         const auto& tbl = std::get<0>(tup);
         const auto& col = std::get<1>(tup);
 
@@ -242,7 +240,7 @@ namespace Genquery {
         const std::string& src
       , const std::string& dst) -> std::tuple<std::string, std::string>
     {
-        for(auto& e : irods::foreign_key_link_map) {
+        for(auto& e : foreign_key_link_map) {
             const auto& key = std::get<0>(e);
             if(key == src) {
                 const auto& tup = std::get<1>(e);
@@ -322,5 +320,6 @@ namespace Genquery {
 
         return root;
     }
-}
+
+} // namespace irods::experimental::api::genquery
 #endif // GENQUERY_JSONIFY_HPP

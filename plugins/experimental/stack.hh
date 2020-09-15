@@ -32,7 +32,7 @@
 
 /**
  ** \file /home/jasonc/dev/irods/plugins/experimental/stack.hh
- ** Define the  Genquery ::stack class.
+ ** Define the  irods::experimental::api::genquery ::stack class.
  */
 
 #ifndef YY_YY_HOME_JASONC_DEV_IRODS_PLUGINS_EXPERIMENTAL_STACK_HH_INCLUDED
@@ -41,7 +41,7 @@
 # include <vector>
 
 #line 8 "/home/jasonc/dev/irods/plugins/experimental/genquery_bison_input.y" // stack.hh:132
-namespace  Genquery  {
+namespace  irods { namespace experimental { namespace api { namespace genquery  {
 #line 46 "/home/jasonc/dev/irods/plugins/experimental/stack.hh" // stack.hh:132
   template <class T, class S = std::vector<T> >
   class stack
@@ -151,7 +151,7 @@ namespace  Genquery  {
   };
 
 #line 8 "/home/jasonc/dev/irods/plugins/experimental/genquery_bison_input.y" // stack.hh:132
-} //  Genquery 
+} } } } //  irods::experimental::api::genquery 
 #line 156 "/home/jasonc/dev/irods/plugins/experimental/stack.hh" // stack.hh:132
 
 #endif // !YY_YY_HOME_JASONC_DEV_IRODS_PLUGINS_EXPERIMENTAL_STACK_HH_INCLUDED

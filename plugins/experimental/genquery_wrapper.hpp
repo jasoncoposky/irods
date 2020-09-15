@@ -9,7 +9,7 @@
 #include "genquery_parser_bison_generated.hpp"
 #include "genquery_scanner.hpp"
 
-namespace Genquery {
+namespace irods::experimental::api::genquery {
     class Wrapper {
     public:
         explicit Wrapper(std::istream*);

@@ -197,6 +197,7 @@ namespace irods::experimental::api {
     }; // locking_json
 
     using progress_handler_type = std::function<void(const std::string&)>;
+    using response_handler_type = std::function<json(const json&, const json&)>;
 
     class client
     {
@@ -205,6 +206,39 @@ namespace irods::experimental::api {
             rcComm_t&             conn
           , flag_type&            exit_flag
           , progress_handler_type progress_handler
+          , response_handler_type response_handler
+          , const json&           options
+          , const std::string&    endpoint)
+        {
+            return implementation(conn
+                                , exit_flag
+                                , progress_handler
+                                , response_handler
+                                , options
+                                , endpoint);
+        } // operator()
+
+        json operator()(
+            rcComm_t&             conn
+          , flag_type&            exit_flag
+          , progress_handler_type progress_handler
+          , const json&           options
+          , const std::string&    endpoint)
+        {
+            return implementation(conn
+                                , exit_flag
+                                , progress_handler
+                                , [] (const json&, const json&) -> json { return {}; }
+                                , options
+                                , endpoint);
+        } // operator()
+
+    private:
+        json implementation(
+            rcComm_t&             conn
+          , flag_type&            exit_flag
+          , progress_handler_type progress_handler
+          , response_handler_type response_handler
           , const json&           options
           , const std::string&    endpoint)
         {
@@ -216,8 +250,6 @@ namespace irods::experimental::api {
 
                 req.update(options);
 
-                rep = invoke(conn, req);
-
                 std::string status{}, progress{}, command{};
 
                 while(states::complete != status &&
@@ -228,11 +260,14 @@ namespace irods::experimental::api {
                     command = exit_flag ? commands::cancel
                                         : commands::progress;
 
-                    req = {{commands::request,  endpoints::command},
-                           {constants::command, command},
-                           {constants::plugin,  endpoint}};
-
                     rep = invoke(conn, req);
+
+                    req = response_handler(req, rep);
+                    if(req.empty()) {
+                        req = {{commands::request,  endpoints::command},
+                               {constants::command, command},
+                               {constants::plugin,  endpoint}};
+                    }
 
                     status   = get<std::string>(constants::status,   rep, "");
                     progress = get<std::string>(constants::progress, rep, "");
@@ -249,7 +284,7 @@ namespace irods::experimental::api {
 
             return rep;
 
-        } // operator()
+        } // implementation
 
     }; // class client
 

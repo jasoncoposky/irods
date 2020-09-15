@@ -32,7 +32,7 @@
 
 /**
  ** \file /home/jasonc/dev/irods/plugins/experimental/position.hh
- ** Define the  Genquery ::position class.
+ ** Define the  irods::experimental::api::genquery ::position class.
  */
 
 #ifndef YY_YY_HOME_JASONC_DEV_IRODS_PLUGINS_EXPERIMENTAL_POSITION_HH_INCLUDED
@@ -51,7 +51,7 @@
 # endif
 
 #line 8 "/home/jasonc/dev/irods/plugins/experimental/genquery_bison_input.y" // location.cc:296
-namespace  Genquery  {
+namespace  irods { namespace experimental { namespace api { namespace genquery  {
 #line 56 "/home/jasonc/dev/irods/plugins/experimental/position.hh" // location.cc:296
   /// Abstract a position.
   class position
@@ -175,6 +175,6 @@ namespace  Genquery  {
   }
 
 #line 8 "/home/jasonc/dev/irods/plugins/experimental/genquery_bison_input.y" // location.cc:296
-} //  Genquery 
+} } } } //  irods::experimental::api::genquery 
 #line 180 "/home/jasonc/dev/irods/plugins/experimental/position.hh" // location.cc:296
 #endif // !YY_YY_HOME_JASONC_DEV_IRODS_PLUGINS_EXPERIMENTAL_POSITION_HH_INCLUDED

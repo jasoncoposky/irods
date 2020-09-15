@@ -4,7 +4,7 @@
 #include <string>
 #include "genquery_ast_types.hpp"
 
-namespace Genquery {
+namespace irods::experimental::api::genquery {
     std::string stringify(const Select&);
 }
 #endif // GENQUERY_STRINGIFY_HPP

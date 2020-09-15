@@ -7,7 +7,7 @@
 
 #include <boost/variant.hpp>
 
-namespace Genquery {
+namespace irods::experimental::api::genquery {
     struct Column {
         Column() = default;
         explicit Column(std::string name)
@@ -164,5 +164,5 @@ namespace Genquery {
         Selections selections;
         Conditions conditions;
     };
-}
+} // namespace irods::experimental::api::genquery
 #endif // GENQUERY_AST_TYPES_HPP

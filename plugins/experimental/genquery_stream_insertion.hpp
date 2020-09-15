@@ -3,7 +3,7 @@
 
 #include "genquery_ast_types.hpp"
 
-namespace Genquery {
+namespace irods::experimental::api::genquery {
     template <typename T>
     T&
     operator<<(T& os, const Column& column) {

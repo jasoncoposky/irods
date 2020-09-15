@@ -4,7 +4,7 @@
 #include <map>
 #include <tuple>
 
-namespace irods {
+namespace irods::experimental::api::genquery {
 
     const std::map<std::string, std::tuple<std::string, int>> table_alias_cycler_map {
         {"R_USER_PASSWORD", {"R_USER_PASSWORD", 0 }},
@@ -661,6 +661,6 @@ namespace irods {
         {"R_TICKET_MAIN", {"r_ticket_user_main", "R_TICKET_MAIN.user_id = r_ticket_user_main.user_id" }}
     }; // foreign_key_link_map
 
-} // namespace irods
+} // namespace irods::experemental::api::genquery
 
 #endif // IRODS_TABLE_COLUMN_KEY_MAPS_HPP
