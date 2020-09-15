@@ -25,7 +25,7 @@ set(
   ${CMAKE_SOURCE_DIR}/plugins/experimental/genquery_parser_bison_generated.cpp
   ${CMAKE_SOURCE_DIR}/plugins/experimental/genquery_flex_output.cpp
   ${CMAKE_SOURCE_DIR}/plugins/experimental/genquery_wrapper.cpp
-  ${CMAKE_SOURCE_DIR}/plugins/experimental/genquery_stringify.cpp
+  ${CMAKE_SOURCE_DIR}/plugins/experimental/genquery_sql.cpp
   ${CMAKE_SOURCE_DIR}/plugins/experimental/query.cpp
   )
 

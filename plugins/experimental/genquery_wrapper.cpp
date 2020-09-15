@@ -5,7 +5,7 @@
 #include "genquery_wrapper.hpp"
 
 namespace irods::experimental::api::genquery {
-    Wrapper::Wrapper(std::istream* istream)
+    wrapper::wrapper(std::istream* istream)
         : _scanner(*this)
         , _parser(_scanner, *this)
         , _select{}
@@ -15,30 +15,30 @@ namespace irods::experimental::api::genquery {
     }
 
     Select
-    Wrapper::parse(std::istream& istream) {
-        Wrapper wrapper(&istream);
+    wrapper::parse(std::istream& istream) {
+        wrapper wrapper(&istream);
         return std::move(wrapper._select);
     }
 
     Select
-    Wrapper::parse(const char* s) {
+    wrapper::parse(const char* s) {
         std::istringstream iss(s);
         return parse(iss);
     }
 
     Select
-    Wrapper::parse(const std::string& s) {
+    wrapper::parse(const std::string& s) {
         std::istringstream iss(s);
         return parse(iss);
     }
 
     void
-    Wrapper::increaseLocation(uint64_t location) {
+    wrapper::increaseLocation(uint64_t location) {
         _location += location;
     }
 
     uint64_t
-    Wrapper::location() const {
+    wrapper::location() const {
         return _location;
     }
 } // namespace irods::experimental::api::genquery

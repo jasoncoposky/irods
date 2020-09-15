@@ -1,6 +1,3 @@
-#ifndef GENQUERY_JSONIFY_HPP
-#define GENQUERY_JSONIFY_HPP
-
 #include <iostream>
 
 #include "genquery_ast_types.hpp"
@@ -11,9 +8,11 @@
 
 namespace irods::experimental::api::genquery {
 
+    using log = irods::experimental::log;
+
     template <typename Iterable>
     std::string
-    iterableToString(Iterable const& iterable) {
+    to_string(Iterable const& iterable) {
         std::string v{"( "};
         for (auto&& element: iterable) {
             v += "'";
@@ -25,17 +24,17 @@ namespace irods::experimental::api::genquery {
         return v;
     }
 
-    struct StringifyVisitor: public boost::static_visitor<std::string> {
+    struct sql_visitor: public boost::static_visitor<std::string> {
         template <typename T>
         std::string operator()(const T& arg) const {
-            return stringify(arg);
+            return sql(arg);
         }
     };
 
     std::vector<std::string> tables{};
 
     std::string
-    stringify(const Column& column) {
+    sql(const Column& column) {
         const auto& key = column.name;
 
         if(column_table_alias_map.find(key) == column_table_alias_map.end()) {
@@ -55,7 +54,7 @@ namespace irods::experimental::api::genquery {
     static uint8_t emit_second_paren{};
 
     std::string
-    stringify(const SelectFunction& select_function) {
+    sql(const SelectFunction& select_function) {
         std::string ret{};
         ret += select_function.name;
         ret += "(";
@@ -65,7 +64,7 @@ namespace irods::experimental::api::genquery {
     }
 
     std::string
-    stringify(const Selections& selections) {
+    sql(const Selections& selections) {
         tables.clear();
 
         if(selections.empty()) {
@@ -74,7 +73,7 @@ namespace irods::experimental::api::genquery {
 
         std::string ret{};
         for (auto&& selection: selections) {
-            auto sel = boost::apply_visitor(StringifyVisitor{}, selection);
+            auto sel = boost::apply_visitor(sql_visitor{}, selection);
             ret.append(sel);
 
             if(emit_second_paren >= 2) {
@@ -102,31 +101,31 @@ namespace irods::experimental::api::genquery {
     }
 
     std::string
-    stringify(const ConditionOperator_Or& op_or) {
+    sql(const ConditionOperator_Or& op_or) {
         std::string ret{};
-        ret += boost::apply_visitor(StringifyVisitor(), op_or.left);
+        ret += boost::apply_visitor(sql_visitor(), op_or.left);
         ret += " || ";
-        ret += boost::apply_visitor(StringifyVisitor(), op_or.right);
+        ret += boost::apply_visitor(sql_visitor(), op_or.right);
         return ret;
     }
 
     std::string
-    stringify(const ConditionOperator_And& op_and) {
-        std::string ret = boost::apply_visitor(StringifyVisitor(), op_and.left);
+    sql(const ConditionOperator_And& op_and) {
+        std::string ret = boost::apply_visitor(sql_visitor(), op_and.left);
         ret += " && ";
-        ret += boost::apply_visitor(StringifyVisitor(), op_and.right);
+        ret += boost::apply_visitor(sql_visitor(), op_and.right);
         return ret;
     }
 
     std::string
-    stringify(const ConditionOperator_Not& op_not) {
+    sql(const ConditionOperator_Not& op_not) {
         std::string ret{" NOT "};
-        ret += boost::apply_visitor(StringifyVisitor(), op_not.expression);
+        ret += boost::apply_visitor(sql_visitor(), op_not.expression);
         return ret;
     }
 
     std::string
-    stringify(const ConditionNotEqual& not_equal) {
+    sql(const ConditionNotEqual& not_equal) {
         std::string ret{" != "};
         ret += "'";
         ret += not_equal.string_literal;
@@ -135,7 +134,7 @@ namespace irods::experimental::api::genquery {
     }
 
     std::string
-    stringify(const ConditionEqual& equal) {
+    sql(const ConditionEqual& equal) {
         std::string ret{" = "};
         ret += "'";
         ret += equal.string_literal;
@@ -144,7 +143,7 @@ namespace irods::experimental::api::genquery {
     }
 
     std::string
-    stringify(const ConditionLessThan& less_than) {
+    sql(const ConditionLessThan& less_than) {
         std::string ret{" < "};
         ret += "'";
         ret += less_than.string_literal;
@@ -153,7 +152,7 @@ namespace irods::experimental::api::genquery {
     }
 
     std::string
-    stringify(const ConditionLessThanOrEqualTo& less_than_or_equal_to) {
+    sql(const ConditionLessThanOrEqualTo& less_than_or_equal_to) {
         std::string ret{" <= "};
         ret += "'";
         ret += less_than_or_equal_to.string_literal;
@@ -162,7 +161,7 @@ namespace irods::experimental::api::genquery {
     }
 
     std::string
-    stringify(const ConditionGreaterThan& greater_than) {
+    sql(const ConditionGreaterThan& greater_than) {
         std::string ret{" > "};
         ret += "'";
         ret += greater_than.string_literal;
@@ -171,14 +170,14 @@ namespace irods::experimental::api::genquery {
     }
 
     std::string
-    stringify(const ConditionGreaterThanOrEqualTo& greater_than_or_equal_to) {
+    sql(const ConditionGreaterThanOrEqualTo& greater_than_or_equal_to) {
         std::string ret{" >= "};
         ret += greater_than_or_equal_to.string_literal;
         return ret;
     }
 
     std::string
-    stringify(const ConditionBetween& between) {
+    sql(const ConditionBetween& between) {
         std::string ret{" BETWEEN '"};
         ret += between.low;
         ret += "' AND '";
@@ -188,14 +187,14 @@ namespace irods::experimental::api::genquery {
     }
 
     std::string
-    stringify(const ConditionIn& in) {
+    sql(const ConditionIn& in) {
         std::string ret{" IN "};
-        ret += iterableToString(in.list_of_string_literals);
+        ret += to_string(in.list_of_string_literals);
         return ret;
     }
 
     std::string
-    stringify(const ConditionLike& like) {
+    sql(const ConditionLike& like) {
         std::string ret{" LIKE '"};
         ret += like.string_literal;
         ret += "'";
@@ -203,36 +202,37 @@ namespace irods::experimental::api::genquery {
     }
 
     std::string
-    stringify(const ConditionParentOf& parent_of) {
+    sql(const ConditionParentOf& parent_of) {
         std::string ret{"parent_of"};
         ret += parent_of.string_literal;
         return ret;
     }
 
     std::string
-    stringify(const ConditionBeginningOf& beginning_of) {
+    sql(const ConditionBeginningOf& beginning_of) {
         std::string ret{"beginning_of"};
         ret += beginning_of.string_literal;
         return ret;
     }
 
     std::string
-    stringify(const Condition& condition) {
-        std::string ret{stringify(condition.column)};
-        ret += boost::apply_visitor(StringifyVisitor(), condition.expression);
+    sql(const Condition& condition) {
+        std::string ret{sql(condition.column)};
+        ret += boost::apply_visitor(sql_visitor(), condition.expression);
         return ret;
     }
 
     std::string
-    stringify(const Conditions& conditions) {
+    sql(const Conditions& conditions) {
         std::string ret{};
 
         size_t i{};
         for (auto&& condition: conditions) {
-            ret += stringify(condition);
+            ret += sql(condition);
             if(i < conditions.size()-1) { ret += " AND "; }
             ++i;
         }
+
         return ret;
     }
 
@@ -283,15 +283,15 @@ namespace irods::experimental::api::genquery {
     } // compute_join_constraints
 
     std::string
-    stringify(const Select& select) {
+    sql(const Select& select) {
         std::string root{"SELECT "};
-        auto sel = stringify(select.selections);
+        auto sel = sql(select.selections);
         if(sel.empty()) {
             THROW(SYS_INVALID_INPUT_PARAM,
                   "error : no columns selected");
         }
 
-        auto con = stringify(select.conditions);
+        auto con = sql(select.conditions);
         if(con.empty()) {
             THROW(SYS_INVALID_INPUT_PARAM,
                   "error : no conditions provided");
@@ -321,5 +321,18 @@ namespace irods::experimental::api::genquery {
         return root;
     }
 
+//  "SELECT DATA_NAME WHERE META_DATA_ATTR_NAME = 'a0' AND META_DATA_ATTR_NAME = 'a1'"
+
+
+
+// select distinct R_DATA_MAIN.data_name  from  R_DATA_MAIN , R_OBJT_METAMAP r_data_metamap , R_META_MAIN r_data_meta_main , R_OBJT_METAMAP r_data_metamap2, R_META_MAIN r_data_meta_mn02  where r_data_meta_main.meta_attr_name = ?  AND r_data_meta_mn02.meta_attr_name = ?  AND R_DATA_MAIN.data_id = r_data_metamap.object_id  AND r_data_metamap.meta_id = r_data_meta_main.meta_id  AND r_data_metamap2.meta_id = r_data_meta_mn02.meta_id AND R_DATA_MAIN.data_id = r_data_metamap2.object_id  order by R_DATA_MAIN.data_name",
+
+
+
+// SELECT R_DATA_MAIN.data_name from R_DATA_MAIN, r_data_meta_main WHERE r_data_meta_main.meta_attr_name = 'a0' AND r_data_meta_main.meta_attr_name = 'a1';",
+
+
+
+
+
 } // namespace irods::experimental::api::genquery
-#endif // GENQUERY_JSONIFY_HPP

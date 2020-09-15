@@ -8,21 +8,21 @@
 #endif
 
 #undef YY_DECL
-#define YY_DECL irods::experimental::api::genquery::Parser::symbol_type irods::experimental::api::genquery::Scanner::get_next_token()
+#define YY_DECL irods::experimental::api::genquery::Parser::symbol_type irods::experimental::api::genquery::scanner::get_next_token()
 
 #include "genquery_parser_bison_generated.hpp" // defines irods::experimental::api::genquery::Parser::symbol_type
 
 namespace irods::experimental::api::genquery {
-    class Wrapper;
+    class wrapper;
 
-    class Scanner : public yyFlexLexer {
+    class scanner : public yyFlexLexer {
     public:
-        Scanner(Wrapper& wrapper) : _wrapper(wrapper) {}
-        virtual ~Scanner() {}
+        scanner(wrapper& wrapper) : _wrapper(wrapper) {}
+        virtual ~scanner() {}
         virtual Parser::symbol_type get_next_token();
 
     private:
-        Wrapper& _wrapper;
+        wrapper& _wrapper;
     };
 
 } // namespace irods::experimental::api::genquery

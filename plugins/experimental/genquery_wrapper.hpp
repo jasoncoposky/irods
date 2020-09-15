@@ -10,21 +10,21 @@
 #include "genquery_scanner.hpp"
 
 namespace irods::experimental::api::genquery {
-    class Wrapper {
+    class wrapper {
     public:
-        explicit Wrapper(std::istream*);
+        explicit wrapper(std::istream*);
 
         static Select parse(std::istream&);
         static Select parse(const char*);
         static Select parse(const std::string&);
 
         friend class Parser;
-        friend class Scanner;
+        friend class scanner;
     private:
         void increaseLocation(uint64_t);
         uint64_t location() const;
 
-        Scanner _scanner;
+        scanner _scanner;
         Parser _parser;
         Select _select;
         uint64_t _location;

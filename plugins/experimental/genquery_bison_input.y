@@ -14,8 +14,8 @@
     #include "genquery_ast_types.hpp"
 
     namespace irods::experimental::api::genquery {
-        class Scanner;
-        class Wrapper;
+        class scanner;
+        class wrapper;
     }
 
     namespace gq = irods::experimental::api::genquery;
@@ -28,13 +28,13 @@
     #include "genquery_wrapper.hpp"
     #include "location.hh"
 
-    static gq::Parser::symbol_type yylex(gq::Scanner& scanner, gq::Wrapper& wrapper) {
+    static gq::Parser::symbol_type yylex(gq::scanner& scanner, gq::wrapper& wrapper) {
         return scanner.get_next_token();
     }
 }
 
-%lex-param { gq::Scanner& scanner } { gq::Wrapper& wrapper }
-%parse-param { gq::Scanner& scanner } { gq::Wrapper& wrapper }
+%lex-param { gq::scanner& scanner } { gq::wrapper& wrapper }
+%parse-param { gq::scanner& scanner } { gq::wrapper& wrapper }
 %locations
 %define parse.trace
 %define parse.error verbose

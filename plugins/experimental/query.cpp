@@ -3,7 +3,7 @@
 
 #include "genquery_wrapper.hpp"
 #include "genquery_stream_insertion.hpp"
-#include "genquery_stringify.hpp"
+#include "genquery_sql.hpp"
 
 #include "nanodbc_connection.hpp"
 
@@ -31,6 +31,7 @@ namespace irods::experimental::api {
                     if(!req.contains("paging")) {
 
                         auto [paging, sql] = generate_sql(req);
+log::api::info("XXXX - sql {}", sql);
 
                         if(paging) {
                             begin();
@@ -95,13 +96,12 @@ namespace irods::experimental::api {
         private:
             auto generate_sql(const json req) -> std::tuple<bool, std::string>
             {
-
                 if(!req.contains("query")) {
                     THROW(SYS_INVALID_INPUT_PARAM, "Missing 'query' parameter");
                 }
 
                 auto gen = req.at("query").get<std::string>();
-                auto sql = genquery::stringify(genquery::Wrapper::parse(gen));
+                auto sql = genquery::sql(genquery::wrapper::parse(gen));
 
                 auto off = get<uint64_t>("offset", req, 0);
                 if(off > 0) {
