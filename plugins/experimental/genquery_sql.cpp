@@ -31,7 +31,11 @@ namespace irods::experimental::api::genquery {
         }
     };
 
+    std::vector<std::string> columns{};
     std::vector<std::string> tables{};
+    std::vector<std::string> from_aliases{};
+    std::vector<std::string> where_aliases{};
+    std::vector<std::string> processed_tables{};
 
     std::string
     sql(const Column& column) {
@@ -46,7 +50,10 @@ namespace irods::experimental::api::genquery {
         const auto& tbl = std::get<0>(tup);
         const auto& col = std::get<1>(tup);
 
+log::api::info("pushing back table {} and column {}", tbl, col);
         tables.push_back(tbl);
+        columns.push_back(col);
+
 
         return tbl + "." + col;
     }
@@ -236,51 +243,232 @@ namespace irods::experimental::api::genquery {
         return ret;
     }
 
-    auto find_fklink_for_columns(
-        const std::string& src
-      , const std::string& dst) -> std::tuple<std::string, std::string>
+    // =-=-=-=-=-=-=-=-=-=-
+    using link_type = std::tuple<const std::string, const std::string>;
+    using link_vector_type = std::vector<link_type>;
+
+    auto find_fklinks_for_table1(const std::string& _src) -> link_vector_type
     {
-        for(auto& e : foreign_key_link_map) {
-            const auto& key = std::get<0>(e);
-            if(key == src) {
-                const auto& tup = std::get<1>(e);
-                const auto& col = std::get<0>(tup);
-                if(dst == col) {
-                    return tup;
-                }
+        std::vector<std::tuple<const std::string, const std::string>> v{};
+
+        for(const auto& t : foreign_key_link_map) {
+            const auto& t1 = std::get<0>(t);
+            if(t1 == _src) {
+                v.push_back(std::make_tuple(std::get<1>(t), std::get<2>(t)));
             }
         }
 
-        return {{}, {}};
+        return v;
 
-    } // find_fklink_for_columns
+    } // find_fklinks_for_table1
 
-    auto compute_join_constraints() -> std::string
+    auto find_fklinks_for_table2(const std::string& _src) -> link_vector_type
     {
-        // guarantee a unique list of tables to join
+        //link_vector_type v{};
+        std::vector<std::tuple<const std::string, const std::string>> v{};
+
+        for(const auto& t : foreign_key_link_map) {
+            const auto& t2 = std::get<1>(t);
+            if(t2 == _src) {
+                v.push_back(std::make_tuple(std::get<0>(t), std::get<2>(t)));
+            }
+        }
+
+        return v;
+
+    } // find_fklinks_for_table2
+
+    auto get_table_alias(const std::string& _t) -> std::string
+    {
+        const auto& tacm = table_alias_cycler_map;
+        if(tacm.find(_t) != tacm.end()) {
+            return std::get<0>(tacm.at(_t));
+        }
+
+        THROW(SYS_INVALID_INPUT_PARAM,
+              fmt::format("Table does not exist [{}]", _t));
+
+    } // get_table_alias
+
+    auto get_table_cycle_flag(const std::string& _t) -> int
+    {
+        const auto& tacm = table_alias_cycler_map;
+        if(tacm.find(_t) != tacm.end()) {
+            const auto& tup = tacm.at(_t);
+            auto r = std::get<1>(tup);
+            return r;
+        }
+
+        THROW(SYS_INVALID_INPUT_PARAM,
+              fmt::format("Table does not exist [{}]", _t));
+
+    } // get_table_cycle_flag
+
+    auto prime_from_aliases() -> void
+    {
+        for(auto&& t : tables) {
+            auto a = get_table_alias(t);
+            log::api::info("priming table alias {} -> '{}'", t, a);
+            from_aliases.push_back(a);
+        }
+
+    } // prime_from_aliases
+
+    auto annotate_redundant_table_aliases() -> void
+    {
+        log::api::info("IMPLEMENT ME {}", __FUNCTION__);
+    }
+
+    auto from_contains_table_alias(const std::string& _t) -> bool
+    {
+        log::api::info("searching for table {} alias", _t);
+
+        //const auto space{" "};
+
+        // table aliases are either a plane table name or
+        // of the form 'table alias'.  we need to attempt
+        // to match the alias after the space
+        for(const auto& a : from_aliases) {
+#if 0
+            const auto pos = a.find(space);
+
+            if(pos != std::string::npos) {
+                const auto s = a.substr(pos+1);
+                log::api::info("---- matching {} to {} alias", s, _t);
+                if(_t == s) {
+                    log::api::info("---- found table {} alias", _t);
+                    return true;
+                }
+            }
+            else if(a == _t) {
+                log::api::info("---- found table {}", _t);
+                return true;
+            }
+#else
+            if(a == _t) {
+            log::api::info("---- matched alias {} to _t {}", a, _t);
+                log::api::info("---- found table {}", _t);
+                return true;
+            }
+#endif
+        } // for aliases
+
+        return false;
+
+    } // from_contains_table_alias
+
+    auto process_table_linkage(const std::string& _t, const link_type& _l) -> void
+    {
+        log::api::info("processing where for table {} : {}", _t, std::get<1>(_l));
+        where_aliases.push_back(std::get<1>(_l));
+
+        //if(from_contains_table_alias(get_table_alias(std::get<0>(_l)))) {
+        if(from_contains_table_alias(_t)) {
+            log::api::info("processing from alias for table {} : {}", _t, std::get<0>(_l));
+            from_aliases.push_back(get_table_alias(std::get<0>(_l)));
+        }
+
+    } // process_table_linkage
+
+    auto table_has_been_processed(const std::string& _t) -> bool
+    {
+        return std::find(processed_tables.begin(),
+                         processed_tables.end(),
+                         _t) != processed_tables.end();
+        
+    } // table_has_been_processed
+
+    auto compute_table_linkage(const std::string& _t1, const std::string& _t2) -> bool
+    {
+        log::api::info("computing table linkage for table {} -> {}", _t1, _t2);
+
+        // if there is a potential cycle in table linkage
+        // then break the recursion
+        if(get_table_cycle_flag(_t1) > 0) {
+            log::api::info("---- found cycle flag for table {}", _t1);
+            return false;
+        }
+
+        // we have already processed this table
+        if(table_has_been_processed(_t1)) {
+            log::api::info("---- table has been processed {}, searching from_tables for {}", _t1, _t2);
+            if(_t2.empty()) {
+                return from_contains_table_alias(get_table_alias(_t1));
+            }
+
+            return from_contains_table_alias(get_table_alias(_t2));
+        }
+
+        processed_tables.push_back(_t1);
+
+        // process all forward linkages for this table
+        log::api::info("---- computing forward linkage for table {}", _t1);
+
+        const auto t1_links = find_fklinks_for_table1(_t1);
+        for(const auto& l : t1_links) {
+            log::api::info("---- processing forward link for table {} to {}:{}", _t1, std::get<0>(l), std::get<1>(l));
+            if(compute_table_linkage(std::get<0>(l), _t1)) {
+                process_table_linkage(_t1, l);
+                return true;
+            }
+        } // for l
+
+        // process all reverse linkages for this table
+        log::api::info("---- computing reverse linkage for table {}", _t1);
+
+        const auto t2_links = find_fklinks_for_table2(_t1);
+        for(const auto& l : t2_links) {
+            log::api::info("---- processing reverse link for table {} to {}:{}", _t1, std::get<0>(l), std::get<1>(l));
+            if(compute_table_linkage(std::get<0>(l), _t1)) {
+                process_table_linkage(_t1, l);
+                return true;
+            }
+        } // for l
+
+        return false;
+
+    } // compute_table_linkage
+
+    auto build_from_clause() -> std::string
+    {
+        auto from = std::string{" FROM "};
+        for(auto&& a : from_aliases) {
+            from += a +  ", ";
+        }
+
+        if(std::string::npos != from.find_last_of(",")) {
+            from.erase(from.find_last_of(","));
+        }
+
+        return from;
+
+    } // build_from_clause 
+    auto build_where_clause() -> std::string
+    {
+        const std::string space{" "};
+        const std::string conn{"AND"};
+
+        auto where = std::string{};
+        for(auto&& a : where_aliases) {
+            where += a +  space + conn + space;
+        }
+
+        auto p = where.find_last_of(conn);
+        if(std::string::npos != p) {
+            where.erase(where.find_last_of(conn) - 3);
+        }
+
+        return where;
+
+    } // build_where_clause
+
+    auto uniquify_tables() -> void
+    {
         std::sort(tables.begin(), tables.end());
         auto last = std::unique(tables.begin(), tables.end());
         tables.erase(last, tables.end());
 
-        std::string cons{};
-        for(const auto& src : tables) {
-            for(const auto& dst : tables) {
-                if(src == dst) {
-                    continue;
-                }
-
-                const auto& tup = find_fklink_for_columns(src, dst);
-                const auto& col = std::get<0>(tup); // matched dst column
-                if(!col.empty()) {
-                    const auto& fkl = std::get<1>(tup);
-                    cons += " AND " + fkl;
-                }
-            } // for dst
-        } // for src
-
-        return cons;
-
-    } // compute_join_constraints
+    } // uniquify_tables
 
     std::string
     sql(const Select& select) {
@@ -301,22 +489,16 @@ namespace irods::experimental::api::genquery {
             THROW(SYS_INVALID_INPUT_PARAM, "from tables is empty");
         }
 
-        // guarantee a unique list of tables to join
-        std::sort(tables.begin(), tables.end());
-        auto last = std::unique(tables.begin(), tables.end());
-        tables.erase(last, tables.end());
+        prime_from_aliases();
 
-        std::string from{" from "};
-        for(auto&& t : tables) {
-            from += t +  ", ";
-        }
+        annotate_redundant_table_aliases();
 
-        if(std::string::npos != from.find_last_of(",")) {
-            from.erase(from.find_last_of(","));
-        }
+        uniquify_tables();
+    
+        compute_table_linkage(get_table_alias(tables[0]), {});
 
-        root += sel + from + " WHERE ";
-        root += con + compute_join_constraints();
+        root += sel + build_from_clause() + " WHERE ";
+        root += con + " AND " + build_where_clause();
 
         return root;
     }
@@ -324,10 +506,34 @@ namespace irods::experimental::api::genquery {
 //  "SELECT DATA_NAME WHERE META_DATA_ATTR_NAME = 'a0' AND META_DATA_ATTR_NAME = 'a1'"
 
 
+// SELECT R_DATA_MAIN.data_name
+//     FROM R_DATA_MAIN, R_META_MAIN r_data_meta_main, R_OBJT_METAMAP r_data_metamap
+//
+//     WHERE r_data_meta_main.meta_attr_name = 'a0' AND
+//           r_data_metamap.meta_id = r_data_meta_main.meta_id AND
+//           r_data_metamap.meta_id = r_data_meta_main.meta_id AND
+//           R_DATA_MAIN.data_id = r_data_metamap.object_id;"
+//
+// select distinct R_DATA_MAIN.data_name
+//     from  R_DATA_MAIN , R_OBJT_METAMAP r_data_metamap , R_META_MAIN r_data_meta_main , R_OBJT_METAMAP r_data_metamap2, R_META_MAIN r_data_meta_mn02
+//
+//     where r_data_meta_main.meta_attr_name = ?  AND r_data_meta_mn02.meta_attr_name = ?  AND
+//
+//           R_DATA_MAIN.data_id     = r_data_metamap.object_id  AND
+//           r_data_metamap.meta_id  = r_data_meta_main.meta_id AND
+//           r_data_metamap2.meta_id = r_data_meta_mn02.meta_id AND
+//           R_DATA_MAIN.data_id     = r_data_metamap2.object_id
+//
+//     order by R_DATA_MAIN.data_name",
 
-// select distinct R_DATA_MAIN.data_name  from  R_DATA_MAIN , R_OBJT_METAMAP r_data_metamap , R_META_MAIN r_data_meta_main , R_OBJT_METAMAP r_data_metamap2, R_META_MAIN r_data_meta_mn02  where r_data_meta_main.meta_attr_name = ?  AND r_data_meta_mn02.meta_attr_name = ?  AND R_DATA_MAIN.data_id = r_data_metamap.object_id  AND r_data_metamap.meta_id = r_data_meta_main.meta_id  AND r_data_metamap2.meta_id = r_data_meta_mn02.meta_id AND R_DATA_MAIN.data_id = r_data_metamap2.object_id  order by R_DATA_MAIN.data_name",
 
+//SELECT R_DATA_MAIN.data_name from R_DATA_MAIN, r_data_meta_main WHERE
+//    r_data_meta_main.meta_attr_name = 'a0' AND r_data_meta_main.meta_attr_name = 'a1' AND
+//    R_DATA_MAIN.data_id = r_data_meta_main.object_id;",
 
+// SELECT R_DATA_MAIN.data_name from R_DATA_MAIN, r_data_meta_main WHERE
+//     r_data_meta_main.meta_attr_name = 'a0' AND r_data_meta_main.meta_attr_name = 'a1' AND
+//     R_DATA_MAIN.data_id = r_data_meta_main.object_id;",
 
 // SELECT R_DATA_MAIN.data_name from R_DATA_MAIN, r_data_meta_main WHERE r_data_meta_main.meta_attr_name = 'a0' AND r_data_meta_main.meta_attr_name = 'a1';",
 
