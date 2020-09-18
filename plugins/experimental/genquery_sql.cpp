@@ -408,6 +408,9 @@ log::api::info("pushing back table {} and column {}", tbl, col);
         for(const auto& l : t1_links) {
             log::api::info("---- processing forward link for table {} to {}:{}", _t1, std::get<0>(l), std::get<1>(l));
             if(compute_table_linkage(std::get<0>(l), _t1)) {
+                if(from_contains_table_alias(get_table_alias(std::get<0>(l)))) {
+                    return true;
+                }
                 process_table_linkage(_t1, l);
                 return true;
             }
@@ -420,6 +423,9 @@ log::api::info("pushing back table {} and column {}", tbl, col);
         for(const auto& l : t2_links) {
             log::api::info("---- processing reverse link for table {} to {}:{}", _t1, std::get<0>(l), std::get<1>(l));
             if(compute_table_linkage(std::get<0>(l), _t1)) {
+                if(from_contains_table_alias(get_table_alias(std::get<0>(l)))) {
+                    return true;
+                }
                 process_table_linkage(_t1, l);
                 return true;
             }
