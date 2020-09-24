@@ -549,7 +549,7 @@ namespace irods::experimental::api::genquery {
         {"R_RESC_GROUP", "r_resc_grp_metamap", "R_RESC_GROUP.resc_group_id = r_resc_grp_metamap.object_id" },
         {"R_COLL_MAIN", "r_coll_metamap", "R_COLL_MAIN.coll_id = r_coll_metamap.object_id" },
 
-        {"R_DATA_MAIN", "r_data_metamap", "R_DATA_MAIN.data_id = r_data_metamap.object_id" },
+{"R_DATA_MAIN", "r_data_metamap", "R_DATA_MAIN.data_id = r_data_metamap.object_id" },
 
         {"R_RULE_MAIN", "r_rule_metamap", "R_RULE_MAIN.rule_id = r_rule_metamap.object_id" },
         {"R_USER_MAIN", "r_user_metamap", "R_USER_MAIN.user_id = r_user_metamap.object_id" },
@@ -573,7 +573,7 @@ namespace irods::experimental::api::genquery {
         {"r_resc_grp_metamap", "r_resc_grp_meta_main",  "r_resc_grp_metamap.meta_id = r_resc_grp_meta_main.meta_id" },
         {"r_coll_metamap", "r_coll_meta_main",  "r_coll_metamap.meta_id = r_coll_meta_main.meta_id" },
 
-        {"r_data_metamap", "r_data_meta_main",  "r_data_metamap.meta_id = r_data_meta_main.meta_id" },
+{"r_data_metamap", "r_data_meta_main",  "r_data_metamap.meta_id = r_data_meta_main.meta_id" },
 
         {"r_rule_metamap", "r_rule_meta_main",  "r_rule_metamap.meta_id = r_rule_meta_main.meta_id" },
         {"r_user_metamap", "r_user_meta_main",  "r_user_metamap.meta_id = r_user_meta_main.meta_id" },
