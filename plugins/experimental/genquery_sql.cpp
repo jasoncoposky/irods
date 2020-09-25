@@ -50,7 +50,7 @@ namespace irods::experimental::api::genquery {
         const auto& tbl = std::get<0>(tup);
         const auto& col = std::get<1>(tup);
 
-log::api::info("pushing back table {} and column {}", tbl, col);
+//log::api::info("pushing back table {} and column {}", tbl, col);
         tables.push_back(tbl);
         columns.push_back(col);
 
@@ -326,7 +326,7 @@ log::api::info("pushing back table {} and column {}", tbl, col);
     {
         for(auto&& t : tables) {
             auto a = get_table_alias(t);
-            log::api::info("priming table alias {} -> '{}'", t, a);
+            //log::api::info("priming table alias {} -> '{}'", t, a);
             from_aliases.push_back(a);
         }
 
@@ -368,7 +368,7 @@ log::api::info("pushing back table {} and column {}", tbl, col);
                 auto& ctr = alias_counter[t]; 
                 if(ctr > 0) {
                     t += "_" + std::to_string(ctr);
-                    log::api::info("---- annotated from table {}", t);
+                    //log::api::info("---- annotated from table {}", t);
                 }
                 ++ctr;
             }
@@ -390,7 +390,7 @@ log::api::info("pushing back table {} and column {}", tbl, col);
             auto& ctr = alias_counter[key]; 
             if(ctr > 0) {
                 annotate_where_clause(c, ctr);
-                log::api::info("---- annotated where clause {}", c);
+                //log::api::info("---- annotated where clause {}", c);
             }
 
             ++ctr;
@@ -401,7 +401,7 @@ log::api::info("pushing back table {} and column {}", tbl, col);
 
     auto count_aliases_in_from_table(const std::string& _t) -> uint8_t
     {
-        log::api::info("searching for table {} alias in FROM tables", _t);
+        //log::api::info("searching for table {} alias in FROM tables", _t);
 
         uint8_t ctr{};
 
@@ -411,7 +411,7 @@ log::api::info("pushing back table {} and column {}", tbl, col);
             }
         } // for aliases
 
-        log::api::info("---- found {} aliases", ctr);
+        //log::api::info("---- found {} aliases", ctr);
 
         return ctr;
 
@@ -420,7 +420,7 @@ log::api::info("pushing back table {} and column {}", tbl, col);
 
     auto count_aliases_in_where_clauses(const std::string& _t) -> uint8_t
     {
-        log::api::info("searching for table {} alias in WHERE clauses", _t);
+        //log::api::info("searching for table {} alias in WHERE clauses", _t);
 
         uint8_t ctr{};
 
@@ -430,7 +430,7 @@ log::api::info("pushing back table {} and column {}", tbl, col);
             }
         } // for aliases
 
-        log::api::info("---- found {} aliases", ctr);
+        //log::api::info("---- found {} aliases", ctr);
 
         return ctr;
 
@@ -442,7 +442,7 @@ log::api::info("pushing back table {} and column {}", tbl, col);
         const auto& t2 = std::get<0>(_l);
         const auto& lk = std::get<1>(_l);
 
-        log::api::info("processing table linkage for {} to {}", _t, t2);
+        //log::api::info("processing table linkage for {} to {}", _t, t2);
 
         // --> We are here for a reason, linkage is needed.
         //
@@ -460,29 +460,50 @@ log::api::info("pushing back table {} and column {}", tbl, col);
         auto fc_t2 = count_aliases_in_from_table(get_table_alias(t2));
         auto wc_t2 = count_aliases_in_where_clauses(t2);
 
-        log::api::info("counts t1 {} w1 {}, t2 {} w2 {}", fc_t1, wc_t1, fc_t2, wc_t2);
-
-        log::api::info("processing WHERE for table {}", _t);
+        //log::api::info("counts from t1 {} where t1 {}, from t2 {} where t2 {}", fc_t1, wc_t1, fc_t2, wc_t2);
 
         // always need at least one where clause
-        log::api::info("adding WHERE clause for table {} : {}", _t, t2);
-        where_clauses.push_back(std::get<1>(_l));
+        //log::api::info("adding WHERE clause for table {} : {}", _t, t2);
+        where_clauses.push_back(lk);
 
-        auto cnt = std::max(fc_t2, std::max(fc_t1, wc_t2));
+        const auto t2_satisfied   = fc_t2 == wc_t2;
+        const auto one_to_one_map = !fc_t1 && !wc_t1;
+        const auto cnt = std::max(fc_t2, wc_t2);
 
-        if(cnt > 0) {
-            // add additional where clauses to match the from clauses
-            for(auto i = 0; i < cnt-1; ++i) {
-                log::api::info("adding WHERE clause for table {} : {}", _t, lk);
-                where_clauses.push_back(lk);
+        //log::api::info("XXXX - t2_satisfied {}", t2_satisfied);
+
+        // fix-up the from-where disparity for table 2
+        if(!t2_satisfied) {
+            //log::api::info("Table 2 {} from-where is not satisfied", t2);
+
+            if(fc_t2 < wc_t2) {
+                const auto cnt = wc_t2 - fc_t2;
+                for(auto i = 0; i < cnt; ++i) {
+                    const auto& a = get_table_alias(t2);
+                    //log::api::info("fix-up :: adding from alias {} for table {}", a, t2);
+                    from_aliases.push_back(a);
+                }
+            }
+            else {
+                const auto cnt = fc_t2 - wc_t2;
+                for(auto i = 0; i < cnt; ++i) {
+                    //log::api::info("fix-up :: adding where clause for table {}", t2);
+                    where_clauses.push_back(lk);
+                }
             }
         }
 
-        log::api::info("processing FROM alias for table {} : {}", _t, t2);
-        if(cnt > 0) {
+        if(one_to_one_map && t2_satisfied) {
+            // add additional where clauses to match the from clauses
+            for(auto i = 0; i < cnt-1; ++i) {
+                //log::api::info("adding WHERE clause for table {} : {}", _t, lk);
+                where_clauses.push_back(lk);
+            }
+
             for(auto i = 0; i < cnt; ++i) {
-                log::api::info("adding from alias for table {} : {} to list", _t, t2);
-                from_aliases.push_back(get_table_alias(t2));
+                const auto& a = get_table_alias(_t);
+                //log::api::info("adding from alias for table {} : {} to list", _t, a);
+                from_aliases.push_back(a);
             }
         }
 
@@ -500,7 +521,7 @@ log::api::info("pushing back table {} and column {}", tbl, col);
 
     auto linkage_is_applicable_for_table(const std::string& _t) -> bool
     {
-        log::api::info("-------- linkage is applicable for table {}", _t);
+        //log::api::info("-------- linkage is applicable for table {}", _t);
 
         return count_aliases_in_from_table(get_table_alias(_t)) > 0;
     } // linkage_is_applicable_for_table
@@ -511,19 +532,19 @@ log::api::info("pushing back table {} and column {}", tbl, col);
     {
         for(const auto& l : _flk) {
             const auto& t2 = std::get<0>(l);
-            const auto& lk = std::get<1>(l);
+            //const auto& lk = std::get<1>(l);
 
-            log::api::info("---- computing forward link for table {} to {}:{}", _t, t2, lk);
+            //log::api::info("---- computing forward link for table {} to {}:{}", _t, t2, lk);
 
             if(compute_table_linkage(t2)) {
-                log::api::info("--- forward linkage has been computed for {}", t2);
+                //log::api::info("--- forward linkage has been computed for {}", t2);
                 process_table_linkage(_t, l);
                 return true;
             }
             // second link table may be terminal, determine if it should be processed
             // due to existance in the FROM clause
             else if(linkage_is_applicable_for_table(t2)) {
-                log::api::info("--- forward linkage is applicable for {} from {}", t2, _t);
+                //log::api::info("--- forward linkage is applicable for {} from {}", t2, _t);
                 process_table_linkage(_t, l);
                 return true;
             }
@@ -537,28 +558,28 @@ log::api::info("pushing back table {} and column {}", tbl, col);
 
     auto compute_table_linkage(const std::string& _t) -> bool
     {
-        log::api::info("computing table linkage for table {}", _t);
+        //log::api::info("computing table linkage for table {}", _t);
 
         if(get_table_cycle_flag(_t) > 0) {
-            log::api::info("---- found cycle flag for table {}, breaking", _t);
+            //log::api::info("---- found cycle flag for table {}, breaking", _t);
             return false;
         }
 
         if(table_has_been_processed(_t)) {
-            log::api::info("---- table has been processed {}", _t);
+            //log::api::info("---- table has been processed {}", _t);
             return false;
         }
 
         processed_tables.push_back(_t);
 
-        log::api::info("---- computing forward linkage for table {}", _t);
+        //log::api::info("---- computing forward linkage for table {}", _t);
 
         const auto t1l = find_fklinks_for_table1(_t);
         if(auto r = process_fklinks(_t, t1l); r) {
             return true;
         }
 
-        log::api::info("---- computing reverse linkage for table {}", _t);
+        //log::api::info("---- computing reverse linkage for table {}", _t);
 
         const auto t2l = find_fklinks_for_table2(_t);
         if(auto r = process_fklinks(_t, t2l); r) {
@@ -639,7 +660,7 @@ log::api::info("pushing back table {} and column {}", tbl, col);
 
 
 //        uniquify_tables();
-    
+
         compute_table_linkage(get_table_alias(tables[0]));
 
         annotate_redundant_table_aliases();
@@ -652,18 +673,19 @@ log::api::info("pushing back table {} and column {}", tbl, col);
     }
 
 #if 0
+=======================================================================================
 ORIGINAL GENQUERY
 
 select distinct R_DATA_MAIN.data_name
     from  R_DATA_MAIN,
           R_OBJT_METAMAP r_data_metamap,
-          R_META_MAIN r_data_meta_main,
+          R_META_MAIN    r_data_meta_main,
           R_OBJT_METAMAP r_data_metamap2,
-          R_META_MAIN r_data_meta_mn02
+          R_META_MAIN    r_data_meta_mn02
 
-    where r_data_meta_main.meta_attr_name = ?  AND
-          r_data_meta_mn02.meta_attr_name = ?  AND
-          R_DATA_MAIN.data_id     = r_data_metamap.object_id  AND
+    where r_data_meta_main.meta_attr_name = ? AND
+          r_data_meta_mn02.meta_attr_name = ? AND
+          R_DATA_MAIN.data_id     = r_data_metamap.object_id AND
           r_data_metamap.meta_id  = r_data_meta_main.meta_id AND
           r_data_metamap2.meta_id = r_data_meta_mn02.meta_id AND
           R_DATA_MAIN.data_id     = r_data_metamap2.object_id
@@ -671,18 +693,5 @@ select distinct R_DATA_MAIN.data_name
     order by R_DATA_MAIN.data_name",
 
 =======================================================================================
-
-SELECT R_DATA_MAIN.data_name
-    FROM R_DATA_MAIN,
-         R_META_MAIN r_data_meta_main,
-         R_META_MAIN r_data_meta_main_1,
-         R_OBJT_METAMAP r_data_metamap
-    WHERE r_data_meta_main.meta_attr_name = 'a0' AND
-          r_data_meta_main.meta_attr_name = 'a1' AND
-          r_data_metamap.meta_id = r_data_meta_main.meta_id AND
-          r_data_metamap.meta_id_1 = r_data_meta_main.meta_id_1 AND
-          R_DATA_MAIN.data_id = r_data_metamap.object_id;
-
-
 #endif
 } // namespace irods::experimental::api::genquery

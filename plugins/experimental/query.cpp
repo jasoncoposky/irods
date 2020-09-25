@@ -30,8 +30,9 @@ namespace irods::experimental::api {
 
                     if(!req.contains("paging")) {
 
+log::api::info("XXXX - before generate sql");
                         auto [paging, sql] = generate_sql(req);
-log::api::info("XXXX - sql {}", sql);
+log::api::info("XXXX - after generate sql");
 
                         if(paging) {
                             begin();
