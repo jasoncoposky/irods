@@ -811,6 +811,12 @@ set(
   ${CMAKE_SOURCE_DIR}/server/core/src/server_utilities.cpp
   ${CMAKE_SOURCE_DIR}/server/core/src/specColl.cpp
   ${CMAKE_SOURCE_DIR}/server/core/src/voting.cpp
+
+  ${CMAKE_SOURCE_DIR}/server/core/src/genquery_parser_bison_generated.cpp
+  ${CMAKE_SOURCE_DIR}/server/core/src/genquery_flex_output.cpp
+  ${CMAKE_SOURCE_DIR}/server/core/src/genquery_wrapper.cpp
+  ${CMAKE_SOURCE_DIR}/server/core/src/genquery_sql.cpp
+
   ${CMAKE_SOURCE_DIR}/server/drivers/src/fileDriver.cpp
   ${CMAKE_SOURCE_DIR}/server/icat/src/icatHighLevelRoutines.cpp
   ${CMAKE_SOURCE_DIR}/server/re/src/extractAvuMS.cpp
@@ -841,6 +847,20 @@ set(
   $<TARGET_OBJECTS:irods_user_administration_server>
   $<TARGET_OBJECTS:irods_resource_administration_server>
   )
+
+add_custom_command(
+    OUTPUT           ${CMAKE_SOURCE_DIR}/server/core/src/genquery_parser_bison_generated.cpp
+    COMMAND bison -o ${CMAKE_SOURCE_DIR}/server/core/src/genquery_parser_bison_generated.cpp ${CMAKE_SOURCE_DIR}/server/core/src/genquery_bison_input.y
+    MAIN_DEPENDENCY  ${CMAKE_SOURCE_DIR}/server/core/src/genquery_bison_input.y
+)
+
+add_custom_command(
+    OUTPUT          ${CMAKE_SOURCE_DIR}/server/core/src/genquery_flex_output.cpp
+    COMMAND flex -o ${CMAKE_SOURCE_DIR}/server/core/src/genquery_flex_output.cpp ${CMAKE_SOURCE_DIR}/server/core/src/genquery_flex_input.l
+    MAIN_DEPENDENCY ${CMAKE_SOURCE_DIR}/server/core/src/genquery_flex_input.l
+)
+
+
 add_library(
   irods_server
   SHARED
@@ -895,7 +915,7 @@ set_property(TARGET irods_server PROPERTY VERSION ${IRODS_VERSION})
 set_property(TARGET irods_server PROPERTY SOVERSION ${IRODS_VERSION})
 target_compile_definitions(irods_server PRIVATE ENABLE_RE RODS_CLERVER IRODS_ENABLE_SYSLOG ${IRODS_COMPILE_DEFINITIONS})
 # TODO: remove -Wno-ignored-qualifiers on resolution of https://github.com/nanodbc/nanodbc/pull/234
-target_compile_options(irods_server PRIVATE -Wno-write-strings -Wno-ignored-qualifiers)
+target_compile_options(irods_server PRIVATE -Wno-write-strings -Wno-ignored-qualifiers -Wno-sign-compare)
 
 
 set(
