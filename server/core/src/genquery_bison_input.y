@@ -42,7 +42,7 @@
 %define api.token.prefix {GENQUERY_TOKEN_}
 
 %token <std::string> IDENTIFIER STRING_LITERAL
-%token SELECT WHERE AND COMMA OPEN_PAREN CLOSE_PAREN
+%token SELECT NO_DISTINCT WHERE AND COMMA OPEN_PAREN CLOSE_PAREN
 %token BETWEEN EQUAL NOT_EQUAL BEGINNING_OF LIKE IN PARENT_OF
 %token LESS_THAN GREATER_THAN LESS_THAN_OR_EQUAL_TO GREATER_THAN_OR_EQUAL_TO
 %token CONDITION_OR CONDITION_AND CONDITION_NOT CONDITION_OR_EQUAL
@@ -66,7 +66,9 @@
 %%
 
 select:
-    SELECT selections  { std::swap(wrapper._select.selections, $2); }
+    SELECT NO_DISTINCT selections  { wrapper._select.no_distinct = true; std::swap(wrapper._select.selections, $3); }
+  | SELECT NO_DISTINCT selections WHERE conditions  { wrapper._select.no_distinct = true; std::swap(wrapper._select.selections, $3); std::swap(wrapper._select.conditions, $5); }
+  | SELECT selections  { std::swap(wrapper._select.selections, $2); }
   | SELECT selections WHERE conditions  { std::swap(wrapper._select.selections, $2); std::swap(wrapper._select.conditions, $4); }
 
 selections:

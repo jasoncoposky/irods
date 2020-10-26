@@ -851,6 +851,8 @@ set(
 add_custom_command(
     OUTPUT           ${CMAKE_SOURCE_DIR}/server/core/src/genquery_parser_bison_generated.cpp
     COMMAND bison -o ${CMAKE_SOURCE_DIR}/server/core/src/genquery_parser_bison_generated.cpp ${CMAKE_SOURCE_DIR}/server/core/src/genquery_bison_input.y
+    COMMAND mv       ${CMAKE_SOURCE_DIR}/server/core/src/*.hh ${CMAKE_SOURCE_DIR}/server/core/include/
+    COMMAND mv       ${CMAKE_SOURCE_DIR}/server/core/src/genquery_parser_bison_generated.hpp ${CMAKE_SOURCE_DIR}/server/core/include/
     MAIN_DEPENDENCY  ${CMAKE_SOURCE_DIR}/server/core/src/genquery_bison_input.y
 )
 
@@ -860,6 +862,18 @@ add_custom_command(
     MAIN_DEPENDENCY ${CMAKE_SOURCE_DIR}/server/core/src/genquery_flex_input.l
 )
 
+set_property(
+    DIRECTORY
+    APPEND
+    PROPERTY
+    ADDITIONAL_MAKE_CLEAN_FILES
+    ${CMAKE_SOURCE_DIR}/server/core/src/genquery_parser_bison_generated.cpp
+    ${CMAKE_SOURCE_DIR}/server/core/src/genquery_parser_bison_generated.hpp
+    ${CMAKE_SOURCE_DIR}/server/core/src/genquery_flex_output.cpp
+    ${CMAKE_SOURCE_DIR}/server/core/include/location.hh
+    ${CMAKE_SOURCE_DIR}/server/core/include/position.hh
+    ${CMAKE_SOURCE_DIR}/server/core/include/stack.hh
+)
 
 add_library(
   irods_server

@@ -31,6 +31,8 @@ namespace irods::experimental::api::genquery {
         }
     };
 
+    auto no_distinct_flag{false};
+
     std::vector<std::string> columns{};
     std::vector<std::string> tables{};
     std::vector<std::string> from_aliases{};
@@ -68,7 +70,6 @@ namespace irods::experimental::api::genquery {
 
         add_table_if_applicable(tbl);
         columns.push_back(col);
-
 
         return tbl + "." + col;
     }
@@ -662,6 +663,11 @@ namespace irods::experimental::api::genquery {
         log::api::info("BEGIN SQL GENERATION");
 
         std::string root{"SELECT "};
+
+        if(!select.no_distinct) {
+            root += "DISTINCT ";
+        }
+
         auto sel = sql(select.selections);
         if(sel.empty()) {
             THROW(SYS_INVALID_INPUT_PARAM,

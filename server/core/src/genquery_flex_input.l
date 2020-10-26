@@ -25,6 +25,8 @@ where                  return gq::Parser::make_WHERE(gq::location());
 like                   return gq::Parser::make_LIKE(gq::location());
 in                     return gq::Parser::make_IN(gq::location());
 between                return gq::Parser::make_BETWEEN(gq::location());
+no-distinct            return gq::Parser::make_NO_DISTINCT(gq::location());
+NO-DISTINCT            return gq::Parser::make_NO_DISTINCT(gq::location());
 SELECT                 return gq::Parser::make_SELECT(gq::location());
 WHERE                  return gq::Parser::make_WHERE(gq::location());
 LIKE                   return gq::Parser::make_LIKE(gq::location());

@@ -163,6 +163,7 @@ namespace irods::experimental::api::genquery {
             : selections(std::move(selections)), conditions(std::move(conditions)) {}
         Selections selections;
         Conditions conditions;
+        bool no_distinct;
     };
 } // namespace irods::experimental::api::genquery
 #endif // GENQUERY_AST_TYPES_HPP
