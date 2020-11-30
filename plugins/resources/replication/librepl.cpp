@@ -29,7 +29,6 @@
 #include "irods_kvp_string_parser.hpp"
 #include "irods_random.hpp"
 #include "irods_exception.hpp"
-#include "rsGenQuery.hpp"
 
 // =-=-=-=-=-=-=-
 // stl includes

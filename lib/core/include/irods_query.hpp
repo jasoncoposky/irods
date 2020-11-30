@@ -10,16 +10,41 @@
     #include "genQuery.h"
 #endif // IRODS_QUERY_ENABLE_SERVER_SIDE_API
 
-#include "irods_log.hpp"
+#include "irods_exception.hpp"
 #include "rcMisc.h"
 
 #include <algorithm>
 #include <string>
 #include <vector>
+#include "fmt/format.h"
+
+// ================================
+// Experimental Query
+#ifdef IRODS_QUERY_ENABLE_SERVER_SIDE_API
+#include "irods_logger.hpp"
+#include "genquery_wrapper.hpp"
+#include "genquery_stream_insertion.hpp"
+#include "genquery_sql.hpp"
+#include "nanodbc_connection.hpp"
+
+namespace ixa = irods::experimental::api;
+#endif // IRODS_QUERY_ENABLE_SERVER_SIDE_API
+// ================================
 
 char *getCondFromString( char * t );
 
 namespace irods {
+
+    namespace {
+        void log_fcn(const std::string& _err)
+        {
+#ifdef IRODS_QUERY_ENABLE_SERVER_SIDE_API
+            experimental::log::api::error(_err);
+#else
+            std::cerr << _err << std::endl;
+#endif // IRODS_QUERY_ENABLE_SERVER_SIDE_API
+        } // log_fcn
+    } // namesapce
 
     template <typename connection_type>
     class query {
@@ -27,8 +52,11 @@ namespace irods {
         using value_type = std::vector<std::string>;
 
         enum query_type {
-            GENERAL = 0,
-            SPECIFIC = 1
+              GENERAL  = 0
+            , SPECIFIC = 1
+#ifdef IRODS_QUERY_ENABLE_SERVER_SIDE_API
+            , EXPERIMENTAL = 2
+#endif // IRODS_QUERY_ENABLE_SERVER_SIDE_API
         };
 
         static query_type convert_string_to_query_type(
@@ -54,6 +82,11 @@ namespace irods {
             else if(SPEC_STR == lowered) {
                 return SPECIFIC;
             }
+#ifdef  IRODS_QUERY_ENABLE_SERVER_SIDE_API
+            else if("experimental" == lowered) {
+                return EXPERIMENTAL;
+            }
+#endif // IRODS_QUERY_ENABLE_SERVER_SIDE_API
             else {
                 THROW(
                     SYS_INVALID_INPUT_PARAM,
@@ -64,39 +97,39 @@ namespace irods {
         class query_impl_base
         {
         public:
-            size_t size() {
+            virtual size_t size() {
                 if(!gen_output_) {
                     return 0;
                 }
                 return gen_output_->rowCnt;
             }
 
-            int cont_idx() {
+            virtual int cont_idx() {
                 return gen_output_->continueInx;
             }
 
-            int row_cnt() {
+            virtual int row_cnt() {
                 return gen_output_->rowCnt;
             }
 
-            std::string query_string() {
+            virtual std::string query_string() {
                 return query_string_;
             }
 
-            bool query_limit_exceeded(const uint32_t _count) {
+            virtual bool query_limit_exceeded(const uint32_t _count) {
                 return query_limit_ && _count >= query_limit_;
             }
 
-            bool page_in_flight(const int row_idx_) {
+            virtual bool page_in_flight(const int row_idx_) {
                 return (row_idx_ < row_cnt());
             }
 
-            bool query_complete() {
+            virtual bool query_complete() {
                 // finished page, and out of pages
                 return cont_idx() <= 0;
             }
 
-            value_type capture_results(int _row_idx) {
+            virtual value_type capture_results(int _row_idx) {
                 value_type res;
                 for(int attr_idx = 0; attr_idx < gen_output_->attriCnt; ++attr_idx) {
                     uint32_t offset = gen_output_->sqlResult[attr_idx].len * _row_idx;
@@ -106,7 +139,7 @@ namespace irods {
                 return res;
             }
 
-            bool results_valid() {
+            virtual bool results_valid() {
                 if(gen_output_) {
                     return (gen_output_->rowCnt > 0);
                 }
@@ -128,16 +161,16 @@ namespace irods {
                 , query_limit_{_query_limit}
                 , row_offset_{_row_offset}
                 , query_string_{_query_string}
-                , gen_output_{}
+                , gen_output_{nullptr}
             {
             }
 
         protected:
-            connection_type* comm_;
-            const uint32_t query_limit_;
-            const uint32_t row_offset_;
+            connection_type*  comm_;
+            const uint32_t    query_limit_;
+            const uint32_t    row_offset_;
             const std::string query_string_;
-            genQueryOut_t* gen_output_;
+            genQueryOut_t*    gen_output_;
         }; // class query_impl_base
 
         class gen_query_impl : public query_impl_base
@@ -145,7 +178,8 @@ namespace irods {
         public:
             virtual ~gen_query_impl() {
                 if(this->gen_output_ && this->gen_output_->continueInx) {
-                    rodsLog(LOG_NOTICE, "[%s] - continueInx is not 0", __FUNCTION__);
+                    log_fcn("~gen_query_impl - continueInx is not 0");
+
                     // Close statements for this query
                     gen_input_.continueInx = this->gen_output_->continueInx;
                     freeGenQueryOut(&this->gen_output_);
@@ -155,9 +189,10 @@ namespace irods {
                                    &gen_input_,
                                    &this->gen_output_);
                     if (CAT_NO_ROWS_FOUND != err && err < 0) {
-                        irods::log(ERROR(err, (boost::format(
-                                    "[%s] - Failed to close statement with continueInx [%d]") %
-                                    __FUNCTION__ % gen_input_.continueInx).str()));
+                         log_fcn(
+                            fmt::format("[%s] - Failed to close statement with continueInx [%d]"
+                            , __FUNCTION__
+                            , gen_input_.continueInx));
                     }
                 }
                 freeGenQueryOut(&this->gen_output_);
@@ -235,10 +270,10 @@ namespace irods {
                                    &spec_input_,
                                    &this->gen_output_);
                     if (CAT_NO_ROWS_FOUND != err && err < 0) {
-                        irods::log(ERROR(
-                                    err, (boost::format(
-                                    "[%s] - Failed to close statement with continueInx [%d]") %
-                                    __FUNCTION__ % spec_input_.continueInx).str()));
+                        log_fcn(
+                            fmt::format("[%s] - Failed to close statement with continueInx [%d]"
+                            , __FUNCTION__
+                            , spec_input_.continueInx));
                     }
                 }
                 freeGenQueryOut(&this->gen_output_);
@@ -307,6 +342,149 @@ namespace irods {
                         spec_query_fcn{rcSpecificQuery};
 #endif // IRODS_QUERY_ENABLE_SERVER_SIDE_API
         }; // class spec_query_impl
+
+#ifdef IRODS_QUERY_ENABLE_SERVER_SIDE_API
+
+        class experimental_query_impl : public query_impl_base
+        {
+            using qb = query_impl_base;
+
+        public:
+            auto size() -> size_t override
+            {
+                return row_cnt();
+            }
+
+            auto cont_idx() -> int override
+            {
+                return results_.at_end() ? 0 : 1;
+            }
+
+            auto row_cnt() -> int override
+            {
+                return results_.rows();
+            }
+
+            auto query_string() -> std::string override
+            {
+                return qb::query_string_;
+            }
+
+            auto query_limit_exceeded(const uint32_t _count) -> bool override
+            {
+                return qb::query_limit_ && _count >= qb::query_limit_;
+            }
+
+            auto page_in_flight(const int _row_idx) -> bool override
+            {
+                return (_row_idx < row_cnt());
+            }
+
+            auto query_complete() -> bool override
+            {
+                // finished page, and out of pages
+                return results_.at_end();
+            }
+
+            auto capture_results(int _row_idx) -> value_type override
+            {
+                auto cols = value_type{};
+                if(!results_.next()) {
+                    return cols;
+                }
+
+                for(auto c = 0; c < results_.columns(); ++c) {
+                    std::string x{};
+                    results_.get_ref(c, {}, x);
+                    cols.push_back(x);
+                }
+
+                return cols;
+
+            } // capture_results
+
+            bool results_valid() override
+            {
+                return row_cnt() > 0;
+            }
+
+            experimental_query_impl(connection_type* _comm,
+                           int                       _limit,
+                           int                       _offset,
+                           const std::string&        _query,
+                           const std::string&        _zone_hint)
+                : query_impl_base(_comm, _limit, _offset, _query)
+                , db_conn_{ixa::new_nanodbc_connection()}
+            {
+
+                using     gw = ixa::genquery::wrapper;
+                namespace gq = ixa::genquery;
+
+                sql_ = gq::sql(gw::parse(_query));
+
+                if(_offset > 0) {
+                    sql_ += " offset " + std::to_string(_offset);
+                }
+
+                if(_limit > 0) {
+                    sql_ += " limit " + std::to_string(_limit);
+                }
+
+                sql_ = "DECLARE gq_cur CURSOR FOR " + sql_;
+
+                sql_ += ";";
+
+                begin();
+
+                execute(db_conn_, sql_);
+
+            } // ctor
+
+            virtual ~experimental_query_impl()
+            {
+                commit();
+
+            } // dtor
+
+            void reset_for_page_boundary() override
+            {
+            }
+
+            int fetch_page() override
+            {
+                auto ps  = std::min(qb::query_limit_, static_cast<uint32_t>(MAX_SQL_ROWS));
+                auto sql = fmt::format("FETCH {} FROM gq_cur;", ps);
+                results_ = execute(db_conn_, sql);
+                return (results_.rows() > 0) ? 0 : CAT_NO_ROWS_FOUND;
+            } // fetch_page
+
+        private:
+            auto begin() -> void
+            {
+                execute(db_conn_, "BEGIN;");
+            }
+
+            auto commit() -> void
+            {
+                execute(db_conn_, "COMMIT;");
+            }
+
+            auto one_shot(const std::string& _sql) -> nanodbc::result
+            {
+                return execute(db_conn_, _sql);
+            } // one_shot
+
+            // private attributes
+            std::string         sql_;
+            nanodbc::connection db_conn_;
+            nanodbc::result     results_;
+
+        }; // class experimental_query_impl
+
+#endif // IRODS_QUERY_ENABLE_SERVER_SIDE_API
+
+
+
 
         class iterator {
             const std::string query_string_;
@@ -417,7 +595,7 @@ namespace irods {
 
                 } // if
 
-            } // advance_query 
+            } // advance_query
 
             value_type capture_results() {
                 return query_impl_->capture_results(row_idx_);
@@ -451,6 +629,16 @@ namespace irods {
                                   _zone_hint,
                                   _specific_query_args);
             }
+#ifdef IRODS_QUERY_ENABLE_SERVER_SIDE_API
+            else if(_query_type == EXPERIMENTAL) {
+                query_impl_ = std::make_shared<experimental_query_impl>(
+                                  _comm,
+                                  _query_limit,
+                                  _row_offset,
+                                  _query_string,
+                                  _zone_hint);
+            }
+#endif // IRODS_QUERY_ENABLE_SERVER_SIDE_API
 
             const int fetch_err = query_impl_->fetch_page();
             if(fetch_err < 0) {

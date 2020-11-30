@@ -254,12 +254,13 @@ add_library(
 target_include_directories(
   irods_filesystem_path
   PRIVATE
+  ${IRODS_EXTERNALS_FULLPATH_NANODBC}/include
   ${CMAKE_SOURCE_DIR}/lib/filesystem/include
   ${CMAKE_SOURCE_DIR}/lib/core/include
   ${IRODS_EXTERNALS_FULLPATH_BOOST}/include
   )
 set_target_properties(irods_filesystem_path PROPERTIES CXX_STANDARD ${IRODS_CXX_STANDARD})
-target_compile_options(irods_filesystem_path PRIVATE -fPIC -Wno-write-strings)
+target_compile_options(irods_filesystem_path PRIVATE -fPIC -Wno-write-strings -Wno-ignored-qualifiers)
 target_compile_definitions(irods_filesystem_path PRIVATE ${IRODS_COMPILE_DEFINITIONS})
 
 add_library(
@@ -272,6 +273,7 @@ add_library(
 target_include_directories(
   irods_filesystem_client
   PRIVATE
+  ${IRODS_EXTERNALS_FULLPATH_NANODBC}/include
   ${CMAKE_BINARY_DIR}/lib/core/include
   ${CMAKE_SOURCE_DIR}/lib/core/include
   ${CMAKE_SOURCE_DIR}/lib/api/include
@@ -287,7 +289,7 @@ target_include_directories(
   ${OPENSSL_INCLUDE_DIR}
   )
 set_target_properties(irods_filesystem_client PROPERTIES CXX_STANDARD ${IRODS_CXX_STANDARD})
-target_compile_options(irods_filesystem_client PRIVATE -fPIC -Wno-write-strings)
+target_compile_options(irods_filesystem_client PRIVATE -fPIC -Wno-write-strings -Wno-ignored-qualifiers)
 target_compile_definitions(irods_filesystem_client PRIVATE ${IRODS_COMPILE_DEFINITIONS})
 
 add_library(
@@ -300,6 +302,7 @@ add_library(
 target_include_directories(
   irods_filesystem_server
   PRIVATE
+  ${IRODS_EXTERNALS_FULLPATH_NANODBC}/include
   ${CMAKE_BINARY_DIR}/lib/core/include
   ${CMAKE_SOURCE_DIR}/lib/core/include
   ${CMAKE_SOURCE_DIR}/lib/api/include
@@ -316,7 +319,7 @@ target_include_directories(
   ${OPENSSL_INCLUDE_DIR}
   )
 set_target_properties(irods_filesystem_server PROPERTIES CXX_STANDARD ${IRODS_CXX_STANDARD})
-target_compile_options(irods_filesystem_server PRIVATE -fPIC -Wno-write-strings)
+target_compile_options(irods_filesystem_server PRIVATE -fPIC -Wno-write-strings -Wno-ignored-qualifiers)
 target_compile_definitions(irods_filesystem_server PRIVATE ${IRODS_COMPILE_DEFINITIONS} IRODS_FILESYSTEM_ENABLE_SERVER_SIDE_API IRODS_TRANSPORT_ENABLE_SERVER_SIDE_API)
 
 add_library(
@@ -327,13 +330,15 @@ add_library(
 target_include_directories(
   irods_user_administration_client
   PRIVATE
+  ${IRODS_EXTERNALS_FULLPATH_FMT}/include
+  ${IRODS_EXTERNALS_FULLPATH_NANODBC}/include
   ${CMAKE_BINARY_DIR}/lib/core/include
   ${CMAKE_SOURCE_DIR}/lib/core/include
   ${CMAKE_SOURCE_DIR}/lib/api/include
   ${IRODS_EXTERNALS_FULLPATH_BOOST}/include
   )
 set_target_properties(irods_user_administration_client PROPERTIES CXX_STANDARD ${IRODS_CXX_STANDARD})
-target_compile_options(irods_user_administration_client PRIVATE -fPIC -Wno-write-strings)
+target_compile_options(irods_user_administration_client PRIVATE -fPIC -Wno-write-strings -Wno-ignored-qualifiers)
 target_compile_definitions(irods_user_administration_client PRIVATE ${IRODS_COMPILE_DEFINITIONS})
 
 add_library(
@@ -344,6 +349,8 @@ add_library(
 target_include_directories(
   irods_user_administration_server
   PRIVATE
+  ${IRODS_EXTERNALS_FULLPATH_FMT}/include
+  ${IRODS_EXTERNALS_FULLPATH_NANODBC}/include
   ${CMAKE_BINARY_DIR}/lib/core/include
   ${CMAKE_SOURCE_DIR}/lib/core/include
   ${CMAKE_SOURCE_DIR}/lib/api/include
@@ -352,7 +359,7 @@ target_include_directories(
   ${IRODS_EXTERNALS_FULLPATH_BOOST}/include
   )
 set_target_properties(irods_user_administration_server PROPERTIES CXX_STANDARD ${IRODS_CXX_STANDARD})
-target_compile_options(irods_user_administration_server PRIVATE -fPIC -Wno-write-strings)
+target_compile_options(irods_user_administration_server PRIVATE -fPIC -Wno-write-strings -Wno-ignored-qualifiers)
 target_compile_definitions(irods_user_administration_server PRIVATE ${IRODS_COMPILE_DEFINITIONS} IRODS_USER_ADMINISTRATION_ENABLE_SERVER_SIDE_API)
 
 add_library(
@@ -363,6 +370,7 @@ add_library(
 target_include_directories(
   irods_resource_administration_client
   PRIVATE
+  ${IRODS_EXTERNALS_FULLPATH_NANODBC}/include
   ${CMAKE_BINARY_DIR}/lib/core/include
   ${CMAKE_SOURCE_DIR}/lib/core/include
   ${CMAKE_SOURCE_DIR}/lib/api/include
@@ -370,7 +378,7 @@ target_include_directories(
   ${IRODS_EXTERNALS_FULLPATH_FMT}/include
   )
 set_target_properties(irods_resource_administration_client PROPERTIES CXX_STANDARD ${IRODS_CXX_STANDARD})
-target_compile_options(irods_resource_administration_client PRIVATE -fPIC -Wno-write-strings)
+target_compile_options(irods_resource_administration_client PRIVATE -fPIC -Wno-write-strings -Wno-ignored-qualifiers)
 target_compile_definitions(irods_resource_administration_client PRIVATE ${IRODS_COMPILE_DEFINITIONS})
 
 add_library(
@@ -381,6 +389,7 @@ add_library(
 target_include_directories(
   irods_resource_administration_server
   PRIVATE
+  ${IRODS_EXTERNALS_FULLPATH_NANODBC}/include
   ${CMAKE_BINARY_DIR}/lib/core/include
   ${CMAKE_SOURCE_DIR}/lib/core/include
   ${CMAKE_SOURCE_DIR}/lib/api/include
@@ -390,7 +399,7 @@ target_include_directories(
   ${IRODS_EXTERNALS_FULLPATH_FMT}/include
   )
 set_target_properties(irods_resource_administration_server PROPERTIES CXX_STANDARD ${IRODS_CXX_STANDARD})
-target_compile_options(irods_resource_administration_server PRIVATE -fPIC -Wno-write-strings)
+target_compile_options(irods_resource_administration_server PRIVATE -fPIC -Wno-write-strings -Wno-ignored-qualifiers)
 target_compile_definitions(irods_resource_administration_server PRIVATE ${IRODS_COMPILE_DEFINITIONS} IRODS_RESOURCE_ADMINISTRATION_ENABLE_SERVER_SIDE_API)
 
 set(
@@ -570,6 +579,12 @@ set(
   ${CMAKE_SOURCE_DIR}/lib/core/src/sslSockComm.cpp
   ${CMAKE_SOURCE_DIR}/lib/core/src/trimUtil.cpp
   ${CMAKE_SOURCE_DIR}/lib/core/src/user.cpp
+
+  ${CMAKE_SOURCE_DIR}/server/core/src/genquery_parser_bison_generated.cpp
+  ${CMAKE_SOURCE_DIR}/server/core/src/genquery_flex_output.cpp
+  ${CMAKE_SOURCE_DIR}/server/core/src/genquery_wrapper.cpp
+  ${CMAKE_SOURCE_DIR}/server/core/src/genquery_sql.cpp
+
   $<TARGET_OBJECTS:irods_filesystem_path>
   $<TARGET_OBJECTS:irods_filesystem_client>
   $<TARGET_OBJECTS:irods_user_administration_client>
@@ -598,6 +613,7 @@ target_link_libraries(
 target_include_directories(
   irods_client
   PRIVATE
+  ${IRODS_EXTERNALS_FULLPATH_NANODBC}/include
   ${CMAKE_BINARY_DIR}/lib/core/include
   ${CMAKE_SOURCE_DIR}/lib/core/include
   ${CMAKE_SOURCE_DIR}/lib/api/include
@@ -616,7 +632,7 @@ target_include_directories(
 set_property(TARGET irods_client PROPERTY CXX_STANDARD ${IRODS_CXX_STANDARD})
 set_property(TARGET irods_client PROPERTY VERSION ${IRODS_VERSION})
 set_property(TARGET irods_client PROPERTY SOVERSION ${IRODS_VERSION})
-target_compile_options(irods_client PRIVATE -Wno-write-strings)
+target_compile_options(irods_client PRIVATE -Wno-write-strings -Wno-ignored-qualifiers -Wno-sign-compare)
 target_compile_definitions(irods_client PRIVATE ${IRODS_COMPILE_DEFINITIONS})
 
 set(
@@ -848,11 +864,16 @@ set(
   $<TARGET_OBJECTS:irods_resource_administration_server>
   )
 
+set(BISON_GENERATED
+    ${CMAKE_SOURCE_DIR}/server/core/src/genquery_parser_bison_generated.cpp
+    ${CMAKE_SOURCE_DIR}/server/core/include/genquery_parser_bison_generated.hpp
+)
+
 add_custom_command(
-    OUTPUT           ${CMAKE_SOURCE_DIR}/server/core/src/genquery_parser_bison_generated.cpp
+    OUTPUT           ${BISON_GENERATED}
     COMMAND bison -o ${CMAKE_SOURCE_DIR}/server/core/src/genquery_parser_bison_generated.cpp ${CMAKE_SOURCE_DIR}/server/core/src/genquery_bison_input.y
-    COMMAND mv       ${CMAKE_SOURCE_DIR}/server/core/src/*.hh ${CMAKE_SOURCE_DIR}/server/core/include/
     COMMAND mv       ${CMAKE_SOURCE_DIR}/server/core/src/genquery_parser_bison_generated.hpp ${CMAKE_SOURCE_DIR}/server/core/include/
+    COMMAND mv       ${CMAKE_SOURCE_DIR}/server/core/src/*.hh ${CMAKE_SOURCE_DIR}/server/core/include/
     MAIN_DEPENDENCY  ${CMAKE_SOURCE_DIR}/server/core/src/genquery_bison_input.y
 )
 
@@ -868,7 +889,7 @@ set_property(
     PROPERTY
     ADDITIONAL_MAKE_CLEAN_FILES
     ${CMAKE_SOURCE_DIR}/server/core/src/genquery_parser_bison_generated.cpp
-    ${CMAKE_SOURCE_DIR}/server/core/src/genquery_parser_bison_generated.hpp
+    ${CMAKE_SOURCE_DIR}/server/core/include/genquery_parser_bison_generated.hpp
     ${CMAKE_SOURCE_DIR}/server/core/src/genquery_flex_output.cpp
     ${CMAKE_SOURCE_DIR}/server/core/include/location.hh
     ${CMAKE_SOURCE_DIR}/server/core/include/position.hh
@@ -904,6 +925,7 @@ target_link_libraries(
 target_include_directories(
   irods_server
   PRIVATE
+  ${IRODS_EXTERNALS_FULLPATH_NANODBC}/include
   ${CMAKE_BINARY_DIR}/lib/core/include
   ${CMAKE_SOURCE_DIR}/lib/api/include
   ${CMAKE_SOURCE_DIR}/lib/core/include
@@ -929,7 +951,7 @@ set_property(TARGET irods_server PROPERTY VERSION ${IRODS_VERSION})
 set_property(TARGET irods_server PROPERTY SOVERSION ${IRODS_VERSION})
 target_compile_definitions(irods_server PRIVATE ENABLE_RE RODS_CLERVER IRODS_ENABLE_SYSLOG ${IRODS_COMPILE_DEFINITIONS})
 # TODO: remove -Wno-ignored-qualifiers on resolution of https://github.com/nanodbc/nanodbc/pull/234
-target_compile_options(irods_server PRIVATE -Wno-write-strings -Wno-ignored-qualifiers -Wno-sign-compare)
+target_compile_options(irods_server PRIVATE -Wno-write-strings -Wno-ignored-qualifiers -Wno-sign-compare -Wno-ignored-qualifiers)
 
 
 set(
@@ -992,6 +1014,7 @@ add_library(
 target_link_libraries(
   irods_common
   PRIVATE
+  ${IRODS_EXTERNALS_FULLPATH_NANODBC}/lib/libnanodbc.so
   ${IRODS_EXTERNALS_FULLPATH_BOOST}/lib/libboost_filesystem.so
   ${IRODS_EXTERNALS_FULLPATH_BOOST}/lib/libboost_program_options.so
   ${IRODS_EXTERNALS_FULLPATH_BOOST}/lib/libboost_random.so
@@ -1005,6 +1028,7 @@ target_link_libraries(
 target_include_directories(
   irods_common
   PRIVATE
+  ${IRODS_EXTERNALS_FULLPATH_NANODBC}/include
   ${CMAKE_BINARY_DIR}/lib/core/include
   ${CMAKE_SOURCE_DIR}/lib/core/include
   ${CMAKE_SOURCE_DIR}/lib/api/include
@@ -1022,7 +1046,7 @@ set_property(TARGET irods_common PROPERTY CXX_STANDARD ${IRODS_CXX_STANDARD})
 set_property(TARGET irods_common PROPERTY VERSION ${IRODS_VERSION})
 set_property(TARGET irods_common PROPERTY SOVERSION ${IRODS_VERSION})
 target_compile_definitions(irods_common PRIVATE ${IRODS_COMPILE_DEFINITIONS} IRODS_ENABLE_SYSLOG)
-target_compile_options(irods_common PRIVATE -Wno-write-strings)
+target_compile_options(irods_common PRIVATE -Wno-write-strings -Wno-ignored-qualifiers)
 
 
 set(
@@ -1060,6 +1084,7 @@ target_link_libraries(
 target_include_directories(
   irods_plugin_dependencies
   PRIVATE
+  ${IRODS_EXTERNALS_FULLPATH_NANODBC}/include
   ${CMAKE_BINARY_DIR}/lib/core/include
   ${CMAKE_SOURCE_DIR}/lib/core/include
   ${CMAKE_SOURCE_DIR}/lib/api/include
@@ -1075,7 +1100,7 @@ set_property(TARGET irods_plugin_dependencies PROPERTY CXX_STANDARD ${IRODS_CXX_
 set_property(TARGET irods_plugin_dependencies PROPERTY VERSION ${IRODS_VERSION})
 set_property(TARGET irods_plugin_dependencies PROPERTY SOVERSION ${IRODS_VERSION})
 target_compile_definitions(irods_plugin_dependencies PRIVATE ${IRODS_COMPILE_DEFINITIONS})
-target_compile_options(irods_plugin_dependencies PRIVATE -Wno-write-strings)
+target_compile_options(irods_plugin_dependencies PRIVATE -Wno-write-strings -Wno-ignored-qualifiers)
 
 
 set(
@@ -1362,6 +1387,7 @@ target_link_libraries(
 target_include_directories(
   RodsAPIs
   PRIVATE
+  ${IRODS_EXTERNALS_FULLPATH_NANODBC}/include
   ${CMAKE_BINARY_DIR}/lib/core/include
   ${CMAKE_SOURCE_DIR}/lib/core/include
   ${CMAKE_SOURCE_DIR}/lib/api/include
@@ -1379,7 +1405,7 @@ target_include_directories(
   )
 set_property(TARGET RodsAPIs PROPERTY CXX_STANDARD ${IRODS_CXX_STANDARD})
 target_compile_definitions(RodsAPIs PRIVATE ${IRODS_COMPILE_DEFINITIONS} IRODS_ENABLE_SYSLOG)
-target_compile_options(RodsAPIs PRIVATE -Wno-write-strings)
+target_compile_options(RodsAPIs PRIVATE -Wno-write-strings -Wno-ignored-qualifiers)
 
 set(
   IRODS_MAIN_EXECUTABLE_IRODSSERVER_SOURCES
@@ -1428,6 +1454,7 @@ foreach(EXECUTABLE ${IRODS_MAIN_EXECUTABLES})
   target_include_directories(
     ${EXECUTABLE}
     PRIVATE
+    ${IRODS_EXTERNALS_FULLPATH_NANODBC}/include
     ${CMAKE_SOURCE_DIR}/server/re/include
     ${CMAKE_SOURCE_DIR}/server/core/include
     ${CMAKE_SOURCE_DIR}/server/drivers/include
@@ -1450,7 +1477,7 @@ foreach(EXECUTABLE ${IRODS_MAIN_EXECUTABLES})
     ENABLE_RE
     ${IRODS_COMPILE_DEFINITIONS}
     )
-  target_compile_options(${EXECUTABLE} PRIVATE -Wno-write-strings)
+target_compile_options(${EXECUTABLE} PRIVATE -Wno-write-strings -Wno-ignored-qualifiers)
 endforeach()
 
 add_executable(
@@ -1463,6 +1490,7 @@ target_link_libraries(
   irods_server
   irods_client
   irods_common
+  ${IRODS_EXTERNALS_FULLPATH_NANODBC}/lib/libnanodbc.so
   ${IRODS_EXTERNALS_FULLPATH_BOOST}/lib/libboost_system.so
   ${IRODS_EXTERNALS_FULLPATH_BOOST}/lib/libboost_filesystem.so
   ${IRODS_EXTERNALS_FULLPATH_BOOST}/lib/libboost_thread.so
@@ -1475,6 +1503,7 @@ target_link_libraries(
 target_include_directories(
   irodsReServer
   PRIVATE
+  ${IRODS_EXTERNALS_FULLPATH_NANODBC}/include
   ${CMAKE_SOURCE_DIR}/server/re/include
   ${CMAKE_SOURCE_DIR}/server/core/include
   ${CMAKE_SOURCE_DIR}/server/drivers/include
@@ -1487,7 +1516,7 @@ target_include_directories(
   )
 set_property(TARGET irodsReServer PROPERTY CXX_STANDARD ${IRODS_CXX_STANDARD})
 target_compile_definitions(irodsReServer PRIVATE ${IRODS_COMPILE_DEFINITIONS} IRODS_ENABLE_SYSLOG)
-target_compile_options(irodsReServer PRIVATE -Wno-write-strings)
+target_compile_options(irodsReServer PRIVATE -Wno-write-strings -Wno-ignored-qualifiers)
 
 add_executable(
   irods_api_test_harness
@@ -1512,6 +1541,7 @@ target_link_libraries(
 target_include_directories(
   irods_api_test_harness
   PRIVATE
+  ${IRODS_EXTERNALS_FULLPATH_NANODBC}/include
   ${CMAKE_SOURCE_DIR}/server/re/include
   ${CMAKE_SOURCE_DIR}/server/core/include
   ${CMAKE_SOURCE_DIR}/server/drivers/include
@@ -1524,7 +1554,7 @@ target_include_directories(
   )
 set_property(TARGET irods_api_test_harness PROPERTY CXX_STANDARD ${IRODS_CXX_STANDARD})
 target_compile_definitions(irods_api_test_harness PRIVATE ${IRODS_COMPILE_DEFINITIONS} IRODS_ENABLE_SYSLOG)
-target_compile_options(irods_api_test_harness PRIVATE -Wno-write-strings)
+target_compile_options(irods_api_test_harness PRIVATE -Wno-write-strings -Wno-ignored-qualifiers)
 
 add_executable(
   irodsPamAuthCheck
@@ -1544,6 +1574,7 @@ add_executable(
 target_include_directories(
   genOSAuth
   PRIVATE
+  ${IRODS_EXTERNALS_FULLPATH_NANODBC}/include
   ${CMAKE_SOURCE_DIR}/lib/core/include
   ${CMAKE_SOURCE_DIR}/server/core/include
   ${CMAKE_SOURCE_DIR}/server/icat/include
@@ -1564,7 +1595,7 @@ target_link_libraries(
   )
 set_property(TARGET genOSAuth PROPERTY CXX_STANDARD ${IRODS_CXX_STANDARD})
 target_compile_definitions(genOSAuth PRIVATE ${IRODS_COMPILE_DEFINITIONS})
-target_compile_options(genOSAuth PRIVATE -Wno-write-strings)
+target_compile_options(genOSAuth PRIVATE -Wno-write-strings -Wno-ignored-qualifiers)
 
 set(IRODS_HOME_DIRECTORY var/lib/irods)
 set(IRODS_PLUGINS_DIRECTORY usr/lib/irods/plugins)

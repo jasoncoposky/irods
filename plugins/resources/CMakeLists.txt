@@ -84,6 +84,8 @@ foreach(PLUGIN ${IRODS_RESOURCE_PLUGINS})
     ${CMAKE_SOURCE_DIR}/server/drivers/include
     ${CMAKE_SOURCE_DIR}/server/icat/include
     ${CMAKE_SOURCE_DIR}/server/re/include
+    ${CMAKE_SOURCE_DIR}/lib/filesystem/include
+    ${IRODS_EXTERNALS_FULLPATH_NANODBC}/include
     ${IRODS_EXTERNALS_FULLPATH_ARCHIVE}/include
     ${IRODS_EXTERNALS_FULLPATH_BOOST}/include
     ${IRODS_EXTERNALS_FULLPATH_FMT}/include
@@ -98,11 +100,12 @@ foreach(PLUGIN ${IRODS_RESOURCE_PLUGINS})
     ${IRODS_EXTERNALS_FULLPATH_BOOST}/lib/libboost_filesystem.so
     ${IRODS_EXTERNALS_FULLPATH_BOOST}/lib/libboost_system.so
     ${IRODS_EXTERNALS_FULLPATH_FMT}/lib/libfmt.so
+    ${IRODS_EXTERNALS_FULLPATH_NANODBC}/lib/libnanodbc.so
     ${OPENSSL_CRYPTO_LIBRARY}
     )
 
   target_compile_definitions(${PLUGIN} PRIVATE ENABLE_RE ${IRODS_COMPILE_DEFINITIONS} BOOST_SYSTEM_NO_DEPRECATED IRODS_ENABLE_SYSLOG)
-  target_compile_options(${PLUGIN} PRIVATE -Wno-write-strings)
+  target_compile_options(${PLUGIN} PRIVATE -Wno-write-strings -Wno-ignored-qualifiers)
   set_property(TARGET ${PLUGIN} PROPERTY CXX_STANDARD ${IRODS_CXX_STANDARD})
 endforeach()
 

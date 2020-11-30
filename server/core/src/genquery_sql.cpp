@@ -6,6 +6,8 @@
 #include "irods_logger.hpp"
 #include "irods_exception.hpp"
 
+#include "fmt/format.h"
+
 namespace irods::experimental::api::genquery {
 
     using log = irods::experimental::log;
@@ -492,7 +494,7 @@ namespace irods::experimental::api::genquery {
 
         // fix-up the from-where disparity for table 2
         if(!t2_satisfied) {
-            log::api::info("Table 2 {} from-where is not satisfied", t2);
+            log::api::info("t2 [{}] from-where is not satisfied", t2);
 
             if(fc_t2 < wc_t2) {
                 const auto cnt = wc_t2 - fc_t2;
@@ -660,7 +662,7 @@ namespace irods::experimental::api::genquery {
 
     std::string
     sql(const Select& select) {
-        log::api::info("BEGIN SQL GENERATION");
+        log::api::info("XXXX - BEGIN SQL GENERATION");
 
         std::string root{"SELECT "};
 

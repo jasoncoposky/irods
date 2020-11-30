@@ -13,12 +13,16 @@ namespace irods::experimental::api {
         public:
             query(const std::string& n) :
                 base(n)
+              , paging_{false}
               , db_conn_(new_nanodbc_connection())
             {
             }
 
             virtual ~query()
             {
+                if(paging_) {
+                    commit();
+                }
             }
 
         protected:
@@ -114,16 +118,14 @@ log::api::info("XXXX - after generate sql");
                     sql += " limit " + std::to_string(lim);
                 }
 
-                bool paging{false};
-
                 if(!off && !lim) {
-                    paging = true;
+                    paging_ = true;
                     sql = "DECLARE gq_cur CURSOR FOR " + sql;
                 }
 
                 sql += ";";
 
-                return std::make_tuple(paging, sql);
+                return std::make_tuple(paging_, sql);
 
             } // generate_sql
 
@@ -171,6 +173,7 @@ log::api::info("XXXX - after generate sql");
             } // to_json
 
             // private attributes
+            bool                paging_;
             nanodbc::connection db_conn_;
 
             const uint32_t MAX_SQL_SIZE{256};
