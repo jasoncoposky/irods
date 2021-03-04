@@ -883,6 +883,8 @@ add_custom_command(
     MAIN_DEPENDENCY ${CMAKE_SOURCE_DIR}/server/core/src/genquery_flex_input.l
 )
 
+add_custom_target(bison_generated ALL DEPENDS ${BISON_GENERATED})
+
 set_property(
     DIRECTORY
     APPEND
