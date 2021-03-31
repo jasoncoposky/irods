@@ -1746,7 +1746,7 @@ getNextRepeatTime( char *currTime, char *delayStr, char *nextTime ) {
             return 1;
         }
     }
-    if ( ( s = strstr( t, "DOUBLE UNTIL SUCCESS OR UNTIL " ) ) != NULL ) {
+    if ( ( s = strstr( delayStr, "DOUBLE UNTIL SUCCESS OR UNTIL " ) ) != NULL ) {
         s = s + strlen( "DOUBLE UNTIL SUCCESS OR UNTIL " );
         while ( isspace( *s ) ) {
             s++;
@@ -1791,7 +1791,7 @@ getNextRepeatTime( char *currTime, char *delayStr, char *nextTime ) {
             return 4;
         }
     }
-    if ( ( s = strstr( t, "DOUBLE UNTIL SUCCESS OR " ) ) != NULL ) {
+    if ( ( s = strstr( delayStr, "DOUBLE UNTIL SUCCESS OR " ) ) != NULL ) {
         s = s + strlen( "DOUBLE UNTIL SUCCESS OR " );
         while ( isspace( *s ) ) {
             s++;
