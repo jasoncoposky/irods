@@ -10,6 +10,7 @@ set(
   "${CMAKE_CURRENT_SOURCE_DIR}/src/irods_catalog_properties.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/low_level_odbc.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/mid_level_routines.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/atomic_apply_sql.cpp"
 )
 
 set(
@@ -19,6 +20,7 @@ set(
   "${CMAKE_CURRENT_SOURCE_DIR}/include/irods/private/low_level.hpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/include/irods/private/low_level_odbc.hpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/include/irods/private/mid_level.hpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/include/irods/private/atomic_apply_sql.hpp"
 )
 
 if (NOT ODBC_LIBRARY)

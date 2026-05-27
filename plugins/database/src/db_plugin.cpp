@@ -15308,6 +15308,66 @@ irods::error db_get_icss_op(
 // from general_query.cpp ::
 int chl_gen_query_impl( genQueryInp_t, genQueryOut_t* );
 
+#include "irods/irods_erasure_coding_error_codes.hpp"
+
+#include "irods/private/atomic_apply_sql.hpp"
+#include "irods/private/dml_json_deserialization.hpp"
+
+namespace {
+    namespace ec_err = irods::erasurecoding::error_codes;
+    constexpr int INVALID_VERSION = -1;
+
+irods::error db_atomic_apply_op(irods::plugin_context& _ctx, const char* _json_input) {
+    if (!_json_input) return ERROR(SYS_INVALID_INPUT_PARAM, "Null JSON input");
+    try {
+        const auto j = nlohmann::json::parse(_json_input);
+        std::vector<irods::experimental::dml::operation_type> ops;
+        for (const auto& item : j) {
+            const std::string type = item.at("type").get<std::string>();
+            if (type == "insert") {
+                irods::experimental::dml::insert_op op{"", {}};
+                irods::experimental::dml::from_json(item, op);
+                ops.push_back(std::move(op));
+            } else if (type == "update") {
+                irods::experimental::dml::update_op op{"", {}, {}};
+                irods::experimental::dml::from_json(item, op);
+                ops.push_back(std::move(op));
+            } else if (type == "delete") {
+                irods::experimental::dml::delete_op op{"", {}};
+                irods::experimental::dml::from_json(item, op);
+                ops.push_back(std::move(op));
+            }
+        }
+
+        auto [db_instance, db_conn] = irods::experimental::catalog::new_database_connection();
+        const auto ec = irods::experimental::catalog::apply_atomic_operations(db_conn, db_instance, ops);
+        if (ec < 0) return ERROR(ec, "Atomic apply failed");
+        return SUCCESS();
+    } catch (const std::exception& e) {
+        return ERROR(SYS_LIBRARY_ERROR, e.what());
+    }
+}
+
+irods::error db_get_catalog_version_op(
+irods::plugin_context& _ctx, int* _version) {
+    if (!_version) return ERROR(SYS_INVALID_INPUT_PARAM, "Null version pointer");
+    try {
+        auto [db_instance, db_conn] = irods::experimental::catalog::new_database_connection();
+        auto row = nanodbc::execute(db_conn,
+                                    "select option_value from R_GRID_CONFIGURATION where namespace = "
+                                    "'database' and option_name = 'schema_version'");
+        if (!row.next()) {
+            *_version = ec_err::CATALOG_VERSION_NOT_FOUND;
+            return ERROR(CAT_NO_ROWS_FOUND, "No schema version found");
+        }
+        *_version = std::stoi(row.get<std::string>(0));
+        return SUCCESS();
+    } catch (const std::exception& e) {
+        return ERROR(ec_err::CATALOG_PLUGIN_RESOLVE_ERR, e.what());
+    }
+}
+
+
 irods::error db_gen_query_op(
     irods::plugin_context& _ctx,
     genQueryInp_t*         _gen_query_inp,
@@ -17381,6 +17441,21 @@ irods::database* plugin_factory(
                        const char*,
                        std::vector<std::tuple<std::string, std::int64_t, std::int64_t, std::int64_t, std::int64_t>>*)>(
             db_check_logical_quota_op));
+
+    pg->add_operation(
+        DATABASE_OP_GET_CATALOG_VERSION,
+        function<error(plugin_context&, int*)>(
+            db_get_catalog_version_op));
+
+    pg->add_operation(
+        DATABASE_OP_INITIALIZE_CATALOG,
+        function<error(plugin_context&)>(
+            db_initialize_catalog_op));
+
+    pg->add_operation(
+        DATABASE_OP_ATOMIC_APPLY,
+        function<error(plugin_context&, const char*)>(
+            db_atomic_apply_op));
 
     return pg;
 } // plugin_factory

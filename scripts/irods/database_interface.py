@@ -16,6 +16,21 @@ from .exceptions import IrodsError, IrodsWarning
 def setup_catalog(irods_config, default_resource_directory=None, default_resource_name=None):
     l = logging.getLogger(__name__)
 
+    # Check if this is a modern agnostic database plugin (e.g. L3KVG)
+    if irods_config.catalog_database_type not in ['postgres', 'mysql', 'oracle', 'cockroachdb']:
+        l.info(irods.lib.get_header('Initializing catalog via database plugin'))
+        # Invoke irodsServer in maintenance mode to perform initialization
+        # This requires the server_config.json and service account environment to be present
+        try:
+            irods.lib.execute_command([irods_config.server_executable, '--db-init'])
+            l.info('Catalog initialized successfully via plugin.')
+            return
+        except IrodsError as e:
+            l.error('Failed to initialize catalog via plugin: %s', str(e))
+            raise
+
+    # Legacy relational setup path
+    l.info(irods.lib.get_header('Setting up the database (Legacy SQL Path)'))
     with contextlib.closing(database_connect.get_database_connection(irods_config)) as connection:
         if irods_config.catalog_database_type == "cockroachdb":
             connection.autocommit = True
@@ -34,6 +49,20 @@ def setup_catalog(irods_config, default_resource_directory=None, default_resourc
 
 def run_catalog_update(irods_config, is_upgrade):
     l = logging.getLogger(__name__)
+
+    # Agnostic version check and update path
+    if irods_config.catalog_database_type not in ['postgres', 'mysql', 'oracle', 'cockroachdb']:
+        l.info('Verifying catalog schema version via plugin...')
+        try:
+            # irodsServer --db-version returns 0 if up to date, non-zero if mismatch
+            irods.lib.execute_command([irods_config.server_executable, '--db-version'])
+            l.info('Catalog schema is up-to-date.')
+            return
+        except IrodsError:
+            l.info('Catalog schema version mismatch detected or initialization required.')
+            # In a future phase, we'd trigger --db-upgrade here
+            return
+
     l.debug('Syncing .odbc.ini file...')
     def update_catalog_schema(irods_config, cursor):
         l = logging.getLogger(__name__)

@@ -126,6 +126,12 @@ namespace irods
     const std::string DATABASE_OP_CALC_LOGICAL_USAGE_AND_QUOTA{"database_calc_logical_usage_and_quota"};
     const std::string DATABASE_OP_SET_LOGICAL_QUOTA{"database_set_logical_quota"};
     const std::string DATABASE_OP_CHECK_LOGICAL_QUOTA{"database_check_logical_quota"};
+
+    // Agnostic Setup & Maintenance Hooks
+    const std::string DATABASE_OP_GET_CATALOG_VERSION{"database_get_catalog_version"};
+    const std::string DATABASE_OP_INITIALIZE_CATALOG{"database_initialize_catalog"};
+    const std::string DATABASE_OP_VERIFY_INTEGRITY{"database_verify_integrity"};
+    const std::string DATABASE_OP_ATOMIC_APPLY{"database_atomic_apply"};
 }; // namespace irods
 
 #endif // IRODS_DATABASE_CONSTANTS_HPP

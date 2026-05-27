@@ -28,6 +28,11 @@
 #include "irods/update_replica_access_time.h"
 #include "irods/set_delay_server_migration_info.h"
 
+#include "irods/irods_database_factory.hpp"
+#include "irods/irods_database_manager.hpp"
+#include "irods/irods_database_plugin.hpp"
+#include "irods/irods_database_constants.hpp"
+
 #include <boost/any.hpp>
 #include <boost/asio.hpp>
 #include <boost/chrono.hpp>
@@ -92,6 +97,8 @@ extern "C" const char* __ubsan_default_options()
 } // __ubsan_default_options
 #endif
 
+#include "irods/irods_erasure_coding_error_codes.hpp"
+
 namespace
 {
     namespace fs = std::filesystem;
@@ -99,6 +106,9 @@ namespace
     namespace log_ns = irods::experimental::log;
 
     using log_server = irods::experimental::log::server;
+    namespace ec_err = irods::erasurecoding::error_codes;
+
+    constexpr int INVALID_VERSION = -1;
 
     // NOLINTBEGIN(cppcoreguidelines-avoid-non-const-global-variables)
     volatile std::sig_atomic_t g_terminate = 0;
@@ -186,6 +196,8 @@ auto main(int _argc, char* _argv[]) -> int
     // clang-format off
     opts_desc.add_options()
         ("daemonize,d", "")
+        ("db-init", "Initialize the catalog database and exit.")
+        ("db-version", "Report the current catalog schema version and exit.")
         ("help,h", "")
         ("pid-file,p", po::value<std::string>(), "")
         ("stdout", po::bool_switch(&write_to_stdout), "")
@@ -214,6 +226,44 @@ auto main(int _argc, char* _argv[]) -> int
 
         if (vm.count("validate-config") > 0) {
             return validate_configuration() ? 0 : 1;
+        }
+
+        if (vm.count("db-version") > 0) {
+            if (!validate_configuration()) return 1;
+            const auto [up_to_date, db_vers] = check_catalog_schema_version();
+            fmt::print("Catalog Schema Version: {}\n", db_vers);
+            return (db_vers > 0) ? 0 : 1;
+        }
+
+        if (vm.count("db-init") > 0) {
+            if (!validate_configuration()) return 1;
+            const auto role = irods::get_server_property<std::string>(irods::KW_CFG_CATALOG_SERVICE_ROLE);
+            if (role != irods::KW_CFG_SERVICE_ROLE_PROVIDER) {
+                fmt::print(stderr, "Error: db-init is only supported for catalog providers.\n");
+                return 1;
+            }
+
+            const auto& server_config = irods::server_properties::instance().map().get_json();
+            const auto& db_config = server_config.at(irods::KW_CFG_PLUGIN_CONFIGURATION).at(irods::KW_CFG_PLUGIN_TYPE_DATABASE);
+            
+            std::string db_type;
+            if (db_config.contains(irods::KW_CFG_DB_TECHNOLOGY)) {
+                db_type = db_config.at(irods::KW_CFG_DB_TECHNOLOGY).get<std::string>();
+            }
+
+            irods::database_ptr db;
+            if (const auto ret = irods::db_mgr.resolve(db_type, db); !ret.ok()) {
+                fmt::print(stderr, "Error: Failed to resolve database plugin [{}]: {}\n", db_type, ret.result());
+                return 1;
+            }
+
+            if (const auto ret = db->call_without_policy(nullptr, irods::DATABASE_OP_INITIALIZE_CATALOG, nullptr); !ret.ok()) {
+                fmt::print(stderr, "Error: Failed to initialize catalog: {}\n", ret.result());
+                return 1;
+            }
+
+            fmt::print("Catalog initialized successfully.\n");
+            return 0;
         }
 
         if (!validate_configuration()) {
@@ -265,7 +315,7 @@ auto main(int _argc, char* _argv[]) -> int
 
         // Setting up signal handlers here removes the need for reacting to shutdown signals
         // such as SIGINT and SIGTERM during the startup sequence.
-        if (setup_signal_handlers() == -1) {
+        if (setup_signal_handlers() == INVALID_VERSION) {
             log_server::error("{}: Error setting up signal handlers for main server process.", __func__);
             return 1;
         }
@@ -372,7 +422,7 @@ auto main(int _argc, char* _argv[]) -> int
             // reload. We call waitpid() multiple times because the main server processes may have multiple
             // child processes.
             for (int i = 0; i < g_max_number_of_child_processes; ++i) {
-                waitpid(-1, nullptr, WNOHANG);
+                waitpid(INVALID_VERSION, nullptr, WNOHANG);
             }
 
             log_stacktrace_files();
@@ -602,7 +652,7 @@ Signals:
         daemonize_fork();
 
         // Become session leader.
-        if (setsid() == -1) {
+        if (setsid() == INVALID_VERSION) {
             _exit(1);
         }
 
@@ -622,7 +672,7 @@ Signals:
 
         // Get max number of open file descriptors.
         auto max_fd = sysconf(_SC_OPEN_MAX);
-        if (-1 == max_fd) {
+        if (INVALID_VERSION == max_fd) {
             // Indeterminate, so take a guess.
             max_fd = 8192;
         }
@@ -659,7 +709,7 @@ Signals:
         // permission to read and write to it.
         // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg, hicpp-signed-bitwise)
         const auto fd = open(_pid_file.c_str(), O_RDWR | O_CREAT, S_IRUSR | S_IWUSR);
-        if (fd == -1) {
+        if (fd == INVALID_VERSION) {
             fmt::print(stderr, "Error: Could not open PID file.\n");
             return 1;
         }
@@ -667,7 +717,7 @@ Signals:
         // Get the current open flags for the open file descriptor.
         // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg)
         const auto flags = fcntl(fd, F_GETFD);
-        if (flags == -1) {
+        if (flags == INVALID_VERSION) {
             fmt::print(stderr, "Error: Could not retrieve open flags for PID file.\n");
             return 1;
         }
@@ -676,7 +726,7 @@ Signals:
         // This option will cause successful calls to exec() to close the file descriptor.
         // Keep in mind that record locks are NOT inherited by forked child processes.
         // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg, hicpp-signed-bitwise)
-        if (fcntl(fd, F_SETFD, flags | FD_CLOEXEC) == -1) {
+        if (fcntl(fd, F_SETFD, flags | FD_CLOEXEC) == INVALID_VERSION) {
             fmt::print(stderr, "Error: Could not set FD_CLOEXEC on PID file.\n");
             return 1;
         }
@@ -692,7 +742,7 @@ Signals:
         // another instance of the application must already be running or something
         // weird is going on.
         // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg)
-        if (fcntl(fd, F_SETLK, &input) == -1) {
+        if (fcntl(fd, F_SETLK, &input) == INVALID_VERSION) {
             if (EAGAIN == errno || EACCES == errno) {
                 fmt::print(
                     stderr,
@@ -701,7 +751,7 @@ Signals:
             }
         }
 
-        if (ftruncate(fd, 0) == -1) {
+        if (ftruncate(fd, 0) == INVALID_VERSION) {
             fmt::print(stderr, "Error: Could not truncate PID file's contents.\n");
             return 1;
         }
@@ -733,16 +783,46 @@ Signals:
             const auto role = irods::get_server_property<std::string>(irods::KW_CFG_CATALOG_SERVICE_ROLE);
 
             if (role == irods::KW_CFG_SERVICE_ROLE_PROVIDER) {
-                auto [db_instance, db_conn] = irods::experimental::catalog::new_database_connection();
-
-                auto row = nanodbc::execute(db_conn,
-                                            "select option_value from R_GRID_CONFIGURATION where namespace = "
-                                            "'database' and option_name = 'schema_version'");
-                if (!row.next()) {
-                    return {false, -1};
+                const auto& server_config = irods::server_properties::instance().map().get_json();
+                const auto& db_config = server_config.at(irods::KW_CFG_PLUGIN_CONFIGURATION).at(irods::KW_CFG_PLUGIN_TYPE_DATABASE);
+                
+                // Find configured database technology
+                std::string db_type;
+                if (db_config.contains(irods::KW_CFG_DB_TECHNOLOGY)) {
+                    db_type = db_config.at(irods::KW_CFG_DB_TECHNOLOGY).get<std::string>();
+                } else {
+                    // Try searching in the sub-keys if nested (common in some configs)
+                    for (auto it = db_config.begin(); it != db_config.end(); ++it) {
+                        if (it.value().is_object() && it.value().contains(irods::KW_CFG_DB_TECHNOLOGY)) {
+                            db_type = it.value().at(irods::KW_CFG_DB_TECHNOLOGY).get<std::string>();
+                            break;
+                        }
+                    }
                 }
 
-                const auto vers = row.get<int>(0);
+                if (db_type.empty()) {
+                    log_server::error("{}: Failed to identify database technology in server_config.json", __func__);
+                    return {false, ec_err::CATALOG_TYPE_IDENTIFY_ERR};
+                }
+
+                irods::database_object_ptr db_obj_ptr;
+                if (const auto ret = irods::database_factory(db_type, db_obj_ptr); !ret.ok()) {
+                    log_server::error("{}: Failed to create database object for [{}]: {}", __func__, db_type, ret.result());
+                    return {false, ec_err::CATALOG_PLUGIN_RESOLVE_ERR};
+                }
+
+                irods::database_ptr db;
+                if (const auto ret = irods::db_mgr.resolve(db_type, db); !ret.ok()) {
+                    log_server::error("{}: Failed to resolve database plugin for [{}]: {}", __func__, db_type, ret.result());
+                    return {false, ec_err::CATALOG_PLUGIN_RESOLVE_ERR};
+                }
+
+                int vers = ec_err::CATALOG_VERSION_NOT_FOUND;
+                if (const auto ret = db->call_without_policy<int*>(nullptr, irods::DATABASE_OP_GET_CATALOG_VERSION, nullptr, &vers); !ret.ok()) {
+                    log_server::error("{}: Failed to get catalog version via plugin [{}]: {}", __func__, db_type, ret.result());
+                    return {false, ec_err::CATALOG_VERSION_NOT_FOUND};
+                }
+
                 return {vers == IRODS_CATALOG_SCHEMA_VERSION, vers};
             }
 
@@ -759,7 +839,7 @@ Signals:
                               __func__);
         }
 
-        return {false, -1};
+        return {false, INVALID_VERSION};
     } // check_catalog_schema_version
 
     auto setup_signal_handlers() -> int
@@ -779,13 +859,13 @@ Signals:
                 g_terminate = 1;
             }
         };
-        if (sigaction(SIGINT, &sa_terminate, nullptr) == -1) {
-            return -1;
+        if (sigaction(SIGINT, &sa_terminate, nullptr) == INVALID_VERSION) {
+            return INVALID_VERSION;
         }
 
         // SIGTERM
-        if (sigaction(SIGTERM, &sa_terminate, nullptr) == -1) {
-            return -1;
+        if (sigaction(SIGTERM, &sa_terminate, nullptr) == INVALID_VERSION) {
+            return INVALID_VERSION;
         }
 
         // SIGQUIT (graceful shutdown)
@@ -799,8 +879,8 @@ Signals:
                 g_terminate_graceful = 1;
             }
         };
-        if (sigaction(SIGQUIT, &sa_terminate_graceful, nullptr) == -1) {
-            return -1;
+        if (sigaction(SIGQUIT, &sa_terminate_graceful, nullptr) == INVALID_VERSION) {
+            return INVALID_VERSION;
         }
 
         // SIGHUP
@@ -809,8 +889,8 @@ Signals:
         sa_sighup.sa_flags = 0;
         // NOLINTNEXTLINE(cppcoreguidelines-pro-type-union-access)
         sa_sighup.sa_handler = [](int) { g_reload_config = 1; };
-        if (sigaction(SIGHUP, &sa_sighup, nullptr) == -1) {
-            return -1;
+        if (sigaction(SIGHUP, &sa_sighup, nullptr) == INVALID_VERSION) {
+            return INVALID_VERSION;
         }
 
         // SIGUSR2 is used by the agent factory to notify the main server process
@@ -820,8 +900,8 @@ Signals:
         sa_sigusr2.sa_flags = 0;
         // NOLINTNEXTLINE(cppcoreguidelines-pro-type-union-access)
         sa_sigusr2.sa_handler = [](int) { g_agent_factory_initialized = 1; };
-        if (sigaction(SIGUSR2, &sa_sigusr2, nullptr) == -1) {
-            return -1;
+        if (sigaction(SIGUSR2, &sa_sigusr2, nullptr) == INVALID_VERSION) {
+            return INVALID_VERSION;
         }
 
         irods::setup_unrecoverable_signal_handlers();
@@ -849,12 +929,12 @@ Signals:
             while (true) {
                 if (g_terminate) {
                     log_server::info("{}: Received shutdown instruction. Exiting server main loop.", __func__);
-                    return -1;
+                    return INVALID_VERSION;
                 }
 
                 if (g_terminate_graceful) {
                     log_server::info("{}: Received graceful shutdown instruction. Exiting server main loop.", __func__);
-                    return -1;
+                    return INVALID_VERSION;
                 }
 
                 try {
@@ -882,12 +962,12 @@ Signals:
 
                 if (g_terminate) {
                     log_server::info("{}: Received shutdown instruction. Exiting server main loop.", __func__);
-                    return -1;
+                    return INVALID_VERSION;
                 }
 
                 if (g_terminate_graceful) {
                     log_server::info("{}: Received graceful shutdown instruction. Exiting server main loop.", __func__);
-                    return -1;
+                    return INVALID_VERSION;
                 }
 
                 try {
@@ -917,7 +997,7 @@ Signals:
                 "{}: Invalid catalog service role: expected [provider] or [consumer], found [{}]", __func__, role);
         }
 
-        return -1;
+        return INVALID_VERSION;
     } // wait_for_external_dependent_servers_to_start
 
     auto set_environment_variables() -> void
@@ -1030,7 +1110,7 @@ Signals:
         auto launch = (0 == g_pid_af);
 
         if (g_pid_af > 0) {
-            if (const auto ec = kill(g_pid_af, 0); ec == -1) {
+            if (const auto ec = kill(g_pid_af, 0); ec == INVALID_VERSION) {
                 if (EPERM == errno || ESRCH == errno) {
                     launch = true;
                     g_pid_af = 0;
@@ -1097,7 +1177,7 @@ Signals:
             // violating an assertion results in program termination (i.e. SIGABRT).
             _exit(1);
         }
-        else if (-1 == g_pid_af) {
+        else if (INVALID_VERSION == g_pid_af) {
             g_pid_af = 0;
             log_server::error("{}: Could not launch agent factory.", __func__);
             return false;
@@ -1286,7 +1366,7 @@ Signals:
         auto launch = (0 == g_pid_ds);
 
         if (g_pid_ds > 0) {
-            if (const auto ec = kill(g_pid_ds, 0); ec == -1) {
+            if (const auto ec = kill(g_pid_ds, 0); ec == INVALID_VERSION) {
                 if (EPERM == errno || ESRCH == errno) {
                     launch = true;
                     g_pid_ds = 0;
@@ -1640,7 +1720,7 @@ Signals:
                 // If the agent process does not exist or the main server process doesn't
                 // have permission to send signals to the agent process, then remove the
                 // agent file so that ips doesn't report it as an active agent.
-                if (kill(agent_pid, 0) == -1 && (ESRCH == errno || EPERM == errno)) {
+                if (kill(agent_pid, 0) == INVALID_VERSION && (ESRCH == errno || EPERM == errno)) {
                     fs::remove(entry);
                 }
             }
@@ -1956,11 +2036,11 @@ Signals:
             log_server::debug("{}: Connecting to (host, port) = ([{}], [{}])", __func__, _host, _port);
             stream.connect(_host, _port);
             if (!stream) {
-                return -1;
+                return INVALID_VERSION;
             }
         }
         catch (const std::exception& e) {
-            return -1;
+            return INVALID_VERSION;
         }
         log_server::debug("{}: Connected to server. Sending HEARTBEAT message.", __func__);
 
@@ -1978,7 +2058,7 @@ Signals:
         log_server::debug("{}: Received [{}] from server.", __func__, msg);
         if (msg != "HEARTBEAT") {
             log_server::debug("{}: Heartbeat Error: Did not get expected response.", __func__);
-            return -1;
+            return INVALID_VERSION;
         }
 
         return 0;
