@@ -423,8 +423,9 @@ auto chl_check_auth_credentials(RsComm& _comm,
 /// \retval <0 On failure.
 ///
 /// \since 4.3.2
-auto chl_execute_genquery2_sql(RsComm& _comm, const char* _sql, const std::vector<std::string>* _values, char** _output)
-    -> int;
+auto chl_execute_genquery2_sql(RsComm& _comm, const char* _sql, const std::vector<std::string>* _values, char** _output) -> int;
+auto chl_execute_genquery2(RsComm& _comm, const char* _json_input, char** _output) -> int;
+
 
 /// \brief High-level wrapper for locking delay rules.
 ///

@@ -132,6 +132,7 @@ namespace irods
     const std::string DATABASE_OP_INITIALIZE_CATALOG{"database_initialize_catalog"};
     const std::string DATABASE_OP_VERIFY_INTEGRITY{"database_verify_integrity"};
     const std::string DATABASE_OP_ATOMIC_APPLY{"database_atomic_apply"};
+    const std::string DATABASE_OP_EXECUTE_GENQUERY2{"database_execute_genquery2"};
 }; // namespace irods
 
 #endif // IRODS_DATABASE_CONSTANTS_HPP

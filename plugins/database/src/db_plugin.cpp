@@ -15312,10 +15312,35 @@ int chl_gen_query_impl( genQueryInp_t, genQueryOut_t* );
 
 #include "irods/private/atomic_apply_sql.hpp"
 #include "irods/private/dml_json_deserialization.hpp"
+#include "irods/private/genquery2_sql.hpp"
+#include "irods/private/genquery2_json_deserialization.hpp"
 
 namespace {
     namespace ec_err = irods::erasurecoding::error_codes;
     constexpr int INVALID_VERSION = -1;
+
+irods::error db_execute_genquery2_op(irods::plugin_context& _ctx, const char* _json_input, char** _output) {
+    if (!_json_input || !_output) return ERROR(SYS_INVALID_INPUT_PARAM, "Null input/output");
+    try {
+        const auto j = nlohmann::json::parse(_json_input);
+        irods::experimental::genquery2::select s;
+        irods::experimental::genquery2::from_json(j, s);
+
+        irods::experimental::genquery2::options opts;
+        const auto& server_config = irods::server_properties::instance().map().get_json();
+        opts.database = server_config.at(irods::KW_CFG_PLUGIN_CONFIGURATION).at(irods::KW_CFG_PLUGIN_TYPE_DATABASE).at(irods::KW_CFG_DB_TECHNOLOGY).get<std::string>();
+        
+        opts.user_name = _ctx.comm()->clientUser.userName;
+        opts.user_zone = _ctx.comm()->clientUser.rodsZone;
+        opts.admin_mode = irods::is_privileged_client(*_ctx.comm());
+        opts.default_number_of_rows = 256;
+
+        const auto [sql, values] = irods::experimental::genquery2::to_sql(s, opts);
+        return irods::experimental::catalog::chl_execute_genquery2_sql(*_ctx.comm(), sql.c_str(), &values, _output);
+    } catch (const std::exception& e) {
+        return ERROR(SYS_LIBRARY_ERROR, e.what());
+    }
+}
 
 irods::error db_atomic_apply_op(irods::plugin_context& _ctx, const char* _json_input) {
     if (!_json_input) return ERROR(SYS_INVALID_INPUT_PARAM, "Null JSON input");
@@ -17456,6 +17481,11 @@ irods::database* plugin_factory(
         DATABASE_OP_ATOMIC_APPLY,
         function<error(plugin_context&, const char*)>(
             db_atomic_apply_op));
+
+    pg->add_operation<const char*, char**>(
+        DATABASE_OP_EXECUTE_GENQUERY2,
+        function<error(plugin_context&, const char*, char**)>(
+            db_execute_genquery2_op));
 
     return pg;
 } // plugin_factory
