@@ -13133,6 +13133,9 @@ auto db_execute_genquery2_op(irods::plugin_context& _ctx,
 
     try {
         const auto [sql, values] = irods::experimental::genquery2::to_sql(*_stmt, *_opts);
+        if (sql.empty()) {
+            return ERROR(SYS_INVALID_INPUT_PARAM, "Generated SQL is empty.");
+        }
         return db_execute_genquery2_sql(_ctx, sql.c_str(), &values, _output);
     }
     catch (const irods::exception& e) {

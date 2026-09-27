@@ -4761,8 +4761,26 @@ auto chl_execute_genquery2(RsComm& _comm,
 
     // Fallback: if _stmt holds select, compile to SQL and execute via chl_execute_genquery2_sql.
     if (const auto* select_stmt = std::get_if<irods::experimental::genquery2::select>(&_stmt)) {
-        const auto [sql, values] = irods::experimental::genquery2::to_sql(*select_stmt, _opts);
-        return chl_execute_genquery2_sql(_comm, sql.c_str(), &values, _output);
+        try {
+            const auto [sql, values] = irods::experimental::genquery2::to_sql(*select_stmt, _opts);
+            if (sql.empty()) {
+                return SYS_INVALID_INPUT_PARAM;
+            }
+            return chl_execute_genquery2_sql(_comm, sql.c_str(), &values, _output);
+        }
+        catch (const irods::exception& e) {
+            irods::log(e);
+            // NOLINTNEXTLINE(bugprone-narrowing-conversions,cppcoreguidelines-narrowing-conversions)
+            return e.code();
+        }
+        catch (const std::exception& e) {
+            irods::log(ERROR(SYS_LIBRARY_ERROR, e.what()));
+            return SYS_LIBRARY_ERROR;
+        }
+        catch (...) {
+            irods::log(ERROR(SYS_UNKNOWN_ERROR, "An unknown error occurred"));
+            return SYS_UNKNOWN_ERROR;
+        }
     }
 
     return SYS_NOT_SUPPORTED;

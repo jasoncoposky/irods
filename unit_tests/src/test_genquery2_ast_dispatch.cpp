@@ -126,6 +126,7 @@ TEST_CASE("chl_execute_genquery2 Native AST Dispatch and Lowering", "[genquery2]
 
         // chl_execute_genquery2 is declared and callable.
         const int ec = chl_execute_genquery2(comm, stmt, opts, &output);
-        (void)ec;
+        CHECK(ec < 0);
+        CHECK(output == nullptr);
     }
 }
