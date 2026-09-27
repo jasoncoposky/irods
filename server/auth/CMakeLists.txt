@@ -7,9 +7,19 @@ if (NOT PAM_LIBRARY)
   endif()
 endif()
 
+find_path(PAM_INCLUDE_DIR NAMES security/pam_appl.h)
+if (PAM_INCLUDE_DIR)
+  message(STATUS "Found pam include dir: ${PAM_INCLUDE_DIR}")
+endif()
+
 add_executable(
   irodsPamAuthCheck
   "${CMAKE_CURRENT_SOURCE_DIR}/src/irodsPamAuthCheck.cpp"
+)
+target_include_directories(
+  irodsPamAuthCheck
+  PRIVATE
+  ${PAM_INCLUDE_DIR}
 )
 target_link_libraries(
   irodsPamAuthCheck

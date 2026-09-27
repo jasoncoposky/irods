@@ -27,3 +27,8 @@ compile_commands.json
 
 # YouCompleteMe
 .ycm_extra_conf.py
+
+# build & local development artifacts
+build/
+iRODS/
+local_deps/

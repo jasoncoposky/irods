@@ -54,10 +54,6 @@ int
 _cllExecSqlNoResult( icatSessionStruct *icss, const char *sql, int option );
 
 
-int cllBindVarCount = 0;
-const char *cllBindVars[MAX_BIND_VARS];
-int cllBindVarCountPrev = 0; /* cllBindVarCount earlier in processing */
-
 SQLCHAR  psgErrorMsg[SQL_MAX_MESSAGE_LENGTH + 10];
 const static SQLLEN GLOBAL_SQL_NTS = SQL_NTS;
 
@@ -81,15 +77,15 @@ SQLINTEGER columnLength[MAX_TOKEN];  /* change me ! */
 
 #include <pwd.h>
 
+#include "irods/private/db_flavor_table.hpp"
+
 #include <cctype>
 #include <cstdio>
 #include <string>
 #include <vector>
 #include <type_traits>
 
-#ifndef ORA_ICAT
 static int didBegin = 0;
-#endif
 // Stores the affected row count of queries made through cllExecSqlNoResult
 // Read by cllGetRowCount
 static int noResultRowCount = 0;
@@ -371,58 +367,23 @@ cllDisconnect( icatSessionStruct *icss ) {
 */
 int
 cllExecSqlNoResult( icatSessionStruct *icss, const char *sql ) {
-
-#ifndef ORA_ICAT
-    if ( strncmp( sql, "commit", 6 ) == 0 ||
-            strncmp( sql, "rollback", 8 ) == 0 ) {
-        didBegin = 0;
-    }
-    else {
-        if ( didBegin == 0 ) {
-            int status = _cllExecSqlNoResult( icss, "begin", 1 );
-            if ( status != SQL_SUCCESS ) {
-                return status;
+    const auto& flavor = irods::experimental::catalog::get_db_flavor(icss ? icss->databaseType : 0);
+    if (flavor.explicit_begin_required) {
+        if ( strncmp( sql, "commit", 6 ) == 0 ||
+                strncmp( sql, "rollback", 8 ) == 0 ) {
+            didBegin = 0;
+        }
+        else {
+            if ( didBegin == 0 ) {
+                int status = _cllExecSqlNoResult( icss, "begin", 1 );
+                if ( status != SQL_SUCCESS ) {
+                    return status;
+                }
             }
+            didBegin = 1;
         }
-        didBegin = 1;
     }
-#endif
     return _cllExecSqlNoResult( icss, sql, 0 );
-}
-
-/*
-  Log the bind variables from the global array (after an error)
-*/
-void
-logTheBindVariables() {
-    for ( int i = 0; i < cllBindVarCountPrev; i++ ) {
-        log_sql::info("{}: Bind variable #{} = [{}]", __func__, i + 1, cllBindVars[i]);
-    }
-}
-
-/*
-  Bind variables from the global array.
-*/
-int
-bindTheVariables( HSTMT myHstmt, const char *sql ) {
-
-    int myBindVarCount = cllBindVarCount;
-    cllBindVarCountPrev = cllBindVarCount; /* save in case we need to log error */
-    cllBindVarCount = 0; /* reset for next call */
-
-    for ( int i = 0; i < myBindVarCount; ++i ) {
-        SQLRETURN stat = SQLBindParameter( myHstmt, i + 1, SQL_PARAM_INPUT, SQL_C_CHAR,
-                                           SQL_CHAR, 0, 0, const_cast<char*>( cllBindVars[i] ), strlen( cllBindVars[i] ), const_cast<SQLLEN*>( &GLOBAL_SQL_NTS ) );
-        char tmpStr[TMP_STR_LEN];
-        snprintf( tmpStr, sizeof( tmpStr ), "bindVar[%d]=%s", i + 1, cllBindVars[i] );
-        log_sql::debug("{}: SQL: [{}]", __func__, tmpStr);
-        if ( stat != SQL_SUCCESS ) {
-            log_db::error("{}: SQLBindParameter failed: {}", __func__, stat);
-            return -1;
-        }
-    }
-
-    return 0;
 }
 
 /*
@@ -472,12 +433,6 @@ _cllExecSqlNoResult(
         log_db::error("{}: SQLAllocHandle failed for statement: {}", __func__, stat);
         return -1;
     }
-
-    if ( option == 0 && bindTheVariables( myHstmt, sql ) != 0 ) {
-        return -1;
-    }
-
-    log_sql::debug("{}: SQL: [{}]", __func__, sql);
 
     stat = SQLExecDirect( myHstmt, ( unsigned char * )sql, strlen( sql ) );
     switch ( stat ) {
@@ -534,9 +489,6 @@ _cllExecSqlNoResult(
         }
     }
     else {
-        if ( option == 0 ) {
-            logTheBindVariables();
-        }
         log_sql::error("{}: SQLExecDirect error: {} SQL:[{}]", __func__, stat, sql);
 
         // logPsgError returns an iRODS-specific error code for duplicate entries in the catalog
@@ -562,159 +514,6 @@ _cllExecSqlNoResult(
     return result;
 }
 
-/*
-   Execute a SQL command that returns a result table, and
-   and bind the default row.
-   This version now uses the global array of bind variables.
-*/
-int
-cllExecSqlWithResult( icatSessionStruct *icss, int *stmtNum, const char *sql ) {
-
-
-    /* In 2.2 and some versions before, this would call
-       _cllExecSqlNoResult with "begin", similar to how cllExecSqlNoResult
-       does.  But since this function is called for 'select's, this is not
-       needed here, and in fact causes postgres processes to be in the
-       'idle in transaction' state which prevents some operations (such as
-       backup).  So this was removed. */
-    log_sql::debug("{}: SQL: [{}]", __func__, sql);
-
-    HDBC myHdbc = icss->connectPtr;
-    HSTMT hstmt;
-    SQLRETURN stat = SQLAllocHandle( SQL_HANDLE_STMT, myHdbc, &hstmt );
-    if ( stat != SQL_SUCCESS ) {
-        log_db::error("{}: SQLAllocHandle failed for statement: {}", __func__, stat);
-        return -1;
-    }
-
-    // Issue 3862:  Set stmtNum to -1 and in cllFreeStatement if the stmtNum is negative do nothing
-    *stmtNum = UNINITIALIZED_STATEMENT_NUMBER;
-
-    int statementNumber = UNINITIALIZED_STATEMENT_NUMBER;
-    for ( int i = 0; i < MAX_NUM_OF_CONCURRENT_STMTS && statementNumber < 0; i++ ) {
-        if ( icss->stmtPtr[i] == 0 ) {
-            statementNumber = i;
-        }
-    }
-    if ( statementNumber < 0 ) {
-        log_db::error("{}: too many concurrent statements", __func__);
-        return CAT_STATEMENT_TABLE_FULL;
-    }
-
-    icatStmtStrct * myStatement = ( icatStmtStrct * )malloc( sizeof( icatStmtStrct ) );
-    memset( myStatement, 0, sizeof( icatStmtStrct ) );
-
-    icss->stmtPtr[statementNumber] = myStatement;
-    *stmtNum = statementNumber;
-
-    myStatement->stmtPtr = hstmt;
-
-    if ( bindTheVariables( hstmt, sql ) != 0 ) {
-        return -1;
-    }
-
-    log_sql::debug("{}: SQL: [{}]", __func__, sql);
-
-    stat = SQLExecDirect( hstmt, ( unsigned char * )sql, strlen( sql ) );
-
-    switch ( stat ) {
-    case SQL_SUCCESS:
-        log_sql::debug("{}: result: SUCCESS", __func__);
-        break;
-    case SQL_SUCCESS_WITH_INFO:
-        log_sql::debug("{}: result: SUCCESS_WITH_INFO", __func__);
-        break;
-    case SQL_NO_DATA_FOUND:
-        log_sql::debug("{}: result: NO_DATA", __func__);
-        break;
-    case SQL_ERROR:
-        log_sql::debug("{}: result: SQL_ERROR", __func__);
-        break;
-    case SQL_INVALID_HANDLE:
-        log_sql::debug("{}: result: HANDLE_ERROR", __func__);
-        break;
-    default:
-        log_sql::debug("{}: result: UNKNOWN", __func__);
-    }
-
-    if ( stat != SQL_SUCCESS &&
-            stat != SQL_SUCCESS_WITH_INFO &&
-            stat != SQL_NO_DATA_FOUND ) {
-        logTheBindVariables();
-        log_sql::error("{}: SQLExecDirect error: {} SQL:[{}]", __func__, stat, sql);
-        logPsgError( icss->environPtr, myHdbc, hstmt,
-                     icss->databaseType );
-        return -1;
-    }
-
-    SQLSMALLINT numColumns;
-    stat = SQLNumResultCols( hstmt, &numColumns );
-    if ( stat != SQL_SUCCESS ) {
-        log_db::error("{}: SQLNumResultCols failed: {}", __func__, stat);
-        return -2;
-    }
-    myStatement->numOfCols = numColumns;
-    for ( int i = 0; i < numColumns; i++ ) {
-        SQLCHAR colName[MAX_TOKEN] = "";
-        SQLSMALLINT colNameLen;
-        SQLSMALLINT colType;
-        SQL_UINT_OR_ULEN precision;
-        SQLSMALLINT scale;
-        stat = SQLDescribeCol( hstmt, i + 1, colName, sizeof( colName ),
-                               &colNameLen, &colType, &precision, &scale, NULL );
-        if ( stat != SQL_SUCCESS ) {
-            log_db::error("{}: SQLDescribeCol failed: {}", __func__, stat);
-            return -3;
-        }
-        /*  printf("colName='%s' precision=%d\n",colName, precision); */
-        columnLength[i] = precision;
-        SQL_INT_OR_LEN displaysize;
-        stat = SQLColAttribute( hstmt, i + 1, SQL_COLUMN_DISPLAY_SIZE,
-                                NULL, 0, NULL, &displaysize ); // JMC :: fixed for odbc
-        if ( stat != SQL_SUCCESS ) {
-            log_db::error("{}: SQLColAttributes failed: {}", __func__, stat);
-            return -3;
-        }
-
-        if ( displaysize > ( ( int )strlen( ( char * ) colName ) ) ) {
-            columnLength[i] = displaysize + 1;
-        }
-        else {
-            columnLength[i] = strlen( ( char * ) colName ) + 1;
-        }
-        /*      printf("columnLength[%d]=%d\n",i,columnLength[i]); */
-
-        myStatement->resultValue[i] = ( char* )malloc( ( int )columnLength[i] );
-        memset( myStatement->resultValue[i], 0, (int)columnLength[i] );
-
-        strcpy( ( char * )myStatement->resultValue[i], "" );
-
-        // =-=-=-=-=-=-=-
-        // JMC :: added static array to catch the result set size.  this was necessary to
-        stat = SQLBindCol( hstmt, i + 1, SQL_C_CHAR, myStatement->resultValue[i], columnLength[i], &resultDataSizeArray[ i ] );
-        if ( stat != SQL_SUCCESS ) {
-            log_db::error("{}: SQLColAttributes failed: {}", __func__, stat);
-            return -4;
-        }
-
-
-        myStatement->resultColName[i] = ( char* )malloc( ( int )columnLength[i] );
-        memset( myStatement->resultColName[i], 0, (int)columnLength[i] );
-
-#ifdef ORA_ICAT
-        //oracle prints column names (which are case-insensitive) in upper case,
-        //so to remain consistent with postgres and mysql, we convert them to lower case.
-        for ( int j = 0; j < columnLength[i] && colName[j] != '\0'; j++ ) {
-            colName[j] = tolower( colName[j] );
-        }
-#endif
-        strncpy( myStatement->resultColName[i], ( char * )colName, columnLength[i] );
-
-    }
-
-    return 0;
-}
-
 /* logBindVars
    For when an error occurs, log the bind variables which were used
    with the sql.
@@ -723,9 +522,7 @@ void
 logBindVars(
     std::vector<std::string> &bindVars ) {
     for ( std::size_t i = 0; i < bindVars.size(); i++ ) {
-        if ( !bindVars[i].empty() ) {
-            log_sql::info("{}: Bind variable #{} = [{}]", __func__, i + 1, bindVars[i]);
-        }
+        log_sql::info("{}: Bind variable #{} = [{}]", __func__, i + 1, bindVars[i]);
     }
 }
 
@@ -774,15 +571,12 @@ cllExecSqlWithResultBV(
     myStatement->stmtPtr = hstmt;
 
     for ( std::size_t i = 0; i < bindVars.size(); i++ ) {
-        if ( !bindVars[i].empty() ) {
-
-            stat = SQLBindParameter( hstmt, i + 1, SQL_PARAM_INPUT, SQL_C_CHAR,
-                                     SQL_CHAR, 0, 0, const_cast<char*>( bindVars[i].c_str() ), bindVars[i].size(), const_cast<SQLLEN*>( &GLOBAL_SQL_NTS ) );
-            log_sql::debug("{}: Bind variable #{} = [{}]", __func__, i + 1, bindVars[i]);
-            if ( stat != SQL_SUCCESS ) {
-                log_db::error("{}: SQLBindParameter failed: {}", __func__, stat);
-                return -1;
-            }
+        stat = SQLBindParameter( hstmt, i + 1, SQL_PARAM_INPUT, SQL_C_CHAR,
+                                 SQL_CHAR, 0, 0, const_cast<char*>( bindVars[i].c_str() ), bindVars[i].size(), const_cast<SQLLEN*>( &GLOBAL_SQL_NTS ) );
+        log_sql::debug("{}: Bind variable #{} = [{}]", __func__, i + 1, bindVars[i]);
+        if ( stat != SQL_SUCCESS ) {
+            log_db::error("{}: SQLBindParameter failed: {}", __func__, stat);
+            return -1;
         }
     }
     log_sql::debug("{}: SQL: [{}]", __func__, sql);
@@ -872,13 +666,16 @@ cllExecSqlWithResultBV(
 
         myStatement->resultColName[i] = ( char* )malloc( ( int )columnLength[i] );
         memset( myStatement->resultColName[i], 0, (int)columnLength[i] );
-#ifdef ORA_ICAT
-        //oracle prints column names (which are case-insensitive) in upper case,
-        //so to remain consistent with postgres and mysql, we convert them to lower case.
-        for ( int j = 0; j < columnLength[i] && colName[j] != '\0'; j++ ) {
-            colName[j] = tolower( colName[j] );
+        if (icss) {
+            const auto& flavor = irods::experimental::catalog::get_db_flavor(icss->databaseType);
+            if (flavor.lowercase_column_names) {
+                //oracle prints column names (which are case-insensitive) in upper case,
+                //so to remain consistent with postgres and mysql, we convert them to lower case.
+                for ( int j = 0; j < columnLength[i] && colName[j] != '\0'; j++ ) {
+                    colName[j] = tolower( colName[j] );
+                }
+            }
         }
-#endif
         strncpy( myStatement->resultColName[i], ( char * )colName, columnLength[i] );
 
     }
@@ -908,22 +705,6 @@ cllGetRow( icatSessionStruct *icss, int statementNumber ) {
     return 0;
 }
 
-/*
-   Return the string needed to get the next value in a sequence item.
-   The syntax varies between RDBMSes, so it is here, in the DBMS-specific code.
-*/
-int
-cllNextValueString( const char *itemName, char *outString, int maxSize ) {
-#ifdef ORA_ICAT
-    snprintf( outString, maxSize, "%s.nextval", itemName );
-#elif MY_ICAT
-    snprintf( outString, maxSize, "%s_nextval()", itemName );
-#else
-    snprintf( outString, maxSize, "nextval('%s')", itemName );
-#endif
-    return 0;
-}
-
 int
 cllGetRowCount( icatSessionStruct *icss, int statementNumber ) {
 
@@ -940,18 +721,6 @@ cllGetRowCount( icatSessionStruct *icss, int statementNumber ) {
         return i;
     }
     return RowCount;
-}
-
-int
-cllCurrentValueString( const char *itemName, char *outString, int maxSize ) {
-#ifdef ORA_ICAT
-    snprintf( outString, maxSize, "%s.currval", itemName );
-#elif MY_ICAT
-    snprintf( outString, maxSize, "%s_currval()", itemName );
-#else
-    snprintf( outString, maxSize, "currval('%s')", itemName );
-#endif
-    return 0;
 }
 
 /*
