@@ -17,7 +17,6 @@
 #include "irods/irods_lexical_cast.hpp"
 #include "irods/irods_logger.hpp"
 #include "irods/irods_pam_auth_object.hpp"
-#include "irods/irods_postgres_object.hpp"
 #include "irods/irods_random.hpp"
 #include "irods/irods_resource_manager.hpp"
 #include "irods/irods_rs_comm_query.hpp"
@@ -30,7 +29,11 @@
 #include "irods/msParam.h"
 #include "irods/private/irods_catalog_properties.hpp"
 #include "irods/private/low_level.hpp"
-#include "irods/private/mid_level.hpp"
+#include "irods/private/genquery2_builder.hpp"
+#include "irods/private/nanodbc_executor.hpp"
+#include "irods/private/database_session.hpp"
+#include "irods/private/db_flavor_table.hpp"
+#include "irods/private/catalog_access_control.hpp"
 #include "irods/rcConnect.h"
 #include "irods/rcMisc.h"
 #include "irods/rods.h"
@@ -44,6 +47,7 @@
 #include <nanodbc/nanodbc.h>
 #include <nlohmann/json.hpp>
 
+#include <boost/algorithm/string.hpp>
 #include <boost/date_time.hpp>
 #include <boost/lexical_cast.hpp>
 #include <boost/regex.hpp>
@@ -61,6 +65,8 @@
 #include <string>
 #include <string_view>
 #include <type_traits>
+#include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -68,6 +74,8 @@
 using log_db        = irods::experimental::log::database;
 using log_sql       = irods::experimental::log::sql;
 using leaf_bundle_t = irods::resource_manager::leaf_bundle_t;
+namespace gq2       = irods::experimental::genquery2;
+using gq2::builder::col;
 // clang-format on
 
 extern irods::resource_manager resc_mgr;
@@ -77,7 +85,7 @@ extern int icatApplyRule( rsComm_t *rsComm, char *ruleName, char *arg1 );
 
 static char prevChalSig[200]; // A 'signature' of the previous challenge.
                               // This is used as a sessionSignature on the catalog provider server
-                              // side. Also see getSessionSignatureClientside function. */
+                              // side. Also see getSessionSignatureClientside function.
 
 // Legal values for accessLevel in chlModAccessControl (Access Parameter).
 // Defined here since other code does not need them (except for help messages)
@@ -86,7 +94,6 @@ static char prevChalSig[200]; // A 'signature' of the previous challenge.
 #define AP_OWN   "own"
 #define AP_NULL  "null"
 
-static rodsLong_t MAX_PASSWORDS = 40;
 /* TEMP_PASSWORD_TIME is the number of seconds the temporary, one-time
    password can be used.  chlCheckAuth also checks for this column
    to be < TEMP_PASSWORD_MAX_TIME (1000) to differentiate the row
@@ -106,7 +113,7 @@ size_t log_sql_flg = 0;
 icatSessionStruct icss; // JMC :: only for testing!!!
 extern int logSQL;
 
-int  creatingUserByGroupAdmin; // JMC - backport 4772
+int  creatingUserByGroupAdmin;
 char mySessionTicket[NAME_LEN];
 char mySessionClientAddr[NAME_LEN];
 
@@ -136,18 +143,40 @@ namespace
         rodsLong_t password_min_time = default_password_min_time;
     };
 
+    auto translate_nanodbc_error(const nanodbc::database_error& e) -> int
+    {
+        const std::string state = e.state();
+        const std::string msg = e.what();
+
+        if (state == "23505" || state == "23000" ||
+            msg.find("duplicate key") != std::string::npos ||
+            msg.find("Duplicate entry") != std::string::npos ||
+            msg.find("unique constraint") != std::string::npos) {
+            return CATALOG_ALREADY_HAS_ITEM_BY_THAT_NAME;
+        }
+
+        return CAT_SQL_ERR;
+    }
+
     auto get_auth_config(const char* _namespace, auth_config& _out) -> irods::error
     {
         try {
-            auto [db_instance, db_conn] = irods::experimental::catalog::new_database_connection();
-            nanodbc::statement stmt{db_conn};
+            auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
 
-            nanodbc::prepare(stmt, "select option_name, option_value from R_GRID_CONFIGURATION where namespace = ?");
-            stmt.bind(0, _namespace);
+            namespace gq2 = irods::experimental::genquery2;
+            using gq2::builder::col;
 
-            for (auto result = nanodbc::execute(stmt); result.next();) {
-                const auto option_name = result.get<std::string>(0);
-                const auto option_value = result.get<std::string>(1);
+            auto q_res = irods::experimental::catalog::execute_catalog(
+                executor, db_conn,
+                gq2::builder::select({"option_name", "option_value"})
+                    .from("GRID_CONFIGURATION")
+                    .where(col("namespace") == _namespace)
+                    .build());
+
+            if (q_res.query_result) {
+                while (q_res.query_result->next()) {
+                    const auto option_name = q_res.query_result->get<std::string>(0);
+                    const auto option_value = q_res.query_result->get<std::string>(1);
 
                 // Given the level of nesting that occurs here to maintain specificity in the error messages, the logic
                 // has been condensed for reuse. The option_name still needs to be differentiated to apply the correct
@@ -213,6 +242,7 @@ namespace
                     continue;
                 }
             }
+        }
         }
         catch (const std::exception& e) {
             return ERROR(
@@ -303,33 +333,125 @@ validateAndParseUserName( const char *fullUserNameIn, char *userName, char *user
     return true;
 }
 
-// =-=-=-=-=-=-=-
-// helper fcn to handle cast to pg object
-irods::error make_db_ptr(
-    const irods::first_class_object_ptr& _fc,
-    irods::postgres_object_ptr&          _pg ) {
-    if ( !_fc.get() ) {
-        return ERROR(
-                   SYS_INVALID_INPUT_PARAM,
-                   "incoming fco is null" );
+namespace {
 
+int db_execute_no_answer_sql( const char *sql, icatSessionStruct *_icss = &icss ) {
+    int i = cllExecSqlNoResult( _icss, sql );
+    if ( i != 0 ) {
+        if ( i <= CAT_ENV_ERR ) {
+            return i;
+        }
+        return CAT_SQL_ERR;
+    }
+    return 0;
+}
+
+int db_free_statement( int statementNumber, icatSessionStruct *_icss = &icss ) {
+    return cllFreeStatement( _icss, statementNumber );
+}
+
+int db_get_first_row_from_sql( const char *sql, int *statement, int skipCount,
+                               std::vector<std::string>& bindVars, icatSessionStruct *_icss = &icss ) {
+    int i = cllExecSqlWithResultBV( _icss, statement, sql, bindVars );
+    if ( i != 0 ) {
+        cllFreeStatement( _icss, *statement );
+        *statement = UNINITIALIZED_STATEMENT_NUMBER;
+        if ( i <= CAT_ENV_ERR ) {
+            return i;
+        }
+        return CAT_SQL_ERR;
     }
 
-    _pg = boost::dynamic_pointer_cast <
-          irods::postgres_object > (
-              _fc );
+    const auto& flavor = irods::experimental::catalog::get_db_flavor( _icss->databaseType );
+    if ( flavor.row_offset_requires_cursor_skip && skipCount > 0 ) {
+        for ( int j = 0; j < skipCount; ++j ) {
+            i = cllGetRow( _icss, *statement );
+            if ( i != 0 ) {
+                cllFreeStatement( _icss, *statement );
+                *statement = UNINITIALIZED_STATEMENT_NUMBER;
+                return CAT_GET_ROW_ERR;
+            }
+            if ( _icss->stmtPtr[*statement]->numOfCols == 0 ) {
+                cllFreeStatement( _icss, *statement );
+                *statement = UNINITIALIZED_STATEMENT_NUMBER;
+                return CAT_NO_ROWS_FOUND;
+            }
+        }
+    }
 
-    if ( _pg.get() ) {
-        return SUCCESS();
+    i = cllGetRow( _icss, *statement );
+    if ( i != 0 ) {
+        cllFreeStatement( _icss, *statement );
+        *statement = UNINITIALIZED_STATEMENT_NUMBER;
+        return CAT_GET_ROW_ERR;
+    }
+    if ( _icss->stmtPtr[*statement]->numOfCols == 0 ) {
+        cllFreeStatement( _icss, *statement );
+        *statement = UNINITIALIZED_STATEMENT_NUMBER;
+        return CAT_NO_ROWS_FOUND;
+    }
 
+    return 0;
+}
+
+int db_get_next_row_from_statement( int stmtNum, icatSessionStruct *_icss = &icss ) {
+    if ( 0 != cllGetRow( _icss, stmtNum ) ) {
+        cllFreeStatement( _icss, stmtNum );
+        return CAT_GET_ROW_ERR;
+    }
+    if ( _icss->stmtPtr[stmtNum]->numOfCols == 0 ) {
+        cllFreeStatement( _icss, stmtNum );
+        return CAT_NO_ROWS_FOUND;
+    }
+    return 0;
+}
+
+int db_open_connection( icatSessionStruct *_icss ) {
+    for ( int i = 0; i < MAX_NUM_OF_CONCURRENT_STMTS; ++i ) {
+        _icss->stmtPtr[i] = nullptr;
+    }
+
+    if ( _icss->database_plugin_type[0] != '\0' ) {
+        _icss->databaseType = irods::experimental::catalog::get_db_type_from_name( _icss->database_plugin_type );
     }
     else {
-        return ERROR(
-                   INVALID_DYNAMIC_CAST,
-                   "failed to dynamic cast to postgres_object_ptr" );
+        _icss->databaseType = DB_TYPE_POSTGRES;
     }
 
-} // make_db_ptr
+    int i = cllOpenEnv( _icss );
+    if ( i != 0 ) {
+        return CAT_ENV_ERR;
+    }
+
+    i = cllConnect( _icss );
+    if ( i != 0 ) {
+        return CAT_CONNECT_ERR;
+    }
+
+    return 0;
+}
+
+int db_close_connection( icatSessionStruct *_icss ) {
+    static int pending = 0;
+    if ( pending == 1 ) {
+        return 0;
+    }
+    pending = 1;
+
+    int status = cllDisconnect( _icss );
+    int stat2 = cllCloseEnv( _icss );
+
+    pending = 0;
+    if ( status ) {
+        return CAT_DISCONNECT_ERR;
+    }
+    if ( stat2 ) {
+        return CAT_CLOSE_ENV_ERR;
+    }
+    return 0;
+}
+
+} // anonymous namespace
 
 // =-=-=-=-=-=-=-
 //  Called internally to rollback current transaction after an error.
@@ -337,12 +459,12 @@ int _rollback( const char *functionName ) {
     // =-=-=-=-=-=-=-
     // This type of rollback is needed for Postgres since the low-level
     // now does an automatic 'begin' to create a sql block */
-    int status =  cmlExecuteNoAnswerSql( "rollback", &icss );
+    int status =  db_execute_no_answer_sql( "rollback", &icss );
     if ( status == 0 ) {
-        log_db::info("{} cmlExecuteNoAnswerSql(rollback) succeeded", functionName);
+        log_db::info("{} rollback succeeded", functionName);
     }
     else {
-        log_db::info("{} cmlExecuteNoAnswerSql(rollback) failure {}", functionName, status);
+        log_db::info("{} rollback failure {}", functionName, status);
     }
 
     return status;
@@ -362,29 +484,32 @@ irods::error getLocalZone(
     // then we hit the catalog and request it
     irods::error ret = _prop_map.get< std::string >( ZONE_PROP, _zone );
     if ( !ret.ok() ) {
-        char local_zone[ MAX_NAME_LEN ];
-        int status;
-        {
-            std::vector<std::string> bindVars;
-            bindVars.push_back( "local" );
-            status = cmlGetStringValueFromSql(
-                         ( char* )"select zone_name from R_ZONE_MAIN where zone_type_name=?",
-                         local_zone, MAX_NAME_LEN, bindVars, _icss );
+        try {
+            auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
+            const auto zone_opt = irods::experimental::catalog::query_catalog_string(
+                executor,
+                db_conn,
+                gq2::builder::select({"zone_name"})
+                    .from("ZONE")
+                    .where(col("zone_type_name") == "local")
+                    .build());
+            if (!zone_opt) {
+                return ERROR(CAT_NO_ROWS_FOUND, "getLocalZone: local zone not found");
+            }
+            _zone = *zone_opt;
+            ret = _prop_map.set< std::string >( ZONE_PROP, _zone );
+            if ( !ret.ok() ) {
+                return PASS( ret );
+            }
         }
-        if ( status != 0 ) {
-            _rollback( "getLocalZone" );
-            return ERROR( status, "getLocalZone failure" );
+        catch (const nanodbc::database_error& e) {
+            log_db::error("{}: database error: {}", __FUNCTION__, e.what());
+            return ERROR(CAT_SQL_ERR, e.what());
         }
-
-        // =-=-=-=-=-=-=-
-        // set the zone property
-        _zone = local_zone;
-        ret = _prop_map.set< std::string >( ZONE_PROP, _zone );
-        if ( !ret.ok() ) {
-            return PASS( ret );
-
+        catch (const std::exception& e) {
+            log_db::error("{}: exception: {}", __FUNCTION__, e.what());
+            return ERROR(SYS_INTERNAL_ERR, e.what());
         }
-
     } // if no zone prop
 
     return SUCCESS();
@@ -420,64 +545,92 @@ int get_object_count_of_resource_by_name(
         return ret.code();
     }
 
-    std::vector<std::string> bindVars;
-    bindVars.push_back( resc_id_str );
-    int status = cmlGetIntegerValueFromSql(
-                     ( char* )"select count(data_id) from R_DATA_MAIN where resc_id=?",
-                     &_count,
-                     bindVars,
-                     _icss );
-
-    return status;
-
+    try {
+        auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
+        auto count_opt = irods::experimental::catalog::query_catalog_integer(
+            executor,
+            db_conn,
+            gq2::builder::select({gq2::builder::count("data_id")})
+                .from("DATA_OBJECT")
+                .where(col("resc_id") == resc_id_str)
+                .build());
+        _count = count_opt.value_or(0);
+        return 0;
+    }
+    catch (const nanodbc::database_error& e) {
+        log_db::error("{}: database error: {}", __FUNCTION__, e.what());
+        return CAT_SQL_ERR;
+    }
+    catch (const std::exception& e) {
+        log_db::error("{}: exception: {}", __FUNCTION__, e.what());
+        return SYS_INTERNAL_ERR;
+    }
 } // get_object_count_of_resource_by_name
 
 // remove AVU (user defined metadata) for an object, the metadata mapping information, if any.
 int removeMetaMapAndAVU(const char* _id)
 {
-    char tSQL[MAX_SQL_SIZE]{};
-    cllBindVars[0] = _id;
-    cllBindVarCount = 1;
-
-    if (logSQL) {
-        log_sql::debug("removeMetaMapAndAVU SQL 1 ");
+    try {
+        auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
+        namespace gq2 = irods::experimental::genquery2;
+        using gq2::builder::col;
+        auto stmt = gq2::builder::remove_from("METADATA_MAP")
+            .where(col("object_id") == _id)
+            .build();
+        irods::experimental::catalog::execute_catalog(executor, db_conn, stmt);
+        return 0;
     }
-
-    snprintf(tSQL, MAX_SQL_SIZE, "delete from R_OBJT_METAMAP where object_id=?");
-
-    const auto ec = cmlExecuteNoAnswerSql(tSQL, &icss);
-
-    return ec < 0 && CAT_SUCCESS_BUT_WITH_NO_INFO != ec ? ec : 0;
+    catch (const nanodbc::database_error& e) {
+        log_db::error("{}: database error: {}", __FUNCTION__, e.what());
+        return CAT_SQL_ERR;
+    }
+    catch (const std::exception& e) {
+        log_db::error("{}: exception: {}", __FUNCTION__, e.what());
+        return SYS_INTERNAL_ERR;
+    }
 } // removeMetaMapAndAVU
 
 /*
  * removeAVUs - remove unused AVUs (user defined metadata), if any.
  */
 static int removeAVUs() {
-    char tSQL[MAX_SQL_SIZE];
+    try {
+        auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
+        nanodbc::transaction trans{db_conn};
 
-    if ( logSQL != 0 ) {
-        log_sql::debug("removeAVUs SQL 1 ");
+        namespace gq2 = irods::experimental::genquery2;
+        using gq2::builder::col;
+
+        auto all_meta_ids = irods::experimental::catalog::query_catalog_strings(
+            executor, db_conn,
+            gq2::builder::select({"meta_id"}).from("METADATA").build());
+        auto used_meta_ids = irods::experimental::catalog::query_catalog_strings(
+            executor, db_conn,
+            gq2::builder::select({"meta_id"}).from("METADATA_MAP").build());
+
+        std::unordered_set<std::string> used(used_meta_ids.begin(), used_meta_ids.end());
+        for (const auto& mid : all_meta_ids) {
+            if (used.find(mid) == used.end()) {
+                irods::experimental::catalog::execute_catalog(
+                    executor,
+                    db_conn,
+                    gq2::builder::remove_from("METADATA")
+                        .where(col("meta_id") == mid)
+                        .build());
+            }
+        }
+
+        trans.commit();
+        return 0;
     }
-    cllBindVarCount = 0;
-
-#if ORA_ICAT
-    snprintf( tSQL, MAX_SQL_SIZE,
-              "delete from R_META_MAIN where meta_id in (select meta_id from R_META_MAIN minus select meta_id from R_OBJT_METAMAP)" );
-#elif MY_ICAT
-    /* MYSQL does not have 'minus' or 'except' (to my knowledge) so
-     * use previous version of the SQL, which is very slow */
-    snprintf( tSQL, MAX_SQL_SIZE,
-              "delete from R_META_MAIN where meta_id not in (select meta_id from R_OBJT_METAMAP)" );
-#else
-    /* Postgres */
-    snprintf( tSQL, MAX_SQL_SIZE,
-              "delete from R_META_MAIN where meta_id in (select meta_id from R_META_MAIN except select meta_id from R_OBJT_METAMAP)" );
-#endif
-    const int status =  cmlExecuteNoAnswerSql( tSQL, &icss );
-    log_db::debug("removeAVUs status={}\n", status);
-
-    return status;
+    catch (const nanodbc::database_error& e) {
+        log_db::error("{}: database error: {}", __FUNCTION__, e.what());
+        return CAT_SQL_ERR;
+    }
+    catch (const std::exception& e) {
+        log_db::error("{}: exception: {}", __FUNCTION__, e.what());
+        return SYS_INTERNAL_ERR;
+    }
 }
 
 int
@@ -516,11 +669,10 @@ _resolveHostName(rsComm_t* _rsComm, const char* _hostAddress) {
     const int status = hostname_resolves_to_ipv4(_hostAddress);
 
     if ( status != 0 ) {
-        char errMsg[155];
-        snprintf( errMsg, 150,
-                  "Warning, resource host address '%s' is not a valid DNS entry, hostname_resolves_to_ipv4 failed.",
-                  _hostAddress );
-        addRErrorMsg( &_rsComm->rError, 0, errMsg );
+        addRErrorMsg(
+            &_rsComm->rError,
+            0,
+            fmt::format("Warning, resource host address '{}' is not a valid DNS entry, hostname_resolves_to_ipv4 failed.", _hostAddress).c_str() );
     }
     if ( strcmp( _hostAddress, "localhost" ) == 0 ) {
         addRErrorMsg( &_rsComm->rError, 0,
@@ -546,11 +698,6 @@ verify_non_root_vault_path(irods::plugin_context& _ctx, const std::string& path)
 irods::error _childIsValid(
     irods::plugin_property_map& _prop_map,
     const std::string&          _new_child ) {
-    // =-=-=-=-=-=-=-
-    // Lookup the child resource and make sure its parent field is empty
-    char parent[MAX_NAME_LEN];
-    int status;
-
     // Get the resource name from the child string
     std::string resc_name;
     irods::children_parser parser;
@@ -563,32 +710,42 @@ irods::error _childIsValid(
         return PASS( ret );
     }
 
-    // Get resource's parent
-    parent[0] = '\0';
-    {
-        std::vector<std::string> bindVars;
-        bindVars.push_back( resc_name );
-        bindVars.push_back( zone );
-        status = cmlGetStringValueFromSql(
-                     "select resc_parent from R_RESC_MAIN where resc_name=? and zone_name=?",
-                     parent, MAX_NAME_LEN, bindVars, &icss );
-    }
-    if ( status != 0 ) {
-        if ( status == CAT_NO_ROWS_FOUND ) {
+    try {
+        auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
+
+        namespace gq2 = irods::experimental::genquery2;
+        using gq2::builder::col;
+
+        auto q_res = irods::experimental::catalog::execute_catalog(
+            executor, db_conn,
+            gq2::builder::select({"resc_parent"})
+                .from("RESOURCE")
+                .where(col("resc_name") == resc_name && col("zone_name") == zone)
+                .build());
+
+        if (!q_res.query_result || !q_res.query_result->next()) {
             log_db::info("{}: Child resource [{}] not found", __func__, resc_name);
             return ERROR( CHILD_NOT_FOUND, "child resource not found" );
         }
-        else {
-            _rollback( "_childIsValid" );
-            return ERROR( status, "error encountered in query for _childIsValid" );
+
+        if (!q_res.query_result->is_null(0)) {
+            const auto parent = q_res.query_result->get<std::string>(0);
+            if (!parent.empty()) {
+                log_db::info("{}: Child resource [{}] already has a parent [{}]", __func__, resc_name, parent);
+                return ERROR( CHILD_HAS_PARENT, "child resource already has a parent" );
+            }
         }
+
+        return SUCCESS();
     }
-    else if ( strlen( parent ) != 0 ) {
-        // If the resource already has a parent it cannot be added as a child of another one
-        log_db::info("{}: Child resource [{}] already has a parent [{}]", __func__, resc_name, parent);
-        return ERROR( CHILD_HAS_PARENT, "child resource already has a parent" );
+    catch (const nanodbc::database_error& e) {
+        log_db::error("{}: database error: {}", __FUNCTION__, e.what());
+        return ERROR( CAT_SQL_ERR, e.what() );
     }
-    return SUCCESS();
+    catch (const std::exception& e) {
+        log_db::error("{}: exception: {}", __FUNCTION__, e.what());
+        return ERROR( SYS_INTERNAL_ERR, e.what() );
+    }
 }
 
 irods::error update_child_parent(const std::string& _child_resc_id,
@@ -597,26 +754,33 @@ irods::error update_child_parent(const std::string& _child_resc_id,
 {
     const auto [current_time_secs, current_time_msecs] = get_current_time();
 
-    // Update the parent for the child resource
-    // have to do this to get around const
-    cllBindVarCount = 0;
-    cllBindVars[cllBindVarCount++] = _parent_resc_id.c_str();
-    cllBindVars[cllBindVarCount++] = _parent_child_context.c_str();
-    cllBindVars[cllBindVarCount++] = current_time_secs.c_str();
-    cllBindVars[cllBindVarCount++] = current_time_msecs.c_str();
-    cllBindVars[cllBindVarCount++] = _child_resc_id.c_str();
+    try {
+        auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
+        nanodbc::transaction trans{db_conn};
 
-    int status = cmlExecuteNoAnswerSql(
-        "update R_RESC_MAIN set resc_parent=?, resc_parent_context=?, modify_ts=?, modify_ts_millis=? "
-        "where resc_id=?",
-        &icss);
-    if( status != 0 ) {
-        _rollback("update_child_parent");
-        return ERROR( status, "cmlExecuteNoAnswerSql failed" );
+        namespace gq2 = irods::experimental::genquery2;
+        using gq2::builder::col;
+
+        auto stmt = gq2::builder::update("RESOURCE")
+            .set("resc_parent", _parent_resc_id)
+            .set("resc_parent_context", _parent_child_context)
+            .set("modify_ts", current_time_secs)
+            .set("modify_ts_millis", current_time_msecs)
+            .where(col("resc_id") == _child_resc_id)
+            .build();
+        irods::experimental::catalog::execute_catalog(executor, db_conn, stmt);
+
+        trans.commit();
+        return SUCCESS();
     }
-
-    return SUCCESS();
-
+    catch (const nanodbc::database_error& e) {
+        log_db::error("{}: database error: {}", __FUNCTION__, e.what());
+        return ERROR( CAT_SQL_ERR, e.what() );
+    }
+    catch (const std::exception& e) {
+        log_db::error("{}: exception: {}", __FUNCTION__, e.what());
+        return ERROR( SYS_INTERNAL_ERR, e.what() );
+    }
 } // update_child_parent
 
 /**
@@ -699,73 +863,58 @@ static inline auto validate_zone_connection_string(const char* _zone_conn_info, 
 }
 
 bool
-_rescHasParentOrChild( char* rescId ) {
-
-    char parent[MAX_NAME_LEN];
-    char children[MAX_NAME_LEN];
-    int status;
-
-    parent[0] = '\0';
-    children[0] = '\0';
-    {
-        std::vector<std::string> bindVars;
-        bindVars.push_back( rescId );
-        status = cmlGetStringValueFromSql(
-                     "select resc_parent from R_RESC_MAIN where resc_id=?",
-                     parent, MAX_NAME_LEN, bindVars, &icss );
+_rescHasParentOrChild( const char* rescId ) {
+    if (!rescId || *rescId == '\0') {
+        return false;
     }
-    if ( status != 0 ) {
-        if ( status == CAT_NO_ROWS_FOUND ) {
-            log_db::info("{}: Resource [{}] not found", __func__, rescId);
+    try {
+        auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
+        namespace gq2 = irods::experimental::genquery2;
+        using gq2::builder::col;
+
+        const auto parent = irods::experimental::catalog::query_catalog_string(
+            executor, db_conn,
+            gq2::builder::select({"resc_parent"}).from("RESOURCE").where(col("resc_id") == rescId).build());
+        if (parent && !parent->empty()) {
+            return true;
         }
-        else {
-            _rollback( "_rescHasParentOrChild" );
+        const auto child = irods::experimental::catalog::query_catalog_string(
+            executor, db_conn,
+            gq2::builder::select({"resc_id"}).from("RESOURCE").where(col("resc_parent") == rescId).build());
+        if (child && !child->empty()) {
+            return true;
         }
         return false;
     }
-    if ( strlen( parent ) != 0 ) {
-        return true;
-    }
-    {
-        std::vector<std::string> bindVars;
-        bindVars.push_back( rescId );
-        status = cmlGetStringValueFromSql(
-                     "select resc_id from R_RESC_MAIN where resc_parent=?",
-                     children, MAX_NAME_LEN, bindVars, &icss );
-    }
-    if ( status != 0 ) {
-        if ( status != CAT_NO_ROWS_FOUND ) {
-            _rollback( "_rescHasParentOrChild" );
-        }
+    catch (const std::exception& e) {
+        log_db::error("{}: database error: {}", __FUNCTION__, e.what());
         return false;
     }
-    if ( strlen( children ) != 0 ) {
-        return true;
-    }
-    return false;
-
 }
 
 bool _userInRUserAuth( const char* userName, const char* zoneName, const char* auth_name ) {
-    int status;
-    rodsLong_t iVal;
-
-    {
-        std::vector<std::string> bindVars;
-        bindVars.push_back( userName );
-        bindVars.push_back( zoneName );
-        bindVars.push_back( auth_name );
-        status = cmlGetIntegerValueFromSql(
-                    "select user_id from R_USER_AUTH where user_id=(select user_id from R_USER_MAIN where user_name=? and zone_name=?) and user_auth_name=?",
-                    &iVal, bindVars, &icss );
-    }
-    if ( status != 0 ) {
-        if ( status != CAT_NO_ROWS_FOUND ) {
-            _rollback( "_userInRUserAuth" );
+    try {
+        auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
+        const auto uid_opt = irods::experimental::catalog::query_catalog_integer(
+            executor, db_conn,
+            gq2::builder::select({"user_id"})
+                .from("USER")
+                .where(col("user_name") == userName && col("zone_name") == zoneName)
+                .build());
+        if (!uid_opt) {
+            return false;
         }
+        const auto opt = irods::experimental::catalog::query_catalog_integer(
+            executor, db_conn,
+            gq2::builder::select({"user_id"})
+                .from("USER_AUTH")
+                .where(col("user_id") == std::to_string(*uid_opt) && col("user_auth_name") == auth_name)
+                .build());
+        return opt.has_value();
+    }
+    catch (const std::exception& e) {
+        log_db::error("{}: database error: {}", __FUNCTION__, e.what());
         return false;
-    } else {
-        return true;
     }
 }
 
@@ -773,20 +922,9 @@ bool _userInRUserAuth( const char* userName, const char* zoneName, const char* a
    does not do the commit.
 */
 static int _delColl( rsComm_t *rsComm, collInfo_t *collInfo ) {
-    rodsLong_t iVal;
     char logicalEndName[MAX_NAME_LEN];
     char logicalParentDirName[MAX_NAME_LEN];
     char collIdNum[MAX_NAME_LEN];
-    char parentCollIdNum[MAX_NAME_LEN];
-    rodsLong_t status;
-
-    if ( logSQL != 0 ) {
-        log_sql::debug("_delColl");
-    }
-
-    if ( !icss.status ) {
-        return CATALOG_NOT_CONNECTED;
-    }
 
     if (const auto ec = splitPathByKey(collInfo->collName, logicalParentDirName, MAX_NAME_LEN, logicalEndName, MAX_NAME_LEN, '/'); ec < 0) {
         log_db::error(
@@ -799,98 +937,77 @@ static int _delColl( rsComm_t *rsComm, collInfo_t *collInfo ) {
         snprintf( logicalEndName, sizeof( logicalEndName ), "%s", collInfo->collName + 1 );
     }
 
-    /* Check that the parent collection exists and user has write permission,
-       and get the collectionID */
-    if ( logSQL != 0 ) {
-        log_sql::debug("_delColl SQL 1 ");
-    }
-    status = cmlCheckDir( logicalParentDirName,
-                          rsComm->clientUser.userName,
-                          rsComm->clientUser.rodsZone,
-                          ACCESS_MODIFY_OBJECT,
-                          &icss );
-    if ( status < 0 ) {
-        char errMsg[105];
-        if ( status == CAT_UNKNOWN_COLLECTION ) {
-            snprintf( errMsg, 100, "collection '%s' is unknown",
-                      logicalParentDirName );
-            addRErrorMsg( &rsComm->rError, 0, errMsg );
-            return status;
+    try {
+        auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
+
+        // Check that the parent collection exists and user has write permission
+        auto parent_status = irods::experimental::catalog::access_control::check_collection_access(
+            executor, db_conn, logicalParentDirName, rsComm->clientUser.userName, rsComm->clientUser.rodsZone, ACCESS_MODIFY_OBJECT);
+        if ( parent_status < 0 ) {
+            if ( parent_status == CAT_UNKNOWN_COLLECTION ) {
+                addRErrorMsg( &rsComm->rError, 0, fmt::format("collection '{}' is unknown", logicalParentDirName).c_str() );
+            }
+            return parent_status;
         }
-        _rollback( "_delColl" );
-        return status;
-    }
-    snprintf( parentCollIdNum, MAX_NAME_LEN, "%lld", status );
 
-    /* Check that the collection exists and user has DELETE or better
-       permission */
-    if ( logSQL != 0 ) {
-        log_sql::debug("_delColl SQL 2");
-    }
-    status = cmlCheckDir( collInfo->collName,
-                          rsComm->clientUser.userName,
-                          rsComm->clientUser.rodsZone,
-                          ACCESS_DELETE_OBJECT,
-                          &icss );
-    if ( status < 0 ) {
-        return status;
-    }
-    snprintf( collIdNum, MAX_NAME_LEN, "%lld", status );
+        // Check that the collection exists and user has DELETE permission
+        auto coll_status = irods::experimental::catalog::access_control::check_collection_access(
+            executor, db_conn, collInfo->collName, rsComm->clientUser.userName, rsComm->clientUser.rodsZone, ACCESS_DELETE_OBJECT);
+        if ( coll_status < 0 ) {
+            return coll_status;
+        }
+        snprintf( collIdNum, MAX_NAME_LEN, "%lld", static_cast<long long>(coll_status) );
 
-    /* check that the collection is empty (both subdirs and files) */
-    if ( logSQL != 0 ) {
-        log_sql::debug("_delColl SQL 3");
-    }
-    {
-        std::vector<std::string> bindVars;
-        bindVars.push_back( collInfo->collName );
-        bindVars.push_back( collInfo->collName );
-        status = cmlGetIntegerValueFromSql(
-                     "select coll_id from R_COLL_MAIN where parent_coll_name=? union select coll_id from R_DATA_MAIN where coll_id=(select coll_id from R_COLL_MAIN where coll_name=?)",
-                     &iVal, bindVars, &icss );
-    }
-    if ( status != CAT_NO_ROWS_FOUND ) {
-        return CAT_COLLECTION_NOT_EMPTY;
-    }
+        // Check that the collection is empty (both subdirs and files)
+        const auto subcoll = irods::experimental::catalog::query_catalog_integer(
+            executor, db_conn,
+            gq2::builder::select({"coll_id"})
+                .from("COLLECTION")
+                .where(col("parent_coll_name") == collInfo->collName)
+                .build());
+        if ( subcoll.has_value() ) {
+            return CAT_COLLECTION_NOT_EMPTY;
+        }
 
-    /* delete the row if it exists */
-    /* The use of coll_id isn't really needed but may add a little safety.
-       Previously, we included a check that it was owned by the user but
-       the above cmlCheckDir is more accurate (handles group access). */
-    cllBindVars[cllBindVarCount++] = collInfo->collName;
-    cllBindVars[cllBindVarCount++] = collIdNum;
-    if ( logSQL != 0 ) {
-        log_sql::debug("_delColl SQL 4");
-    }
-    status =  cmlExecuteNoAnswerSql(
-                  "delete from R_COLL_MAIN where coll_name=? and coll_id=?",
-                  &icss );
-    if ( status != 0 ) { /* error, odd one as everything checked above */
-        log_db::info("_delColl cmlExecuteNoAnswerSql delete failure {}", status);
-        _rollback( "_delColl" );
-        return status;
-    }
+        const auto data_obj = irods::experimental::catalog::query_catalog_integer(
+            executor, db_conn,
+            gq2::builder::select({"data_id"})
+                .from("DATA_OBJECT")
+                .where(col("coll_id") == collIdNum)
+                .build());
+        if ( data_obj.has_value() ) {
+            return CAT_COLLECTION_NOT_EMPTY;
+        }
 
-    /* remove any access rows */
-    cllBindVars[cllBindVarCount++] = collIdNum;
-    if ( logSQL != 0 ) {
-        log_sql::debug("_delColl SQL 5");
-    }
-    status =  cmlExecuteNoAnswerSql(
-                  "delete from R_OBJT_ACCESS where object_id=?",
-                  &icss );
-    if ( status != 0 ) { /* error, odd one as everything checked above */
-        log_db::info("_delColl cmlExecuteNoAnswerSql delete access failure {}", status);
-        _rollback( "_delColl" );
-    }
+        nanodbc::transaction trans{db_conn};
 
-    /* Remove associated AVUs, if any */
-    if (const auto ec = removeMetaMapAndAVU(collIdNum); ec < 0) {
-        log_db::warn("[{}:{}] - failed to remove associated AVUs [ec=[{}]]", __func__, __LINE__, ec);
+        namespace gq2 = irods::experimental::genquery2;
+        using gq2::builder::col;
+        auto del_coll = gq2::builder::remove_from("COLLECTION")
+            .where(col("coll_name") == collInfo->collName && col("coll_id") == collIdNum)
+            .build();
+        irods::experimental::catalog::execute_catalog(executor, db_conn, del_coll);
+
+        auto del_access = gq2::builder::remove_from("ACCESS")
+            .where(col("object_id") == collIdNum)
+            .build();
+        irods::experimental::catalog::execute_catalog(executor, db_conn, del_access);
+
+        if (const auto ec = removeMetaMapAndAVU(collIdNum); ec < 0) {
+            log_db::warn("[{}:{}] - failed to remove associated AVUs [ec=[{}]]", __func__, __LINE__, ec);
+        }
+
+        trans.commit();
+        return 0;
     }
-
-    return status;
-
+    catch (const nanodbc::database_error& e) {
+        log_db::error("{}: database error: {}", __FUNCTION__, e.what());
+        return CAT_SQL_ERR;
+    }
+    catch (const std::exception& e) {
+        log_db::error("{}: exception: {}", __FUNCTION__, e.what());
+        return SYS_INTERNAL_ERR;
+    }
 } // _delColl
 
 /*
@@ -949,33 +1066,46 @@ icatScramble( char *pw ) {
   Called internally, from chlModUser.
 */
 int decodePw( rsComm_t *rsComm, const char *in, char *out ) {
-    int status;
     char *cp;
-    char password[MAX_PASSWORD_LEN];
+    char password[MAX_PASSWORD_LEN]{};
     char upassword[MAX_PASSWORD_LEN + 10];
     char rand[] =
         "1gCBizHWbwIYyWLo";  /* must match clients */
     int pwLen1, pwLen2;
 
-    if ( logSQL != 0 ) {
-        log_sql::debug("decodePw - SQL 1 ");
-    }
-    {
-        std::vector<std::string> bindVars;
-        bindVars.push_back( rsComm->clientUser.userName );
-        bindVars.push_back( rsComm->clientUser.rodsZone );
-        status = cmlGetStringValueFromSql(
-                     "select rcat_password from R_USER_PASSWORD, R_USER_MAIN where user_name=? and R_USER_MAIN.zone_name=? and R_USER_MAIN.user_id = R_USER_PASSWORD.user_id",
-                     password, MAX_PASSWORD_LEN, bindVars, &icss );
-    }
-    if ( status != 0 ) {
-        if ( status == CAT_NO_ROWS_FOUND ) {
-            status = CAT_INVALID_USER; /* Be a little more specific */
+    try {
+        auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
+        namespace gq2 = irods::experimental::genquery2;
+        using gq2::builder::col;
+
+        const auto uid_opt = irods::experimental::catalog::query_catalog_integer(
+            executor, db_conn,
+            gq2::builder::select({"user_id"})
+                .from("USER")
+                .where(col("user_name") == rsComm->clientUser.userName && col("zone_name") == rsComm->clientUser.rodsZone)
+                .build());
+        if (!uid_opt) {
+            return CAT_INVALID_USER;
         }
-        else {
-            _rollback( "decodePw" );
+
+        const auto pwd_opt = irods::experimental::catalog::query_catalog_string(
+            executor, db_conn,
+            gq2::builder::select({"rcat_password"})
+                .from("USER_PASSWORD")
+                .where(col("user_id") == std::to_string(*uid_opt))
+                .build());
+        if (!pwd_opt) {
+            return CAT_INVALID_USER;
         }
-        return status;
+        rstrcpy(password, pwd_opt->c_str(), sizeof(password));
+    }
+    catch (const nanodbc::database_error& e) {
+        log_db::error("{}: database error: {}", __FUNCTION__, e.what());
+        return CAT_SQL_ERR;
+    }
+    catch (const std::exception& e) {
+        log_db::error("{}: exception: {}", __FUNCTION__, e.what());
+        return SYS_INTERNAL_ERR;
     }
 
     icatDescramble( password );
@@ -995,10 +1125,10 @@ int decodePw( rsComm_t *rsComm, const char *in, char *out ) {
 
     if ( pwLen2 > MAX_PASSWORD_LEN - 5 && pwLen2 == pwLen1 ) {
         /* probable failure */
-        char errMsg[260];
-        snprintf( errMsg, 250,
-                  "Error with password encoding.  This can be caused by not connecting directly to the ICAT host, not using password authentication (using GSI or Kerberos instead), or entering your password incorrectly (if prompted)." );
-        addRErrorMsg( &rsComm->rError, 0, errMsg );
+        addRErrorMsg(
+            &rsComm->rError,
+            0,
+            "Error with password encoding.  This can be caused by not connecting directly to the ICAT host, not using password authentication (using GSI or Kerberos instead), or entering your password incorrectly (if prompted)." );
         return CAT_PASSWORD_ENCODING_ERROR;
     }
     strcpy( out, upassword );
@@ -1060,9 +1190,7 @@ rodsLong_t checkAndGetObjectId(
     char userName[NAME_LEN];
     char userZone[NAME_LEN];
 
-    if ( logSQL != 0 ) {
-        log_sql::debug("checkAndGetObjectId");
-    }
+    log_sql::debug("checkAndGetObjectId");
 
     if ( !icss.status ) {
         return CATALOG_NOT_CONNECTED;
@@ -1091,172 +1219,166 @@ rodsLong_t checkAndGetObjectId(
         return CAT_INVALID_ARGUMENT;
     }
 
-    if ( itype == 1 ) {
-        if (const auto ec = splitPathByKey(name, logicalParentDirName, MAX_NAME_LEN, logicalEndName, MAX_NAME_LEN, '/'); ec < 0) {
-            log_db::error("[{}:{}] - failed in splitPathByKey [path=[{}], ec=[{}]]", __func__, __LINE__, name, ec);
-            return ec;
-        }
-        if ( strlen( logicalParentDirName ) == 0 ) {
-            snprintf( logicalParentDirName, sizeof( logicalParentDirName ), "%s", PATH_SEPARATOR );
-            snprintf( logicalEndName, sizeof( logicalEndName ), "%s", name );
-        }
-        if ( logSQL != 0 ) {
+    try {
+        auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
+
+        if ( itype == 1 ) {
+            if (const auto ec = splitPathByKey(name, logicalParentDirName, MAX_NAME_LEN, logicalEndName, MAX_NAME_LEN, '/'); ec < 0) {
+                log_db::error("[{}:{}] - failed in splitPathByKey [path=[{}], ec=[{}]]", __func__, __LINE__, name, ec);
+                return ec;
+            }
+            if ( strlen( logicalParentDirName ) == 0 ) {
+                snprintf( logicalParentDirName, sizeof( logicalParentDirName ), "%s", PATH_SEPARATOR );
+                snprintf( logicalEndName, sizeof( logicalEndName ), "%s", name );
+            }
             log_sql::debug("checkAndGetObjectId SQL 1 ");
+            status = irods::experimental::catalog::access_control::check_data_object_only(
+                executor, db_conn,
+                logicalParentDirName, logicalEndName,
+                rsComm->clientUser.userName,
+                rsComm->clientUser.rodsZone,
+                access, admin_mode );
+            if ( status < 0 ) {
+                _rollback( "checkAndGetObjectId" );
+                return status;
+            }
+            objId = status;
         }
-        status = cmlCheckDataObjOnly( logicalParentDirName, logicalEndName,
-                                      rsComm->clientUser.userName,
-                                      rsComm->clientUser.rodsZone,
-                                      access, &icss, admin_mode );
-        if ( status < 0 ) {
-            _rollback( "checkAndGetObjectId" );
-            return status;
-        }
-        objId = status;
-    }
 
-    if ( itype == 2 ) {
-        /* Check that the collection exists and user has create_metadata permission,
-           and get the collectionID */
-        if ( logSQL != 0 ) {
+        if ( itype == 2 ) {
+            /* Check that the collection exists and user has create_metadata permission,
+               and get the collectionID */
             log_sql::debug("checkAndGetObjectId SQL 2");
-        }
-        status = cmlCheckDir( name,
-                              rsComm->clientUser.userName,
-                              rsComm->clientUser.rodsZone,
-                              access, &icss, admin_mode );
-        if ( status < 0 ) {
-            char errMsg[105];
-            if ( status == CAT_UNKNOWN_COLLECTION ) {
-                snprintf( errMsg, 100, "collection '%s' is unknown",
-                          name );
-                addRErrorMsg( &rsComm->rError, 0, errMsg );
+            status = irods::experimental::catalog::access_control::check_collection_access(
+                executor, db_conn,
+                name,
+                rsComm->clientUser.userName,
+                rsComm->clientUser.rodsZone,
+                access, admin_mode );
+            if ( status < 0 ) {
+                if ( status == CAT_UNKNOWN_COLLECTION ) {
+                    addRErrorMsg( &rsComm->rError, 0, fmt::format("collection '{}' is unknown", name).c_str() );
+                }
+                return status;
             }
-            return status;
-        }
-        objId = status;
-    }
-
-    if ( itype == 3 ) {
-        if ( rsComm->clientUser.authInfo.authFlag < LOCAL_PRIV_USER_AUTH ) {
-            return CAT_INSUFFICIENT_PRIVILEGE_LEVEL;
+            objId = status;
         }
 
-        std::string zone;
-        irods::error ret = getLocalZone( prop_map, &icss, zone );
-        if ( !ret.ok() ) {
-            return PASS( ret ).code();
-        }
-
-        objId = 0;
-        if ( logSQL != 0 ) {
-            log_sql::debug("checkAndGetObjectId SQL 3");
-        }
-        {
-            std::vector<std::string> bindVars;
-            bindVars.push_back( name );
-            bindVars.push_back( zone );
-            status = cmlGetIntegerValueFromSql(
-                         "select resc_id from R_RESC_MAIN where resc_name=? and zone_name=?",
-                         &objId, bindVars, &icss );
-        }
-        if ( status != 0 ) {
-            if ( status == CAT_NO_ROWS_FOUND ) {
-                return CAT_INVALID_RESOURCE;
+        if ( itype == 3 ) {
+            if ( rsComm->clientUser.authInfo.authFlag < LOCAL_PRIV_USER_AUTH ) {
+                return CAT_INSUFFICIENT_PRIVILEGE_LEVEL;
             }
-            _rollback( "checkAndGetObjectId" );
-            return status;
-        }
-    }
 
-    if ( itype == 4 ) {
-        if ( rsComm->clientUser.authInfo.authFlag < LOCAL_PRIV_USER_AUTH ) {
-            return CAT_INSUFFICIENT_PRIVILEGE_LEVEL;
-        }
-
-        status = validateAndParseUserName( name, userName, userZone );
-        if ( status ) {
-            return status;
-        }
-        if ( userZone[0] == '\0' ) {
             std::string zone;
             irods::error ret = getLocalZone( prop_map, &icss, zone );
             if ( !ret.ok() ) {
                 return PASS( ret ).code();
             }
-            snprintf( userZone, sizeof( userZone ), "%s",  zone.c_str() );
+
+            objId = 0;
+            log_sql::debug("checkAndGetObjectId SQL 3");
+            auto opt_id = irods::experimental::catalog::query_catalog_integer(
+                executor, db_conn,
+                gq2::builder::select({"resc_id"})
+                    .from("RESOURCE")
+                    .where(col("resc_name") == name && col("zone_name") == zone)
+                    .build());
+            if ( !opt_id ) {
+                return CAT_INVALID_RESOURCE;
+            }
+            objId = *opt_id;
         }
 
-        objId = 0;
-        if ( logSQL != 0 ) {
+        if ( itype == 4 ) {
+            if ( rsComm->clientUser.authInfo.authFlag < LOCAL_PRIV_USER_AUTH ) {
+                return CAT_INSUFFICIENT_PRIVILEGE_LEVEL;
+            }
+
+            status = validateAndParseUserName( name, userName, userZone );
+            if ( status ) {
+                return status;
+            }
+            if ( userZone[0] == '\0' ) {
+                std::string zone;
+                irods::error ret = getLocalZone( prop_map, &icss, zone );
+                if ( !ret.ok() ) {
+                    return PASS( ret ).code();
+                }
+                snprintf( userZone, sizeof( userZone ), "%s",  zone.c_str() );
+            }
+
+            objId = 0;
             log_sql::debug("checkAndGetObjectId SQL 4");
-        }
-        {
-            std::vector<std::string> bindVars;
-            bindVars.push_back( userName );
-            bindVars.push_back( userZone );
-            status = cmlGetIntegerValueFromSql(
-                         "select user_id from R_USER_MAIN where user_name=? and zone_name=?",
-                         &objId, bindVars, &icss );
-        }
-        if ( status != 0 ) {
-            if ( status == CAT_NO_ROWS_FOUND ) {
+            auto opt_id = irods::experimental::catalog::query_catalog_integer(
+                executor,
+                db_conn,
+                gq2::builder::select({"user_id"})
+                    .from("USER")
+                    .where(col("user_name") == userName && col("zone_name") == userZone)
+                    .build());
+            if ( !opt_id ) {
                 return CAT_INVALID_USER;
             }
-            _rollback( "checkAndGetObjectId" );
-            return status;
+            objId = *opt_id;
         }
+    }
+    catch (const nanodbc::database_error& e) {
+        log_db::error("{}: database error: {}", __func__, e.what());
+        _rollback( "checkAndGetObjectId" );
+        return CAT_SQL_ERR;
+    }
+    catch (const std::exception& e) {
+        log_db::error("{}: exception: {}", __func__, e.what());
+        _rollback( "checkAndGetObjectId" );
+        return SYS_INTERNAL_ERR;
     }
 
     return objId;
 }
 
-/*
-// =-=-=-=-=-=-=-
-// JMC - backport 4836
-+ Find existing AVU triplet.
-+ Return code is error or the AVU ID.
-+*/
+// Find existing AVU triplet.
+// Return code is error or the AVU ID.
 rodsLong_t
 findAVU( const char *attribute, const char *value, const char *units ) {
-    rodsLong_t status;
-// =-=-=-=-=-=-=-
+    try {
+        auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
 
-    rodsLong_t iVal;
-    iVal = 0;
-    if ( *units != '\0' ) {
-        if ( logSQL != 0 ) {
-            log_sql::debug("findAVU SQL 1"); // JMC - backport 4836
+        namespace gq2 = irods::experimental::genquery2;
+        using gq2::builder::col;
+
+        std::optional<int64_t> opt_id;
+        if ( units != nullptr && *units != '\0' ) {
+            log_sql::debug("findAVU SQL 1");
+            opt_id = irods::experimental::catalog::query_catalog_integer(
+                executor, db_conn,
+                gq2::builder::select({"meta_id"})
+                    .from("METADATA")
+                    .where(col("meta_attr_name") == (attribute ? attribute : "") &&
+                           col("meta_attr_value") == (value ? value : "") &&
+                           col("meta_attr_unit") == units)
+                    .build());
         }
-        {
-            std::vector<std::string> bindVars;
-            bindVars.push_back( attribute );
-            bindVars.push_back( value );
-            bindVars.push_back( units );
-            status = cmlGetIntegerValueFromSql(
-                         "select meta_id from R_META_MAIN where meta_attr_name=? and meta_attr_value=? and meta_attr_unit=?",
-                         &iVal, bindVars, &icss );
-        }
-    }
-    else {
-        if ( logSQL != 0 ) {
+        else {
             log_sql::debug("findAVU SQL 2");
+            opt_id = irods::experimental::catalog::query_catalog_integer(
+                executor, db_conn,
+                gq2::builder::select({"meta_id"})
+                    .from("METADATA")
+                    .where(col("meta_attr_name") == (attribute ? attribute : "") &&
+                           col("meta_attr_value") == (value ? value : "") &&
+                           (col("meta_attr_unit") == "" || col("meta_attr_unit").is_null()))
+                    .build());
         }
-        {
-            std::vector<std::string> bindVars;
-            bindVars.push_back( attribute );
-            bindVars.push_back( value );
-            status = cmlGetIntegerValueFromSql(
-                         "select meta_id from R_META_MAIN where meta_attr_name=? and meta_attr_value=? and (meta_attr_unit='' or meta_attr_unit IS NULL)", // JMC - backport 4827
-                         &iVal, bindVars, &icss );
+
+        if (opt_id) {
+            return *opt_id;
         }
+        return CAT_NO_ROWS_FOUND;
     }
-    if ( status == 0 ) {
-        status = iVal; /* use existing R_META_MAIN row */
-        return status;
+    catch (const std::exception& e) {
+        log_db::error("findAVU failed with exception: {}", e.what());
+        return CAT_SQL_ERR;
     }
-// =-=-=-=-=-=-=-
-// JMC - backport 4836
-    return ( status ); // JMC - backport 4836
 }
 
 /*
@@ -1267,45 +1389,47 @@ int
 findOrInsertAVU( const char *attribute, const char *value, const char *units ) {
     char nextStr[MAX_NAME_LEN];
     char myTime[50];
-    rodsLong_t status, seqNum;
+    rodsLong_t seqNum;
     rodsLong_t iVal;
     iVal = findAVU( attribute, value, units );
     if ( iVal > 0 ) {
         return iVal;
     }
-    if ( logSQL != 0 ) {
-        log_sql::debug("findOrInsertAVU SQL 1");
-    }
-// =-=-=-=-=-=-=-
-    status = cmlGetNextSeqVal( &icss );
-    if ( status < 0 ) {
-        log_db::info("findOrInsertAVU cmlGetNextSeqVal failure {}", status);
-        return status;
-    }
-    seqNum = status; /* the returned status is the next sequence value */
+    log_sql::debug("findOrInsertAVU SQL 1");
 
-    snprintf( nextStr, sizeof nextStr, "%lld", seqNum );
+    try {
+        auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
 
-    getNowStr( myTime );
+        seqNum = executor.get_next_sequence_value(db_conn, "R_ObjectID");
+        if ( seqNum < 0 ) {
+            log_db::info("findOrInsertAVU get_next_sequence_value failure {}", seqNum);
+            return seqNum;
+        }
 
-    cllBindVars[cllBindVarCount++] = nextStr;
-    cllBindVars[cllBindVarCount++] = attribute;
-    cllBindVars[cllBindVarCount++] = value;
-    cllBindVars[cllBindVarCount++] = units;
-    cllBindVars[cllBindVarCount++] = myTime;
-    cllBindVars[cllBindVarCount++] = myTime;
+        snprintf( nextStr, sizeof nextStr, "%lld", seqNum );
+        getNowStr( myTime );
 
-    if ( logSQL != 0 ) {
-        log_sql::debug("findOrInsertAVU SQL 2"); // JMC - backport 4836
+        log_sql::debug("findOrInsertAVU SQL 2");
+        namespace gq2 = irods::experimental::genquery2;
+        auto ins_stmt = gq2::builder::insert_into("METADATA")
+            .set("meta_id", nextStr)
+            .set("meta_attr_name", attribute ? attribute : "")
+            .set("meta_attr_value", value ? value : "")
+            .set("meta_attr_unit", units ? units : "")
+            .set("create_ts", myTime)
+            .set("modify_ts", myTime)
+            .build();
+        irods::experimental::catalog::execute_catalog(executor, db_conn, ins_stmt);
+        return seqNum;
     }
-    status =  cmlExecuteNoAnswerSql(
-                  "insert into R_META_MAIN (meta_id, meta_attr_name, meta_attr_value, meta_attr_unit, create_ts, modify_ts) values (?, ?, ?, ?, ?, ?)",
-                  &icss );
-    if ( status < 0 ) {
-        log_db::info("findOrInsertAVU insert failure {}", status);
-        return status;
+    catch (const nanodbc::database_error& e) {
+        log_db::error("{}: database error: {}", __FUNCTION__, e.what());
+        return CAT_SQL_ERR;
     }
-    return seqNum;
+    catch (const std::exception& e) {
+        log_db::error("{}: exception: {}", __FUNCTION__, e.what());
+        return SYS_INTERNAL_ERR;
+    }
 }
 
 
@@ -1324,49 +1448,42 @@ int _modInheritance( int inheritFlag, int recursiveFlag, const char *collIdStr, 
     char myTime[50];
     getNowStr( myTime );
 
-    rodsLong_t status;
-    /* non-Recursive mode */
-    if ( recursiveFlag == 0 ) {
+    try {
+        auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
+        nanodbc::transaction trans{db_conn};
 
-        if ( logSQL != 0 ) {
-            log_sql::debug("_modInheritance SQL 1");
+        namespace gq2 = irods::experimental::genquery2;
+        using gq2::builder::col;
+
+        if ( recursiveFlag == 0 ) {
+            auto upd = gq2::builder::update("COLLECTION")
+                .set("coll_inheritance", newValue)
+                .set("modify_ts", myTime)
+                .where(col("coll_id") == collIdStr)
+                .build();
+            irods::experimental::catalog::execute_catalog(executor, db_conn, upd);
+        }
+        else {
+            std::string pathStart = makeEscapedPath( pathName ) + "/%";
+            auto upd = gq2::builder::update("COLLECTION")
+                .set("coll_inheritance", newValue)
+                .set("modify_ts", myTime)
+                .where(col("coll_name") == pathName || col("coll_name").like(pathStart))
+                .build();
+            irods::experimental::catalog::execute_catalog(executor, db_conn, upd);
         }
 
-        cllBindVars[cllBindVarCount++] = newValue;
-        cllBindVars[cllBindVarCount++] = myTime;
-        cllBindVars[cllBindVarCount++] = collIdStr;
-        status =  cmlExecuteNoAnswerSql(
-                      "update R_COLL_MAIN set coll_inheritance=?, modify_ts=? where coll_id=?",
-                      &icss );
+        trans.commit();
+        return 0;
     }
-    else {
-        /* Recursive mode */
-        std::string pathStart = makeEscapedPath( pathName ) + "/%";
-
-        cllBindVars[cllBindVarCount++] = newValue;
-        cllBindVars[cllBindVarCount++] = myTime;
-        cllBindVars[cllBindVarCount++] = pathName;
-        cllBindVars[cllBindVarCount++] = pathStart.c_str();
-        if ( logSQL != 0 ) {
-            log_sql::debug("_modInheritance SQL 2");
-        }
-#ifdef ORA_ICAT
-        status =  cmlExecuteNoAnswerSql(
-                      "update R_COLL_MAIN set coll_inheritance=?, modify_ts=? where coll_name = ? or coll_name like ? ESCAPE '\\'",
-                      &icss );
-#else
-        status =  cmlExecuteNoAnswerSql(
-                      "update R_COLL_MAIN set coll_inheritance=?, modify_ts=? where coll_name = ? or coll_name like ?",
-                      &icss );
-#endif
+    catch (const nanodbc::database_error& e) {
+        log_db::error("{}: database error: {}", __FUNCTION__, e.what());
+        return CAT_SQL_ERR;
     }
-    if ( status != 0 ) {
-        _rollback( "_modInheritance" );
-        return status;
+    catch (const std::exception& e) {
+        log_db::error("{}: exception: {}", __FUNCTION__, e.what());
+        return SYS_INTERNAL_ERR;
     }
-
-    status =  cmlExecuteNoAnswerSql( "commit", &icss );
-    return status;
 }
 
 /*
@@ -1378,218 +1495,157 @@ int _modInheritance( int inheritFlag, int recursiveFlag, const char *collIdStr, 
   indicates how much space is left before reaching the quota.
 */
 int setOverQuota( rsComm_t *rsComm ) {
-    int status;
-    int rowsFound;
-    int statementNum = UNINITIALIZED_STATEMENT_NUMBER;
-    char myTime[50];
+    log_sql::debug("setOverQuota");
+    try {
+        auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
+        nanodbc::transaction trans{db_conn};
 
-    /* For each defined group limit (if any), get a total usage on that
-     * resource for all users in that group: */
-    char mySQL1[] = "select sum(quota_usage), UM1.user_id, R_QUOTA_USAGE.resc_id from R_QUOTA_USAGE, R_QUOTA_MAIN, R_USER_MAIN UM1, R_USER_GROUP, R_USER_MAIN UM2 where R_QUOTA_MAIN.user_id = UM1.user_id and UM1.user_type_name = 'rodsgroup' and R_USER_GROUP.group_user_id = UM1.user_id and UM2.user_id = R_USER_GROUP.user_id and R_QUOTA_USAGE.user_id = UM2.user_id and R_QUOTA_MAIN.resc_id = R_QUOTA_USAGE.resc_id group by UM1.user_id, R_QUOTA_USAGE.resc_id";
+        namespace gq2 = irods::experimental::genquery2;
+        using gq2::builder::col;
 
-    /* For each defined group limit on total usage (if any), get a
-     * total usage on any resource for all users in that group: */
-    char mySQL2a[] = "select sum(quota_usage), R_QUOTA_MAIN.quota_limit, UM1.user_id from R_QUOTA_USAGE, R_QUOTA_MAIN, R_USER_MAIN UM1, R_USER_GROUP, R_USER_MAIN UM2 where R_QUOTA_MAIN.user_id = UM1.user_id and UM1.user_type_name = 'rodsgroup' and R_USER_GROUP.group_user_id = UM1.user_id and UM2.user_id = R_USER_GROUP.user_id and R_QUOTA_USAGE.user_id = UM2.user_id and R_QUOTA_USAGE.resc_id != %s and R_QUOTA_MAIN.resc_id = %s group by UM1.user_id,  R_QUOTA_MAIN.quota_limit";
-    char mySQL2b[MAX_SQL_SIZE];
+        char myTime[50]{};
+        getNowStr( myTime );
 
-    char mySQL3a[] = "update R_QUOTA_MAIN set quota_over= %s - ?, modify_ts=? where user_id=? and %s - ? > quota_over";
-    char mySQL3b[MAX_SQL_SIZE];
+        // 1. Fetch all configured quotas from R_QUOTA_MAIN
+        auto quota_res = irods::experimental::catalog::execute_catalog(
+            executor, db_conn,
+            gq2::builder::select({"user_id", "resc_id", "quota_limit", "quota_over"})
+                .from("QUOTA")
+                .build());
 
+        if (!quota_res.query_result) {
+            return 0;
+        }
 
-    /* Initialize over_quota values (if any) to the no-usage value
-       which is the negative of the limit.  */
-    if ( logSQL != 0 ) {
-        log_sql::debug("setOverQuota SQL 1");
-    }
-    status =  cmlExecuteNoAnswerSql(
-                  "update R_QUOTA_MAIN set quota_over = -quota_limit", &icss );
-    if ( status == CAT_SUCCESS_BUT_WITH_NO_INFO ) {
-        return ( 0 );   /* no quotas, done */
-    }
-    if ( status != 0 ) {
-        return status;
-    }
+        struct QuotaRow {
+            std::string user_id;
+            std::string resc_id;
+            int64_t quota_limit = 0;
+            int64_t quota_over = 0;
+        };
 
-    /* Set the over_quota values for per-resource, if any */
-    if ( logSQL != 0 ) {
-        log_sql::debug("setOverQuota SQL 2");
-    }
-    status =  cmlExecuteNoAnswerSql(
-#if ORA_ICAT
-                  "update R_QUOTA_MAIN set quota_over = (select distinct R_QUOTA_USAGE.quota_usage - R_QUOTA_MAIN.quota_limit from R_QUOTA_USAGE where R_QUOTA_MAIN.user_id = R_QUOTA_USAGE.user_id and R_QUOTA_MAIN.resc_id = R_QUOTA_USAGE.resc_id) where exists (select 1 from R_QUOTA_USAGE where R_QUOTA_MAIN.user_id = R_QUOTA_USAGE.user_id and R_QUOTA_MAIN.resc_id = R_QUOTA_USAGE.resc_id)",
-#elif MY_ICAT
-                  "update R_QUOTA_MAIN, R_QUOTA_USAGE set R_QUOTA_MAIN.quota_over = R_QUOTA_USAGE.quota_usage - R_QUOTA_MAIN.quota_limit where R_QUOTA_MAIN.user_id = R_QUOTA_USAGE.user_id and R_QUOTA_MAIN.resc_id = R_QUOTA_USAGE.resc_id",
-#else
-                  "update R_QUOTA_MAIN set quota_over = quota_usage - quota_limit from R_QUOTA_USAGE where R_QUOTA_MAIN.user_id = R_QUOTA_USAGE.user_id and R_QUOTA_MAIN.resc_id = R_QUOTA_USAGE.resc_id",
-#endif
-                  & icss );
-    if ( status == CAT_SUCCESS_BUT_WITH_NO_INFO ) {
-        status = 0;    /* none */
-    }
-    if ( status != 0 ) {
-        return status;
-    }
+        std::vector<QuotaRow> quotas;
+        while (quota_res.query_result->next()) {
+            quotas.push_back({
+                quota_res.query_result->get<std::string>(0),
+                quota_res.query_result->get<std::string>(1),
+                quota_res.query_result->get<int64_t>(2, 0),
+                quota_res.query_result->get<int64_t>(3, 0)
+            });
+        }
 
-    /* Set the over_quota values for irods-total, if any, and only if
-       this over_quota value is higher than the previous.  Do it in
-       two steps to keep it simpler (there may be a better way though).
-    */
-    if ( logSQL != 0 ) {
-        log_sql::debug("setOverQuota SQL 3");
-    }
-    getNowStr( myTime );
-    for ( rowsFound = 0;; rowsFound++ ) {
-        int status2;
-        if ( rowsFound == 0 ) {
-            status = cmlGetFirstRowFromSql( "select sum(quota_usage), R_QUOTA_MAIN.user_id from R_QUOTA_USAGE, R_QUOTA_MAIN where R_QUOTA_MAIN.user_id = R_QUOTA_USAGE.user_id and R_QUOTA_MAIN.resc_id = '0' group by R_QUOTA_MAIN.user_id",
-                                            &statementNum, 0, &icss );
+        if (quotas.empty()) {
+            return 0; // no quotas, done
         }
-        else {
-            status = cmlGetNextRowFromStatement( statementNum, &icss );
-        }
-        if ( status != 0 ) {
-            break;
-        }
-        cllBindVars[cllBindVarCount++] = icss.stmtPtr[statementNum]->resultValue[0];
-        cllBindVars[cllBindVarCount++] = myTime;
-        cllBindVars[cllBindVarCount++] = icss.stmtPtr[statementNum]->resultValue[1];
-        cllBindVars[cllBindVarCount++] = icss.stmtPtr[statementNum]->resultValue[0];
-        if ( logSQL != 0 ) {
-            log_sql::debug("setOverQuota SQL 4");
-        }
-        status2 = cmlExecuteNoAnswerSql( "update R_QUOTA_MAIN set quota_over=?-quota_limit, modify_ts=? where user_id=? and ?-quota_limit > quota_over and resc_id='0'",
-                                         &icss );
-        if ( status2 == CAT_SUCCESS_BUT_WITH_NO_INFO ) {
-            status2 = 0;
-        }
-        if ( status2 != 0 ) {
-            cmlFreeStatement(statementNum, &icss);
-            return status2;
-        }
-    }
 
-    cmlFreeStatement(statementNum, &icss);
+        // Cache user types (user vs rodsgroup) and group memberships
+        std::unordered_map<std::string, bool> is_group_cache;
+        std::unordered_map<std::string, std::vector<std::string>> group_members_cache;
 
-    /* Handle group quotas on resources */
-    if ( logSQL != 0 ) {
-        log_sql::debug("setOverQuota SQL 5");
-    }
-    for ( rowsFound = 0;; rowsFound++ ) {
-        int status2;
-        if ( rowsFound == 0 ) {
-            status = cmlGetFirstRowFromSql( mySQL1, &statementNum,
-                                            0, &icss );
-        }
-        else {
-            status = cmlGetNextRowFromStatement( statementNum, &icss );
-        }
-        if ( status != 0 ) {
-            break;
-        }
-        cllBindVars[cllBindVarCount++] = icss.stmtPtr[statementNum]->resultValue[0];
-        cllBindVars[cllBindVarCount++] = myTime;
-        cllBindVars[cllBindVarCount++] = icss.stmtPtr[statementNum]->resultValue[1];
-        cllBindVars[cllBindVarCount++] = icss.stmtPtr[statementNum]->resultValue[0];
-        cllBindVars[cllBindVarCount++] = icss.stmtPtr[statementNum]->resultValue[2];
-        if ( logSQL != 0 ) {
-            log_sql::debug("setOverQuota SQL 6");
-        }
-        status2 = cmlExecuteNoAnswerSql( "update R_QUOTA_MAIN set quota_over=?-quota_limit, modify_ts=? where user_id=? and ?-quota_limit > quota_over and R_QUOTA_MAIN.resc_id=?",
-                                         &icss );
-        if ( status2 == CAT_SUCCESS_BUT_WITH_NO_INFO ) {
-            status2 = 0;
-        }
-        if ( status2 != 0 ) {
-            cmlFreeStatement(statementNum, &icss);
-            return status2;
-        }
-    }
-    if ( status == CAT_NO_ROWS_FOUND ) {
-        status = 0;
-    }
-    if ( status != 0 ) {
-        cmlFreeStatement(statementNum, &icss);
-        return status;
-    }
+        auto is_group = [&](const std::string& _uid) -> bool {
+            auto it = is_group_cache.find(_uid);
+            if (it != is_group_cache.end()) {
+                return it->second;
+            }
+            auto type_opt = irods::experimental::catalog::query_catalog_string(
+                executor, db_conn,
+                gq2::builder::select({"user_type_name"})
+                    .from("USER")
+                    .where(col("user_id") == _uid)
+                    .build());
+            bool grp = type_opt && (*type_opt == "rodsgroup");
+            is_group_cache[_uid] = grp;
+            return grp;
+        };
 
-    cmlFreeStatement(statementNum, &icss);
+        auto get_group_members = [&](const std::string& _gid) -> const std::vector<std::string>& {
+            auto it = group_members_cache.find(_gid);
+            if (it != group_members_cache.end()) {
+                return it->second;
+            }
+            auto members = irods::experimental::catalog::query_catalog_strings(
+                executor, db_conn,
+                gq2::builder::select({"user_id"})
+                    .from("USER_GROUP")
+                    .where(col("group_user_id") == _gid)
+                    .build());
+            return group_members_cache.emplace(_gid, std::move(members)).first->second;
+        };
 
-    /* Handle group quotas on total usage */
-#if ORA_ICAT
-    /* For Oracle cast is to integer, for Postgres to bigint,for MySQL no cast*/
-    snprintf( mySQL2b, sizeof mySQL2b, mySQL2a,
-              "cast('0' as integer)", "cast('0' as integer)" );
-    snprintf( mySQL3b, sizeof mySQL3b, mySQL3a,
-              "cast(? as integer)", "cast(? as integer)" );
-#elif MY_ICAT
-    snprintf( mySQL2b, sizeof mySQL2b, mySQL2a, "'0'", "'0'" );
-    snprintf( mySQL3b, sizeof mySQL3b, mySQL3a, "?", "?" );
-#else
-    snprintf( mySQL2b, sizeof mySQL2b, mySQL2a,
-              "cast('0' as bigint)", "cast('0' as bigint)" );
-    snprintf( mySQL3b, sizeof mySQL3b, mySQL3a,
-              "cast(? as bigint)", "cast(? as bigint)" );
-#endif
-    if ( logSQL != 0 ) {
-        log_sql::debug("setOverQuota SQL 7");
-    }
-    getNowStr( myTime );
-    for ( rowsFound = 0;; rowsFound++ ) {
-        int status2;
-        if ( rowsFound == 0 ) {
-            status = cmlGetFirstRowFromSql( mySQL2b, &statementNum,
-                                            0, &icss );
-        }
-        else {
-            status = cmlGetNextRowFromStatement( statementNum, &icss );
-        }
-        if ( status != 0 ) {
-            break;
-        }
-        cllBindVars[cllBindVarCount++] = icss.stmtPtr[statementNum]->resultValue[0];
-        cllBindVars[cllBindVarCount++] = icss.stmtPtr[statementNum]->resultValue[1];
-        cllBindVars[cllBindVarCount++] = myTime;
-        cllBindVars[cllBindVarCount++] = icss.stmtPtr[statementNum]->resultValue[2];
-        cllBindVars[cllBindVarCount++] = icss.stmtPtr[statementNum]->resultValue[0];
-        cllBindVars[cllBindVarCount++] = icss.stmtPtr[statementNum]->resultValue[1];
-        if ( logSQL != 0 ) {
-            log_sql::debug("setOverQuota SQL 8");
-        }
-        status2 = cmlExecuteNoAnswerSql( mySQL3b,
-                                         &icss );
-        if ( status2 == CAT_SUCCESS_BUT_WITH_NO_INFO ) {
-            status2 = 0;
-        }
-        if ( status2 != 0 ) {
-            cmlFreeStatement(statementNum, &icss);
-            return status2;
-        }
-    }
-    if ( status == CAT_NO_ROWS_FOUND ) {
-        status = 0;
-    }
-    if ( status != 0 ) {
-        cmlFreeStatement(statementNum, &icss);
-        return status;
-    }
+        for (const auto& q : quotas) {
+            int64_t sum_usage = 0;
 
-    /* To simplify the query, if either of the above group operations
-       found some over_quota, will probably want to update and insert rows
-       for each user into R_QUOTA_MAIN.  For now tho, this is not done and
-       perhaps shouldn't be, to keep it a little less complicated. */
+            if (!is_group(q.user_id)) {
+                // Individual user quota
+                if (q.resc_id == "0") {
+                    // Total usage across all resources
+                    auto usage_opt = irods::experimental::catalog::query_catalog_integer(
+                        executor, db_conn,
+                        gq2::builder::select(gq2::builder::sum("quota_usage"))
+                            .from("QUOTA_USAGE")
+                            .where(col("user_id") == q.user_id)
+                            .build());
+                    sum_usage = usage_opt.value_or(0);
+                }
+                else {
+                    // Resource-specific usage
+                    auto usage_opt = irods::experimental::catalog::query_catalog_integer(
+                        executor, db_conn,
+                        gq2::builder::select(gq2::builder::sum("quota_usage"))
+                            .from("QUOTA_USAGE")
+                            .where(col("user_id") == q.user_id && col("resc_id") == q.resc_id)
+                            .build());
+                    sum_usage = usage_opt.value_or(0);
+                }
+            }
+            else {
+                // Group quota: sum member usages
+                const auto& members = get_group_members(q.user_id);
+                for (const auto& mid : members) {
+                    if (q.resc_id == "0") {
+                        auto usage_opt = irods::experimental::catalog::query_catalog_integer(
+                            executor, db_conn,
+                            gq2::builder::select(gq2::builder::sum("quota_usage"))
+                                .from("QUOTA_USAGE")
+                                .where(col("user_id") == mid && col("resc_id") != "0")
+                                .build());
+                        sum_usage += usage_opt.value_or(0);
+                    }
+                    else {
+                        auto usage_opt = irods::experimental::catalog::query_catalog_integer(
+                            executor, db_conn,
+                            gq2::builder::select(gq2::builder::sum("quota_usage"))
+                                .from("QUOTA_USAGE")
+                                .where(col("user_id") == mid && col("resc_id") == q.resc_id)
+                                .build());
+                        sum_usage += usage_opt.value_or(0);
+                    }
+                }
+            }
 
-    cmlFreeStatement(statementNum, &icss);
-    return status;
+            int64_t over = sum_usage - q.quota_limit;
+            auto upd = gq2::builder::update("QUOTA")
+                .set("quota_over", std::to_string(over))
+                .set("modify_ts", myTime)
+                .where(col("user_id") == q.user_id && col("resc_id") == q.resc_id)
+                .build();
+            irods::experimental::catalog::execute_catalog(executor, db_conn, upd);
+        }
+
+        trans.commit();
+        return 0;
+    }
+    catch (const std::exception& e) {
+        log_db::error("{}: failed: {}", __func__, e.what());
+        return CAT_SQL_ERR;
+    }
 }
 
 int
 icatGetTicketUserId( irods::plugin_property_map& _prop_map, const char *userName, char *userIdStr ) {
-
-    char userId[NAME_LEN];
     char userZone[NAME_LEN];
     char zoneToUse[NAME_LEN];
     char userName2[NAME_LEN];
-    int status;
 
     std::string zone;
     irods::error ret = getLocalZone( _prop_map, &icss, zone );
@@ -1598,7 +1654,7 @@ icatGetTicketUserId( irods::plugin_property_map& _prop_map, const char *userName
     }
 
     snprintf( zoneToUse, sizeof( zoneToUse ), "%s", zone.c_str() );
-    status = validateAndParseUserName( userName, userName2, userZone );
+    int status = validateAndParseUserName( userName, userName2, userZone );
     if ( status ) {
         return status;
     }
@@ -1606,35 +1662,32 @@ icatGetTicketUserId( irods::plugin_property_map& _prop_map, const char *userName
         rstrcpy( zoneToUse, userZone, NAME_LEN );
     }
 
-    userId[0] = '\0';
-    if ( logSQL != 0 ) {
-        log_sql::debug("icatGetTicketUserId SQL 1 ");
-    }
-    {
-        std::vector<std::string> bindVars;
-        bindVars.push_back( userName2 );
-        bindVars.push_back( zoneToUse );
-        status = cmlGetStringValueFromSql(
-                     "select user_id from R_USER_MAIN where user_name=? and R_USER_MAIN.zone_name=? and user_type_name!='rodsgroup'",
-                     userId, NAME_LEN, bindVars, &icss );
-    }
-    if ( status != 0 ) {
-        if ( status == CAT_NO_ROWS_FOUND ) {
+    try {
+        auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
+        auto opt_id = irods::experimental::catalog::query_catalog_string(
+            executor,
+            db_conn,
+            gq2::builder::select({"user_id"})
+                .from("USER")
+                .where(col("user_name") == userName2 && col("zone_name") == zoneToUse && col("user_type_name") != "rodsgroup")
+                .build());
+        if (!opt_id) {
             return CAT_INVALID_USER;
         }
-        return status;
+        rstrcpy( userIdStr, opt_id->c_str(), NAME_LEN );
+        return 0;
     }
-    strncpy( userIdStr, userId, NAME_LEN );
-    return 0;
+    catch (const std::exception& e) {
+        log_db::error("{}: Exception caught: {}", __func__, e.what());
+        return CAT_SQL_ERR;
+    }
 }
 
 int
 icatGetTicketGroupId( irods::plugin_property_map& _prop_map, const char *groupName, char *groupIdStr ) {
-    char groupId[NAME_LEN];
     char groupZone[NAME_LEN];
     char zoneToUse[NAME_LEN];
     char groupName2[NAME_LEN];
-    int status;
 
     std::string zone;
     irods::error ret = getLocalZone( _prop_map, &icss, zone );
@@ -1643,7 +1696,7 @@ icatGetTicketGroupId( irods::plugin_property_map& _prop_map, const char *groupNa
     }
 
     snprintf( zoneToUse, sizeof( zoneToUse ), "%s", zone.c_str() );
-    status = validateAndParseUserName( groupName, groupName2, groupZone );
+    int status = validateAndParseUserName( groupName, groupName2, groupZone );
     if ( status ) {
         return status;
     }
@@ -1651,26 +1704,25 @@ icatGetTicketGroupId( irods::plugin_property_map& _prop_map, const char *groupNa
         rstrcpy( zoneToUse, groupZone, NAME_LEN );
     }
 
-    groupId[0] = '\0';
-    if ( logSQL != 0 ) {
-        log_sql::debug("icatGetTicketGroupId SQL 1 ");
-    }
-    {
-        std::vector<std::string> bindVars;
-        bindVars.push_back( groupName2 );
-        bindVars.push_back( zoneToUse );
-        status = cmlGetStringValueFromSql(
-                     "select user_id from R_USER_MAIN where user_name=? and R_USER_MAIN.zone_name=? and user_type_name='rodsgroup'",
-                     groupId, NAME_LEN, bindVars, &icss );
-    }
-    if ( status != 0 ) {
-        if ( status == CAT_NO_ROWS_FOUND ) {
+    try {
+        auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
+        auto opt_id = irods::experimental::catalog::query_catalog_string(
+            executor,
+            db_conn,
+            gq2::builder::select({"user_id"})
+                .from("USER")
+                .where(col("user_name") == groupName2 && col("zone_name") == zoneToUse && col("user_type_name") == "rodsgroup")
+                .build());
+        if (!opt_id) {
             return CAT_INVALID_GROUP;
         }
-        return status;
+        rstrcpy( groupIdStr, opt_id->c_str(), NAME_LEN );
+        return 0;
     }
-    strncpy( groupIdStr, groupId, NAME_LEN );
-    return 0;
+    catch (const std::exception& e) {
+        log_db::error("{}: Exception caught: {}", __func__, e.what());
+        return CAT_SQL_ERR;
+    }
 }
 
 
@@ -1715,15 +1767,6 @@ irods::error db_start_op(
         return PASS( ret );
     }
 
-    // =-=-=-=-=-=-=-
-    // get a postgres object from the context
-    /*irods::postgres_object_ptr pg;
-    ret = make_db_ptr( _ctx.fco(), pg );
-    if ( !ret.ok() ) {
-        return PASS( ret );
-
-    }*/
-
     return ret;
 
 
@@ -1740,15 +1783,6 @@ irods::error db_debug_op(
     if ( !ret.ok() ) {
         return PASS( ret );
     }
-
-    // =-=-=-=-=-=-=-
-    // get a postgres object from the context
-    /*irods::postgres_object_ptr pg;
-    ret = make_db_ptr( _ctx.fco(), pg );
-    if ( !ret.ok() ) {
-        return PASS( ret );
-
-    }*/
 
     // =-=-=-=-=-=-=-
     // check incoming param
@@ -1789,15 +1823,6 @@ irods::error db_open_op(
     }
 
     // =-=-=-=-=-=-=-
-    // get a postgres object from the context
-    /*irods::postgres_object_ptr pg;
-    ret = make_db_ptr( _ctx.fco(), pg );
-    if ( !ret.ok() ) {
-        return PASS( ret );
-
-    }*/
-
-    // =-=-=-=-=-=-=-
     // check incoming param
 //        if ( !_cfg ) {
 //            return ERROR(
@@ -1807,9 +1832,7 @@ irods::error db_open_op(
 
     // =-=-=-=-=-=-=-
     // log as appropriate
-    if ( logSQL != 0 ) {
-        log_sql::debug("chlOpen");
-    }
+    log_sql::debug("chlOpen");
 
     // =-=-=-=-=-=-=-
     // cache db creds
@@ -1834,8 +1857,8 @@ irods::error db_open_op(
     }
 
     // =-=-=-=-=-=-=-
-    // call open in mid level
-    int status = cmlOpen( &icss );
+    // call open connection
+    int status = db_open_connection( &icss );
     if ( 0 != status ) {
         return ERROR(
                    status,
@@ -1846,13 +1869,10 @@ irods::error db_open_op(
     // set success flag
     icss.status = 1;
 
-    // =-=-=-=-=-=-=-
-    // Capture ICAT properties
-#if MY_ICAT
-#elif ORA_ICAT
-#else
-    irods::catalog_properties::instance().capture_if_needed( &icss );
-#endif
+    const auto& flavor = irods::experimental::catalog::get_db_flavor(icss.databaseType);
+    if (flavor.supports_catalog_properties) {
+        irods::catalog_properties::instance().capture_if_needed( &icss );
+    }
 
     return CODE( status );
 
@@ -1870,22 +1890,8 @@ irods::error db_close_op(
     }
 
     // =-=-=-=-=-=-=-
-    // get a postgres object from the context
-    /*irods::postgres_object_ptr pg;
-    ret = make_db_ptr( _ctx.fco(), pg );
-    if ( !ret.ok() ) {
-        return PASS( ret );
-
-    }*/
-
-    // =-=-=-=-=-=-=-
-    // extract the icss property
-//        icatSessionStruct icss;
-//        _ctx.prop_map().get< icatSessionStruct >( ICSS_PROP, icss );
-
-    // =-=-=-=-=-=-=-
-    // call open in mid level
-    int status = cmlClose( &icss );
+    // call close connection
+    int status = db_close_connection( &icss );
     if ( 0 != status ) {
         return ERROR(
                    status,
@@ -1895,6 +1901,7 @@ irods::error db_close_op(
     // =-=-=-=-=-=-=-
     // set success flag
     icss.status = 0;
+    irods::experimental::catalog::get_database_session().reset();
 
     return CODE( status );
 
@@ -1914,10 +1921,6 @@ irods::error db_check_and_get_object_id_op(
         return PASS( ret );
     }
 
-    // =-=-=-=-=-=-=-
-    // extract the icss property
-//        icatSessionStruct icss;
-//        _ctx.prop_map().get< icatSessionStruct >( ICSS_PROP, icss );
     rodsLong_t status = checkAndGetObjectId(
                             _ctx.comm(),
                             _ctx.prop_map(),
@@ -1946,10 +1949,6 @@ irods::error db_get_local_zone_op(
         return PASS( ret );
     }
 
-    // =-=-=-=-=-=-=-
-    // extract the icss property
-//        icatSessionStruct icss;
-//        _ctx.prop_map().get< icatSessionStruct >( ICSS_PROP, icss );
     ret = getLocalZone( _ctx.prop_map(), &icss, ( *_zone ) );
     if ( !ret.ok() ) {
         return PASS( ret );
@@ -1995,24 +1994,8 @@ irods::error db_mod_data_obj_meta_op(
                    "null parameter" );
     }
 
-    // =-=-=-=-=-=-=-
-    // get a postgres object from the context
-    /*irods::postgres_object_ptr pg;
-    ret = make_db_ptr( _ctx.fco(), pg );
-    if ( !ret.ok() ) {
-        return PASS( ret );
-
-    }*/
-
-    // =-=-=-=-=-=-=-
-    // extract the icss property
-//        icatSessionStruct icss;
-//        _ctx.prop_map().get< icatSessionStruct >( ICSS_PROP, icss );
-
-
     int status = 0, upCols = 0;
     rodsLong_t iVal = 0; // JMC cppcheck - uninit var
-    int status2 = 0;
 
     char logicalFileName[MAX_NAME_LEN];
     char logicalDirName[MAX_NAME_LEN];
@@ -2089,9 +2072,9 @@ irods::error db_mod_data_obj_meta_op(
     char objIdString[MAX_NAME_LEN];
     char *neededAccess = 0;
 
-    if ( logSQL != 0 ) {
-        log_sql::debug("chlModDataObjMeta");
-    }
+    log_sql::debug("chlModDataObjMeta");
+
+    auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
 
     bool adminMode{};
     if (getValByKey(_reg_param, ADMIN_KW)) {
@@ -2178,8 +2161,8 @@ irods::error db_mod_data_obj_meta_op(
 
             /* If the datatype is being updated, check that it is valid */
             if(regParamNames[i] == DATA_TYPE_KW) {
-                status = cmlCheckNameToken( "data_type",
-                                            theVal, &icss );
+                status = irods::experimental::catalog::access_control::check_name_token(
+                    executor, db_conn, "data_type", theVal );
                 if ( status != 0 ) {
                     std::stringstream msg;
                     msg << __FUNCTION__;
@@ -2219,41 +2202,34 @@ irods::error db_mod_data_obj_meta_op(
                          __func__, __LINE__, _data_obj_info->objPath, ec));
         }
 
-        if ( logSQL != 0 ) {
-            log_sql::debug("chlModDataObjMeta SQL 1 ");
-        }
-        {
-            std::vector<std::string> bindVars;
-            bindVars.push_back( logicalDirName );
-            status = cmlGetIntegerValueFromSql(
-                         "select coll_id from R_COLL_MAIN where coll_name=?", &iVal,
-                         bindVars, &icss );
-        }
-
-        if ( status != 0 ) {
-            char errMsg[105];
-            snprintf( errMsg, 100, "collection '%s' is unknown",
-                      logicalDirName );
-            addRErrorMsg( &_ctx.comm()->rError, 0, errMsg );
+        log_sql::debug("chlModDataObjMeta SQL 1 ");
+        auto opt_coll_id = irods::experimental::catalog::query_catalog_integer(
+            executor,
+            db_conn,
+            gq2::builder::select({"coll_id"})
+                .from("COLLECTION")
+                .where(col("coll_name") == logicalDirName)
+                .build());
+        if (!opt_coll_id) {
+            addRErrorMsg( &_ctx.comm()->rError, 0,
+                          fmt::format( "collection '{}' is unknown", logicalDirName ).c_str() );
             _rollback( "chlModDataObjMeta" );
             return ERROR(
                        CAT_UNKNOWN_COLLECTION,
                        "failed with unknown collection" );
         }
-        snprintf( objIdString, MAX_NAME_LEN, "%lld", iVal );
+        iVal = *opt_coll_id;
+        const auto collIdString = std::to_string( iVal );
 
-        if ( logSQL != 0 ) {
-            log_sql::debug("chlModDataObjMeta SQL 2");
-        }
-        {
-            std::vector<std::string> bindVars;
-            bindVars.push_back( objIdString );
-            bindVars.push_back( logicalFileName );
-            status = cmlGetIntegerValueFromSql(
-                         "select data_id from R_DATA_MAIN where coll_id=? and data_name=?",
-                         &iVal, bindVars, &icss );
-        }
-        if ( status != 0 ) {
+        log_sql::debug("chlModDataObjMeta SQL 2");
+        auto opt_data_id = irods::experimental::catalog::query_catalog_integer(
+            executor,
+            db_conn,
+            gq2::builder::select({"data_id"})
+                .from("DATA_OBJECT")
+                .where(col("coll_id") == collIdString && col("data_name") == logicalFileName)
+                .build());
+        if (!opt_data_id) {
             std::stringstream msg;
             msg << __FUNCTION__;
             msg << " - Failed to find file in database by its logical path.";
@@ -2263,6 +2239,7 @@ irods::error db_mod_data_obj_meta_op(
                        CAT_UNKNOWN_FILE,
                        "failed with unknown file" );
         }
+        iVal = *opt_data_id;
 
         _data_obj_info->dataId = iVal;  /* return it for possible use next time, */
         /* and for use below */
@@ -2272,29 +2249,28 @@ irods::error db_mod_data_obj_meta_op(
 
     if (!adminMode) {
         if ( doingDataSize == 1 && strlen( mySessionTicket ) > 0 ) {
-            status = cmlTicketUpdateWriteBytes( mySessionTicket,
-                                                dataSizeString,
-                                                objIdString, &icss );
+            status = irods::experimental::catalog::access_control::ticket_update_write_bytes(
+                executor, db_conn, mySessionTicket, dataSizeString, objIdString );
             if ( status != 0 ) {
-                //_rollback("chlModDataObjMeta");
-                return ERROR(status, "cmlTicketUpdateWriteBytes failed");
+                return ERROR(status, "ticket_update_write_bytes failed");
             }
         }
 
-        status = cmlCheckDataObjId(
+        status = irods::experimental::catalog::access_control::check_data_object_id(
+                     executor, db_conn,
                      objIdString,
                      _ctx.comm()->clientUser.userName,
                      _ctx.comm()->clientUser.rodsZone,
                      neededAccess,
                      mySessionTicket,
-                     mySessionClientAddr,
-                     &icss );
+                     mySessionClientAddr );
 
         if ( status != 0 ) {
             theVal = getValByKey( _reg_param, ACL_COLLECTION_KW );
             if ( theVal != NULL && upCols == 1 &&
                     strcmp( updateCols[0], "data_path" ) == 0 ) {
-                int len, iVal = 0; // JMC cppcheck - uninit var ( shadows prev decl? )
+                int len;
+                int64_t iVal_check = 0;
                 /*
                  In this case, the user is doing a 'imv' of a collection but one of
                  the sub-files is not owned by them.  We decided this should be
@@ -2305,13 +2281,14 @@ irods::error db_mod_data_obj_meta_op(
                 len = strlen( theVal );
                 if ( strncmp( theVal, _data_obj_info->objPath, len ) == 0 ) {
 
-                    iVal = cmlCheckDir( theVal,
-                                        _ctx.comm()->clientUser.userName,
-                                        _ctx.comm()->clientUser.rodsZone,
-                                        ACCESS_OWN,
-                                        &icss );
+                    iVal_check = irods::experimental::catalog::access_control::check_collection_access(
+                        executor, db_conn,
+                        theVal,
+                        _ctx.comm()->clientUser.userName,
+                        _ctx.comm()->clientUser.rodsZone,
+                        ACCESS_OWN );
                 }
-                if ( iVal > 0 ) {
+                if ( iVal_check > 0 ) {
                     status = 0;
                 } /* Collection was found (id
                                    * returned) & user has access */
@@ -2370,129 +2347,104 @@ irods::error db_mod_data_obj_meta_op(
         return PASS( ret );
     }
 
-    if (!getValByKey(_reg_param, ALL_REPL_STATUS_KW)) {
-        if ( logSQL != 0 ) {
+    try {
+        auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
+        std::unique_ptr<nanodbc::transaction> trans;
+        if (!(_data_obj_info->flags & NO_COMMIT_FLAG)) {
+            trans = std::make_unique<nanodbc::transaction>(db_conn);
+        }
+
+        namespace gq2 = irods::experimental::genquery2;
+        using gq2::builder::col;
+
+        auto build_base_condition = [&]() -> gq2::builder::condition_builder {
+            auto cond = (col("data_id") == std::string_view{idVal});
+            if (getValByKey(_reg_param, ALL_KW) == NULL) {
+                if (update_resc_id || strlen(_data_obj_info->rescHier) <= 0) {
+                    cond = cond && (col("data_repl_num") == std::string_view{replNum1});
+                }
+                else {
+                    cond = cond && (col("resc_id") == std::string_view{where_resc_id_str});
+                }
+            }
+            return cond;
+        };
+
+        if (!getValByKey(_reg_param, ALL_REPL_STATUS_KW)) {
             log_sql::debug("chlModDataObjMeta SQL 4");
-        }
-        status = cmlModifySingleTable(
-                "R_DATA_MAIN",
-                &( updateCols[0] ),
-                &( updateVals[0] ),
-                whereColsAndConds,
-                whereValues,
-                upCols,
-                numConditions,
-                &icss );
+            if (!updateCols.empty()) {
+                auto update_builder = gq2::builder::update("DATA_OBJECT");
+                for (std::size_t k = 0; k < updateCols.size(); ++k) {
+                    update_builder.set(updateCols[k], updateVals[k]);
+                }
+                auto update_stmt = update_builder.where(build_base_condition()).build();
+                const auto res = irods::experimental::catalog::execute_catalog(executor, db_conn, update_stmt);
+                if (res.affected_rows == 0) {
+                    return ERROR(CAT_SUCCESS_BUT_WITH_NO_INFO, "no rows updated");
+                }
+            }
 
-        // Stale intermediate replicas
-        if (0 == status && getValByKey(_reg_param, STALE_ALL_INTERMEDIATE_REPLICAS_KW)) {
-            // Exclude this replica
-            j = numConditions - 1;
-            whereColsAndConds[j] = "data_repl_num!=";
-            snprintf( replNum1, MAX_NAME_LEN, "%d", _data_obj_info->replNum );
-            whereValues[j] = replNum1;
+            // Stale intermediate replicas
+            if (getValByKey(_reg_param, STALE_ALL_INTERMEDIATE_REPLICAS_KW)) {
+                snprintf(replNum1, MAX_NAME_LEN, "%d", _data_obj_info->replNum);
 
-            // Find all intermediate replicas
-            j = numConditions;
-            whereColsAndConds[j] = "data_is_dirty=";
-            whereValues[j] = intermediate_replica_status_str.c_str();
-            numConditions++;
+                auto stale_builder = gq2::builder::update("DATA_OBJECT")
+                    .set("data_is_dirty", std::to_string(STALE_REPLICA));
 
-            // And mark them stale
-            updateCols[0] = "data_is_dirty";
-            memset(replica_status_string, 0, NAME_LEN);
-            snprintf(replica_status_string, NAME_LEN, "%d", STALE_REPLICA);
-            updateVals[0] = replica_status_string;
-            if ( logSQL != 0 ) {
+                auto stale_cond = (col("data_id") == std::string_view{idVal}) &&
+                    (col("data_repl_num") != std::string_view{replNum1}) &&
+                    (col("data_is_dirty") == std::string_view{intermediate_replica_status_str});
+
+                auto stale_stmt = stale_builder.where(stale_cond).build();
                 log_sql::debug("chlModDataObjMeta SQL 6");
-            }
-            status2 = cmlModifySingleTable( "R_DATA_MAIN", &( updateCols[0] ), &( updateVals[0] ),
-                    whereColsAndConds, whereValues, 1,
-                    numConditions, &icss );
-
-            if ( status2 != 0 && status2 != CAT_SUCCESS_BUT_WITH_NO_INFO ) {
-                /* Ignore NO_INFO errors but not others */
-                log_db::info("chlModDataObjMeta cmlModifySingleTable failure for other replicas {}", status2);
-                _rollback( "chlModDataObjMeta" );
-                return ERROR(
-                        status2,
-                        "cmlModifySingleTable failure for other replicas" );
+                irods::experimental::catalog::execute_catalog(executor, db_conn, stale_stmt);
             }
         }
-    }
-    else {
-        /* mark this one as GOOD_REPLICA and others as STALE_REPLICA */
-        updateCols.push_back( "data_is_dirty" );
-        snprintf(replica_status_string, NAME_LEN, "%d", GOOD_REPLICA);
-        updateVals.push_back(replica_status_string);
-        upCols++;
-        if ( logSQL != 0 ) {
+        else {
+            /* mark this one as GOOD_REPLICA and others as STALE_REPLICA */
+            updateCols.push_back("data_is_dirty");
+            snprintf(replica_status_string, NAME_LEN, "%d", GOOD_REPLICA);
+            updateVals.push_back(replica_status_string);
+
             log_sql::debug("chlModDataObjMeta SQL 5");
-        }
-        status = cmlModifySingleTable(
-                     "R_DATA_MAIN",
-                     &( updateCols[0] ),
-                     &( updateVals[0] ),
-                     whereColsAndConds,
-                     whereValues,
-                     upCols,
-                     numConditions,
-                     &icss );
-
-        if ( status == 0 ) {
-            j = numConditions - 1;
-            whereColsAndConds[j] = "data_repl_num!=";
-            snprintf( replNum1, MAX_NAME_LEN, "%d", _data_obj_info->replNum );
-            whereValues[j] = replNum1;
-
-            // Only update replicas already marked as good
-            // Intermediate replicas were never good, so they cannot be stale.
-            j = numConditions;
-            whereColsAndConds[j] = "data_is_dirty!=";
-            whereValues[j] = intermediate_replica_status_str.c_str();
-            numConditions++;
-
-            updateCols[0] = "data_is_dirty";
-            memset(replica_status_string, 0, NAME_LEN);
-            snprintf(replica_status_string, NAME_LEN, "%d", STALE_REPLICA);
-            updateVals[0] = replica_status_string;
-            if ( logSQL != 0 ) {
-                log_sql::debug("chlModDataObjMeta SQL 6");
+            auto update_builder = gq2::builder::update("DATA_OBJECT");
+            for (std::size_t k = 0; k < updateCols.size(); ++k) {
+                update_builder.set(updateCols[k], updateVals[k]);
             }
-            status2 = cmlModifySingleTable( "R_DATA_MAIN", &( updateCols[0] ), &( updateVals[0] ),
-                                            whereColsAndConds, whereValues, 1,
-                                            numConditions, &icss );
-
-            if ( status2 != 0 && status2 != CAT_SUCCESS_BUT_WITH_NO_INFO ) {
-                /* Ignore NO_INFO errors but not others */
-                log_db::info("chlModDataObjMeta cmlModifySingleTable failure for other replicas {}", status2);
-                _rollback( "chlModDataObjMeta" );
-                return ERROR(
-                           status2,
-                           "cmlModifySingleTable failure for other replicas" );
+            auto update_stmt = update_builder.where(build_base_condition()).build();
+            const auto res = irods::experimental::catalog::execute_catalog(executor, db_conn, update_stmt);
+            if (res.affected_rows == 0) {
+                return ERROR(CAT_SUCCESS_BUT_WITH_NO_INFO, "no rows updated");
             }
 
-        }
-    }
-    if ( status != 0 ) {
-        _rollback( "chlModDataObjMeta" );
-        log_db::info("chlModDataObjMeta cmlModifySingleTable failure {}", status);
-        return ERROR(
-                   status,
-                   "cmlModifySingleTable failure" );
-    }
+            snprintf(replNum1, MAX_NAME_LEN, "%d", _data_obj_info->replNum);
 
-    if ( !( _data_obj_info->flags & NO_COMMIT_FLAG ) ) {
-        status =  cmlExecuteNoAnswerSql( "commit", &icss );
-        if ( status != 0 ) {
-            log_db::info("chlModDataObjMeta cmlExecuteNoAnswerSql commit failure {}", status);
-            return ERROR(
-                       status,
-                       "commit failure" );
-        }
-    }
+            auto stale_builder = gq2::builder::update("DATA_OBJECT")
+                .set("data_is_dirty", std::to_string(STALE_REPLICA));
 
-    return CODE( status );
+            auto stale_cond = (col("data_id") == std::string_view{idVal}) &&
+                (col("data_repl_num") != std::string_view{replNum1}) &&
+                (col("data_is_dirty") != std::string_view{intermediate_replica_status_str});
+
+            auto stale_stmt = stale_builder.where(stale_cond).build();
+            log_sql::debug("chlModDataObjMeta SQL 6");
+            irods::experimental::catalog::execute_catalog(executor, db_conn, stale_stmt);
+        }
+
+        if (trans) {
+            trans->commit();
+        }
+
+        return CODE(status);
+    }
+    catch (const nanodbc::database_error& e) {
+        log_db::error("{}: database error: {}", __FUNCTION__, e.what());
+        return ERROR(CAT_SQL_ERR, e.what());
+    }
+    catch (const std::exception& e) {
+        log_db::error("{}: exception: {}", __FUNCTION__, e.what());
+        return ERROR(SYS_INTERNAL_ERR, e.what());
+    }
 
 } // db_mod_data_obj_meta_op
 
@@ -2518,20 +2470,6 @@ irods::error db_reg_data_obj_op(
     }
 
     // =-=-=-=-=-=-=-
-    // get a postgres object from the context
-    /*irods::postgres_object_ptr pg;
-    ret = make_db_ptr( _ctx.fco(), pg );
-    if ( !ret.ok() ) {
-        return PASS( ret );
-
-    }*/
-
-    // =-=-=-=-=-=-=-
-    // extract the icss property
-//        icatSessionStruct icss;
-//        _ctx.prop_map().get< icatSessionStruct >( ICSS_PROP, icss );
-
-    // =-=-=-=-=-=-=-
     //
     char myTime[50];
     char logicalFileName[MAX_NAME_LEN];
@@ -2546,21 +2484,19 @@ irods::error db_reg_data_obj_op(
     int status;
     int inheritFlag;
 
-    if ( logSQL != 0 ) {
-        log_sql::debug("chlRegDataObj");
-    }
+    log_sql::debug("chlRegDataObj");
     if ( !icss.status ) {
         return ERROR( CATALOG_NOT_CONNECTED, "catalog not connected" );
     }
 
-    if ( logSQL != 0 ) {
-        log_sql::debug("chlRegDataObj SQL 1 ");
-    }
-    seqNum = cmlGetNextSeqVal( &icss );
+    auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
+
+    log_sql::debug("chlRegDataObj SQL 1 ");
+    seqNum = executor.get_next_sequence_value(db_conn, "R_ObjectID");
     if ( seqNum < 0 ) {
-        log_db::info("chlRegDataObj cmlGetNextSeqVal failure {}", seqNum);
+        log_db::info("chlRegDataObj get_next_sequence_value failure {}", seqNum);
         _rollback( "chlRegDataObj" );
-        return ERROR( seqNum, "chlRegDataObj cmlGetNextSeqVal failure" );
+        return ERROR( seqNum, "chlRegDataObj get_next_sequence_value failure" );
     }
     snprintf( dataIdNum, MAX_NAME_LEN, "%lld", seqNum );
     _data_obj_info->dataId = seqNum; /* store as output parameter */
@@ -2573,24 +2509,23 @@ irods::error db_reg_data_obj_op(
 
     /* Check that collection exists and user has write permission.
        At the same time, also get the inherit flag */
-    iVal = cmlCheckDirAndGetInheritFlag( logicalDirName,
-                                         _ctx.comm()->clientUser.userName,
-                                         _ctx.comm()->clientUser.rodsZone,
-                                         ACCESS_MODIFY_OBJECT,
-                                         &inheritFlag,
-                                         mySessionTicket,
-                                         mySessionClientAddr,
-                                         &icss );
+    iVal = irods::experimental::catalog::access_control::check_collection_access_and_inherit(
+        executor, db_conn,
+        logicalDirName,
+        _ctx.comm()->clientUser.userName,
+        _ctx.comm()->clientUser.rodsZone,
+        ACCESS_MODIFY_OBJECT,
+        &inheritFlag,
+        mySessionTicket,
+        mySessionClientAddr );
     if ( iVal < 0 ) {
         if ( iVal == CAT_UNKNOWN_COLLECTION ) {
-            std::stringstream errMsg;
-            errMsg << "collection '" << logicalDirName << "' is unknown";
-            addRErrorMsg( &_ctx.comm()->rError, 0, errMsg.str().c_str() );
+            addRErrorMsg( &_ctx.comm()->rError, 0,
+                          fmt::format( "collection '{}' is unknown", logicalDirName ).c_str() );
         }
         else if ( iVal == CAT_NO_ACCESS_PERMISSION ) {
-            std::stringstream errMsg;
-            errMsg << "no permission to update collection '" << logicalDirName << "'";
-            addRErrorMsg( &_ctx.comm()->rError, 0, errMsg.str().c_str() );
+            addRErrorMsg( &_ctx.comm()->rError, 0,
+                          fmt::format( "no permission to update collection '{}'", logicalDirName ).c_str() );
         }
         //_rollback("chlRegDataObj");
         return ERROR( iVal, "" );
@@ -2599,25 +2534,21 @@ irods::error db_reg_data_obj_op(
     _data_obj_info->collId = iVal;
 
     /* Make sure no collection already exists by this name */
-    if ( logSQL != 0 ) {
-        log_sql::debug("chlRegDataObj SQL 4");
-    }
-    {
-        std::vector<std::string> bindVars;
-        bindVars.push_back( _data_obj_info->objPath );
-        status = cmlGetIntegerValueFromSql(
-                     "select coll_id from R_COLL_MAIN where coll_name=?",
-                     &iVal, bindVars, &icss );
-    }
-    if ( status == 0 ) {
+    log_sql::debug("chlRegDataObj SQL 4");
+    auto opt_coll = irods::experimental::catalog::query_catalog_integer(
+        executor,
+        db_conn,
+        gq2::builder::select({"coll_id"})
+            .from("COLLECTION")
+            .where(col("coll_name") == _data_obj_info->objPath)
+            .build());
+    if ( opt_coll.has_value() ) {
         return ERROR( CAT_NAME_EXISTS_AS_COLLECTION, "collection exists" );
     }
 
-    if ( logSQL != 0 ) {
-        log_sql::debug("chlRegDataObj SQL 5");
-    }
-    status = cmlCheckNameToken( "data_type",
-                                _data_obj_info->dataType, &icss );
+    log_sql::debug("chlRegDataObj SQL 5");
+    status = irods::experimental::catalog::access_control::check_name_token(
+        executor, db_conn, "data_type", _data_obj_info->dataType );
     if ( status != 0 ) {
         return ERROR( CAT_INVALID_DATA_TYPE, "invalid data type" );
     }
@@ -2643,102 +2574,114 @@ irods::error db_reg_data_obj_op(
 
     std::string resc_id_str = boost::lexical_cast<std::string>(_data_obj_info->rescId);
 
-    cllBindVars[0] = dataIdNum;
-    cllBindVars[1] = collIdNum;
-    cllBindVars[2] = logicalFileName;
-    cllBindVars[3] = dataReplNum;
-    cllBindVars[4] = _data_obj_info->version;
-    cllBindVars[5] = _data_obj_info->dataType;
-    cllBindVars[6] = dataSizeNum;
-    cllBindVars[7] = resc_id_str.c_str();
-    cllBindVars[8] = _data_obj_info->filePath;
-    cllBindVars[9] = _data_obj_info->dataOwnerName;
-    cllBindVars[10] = _data_obj_info->dataOwnerZone;
-    cllBindVars[11] = dataStatusNum;
-    cllBindVars[12] = _data_obj_info->chksum;
-    cllBindVars[13] = _data_obj_info->dataMode;
-    cllBindVars[14] = _data_obj_info->dataCreate;
-    cllBindVars[15] = _data_obj_info->dataModify;
-    cllBindVars[16] = _data_obj_info->dataExpiry;
-    cllBindVars[17] = "EMPTY_RESC_NAME";
-    cllBindVars[18] = "EMPTY_RESC_HIER";
-    cllBindVars[19] = "EMPTY_RESC_GROUP_NAME";
-    cllBindVars[20] = _data_obj_info->dataAccessTime;
-    cllBindVarCount = 21;
-    if ( logSQL != 0 ) {
+    try {
+        auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
+        std::unique_ptr<nanodbc::transaction> trans;
+        if (!(_data_obj_info->flags & NO_COMMIT_FLAG)) {
+            trans = std::make_unique<nanodbc::transaction>(db_conn);
+        }
+
         log_sql::debug("chlRegDataObj SQL 6");
-    }
-    status = cmlExecuteNoAnswerSql(
-        "insert into R_DATA_MAIN (data_id, coll_id, data_name, data_repl_num, data_version, data_type_name, data_size, "
-        "resc_id, data_path, data_owner_name, data_owner_zone, data_is_dirty, data_checksum, data_mode, create_ts, "
-        "modify_ts, data_expiry_ts, resc_name, resc_hier, resc_group_name, access_ts) values (?, ?, ?, ?, ?, ?, ?, ?, "
-        "?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        &icss);
-    if ( status != 0 ) {
-        log_db::info("chlRegDataObj cmlExecuteNoAnswerSql failure {}", status);
-        _rollback( "chlRegDataObj" );
-        return ERROR( status, "chlRegDataObj cmlExecuteNoAnswerSql failure" );
-    }
-    std::string zone;
-    ret = getLocalZone(
-              _ctx.prop_map(),
-              &icss,
-              zone );
-    if ( !ret.ok() ) {
-        log_db::error("chlRegDataInfo - failed in getLocalZone with status [{}]", status);
-        return PASS( ret );
-    }
+        namespace gq2 = irods::experimental::genquery2;
+        using gq2::builder::col;
 
-    if ( inheritFlag ) {
-        /* If inherit is set (sticky bit), then add access rows for this
-           dataobject that match those of the parent collection */
-        cllBindVars[0] = dataIdNum;
-        cllBindVars[1] = myTime;
-        cllBindVars[2] = myTime;
-        cllBindVars[3] = collIdNum;
-        cllBindVarCount = 4;
-        if ( logSQL != 0 ) {
+        auto ins_data = gq2::builder::insert_into("DATA_OBJECT")
+            .set("data_id", dataIdNum)
+            .set("coll_id", collIdNum)
+            .set("data_name", logicalFileName)
+            .set("data_repl_num", dataReplNum)
+            .set("data_version", _data_obj_info->version)
+            .set("data_type_name", _data_obj_info->dataType)
+            .set("data_size", dataSizeNum)
+            .set("resc_id", resc_id_str)
+            .set("data_path", _data_obj_info->filePath)
+            .set("data_owner_name", _data_obj_info->dataOwnerName)
+            .set("data_owner_zone", _data_obj_info->dataOwnerZone)
+            .set("data_is_dirty", dataStatusNum)
+            .set("data_checksum", _data_obj_info->chksum)
+            .set("data_mode", _data_obj_info->dataMode)
+            .set("create_ts", _data_obj_info->dataCreate)
+            .set("modify_ts", _data_obj_info->dataModify)
+            .set("data_expiry_ts", _data_obj_info->dataExpiry)
+            .set("resc_name", "EMPTY_RESC_NAME")
+            .set("resc_hier", "EMPTY_RESC_HIER")
+            .set("resc_group_name", "EMPTY_RESC_GROUP_NAME")
+            .set("access_ts", _data_obj_info->dataAccessTime)
+            .build();
+        irods::experimental::catalog::execute_catalog(executor, db_conn, ins_data);
+
+        std::string zone;
+        ret = getLocalZone(_ctx.prop_map(), &icss, zone);
+        if (!ret.ok()) {
+            log_db::error("chlRegDataInfo - failed in getLocalZone with status [{}]", ret.code());
+            return PASS(ret);
+        }
+
+        if (inheritFlag) {
             log_sql::debug("chlRegDataObj SQL 7");
+            auto q_res = irods::experimental::catalog::execute_catalog(
+                executor, db_conn,
+                gq2::builder::select({"user_id", "access_type_id"})
+                    .from("ACCESS")
+                    .where(col("object_id") == collIdNum)
+                    .build());
+            if (q_res.query_result) {
+                while (q_res.query_result->next()) {
+                    const auto uid = q_res.query_result->get<std::string>(0);
+                    const auto atid = q_res.query_result->get<std::string>(1);
+                    auto ins_acc = gq2::builder::insert_into("ACCESS")
+                        .set("object_id", dataIdNum)
+                        .set("user_id", uid)
+                        .set("access_type_id", atid)
+                        .set("create_ts", myTime)
+                        .set("modify_ts", myTime)
+                        .build();
+                    irods::experimental::catalog::execute_catalog(executor, db_conn, ins_acc);
+                }
+            }
         }
-        status =  cmlExecuteNoAnswerSql(
-                      "insert into R_OBJT_ACCESS (object_id, user_id, access_type_id, create_ts, modify_ts) (select ?, user_id, access_type_id, ?, ? from R_OBJT_ACCESS where object_id = ?)",
-                      &icss );
-        if ( status != 0 ) {
-            log_db::info("chlRegDataObj cmlExecuteNoAnswerSql insert access failure {}", status);
-            _rollback( "chlRegDataObj" );
-            return ERROR( status, "cmlExecuteNoAnswerSql insert access failure" );
-        }
-    }
-    else {
-        cllBindVars[0] = dataIdNum;
-        cllBindVars[1] = _ctx.comm()->clientUser.userName;
-        cllBindVars[2] = _ctx.comm()->clientUser.rodsZone;
-        cllBindVars[3] = ACCESS_OWN;
-        cllBindVars[4] = myTime;
-        cllBindVars[5] = myTime;
-        cllBindVarCount = 6;
-        if ( logSQL != 0 ) {
+        else {
             log_sql::debug("chlRegDataObj SQL 8");
+            const auto opt_user_id = irods::experimental::catalog::query_catalog_integer(
+                executor,
+                db_conn,
+                gq2::builder::select({"user_id"})
+                    .from("USER")
+                    .where(col("user_name") == _ctx.comm()->clientUser.userName && col("zone_name") == _ctx.comm()->clientUser.rodsZone)
+                    .build());
+            const auto opt_token_id = irods::experimental::catalog::query_catalog_integer(
+                executor,
+                db_conn,
+                gq2::builder::select({"token_id"})
+                    .from("TOKEN")
+                    .where(col("token_namespace") == "access_type" && col("token_name") == ACCESS_OWN)
+                    .build());
+            if (opt_user_id && opt_token_id) {
+                auto ins_acc = gq2::builder::insert_into("ACCESS")
+                    .set("object_id", dataIdNum)
+                    .set("user_id", std::to_string(*opt_user_id))
+                    .set("access_type_id", std::to_string(*opt_token_id))
+                    .set("create_ts", myTime)
+                    .set("modify_ts", myTime)
+                    .build();
+                irods::experimental::catalog::execute_catalog(executor, db_conn, ins_acc);
+            }
         }
-        status =  cmlExecuteNoAnswerSql(
-                      "insert into R_OBJT_ACCESS values (?, (select user_id from R_USER_MAIN where user_name=? and zone_name=?), (select token_id from R_TOKN_MAIN where token_namespace = 'access_type' and token_name = ?), ?, ?)",
-                      &icss );
-        if ( status != 0 ) {
-            log_db::info("chlRegDataObj cmlExecuteNoAnswerSql insert access failure {}", status);
-            _rollback( "chlRegDataObj" );
-            return ERROR( status, "cmlExecuteNoAnswerSql insert access failure" );
-        }
-    }
 
-    if ( !( _data_obj_info->flags & NO_COMMIT_FLAG ) ) {
-        status =  cmlExecuteNoAnswerSql( "commit", &icss );
-        if ( status != 0 ) {
-            log_db::info("chlRegDataObj cmlExecuteNoAnswerSql commit failure {}", status);
-            return ERROR( status, "cmlExecuteNoAnswerSql commit failure" );
+        if (trans) {
+            trans->commit();
         }
-    }
 
-    return SUCCESS();
+        return SUCCESS();
+    }
+    catch (const nanodbc::database_error& e) {
+        log_db::error("{}: database error: {}", __FUNCTION__, e.what());
+        return ERROR(CAT_SQL_ERR, e.what());
+    }
+    catch (const std::exception& e) {
+        log_db::error("{}: exception: {}", __FUNCTION__, e.what());
+        return ERROR(SYS_INTERNAL_ERR, e.what());
+    }
 
 } // db_reg_data_obj_op
 
@@ -2780,56 +2723,13 @@ irods::error db_reg_replica_op(
                 msg.str() );
     }
 
-    // =-=-=-=-=-=-=-
-    // get a postgres object from the context
-    /*irods::postgres_object_ptr pg;
-    ret = make_db_ptr( _ctx.fco(), pg );
-    if ( !ret.ok() ) {
-        return PASS( ret );
-
-    }*/
-
-    // =-=-=-=-=-=-=-
-    // extract the icss property
-//        icatSessionStruct icss;
-//        _ctx.prop_map().get< icatSessionStruct >( ICSS_PROP, icss );
-
-
     char myTime[50];
     char logicalFileName[MAX_NAME_LEN];
     char logicalDirName[MAX_NAME_LEN];
     rodsLong_t iVal;
     rodsLong_t status;
-    char tSQL[MAX_SQL_SIZE];
-    char *cVal[30];
-    int i;
-    int statementNumber = UNINITIALIZED_STATEMENT_NUMBER;
     int nextReplNum;
     char nextRepl[30];
-    char theColls[] = "data_id, \
-                       coll_id,  \
-                       data_name, \
-                       data_repl_num, \
-                       data_version, \
-                       data_type_name, \
-                       data_size, \
-                       resc_group_name, \
-                       resc_name, \
-                       resc_hier, \
-                       resc_id, \
-                       data_path, \
-                       data_owner_name, \
-                       data_owner_zone, \
-                       data_is_dirty, \
-                       data_status, \
-                       data_checksum, \
-                       data_expiry_ts, \
-                       data_map_id, \
-                       data_mode, \
-                       r_comment, \
-                       create_ts, \
-                       modify_ts, \
-                       access_ts";
     const int IX_DATA_REPL_NUM = 3; /* index of data_repl_num in theColls */
 //        int IX_RESC_GROUP_NAME = 7; /* index into theColls */
     const int IX_RESC_ID = 10;
@@ -2841,19 +2741,13 @@ irods::error db_reg_replica_op(
     const int IX_CREATE_TS = 21;
     const int IX_MODIFY_TS = 22;
     const int IX_ACCESS_TS = 23;
-    const int IX_RESC_NAME2 = 24;
-    const int IX_DATA_PATH2 = 25;
-    const int IX_DATA_ID2 = 26;
-    int nColumns = 27;
 
     char objIdString[MAX_NAME_LEN];
     char replNumString[MAX_NAME_LEN];
     int adminMode;
     char *theVal;
 
-    if ( logSQL != 0 ) {
-        log_sql::debug("chlRegReplica");
-    }
+    log_sql::debug("chlRegReplica");
 
     adminMode = 0;
     if ( _cond_input != NULL ) {
@@ -2873,6 +2767,8 @@ irods::error db_reg_replica_op(
                      __func__, __LINE__, _src_data_obj_info->objPath, ec));
     }
 
+    auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
+
     if ( adminMode ) {
         if ( _ctx.comm()->clientUser.authInfo.authFlag != LOCAL_PRIV_USER_AUTH ) {
             return ERROR( CAT_INSUFFICIENT_PRIVILEGE_LEVEL, "insufficient privilege" );
@@ -2880,147 +2776,148 @@ irods::error db_reg_replica_op(
     }
     else {
         /* Check the access to the dataObj */
-        if ( logSQL != 0 ) {
-            log_sql::debug("chlRegReplica SQL 1 ");
-        }
-        status = cmlCheckDataObjOnly( logicalDirName, logicalFileName,
-                                      _ctx.comm()->clientUser.userName,
-                                      _ctx.comm()->clientUser.rodsZone,
-                                      ACCESS_READ_OBJECT, &icss );
+        log_sql::debug("chlRegReplica SQL 1 ");
+        status = irods::experimental::catalog::access_control::check_data_object_only(
+            executor, db_conn,
+            logicalDirName, logicalFileName,
+            _ctx.comm()->clientUser.userName,
+            _ctx.comm()->clientUser.rodsZone,
+            ACCESS_READ_OBJECT );
         if ( status < 0 ) {
             _rollback( "chlRegReplica" );
-            return ERROR( status, "cmlCheckDataObjOnly failed" );
+            return ERROR( status, "check_data_object_only failed" );
         }
     }
 
     /* Get the next replica number */
     snprintf( objIdString, MAX_NAME_LEN, "%lld", _src_data_obj_info->dataId );
-    if ( logSQL != 0 ) {
-        log_sql::debug("chlRegReplica SQL 2");
-    }
-    {
-        std::vector<std::string> bindVars;
-        bindVars.push_back( objIdString );
-        status = cmlGetIntegerValueFromSql(
-                     "select max(data_repl_num) from R_DATA_MAIN where data_id = ?",
-                     &iVal, bindVars, &icss );
-    }
-
-    if ( status != 0 ) {
+    log_sql::debug("chlRegReplica SQL 2");
+    auto opt_max_repl = irods::experimental::catalog::query_catalog_integer(
+        executor,
+        db_conn,
+        gq2::builder::select({gq2::builder::max("data_repl_num")})
+            .from("DATA_OBJECT")
+            .where(col("data_id") == objIdString)
+            .build());
+    if (!opt_max_repl) {
         _rollback( "chlRegReplica" );
-        return ERROR( status, "cmlGetIntegerValueFromSql failed" );
+        return ERROR( CAT_SQL_ERR, "query max data_repl_num failed" );
     }
+    iVal = *opt_max_repl;
 
     nextReplNum = iVal + 1;
     snprintf( nextRepl, sizeof nextRepl, "%d", nextReplNum );
     _dst_data_obj_info->replNum = nextReplNum; /* return new replica number */
     snprintf( replNumString, MAX_NAME_LEN, "%d", _src_data_obj_info->replNum );
-    snprintf( tSQL, MAX_SQL_SIZE,
-              "select %s from R_DATA_MAIN where data_id = ? and data_repl_num = ?",
-              theColls );
-    if ( logSQL != 0 ) {
-        log_sql::debug("chlRegReplica SQL 3");
+    log_sql::debug("chlRegReplica SQL 3");
+
+    const std::vector<std::string> replica_cols = {
+        "data_id", "coll_id", "data_name", "data_repl_num", "data_version", "data_type_name",
+        "data_size", "resc_group_name", "resc_name", "resc_hier", "resc_id", "data_path",
+        "data_owner_name", "data_owner_zone", "data_is_dirty", "data_status", "data_checksum",
+        "data_expiry_ts", "data_map_id", "data_mode", "r_comment", "create_ts", "modify_ts", "access_ts"
+    };
+
+    std::vector<std::string> row_values;
+    try {
+        auto sel_replica = gq2::builder::select(replica_cols)
+            .from("DATA_OBJECT")
+            .where(col("data_id") == objIdString && col("data_repl_num") == replNumString)
+            .build();
+        auto row_res = irods::experimental::catalog::execute_catalog(executor, db_conn, sel_replica);
+        if (!row_res.query_result || !row_res.query_result->next()) {
+            _rollback("chlRegReplica");
+            return ERROR(CAT_NO_ROWS_FOUND, "failed to find source replica");
+        }
+        for (int col = 0; col < 24; ++col) {
+            row_values.push_back(row_res.query_result->get<std::string>(col, ""));
+        }
     }
-    {
-        std::vector<std::string> bindVars;
-        bindVars.push_back( objIdString );
-        bindVars.push_back( replNumString );
-        status = cmlGetOneRowFromSqlV2( tSQL, cVal, nColumns, bindVars, &icss );
+    catch (const std::exception& e) {
+        log_db::error("chlRegReplica select source replica failure {}", e.what());
+        _rollback("chlRegReplica");
+        return ERROR(CAT_SQL_ERR, e.what());
     }
-    if ( status < 0 ) {
-        _rollback( "chlRegReplica" );
-        return ERROR( status, "cmlGetOneRowFromSqlV2 failed" );
-    }
-    statementNumber = status;
 
     std::string resc_id_str = boost::lexical_cast<std::string>(_dst_data_obj_info->rescId);
 
-    cVal[IX_DATA_REPL_NUM]   = nextRepl;
-    //cVal[IX_RESC_NAME]       = _dst_data_obj_info->rescName;
-    cVal[IX_RESC_ID]       = (char*)resc_id_str.c_str();
-    cVal[IX_DATA_PATH]       = _dst_data_obj_info->filePath;
-    cVal[IX_DATA_MODE]       = _dst_data_obj_info->dataMode;
+    row_values[IX_DATA_REPL_NUM] = nextRepl;
+    row_values[IX_RESC_ID] = resc_id_str;
+    row_values[IX_DATA_PATH] = _dst_data_obj_info->filePath;
+    row_values[IX_DATA_MODE] = _dst_data_obj_info->dataMode;
 
-    // The caller has requested that the replica be registered as intermediate. This
-    // means that the replica will be written or changed at a future time. Otherwise,
-    // the replica will take the replica status of the source replica. The const must
-    // be cast away due to cVal being a char*[] and not a const char*[].
     if (getValByKey(_cond_input, REGISTER_AS_INTERMEDIATE_KW)) {
-        cVal[IX_REPLICA_STATUS] = const_cast<char*>(intermediate_replica_status_str.data());
+        row_values[IX_REPLICA_STATUS] = std::string(intermediate_replica_status_str);
     }
 
-    // data_status tracks replica status for logical locking - this is a new replica,
-    // so make sure the data_status column is empty at registration time.
     std::snprintf(_dst_data_obj_info->statusString, NAME_LEN, "");
-    cVal[IX_DATA_STATUS] = _dst_data_obj_info->statusString;
+    row_values[IX_DATA_STATUS] = _dst_data_obj_info->statusString;
 
     getNowStr( myTime );
-    cVal[IX_MODIFY_TS] = myTime;
-    cVal[IX_CREATE_TS] = myTime;
-    cVal[IX_ACCESS_TS] = myTime;
+    row_values[IX_MODIFY_TS] = myTime;
+    row_values[IX_CREATE_TS] = myTime;
+    row_values[IX_ACCESS_TS] = myTime;
 
-    cVal[IX_RESC_NAME2] = (char*)resc_id_str.c_str();//_dst_data_obj_info->rescName; // JMC - backport 4669
-    cVal[IX_DATA_PATH2] = _dst_data_obj_info->filePath; // JMC - backport 4669
-    cVal[IX_DATA_ID2] = objIdString; // JMC - backport 4669
+    try {
+        nanodbc::transaction trans{db_conn};
 
-    for ( i = 0; i < nColumns; i++ ) {
-        cllBindVars[i] = cVal[i];
-    }
-    cllBindVarCount = nColumns;
-#if (defined ORA_ICAT || defined MY_ICAT) // JMC - backport 4685
-    /* MySQL and Oracle */
-    snprintf(tSQL,
-             MAX_SQL_SIZE,
-             "insert into R_DATA_MAIN ( %s ) select ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,? from DUAL where "
-             "not exists (select data_id from R_DATA_MAIN where resc_id=? and data_path=? and data_id=?)",
-             theColls);
-#else
-    /* Postgres */
-    snprintf(tSQL,
-             MAX_SQL_SIZE,
-             "insert into R_DATA_MAIN ( %s ) select ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,? where not exists "
-             "(select data_id from R_DATA_MAIN where resc_id=? and data_path=? and data_id=?)",
-             theColls);
-
-#endif
-    if ( logSQL != 0 ) {
         log_sql::debug("chlRegReplica SQL 4");
-    }
-    status = cmlExecuteNoAnswerSql( tSQL,  &icss );
-    if ( status < 0 ) {
-        log_db::info("chlRegReplica cmlExecuteNoAnswerSql(insert) failure {}", status);
-        _rollback( "chlRegReplica" );
-        const int free_status = cmlFreeStatement( statementNumber, &icss );
-        if (free_status != 0) {
-            log_db::error("db_reg_replica_op: cmlFreeStatement0 failure [{}]", free_status);
+        const auto existing = irods::experimental::catalog::query_catalog_integer(
+            executor,
+            db_conn,
+            gq2::builder::select({"data_id"})
+                .from("DATA_OBJECT")
+                .where(col("resc_id") == resc_id_str && col("data_path") == _dst_data_obj_info->filePath && col("data_id") == objIdString)
+                .build());
+        if (!existing) {
+            namespace gq2 = irods::experimental::genquery2;
+            auto ins = gq2::builder::insert_into("DATA_OBJECT")
+                .set("data_id", row_values[0])
+                .set("coll_id", row_values[1])
+                .set("data_name", row_values[2])
+                .set("data_repl_num", row_values[3])
+                .set("data_version", row_values[4])
+                .set("data_type_name", row_values[5])
+                .set("data_size", row_values[6])
+                .set("resc_group_name", row_values[7])
+                .set("resc_name", row_values[8])
+                .set("resc_hier", row_values[9])
+                .set("resc_id", row_values[10])
+                .set("data_path", row_values[11])
+                .set("data_owner_name", row_values[12])
+                .set("data_owner_zone", row_values[13])
+                .set("data_is_dirty", row_values[14])
+                .set("data_status", row_values[15])
+                .set("data_checksum", row_values[16])
+                .set("data_expiry_ts", row_values[17])
+                .set("data_map_id", row_values[18])
+                .set("data_mode", row_values[19])
+                .set("r_comment", row_values[20])
+                .set("create_ts", row_values[21])
+                .set("modify_ts", row_values[22])
+                .set("access_ts", row_values[23])
+                .build();
+            irods::experimental::catalog::execute_catalog(executor, db_conn, ins);
         }
-        return ERROR( status, "cmlExecuteNoAnswerSql(insert) failure" );
-    }
 
-    std::string zone;
-    ret = getLocalZone( _ctx.prop_map(), &icss, zone );
-    if ( !ret.ok() ) {
-        log_db::error("chlRegReplica - failed in getLocalZone with status [{}]", status);
-        const int free_status = cmlFreeStatement( statementNumber, &icss );
-        if (free_status != 0) {
-            log_db::error("db_reg_replica_op: cmlFreeStatement1 failure [{}]", free_status);
+        std::string zone;
+        ret = getLocalZone(_ctx.prop_map(), &icss, zone);
+        if (!ret.ok()) {
+            log_db::error("chlRegReplica - failed in getLocalZone with status [{}]", ret.code());
+            return PASS(ret);
         }
-        return PASS( ret );
-    }
 
-    status = cmlFreeStatement( statementNumber, &icss );
-    if ( status < 0 ) {
-        log_db::info("chlRegReplica cmlFreeStatement failure {}", status);
-        return ERROR( status, "cmlFreeStatement failure" );
+        trans.commit();
+        return SUCCESS();
     }
-
-    status =  cmlExecuteNoAnswerSql( "commit", &icss );
-    if ( status != 0 ) {
-        log_db::info("chlRegReplica cmlExecuteNoAnswerSql commit failure {}", status);
-        return ERROR( status, "cmlExecuteNoAnswerSql commit failure" );
+    catch (const nanodbc::database_error& e) {
+        log_db::error("{}: database error: {}", __FUNCTION__, e.what());
+        return ERROR(CAT_SQL_ERR, e.what());
     }
-
-    return SUCCESS();
+    catch (const std::exception& e) {
+        log_db::error("{}: exception: {}", __FUNCTION__, e.what());
+        return ERROR(SYS_INTERNAL_ERR, e.what());
+    }
 
 } // db_reg_replica_op
 
@@ -3047,27 +2944,10 @@ irods::error db_unreg_replica_op(
     }
 
     // =-=-=-=-=-=-=-
-    // get a postgres object from the context
-    /*irods::postgres_object_ptr pg;
-    ret = make_db_ptr( _ctx.fco(), pg );
-    if ( !ret.ok() ) {
-        return PASS( ret );
-
-    }*/
-
-    // =-=-=-=-=-=-=-
-    // extract the icss property
-//        icatSessionStruct icss;
-//        _ctx.prop_map().get< icatSessionStruct >( ICSS_PROP, icss );
-
-
-    // =-=-=-=-=-=-=-
     //
     char logicalFileName[MAX_NAME_LEN];
     char logicalDirName[MAX_NAME_LEN];
     rodsLong_t status;
-    char tSQL[MAX_SQL_SIZE];
-    char replNumber[30];
     char dataObjNumber[30];
     int adminMode;
     int trashMode;
@@ -3075,9 +2955,7 @@ irods::error db_unreg_replica_op(
     char checkPath[MAX_NAME_LEN];
 
     dataObjNumber[0] = '\0';
-    if ( logSQL != 0 ) {
-        log_sql::debug("chlUnregDataObj");
-    }
+    log_sql::debug("chlUnregDataObj");
 
     if ( !icss.status ) {
         return ERROR( CATALOG_NOT_CONNECTED, "catalog not connected" );
@@ -3105,18 +2983,19 @@ irods::error db_unreg_replica_op(
 
     if ( adminMode == 0 ) {
         /* Check the access to the dataObj */
-        if ( logSQL != 0 ) {
-            log_sql::debug("chlUnregDataObj SQL 1 ");
-        }
-        status = cmlCheckDataObjOnly( logicalDirName, logicalFileName,
-                                      _ctx.comm()->clientUser.userName,
-                                      _ctx.comm()->clientUser.rodsZone,
-                                      ACCESS_DELETE_OBJECT, &icss );
+        log_sql::debug("chlUnregDataObj SQL 1 ");
+        auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
+        status = irods::experimental::catalog::access_control::check_data_object_only(
+            executor, db_conn,
+            logicalDirName, logicalFileName,
+            _ctx.comm()->clientUser.userName,
+            _ctx.comm()->clientUser.rodsZone,
+            ACCESS_DELETE_OBJECT );
         if ( status < 0 ) {
             _rollback( "chlUnregDataObj" );
-            return ERROR( status, "cmlCheckDataObjOnly failed" ); /* convert long to int */
+            return ERROR( status, "check_data_object_only failed" );
         }
-        snprintf( dataObjNumber, sizeof dataObjNumber, "%lld", status );
+        snprintf( dataObjNumber, sizeof dataObjNumber, "%lld", (rodsLong_t)status );
     }
     else {
         if ( _ctx.comm()->clientUser.authInfo.authFlag != LOCAL_PRIV_USER_AUTH ) {
@@ -3155,79 +3034,90 @@ irods::error db_unreg_replica_op(
         }
     }
 
-    cllBindVars[0] = logicalDirName;
-    cllBindVars[1] = logicalFileName;
-    if ( _data_obj_info->replNum >= 0 ) {
-        snprintf( replNumber, sizeof replNumber, "%d", _data_obj_info->replNum );
-        cllBindVars[2] = replNumber;
-        cllBindVarCount = 3;
-        if ( logSQL != 0 ) {
+    try {
+        auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
+        nanodbc::transaction trans{db_conn};
+
+        const auto coll_id_opt = irods::experimental::catalog::query_catalog_integer(
+            executor,
+            db_conn,
+            gq2::builder::select({"coll_id"})
+                .from("COLLECTION")
+                .where(col("coll_name") == logicalDirName)
+                .build());
+        if (!coll_id_opt) {
+            addRErrorMsg(&_ctx.comm()->rError, 0, fmt::format("data object '{}' is unknown", logicalFileName).c_str());
+            return ERROR(CAT_UNKNOWN_FILE, "data object unknown");
+        }
+        const auto coll_id_str = std::to_string(*coll_id_opt);
+
+        namespace gq2 = irods::experimental::genquery2;
+        using gq2::builder::col;
+
+        std::size_t affected = 0;
+        if (_data_obj_info->replNum >= 0) {
             log_sql::debug("chlUnregDataObj SQL 4");
+            auto rem_stmt = gq2::builder::remove_from("DATA_OBJECT")
+                .where(col("coll_id") == coll_id_str &&
+                       col("data_name") == logicalFileName &&
+                       col("data_repl_num") == std::to_string(_data_obj_info->replNum))
+                .build();
+            affected = irods::experimental::catalog::execute_catalog(executor, db_conn, rem_stmt).affected_rows;
         }
-        snprintf( tSQL, MAX_SQL_SIZE,
-                  "delete from R_DATA_MAIN where coll_id=(select coll_id from R_COLL_MAIN where coll_name=?) and data_name=? and data_repl_num=?" );
-    }
-    else {
-        cllBindVarCount = 2;
-        if ( logSQL != 0 ) {
+        else {
             log_sql::debug("chlUnregDataObj SQL 5");
+            auto rem_stmt = gq2::builder::remove_from("DATA_OBJECT")
+                .where(col("coll_id") == coll_id_str &&
+                       col("data_name") == logicalFileName)
+                .build();
+            affected = irods::experimental::catalog::execute_catalog(executor, db_conn, rem_stmt).affected_rows;
         }
-        snprintf( tSQL, MAX_SQL_SIZE,
-                  "delete from R_DATA_MAIN where coll_id=(select coll_id from R_COLL_MAIN where coll_name=?) and data_name=?" );
-    }
-    status =  cmlExecuteNoAnswerSql( tSQL, &icss );
-    if ( status != 0 ) {
-        if ( status == CAT_SUCCESS_BUT_WITH_NO_INFO ) {
-            char errMsg[105];
-            status = CAT_UNKNOWN_FILE;  /* More accurate, in this case */
-            snprintf( errMsg, 100, "data object '%s' is unknown",
-                      logicalFileName );
-            addRErrorMsg( &_ctx.comm()->rError, 0, errMsg );
-            return ERROR( status, "data object unknown" );
+
+        if (affected == 0) {
+            addRErrorMsg(&_ctx.comm()->rError, 0, fmt::format("data object '{}' is unknown", logicalFileName).c_str());
+            return ERROR(CAT_UNKNOWN_FILE, "data object unknown");
         }
-        _rollback( "chlUnregDataObj" );
-        return ERROR( status, "cmlExecuteNoAnswerSql failed" );
-    }
 
-    std::string zone;
-    ret = getLocalZone( _ctx.prop_map(), &icss, zone );
-    if ( !ret.ok() ) {
-        log_db::error("chlUnRegDataObj - failed in getLocalZone with status [{}]", status);
-        return PASS( ret );
-    }
+        std::string zone;
+        ret = getLocalZone(_ctx.prop_map(), &icss, zone);
+        if (!ret.ok()) {
+            log_db::error("chlUnRegDataObj - failed in getLocalZone with status [{}]", ret.code());
+            return PASS(ret);
+        }
 
-    /* delete the access rows, if we just deleted the last replica */
-    if ( dataObjNumber[0] != '\0' ) {
-        cllBindVars[0] = dataObjNumber;
-        cllBindVars[1] = dataObjNumber;
-        cllBindVarCount = 2;
-        if ( logSQL != 0 ) {
+        /* delete the access rows, if we just deleted the last replica */
+        if (dataObjNumber[0] != '\0') {
             log_sql::debug("chlUnregDataObj SQL 3");
-        }
+            const auto remaining_replicas = irods::experimental::catalog::query_catalog_integer(
+                executor,
+                db_conn,
+                gq2::builder::select({gq2::builder::count("data_id")})
+                    .from("DATA_OBJECT")
+                    .where(col("data_id") == dataObjNumber)
+                    .build());
+            if (remaining_replicas.value_or(0) == 0) {
+                auto rem_access = gq2::builder::remove_from("ACCESS")
+                    .where(col("object_id") == dataObjNumber)
+                    .build();
+                irods::experimental::catalog::execute_catalog(executor, db_conn, rem_access);
 
-        status = cmlExecuteNoAnswerSql(
-                     "delete from R_OBJT_ACCESS where object_id=? and not exists (select * from R_DATA_MAIN where data_id=?)", &icss );
-        if (status != 0 && status != CAT_SUCCESS_BUT_WITH_NO_INFO) {
-            _rollback("chlUnregDataObj");
-            return ERROR(status, fmt::format(
-                         "[{}:{}] - failed to delete access rows [ec=[{}]]",
-                         __func__, __LINE__, status));
-        }
-
-        if (status == 0) {
-            if (const auto ec = removeMetaMapAndAVU(dataObjNumber); ec < 0) {
-                log_db::warn("[{}:{}] - failed to remove associated AVUs [ec=[{}]]", __func__, __LINE__, ec);
+                if (const auto ec = removeMetaMapAndAVU(dataObjNumber); ec < 0) {
+                    log_db::warn("[{}:{}] - failed to remove associated AVUs [ec=[{}]]", __func__, __LINE__, ec);
+                }
             }
         }
-    }
 
-    status =  cmlExecuteNoAnswerSql( "commit", &icss );
-    if ( status != 0 ) {
-        log_db::info("chlUnregDataObj cmlExecuteNoAnswerSql commit failure {}", status);
-        return ERROR( status, "cmlExecuteNoAnswerSql commit failure" );
+        trans.commit();
+        return SUCCESS();
     }
-
-    return SUCCESS();
+    catch (const nanodbc::database_error& e) {
+        log_db::error("{}: database error: {}", __FUNCTION__, e.what());
+        return ERROR(CAT_SQL_ERR, e.what());
+    }
+    catch (const std::exception& e) {
+        log_db::error("{}: exception: {}", __FUNCTION__, e.what());
+        return ERROR(SYS_INTERNAL_ERR, e.what());
+    }
 
 } // db_unreg_replica_op
 
@@ -3249,87 +3139,68 @@ irods::error db_reg_rule_exec_op(
         return ERROR( CAT_INVALID_ARGUMENT, "null parameter" );
     }
 
-    // =-=-=-=-=-=-=-
-    // get a postgres object from the context
-    /*irods::postgres_object_ptr pg;
-    ret = make_db_ptr( _ctx.fco(), pg );
-    if ( !ret.ok() ) {
-        return PASS( ret );
-
-    }*/
-
-    // =-=-=-=-=-=-=-
-    // extract the icss property
-//        icatSessionStruct icss;
-//        _ctx.prop_map().get< icatSessionStruct >( ICSS_PROP, icss );
-
     char myTime[50];
     rodsLong_t seqNum;
-    char ruleExecIdNum[MAX_NAME_LEN];
-    int status;
 
-    if ( logSQL != 0 ) {
-        log_sql::debug("chlRegRuleExec");
-    }
+    log_sql::debug("chlRegRuleExec");
 
     if ( !icss.status ) {
         return ERROR( CATALOG_NOT_CONNECTED, "catalog not connected" );
     }
 
-    if ( logSQL != 0 ) {
+    try {
+        auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
+        nanodbc::transaction trans{db_conn};
+
         log_sql::debug("chlRegRuleExec SQL 1 ");
-    }
 
-    seqNum = cmlGetNextSeqVal( &icss );
-    if ( seqNum < 0 ) {
-        log_db::info("chlRegRuleExec cmlGetNextSeqVal failure {}", seqNum);
-        _rollback( "chlRegRuleExec" );
-        return ERROR( seqNum, "cmlGetNextSeqVal failure" );
-    }
-    snprintf( ruleExecIdNum, MAX_NAME_LEN, "%lld", seqNum );
+        seqNum = executor.get_next_sequence_value(db_conn, "R_ObjectID");
+        if ( seqNum < 0 ) {
+            log_db::info("chlRegRuleExec get_next_sequence_value failure {}", seqNum);
+            return ERROR( seqNum, "get_next_sequence_value failure" );
+        }
+        const auto ruleExecIdNum = std::to_string( seqNum );
 
-    /* store as output parameter */
-    snprintf( _re_sub_inp->ruleExecId, NAME_LEN, "%s", ruleExecIdNum );
+        /* store as output parameter */
+        rstrcpy( _re_sub_inp->ruleExecId, ruleExecIdNum.c_str(), NAME_LEN );
 
-    getNowStr( myTime );
+        getNowStr( myTime );
 
-    cllBindVars[cllBindVarCount++] = ruleExecIdNum;
-    cllBindVars[cllBindVarCount++] = _re_sub_inp->ruleName;
-    cllBindVars[cllBindVarCount++] = _re_sub_inp->reiFilePath;
-    cllBindVars[cllBindVarCount++] = _re_sub_inp->userName;
-    cllBindVars[cllBindVarCount++] = _re_sub_inp->exeAddress;
-    cllBindVars[cllBindVarCount++] = _re_sub_inp->exeTime;
-    cllBindVars[cllBindVarCount++] = _re_sub_inp->exeFrequency;
-    cllBindVars[cllBindVarCount++] = _re_sub_inp->priority;
-    cllBindVars[cllBindVarCount++] = _re_sub_inp->estimateExeTime;
-    cllBindVars[cllBindVarCount++] = _re_sub_inp->notificationAddr;
-    cllBindVars[cllBindVarCount++] = myTime;
-    cllBindVars[cllBindVarCount++] = myTime;
+        const irods::experimental::key_value_proxy kvp{_re_sub_inp->condInput};
+        const std::string exe_context_str = kvp.contains(RULE_EXECUTION_CONTEXT_KW)
+            ? std::string{kvp[RULE_EXECUTION_CONTEXT_KW].value()}
+            : std::string{};
 
-    // To maintain backwards compatibility, the jsonified rule execution context
-    // is passed via the conditional input.
-    const irods::experimental::key_value_proxy kvp{_re_sub_inp->condInput};
-    cllBindVars[cllBindVarCount++] = kvp[RULE_EXECUTION_CONTEXT_KW].value().data();
-
-    if ( logSQL != 0 ) {
         log_sql::debug("chlRegRuleExec SQL 2");
-    }
-    status = cmlExecuteNoAnswerSql("insert into R_RULE_EXEC (rule_exec_id, rule_name, rei_file_path, user_name, exe_address, exe_time, exe_frequency, priority, estimated_exe_time, notification_addr, create_ts, modify_ts, exe_context) "
-                                   "values (?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                                   &icss);
-    if ( status != 0 ) {
-        log_db::info("chlRegRuleExec cmlExecuteNoAnswerSql(insert) failure {}", status);
-        _rollback( "chlRegRuleExec" );
-        return ERROR( status, "cmlExecuteNoAnswerSql(insert) failure" );
-    }
+        namespace gq2 = irods::experimental::genquery2;
+        auto insert_stmt = gq2::builder::insert_into("RULE_EXEC")
+            .set("rule_exec_id", ruleExecIdNum)
+            .set("rule_name", _re_sub_inp->ruleName)
+            .set("rei_file_path", _re_sub_inp->reiFilePath)
+            .set("user_name", _re_sub_inp->userName)
+            .set("exe_address", _re_sub_inp->exeAddress)
+            .set("exe_time", _re_sub_inp->exeTime)
+            .set("exe_frequency", _re_sub_inp->exeFrequency)
+            .set("priority", _re_sub_inp->priority)
+            .set("estimated_exe_time", _re_sub_inp->estimateExeTime)
+            .set("notification_addr", _re_sub_inp->notificationAddr)
+            .set("create_ts", myTime)
+            .set("modify_ts", myTime)
+            .set("exe_context", exe_context_str)
+            .build();
+        irods::experimental::catalog::execute_catalog(executor, db_conn, insert_stmt);
 
-    status =  cmlExecuteNoAnswerSql( "commit", &icss );
-    if ( status != 0 ) {
-        log_db::info("chlRegRuleExec cmlExecuteNoAnswerSql commit failure {}", status);
-        return ERROR( status, "cmlExecuteNoAnswerSql commit failure" );
+        trans.commit();
+        return SUCCESS();
     }
-
-    return SUCCESS();
+    catch (const nanodbc::database_error& e) {
+        log_db::error("{}: database error: {}", __FUNCTION__, e.what());
+        return ERROR( CAT_SQL_ERR, e.what() );
+    }
+    catch (const std::exception& e) {
+        log_db::error("{}: exception: {}", __FUNCTION__, e.what());
+        return ERROR( SYS_INTERNAL_ERR, e.what() );
+    }
 } // db_reg_rule_exec_op
 
 // =-=-=-=-=-=-=-
@@ -3353,25 +3224,8 @@ irods::error db_mod_rule_exec_op(
     }
 
     // =-=-=-=-=-=-=-
-    // get a postgres object from the context
-    /*irods::postgres_object_ptr pg;
-    ret = make_db_ptr( _ctx.fco(), pg );
-    if ( !ret.ok() ) {
-        return PASS( ret );
-
-    }*/
-
-    // =-=-=-=-=-=-=-
-    // extract the icss property
-//        icatSessionStruct icss;
-//        _ctx.prop_map().get< icatSessionStruct >( ICSS_PROP, icss );
-
-
-    // =-=-=-=-=-=-=-
     //
-    int i, j, status;
-
-    char tSQL[MAX_SQL_SIZE];
+    int i;
     char *theVal = 0;
 
     /* regParamNames has the argument names (in regParam) that this
@@ -3415,13 +3269,15 @@ irods::error db_mod_rule_exec_op(
                         "create_ts",
                         "modify_ts"};
 
-    if ( logSQL != 0 ) {
-        log_sql::debug("chlModRuleExec");
-    }
+    log_sql::debug("chlModRuleExec");
 
-    snprintf( tSQL, MAX_SQL_SIZE, "update R_RULE_EXEC set " );
+    namespace gq2 = irods::experimental::genquery2;
+    using gq2::builder::col;
 
-    for ( i = 0, j = 0; strcmp( regParamNames[i], "END" ); i++ ) {
+    auto update_builder = gq2::builder::update("RULE_EXEC");
+    bool has_updates = false;
+
+    for ( i = 0; strcmp( regParamNames[i], "END" ); i++ ) {
         theVal = getValByKey( _reg_param, regParamNames[i] );
 
         if (theVal) {
@@ -3443,41 +3299,35 @@ irods::error db_mod_rule_exec_op(
                 }
             }
 
-            if ( j > 0 ) {
-                rstrcat( tSQL, "," , MAX_SQL_SIZE );
-            }
-            rstrcat( tSQL, colNames[i] , MAX_SQL_SIZE );
-            rstrcat( tSQL, "=? ", MAX_SQL_SIZE );
-            cllBindVars[j++] = theVal;
+            update_builder.set(colNames[i], theVal);
+            has_updates = true;
         }
     }
 
-    if ( j == 0 ) {
+    if ( !has_updates ) {
         return ERROR( CAT_INVALID_ARGUMENT, "invalid argument" );
     }
 
-    rstrcat( tSQL, "where rule_exec_id=?", MAX_SQL_SIZE );
-    cllBindVars[j++] = _re_id;
-    cllBindVarCount = j;
+    auto stmt = update_builder.where(col("rule_exec_id") == _re_id).build();
 
-    if ( logSQL != 0 ) {
+    try {
+        auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
+        nanodbc::transaction trans{db_conn};
+
         log_sql::debug("chlModRuleExec SQL 1 ");
-    }
-    status = cmlExecuteNoAnswerSql( tSQL, &icss );
+        irods::experimental::catalog::execute_catalog(executor, db_conn, stmt);
 
-    if ( status != 0 ) {
-        _rollback( "chlModRuleExec" );
-        log_db::info("chlModRuleExec cmlExecuteNoAnswer(update) failure {}", status);
-        return ERROR( status, "cmlExecuteNoAnswer(update) failure" );
+        trans.commit();
+        return SUCCESS();
     }
-
-    status =  cmlExecuteNoAnswerSql( "commit", &icss );
-    if ( status != 0 ) {
-        log_db::info("chlModRuleExecMeta cmlExecuteNoAnswerSql commit failure {}", status);
-        return ERROR( status, "cmlExecuteNoAnswerSql commit failure" );
+    catch (const nanodbc::database_error& e) {
+        log_db::error("{}: database error: {}", __FUNCTION__, e.what());
+        return ERROR( CAT_SQL_ERR, e.what() );
     }
-
-    return CODE( status );
+    catch (const std::exception& e) {
+        log_db::error("{}: exception: {}", __FUNCTION__, e.what());
+        return ERROR( SYS_INTERNAL_ERR, e.what() );
+    }
 } // db_mod_rule_exec_op
 
 irods::error db_del_rule_exec_op(irods::plugin_context& _ctx, const char* _re_id)
@@ -3491,32 +3341,29 @@ irods::error db_del_rule_exec_op(irods::plugin_context& _ctx, const char* _re_id
         return ERROR(CAT_INVALID_ARGUMENT, "null parameter");
     }
 
-    if ( logSQL != 0 ) {
-        log_sql::debug("chlDelRuleExec");
-    }
+    try {
+        auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
+        nanodbc::transaction trans{db_conn};
 
-    if ( !icss.status ) {
-        return ERROR( CATALOG_NOT_CONNECTED, "catalog not connected" );
-    }
-
-    cllBindVars[cllBindVarCount++] = _re_id;
-    if ( logSQL != 0 ) {
+        namespace gq2 = irods::experimental::genquery2;
+        using gq2::builder::col;
         log_sql::debug("chlDelRuleExec SQL 2 ");
-    }
-    int status = cmlExecuteNoAnswerSql("delete from R_RULE_EXEC where rule_exec_id=?", &icss);
-    if ( status != 0 ) {
-        log_db::info("chlDelRuleExec delete failure {}", status);
-        _rollback( "chlDelRuleExec" );
-        return ERROR( status, "delete failure" );
-    }
+        auto del_re = gq2::builder::remove_from("RULE_EXEC")
+            .where(col("rule_exec_id") == _re_id)
+            .build();
+        irods::experimental::catalog::execute_catalog(executor, db_conn, del_re);
 
-    status = cmlExecuteNoAnswerSql("commit", &icss);
-    if ( status != 0 ) {
-        log_db::info("chlDelRuleExec cmlExecuteNoAnswerSql commit failure {}", status);
-        return ERROR( status, "cmlExecuteNoAnswerSql commit failure" );
+        trans.commit();
+        return SUCCESS();
     }
-
-    return CODE( status );
+    catch (const nanodbc::database_error& e) {
+        log_db::error("{}: database error: {}", __FUNCTION__, e.what());
+        return ERROR( CAT_SQL_ERR, e.what() );
+    }
+    catch (const std::exception& e) {
+        log_db::error("{}: exception: {}", __FUNCTION__, e.what());
+        return ERROR( SYS_INTERNAL_ERR, e.what() );
+    }
 } // db_del_rule_exec_op
 
 static irods::error extract_resource_properties_for_operations(
@@ -3653,15 +3500,7 @@ irods::error db_add_child_resc_op(
         return PASS(ret);
     }
 
-    status = cmlExecuteNoAnswerSql( "commit", &icss );
-    if(status != 0) {
-        return ERROR(
-                   status,
-                   "commit failure");
-    }
-
     return SUCCESS();
-
 } // db_add_child_resc_op
 
 // =-=-=-=-=-=-=-
@@ -3687,26 +3526,9 @@ irods::error db_reg_resc_op(
         return PASS( ret );
     }
 
-    // =-=-=-=-=-=-=-
-    // get a postgres object from the context
-    /*irods::postgres_object_ptr pg;
-    ret = make_db_ptr( _ctx.fco(), pg );
-    if ( !ret.ok() ) {
-        return PASS( ret );
-
-    }*/
-
-    // =-=-=-=-=-=-=-
-    // extract the icss property
-//        icatSessionStruct icss;
-//        _ctx.prop_map().get< icatSessionStruct >( ICSS_PROP, icss );
     rodsLong_t seqNum;
-    char idNum[MAX_SQL_SIZE];
-    int status;
 
-    if ( logSQL != 0 ) {
-        log_sql::debug("chlRegResc");
-    }
+    log_sql::debug("chlRegResc");
 
     // =-=-=-=-=-=-=-
     // error trap empty resc name
@@ -3743,16 +3565,22 @@ irods::error db_reg_resc_op(
     // =-=-=-=-=-=-=-
 
 
-    if ( logSQL != 0 ) {
-        log_sql::debug("chlRegResc SQL 1 ");
+    log_sql::debug("chlRegResc SQL 1 ");
+    try {
+        auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
+        seqNum = executor.get_next_sequence_value(db_conn, "R_ObjectID");
     }
-    seqNum = cmlGetNextSeqVal( &icss );
-    if ( seqNum < 0 ) {
-        log_db::info("chlRegResc cmlGetNextSeqVal failure {}", seqNum);
+    catch (const std::exception& e) {
+        log_db::info("chlRegResc get_next_sequence_value failure {}", e.what());
         _rollback( "chlRegResc" );
-        return ERROR( seqNum, "cmlGetNextSeqVal failure" );
+        return ERROR( CAT_SQL_ERR, "get_next_sequence_value failure" );
     }
-    snprintf( idNum, MAX_SQL_SIZE, "%lld", seqNum );
+    if ( seqNum < 0 ) {
+        log_db::info("chlRegResc get_next_sequence_value failure {}", seqNum);
+        _rollback( "chlRegResc" );
+        return ERROR( seqNum, "get_next_sequence_value failure" );
+    }
+    const auto idNum = std::to_string( seqNum );
 
     std::string zone;
     ret = getLocalZone( _ctx.prop_map(), &icss, zone );
@@ -3778,7 +3606,7 @@ irods::error db_reg_resc_op(
     // if the resource is not the 'empty resource' test it
     if ( resc_input[irods::RESOURCE_LOCATION] != irods::EMPTY_RESC_HOST ) {
         // =-=-=-=-=-=-=-
-        // JMC - backport 4597
+
         _resolveHostName( _ctx.comm(), resc_input[irods::RESOURCE_LOCATION].c_str());
     }
 
@@ -3790,43 +3618,40 @@ irods::error db_reg_resc_op(
 
     const auto [current_time_secs, current_time_msecs] = get_current_time();
 
-    cllBindVars[0] = idNum;
-    cllBindVars[1] = resc_input[irods::RESOURCE_NAME].c_str();
-    cllBindVars[2] = ( char* )zone.c_str();
-    cllBindVars[3] = resc_input[irods::RESOURCE_TYPE].c_str();
-    cllBindVars[4] = resc_input[irods::RESOURCE_CLASS].c_str();
-    cllBindVars[5] = resc_input[irods::RESOURCE_LOCATION].c_str();
-    cllBindVars[6] = resc_input[irods::RESOURCE_PATH].c_str();
-    cllBindVars[7] = current_time_secs.c_str();
-    cllBindVars[8] = current_time_secs.c_str();
-    cllBindVars[9] = current_time_msecs.c_str();
-    cllBindVars[10] = resc_input[irods::RESOURCE_CHILDREN].c_str();
-    cllBindVars[11] = resc_input[irods::RESOURCE_CONTEXT].c_str();
-    cllBindVars[12] = resc_input[irods::RESOURCE_PARENT].c_str();
-    cllBindVarCount = 13;
+    try {
+        auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
+        nanodbc::transaction trans{db_conn};
 
-    if ( logSQL != 0 ) {
         log_sql::debug("chlRegResc SQL 4");
+        namespace gq2 = irods::experimental::genquery2;
+        auto insert_stmt = gq2::builder::insert_into("RESOURCE")
+            .set("resc_id", idNum)
+            .set("resc_name", resc_input[irods::RESOURCE_NAME])
+            .set("zone_name", zone)
+            .set("resc_type_name", resc_input[irods::RESOURCE_TYPE])
+            .set("resc_class_name", resc_input[irods::RESOURCE_CLASS])
+            .set("resc_net", resc_input[irods::RESOURCE_LOCATION])
+            .set("resc_def_path", resc_input[irods::RESOURCE_PATH])
+            .set("create_ts", current_time_secs)
+            .set("modify_ts", current_time_secs)
+            .set("modify_ts_millis", current_time_msecs)
+            .set("resc_children", resc_input[irods::RESOURCE_CHILDREN])
+            .set("resc_context", resc_input[irods::RESOURCE_CONTEXT])
+            .set("resc_parent", resc_input[irods::RESOURCE_PARENT])
+            .build();
+        irods::experimental::catalog::execute_catalog(executor, db_conn, insert_stmt);
+
+        trans.commit();
+        return SUCCESS();
     }
-    status = cmlExecuteNoAnswerSql("insert into R_RESC_MAIN (resc_id, resc_name, zone_name, resc_type_name, "
-                                   "resc_class_name, resc_net, resc_def_path, create_ts, modify_ts, modify_ts_millis, "
-                                   "resc_children, resc_context, resc_parent) values (?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                                   &icss);
-
-    if ( status != 0 ) {
-        log_db::info("chlRegResc cmlExectuteNoAnswerSql(insert) failure {}", status);
-        _rollback( "chlRegResc" );
-        return ERROR( status, "cmlExectuteNoAnswerSql(insert) failure" );
+    catch (const nanodbc::database_error& e) {
+        log_db::error("{}: database error: {}", __FUNCTION__, e.what());
+        return ERROR( CAT_SQL_ERR, e.what() );
     }
-
-    status =  cmlExecuteNoAnswerSql( "commit", &icss );
-    if ( status != 0 ) {
-        log_db::info("chlRegResc cmlExecuteNoAnswerSql commit failure {}", status);
-        return ERROR( status, "cmlExecuteNoAnswerSql commit failure" );
+    catch (const std::exception& e) {
+        log_db::error("{}: exception: {}", __FUNCTION__, e.what());
+        return ERROR( SYS_INTERNAL_ERR, e.what() );
     }
-
-    return CODE( status );
-
 } // db_reg_resc_op
 
 // =-=-=-=-=-=-=-
@@ -3903,15 +3728,7 @@ irods::error db_del_child_resc_op(
         return PASS(ret);
     }
 
-    status = cmlExecuteNoAnswerSql( "commit", &icss );
-    if(status != 0) {
-        return ERROR(
-                   status,
-                   "commit failure");
-    }
-
     return SUCCESS();
-
 } // db_del_child_resc_op
 
 // =-=-=-=-=-=-=-
@@ -3936,25 +3753,9 @@ irods::error db_del_resc_op(
                    "null parameter" );
     }
 
-    // =-=-=-=-=-=-=-
-    // get a postgres object from the context
-    /*irods::postgres_object_ptr pg;
-    ret = make_db_ptr( _ctx.fco(), pg );
-    if ( !ret.ok() ) {
-        return PASS( ret );
-
-    }*/
-
-    // =-=-=-=-=-=-=-
-    // extract the icss property
-//        icatSessionStruct icss;
-//        _ctx.prop_map().get< icatSessionStruct >( ICSS_PROP, icss );
-
     int status;
 
-    if ( logSQL != 0 ) {
-        log_sql::debug("chlDelResc");
-    }
+    log_sql::debug("chlDelResc");
 
     if ( !icss.status ) {
         return ERROR( CATALOG_NOT_CONNECTED, "catalog not connected" );
@@ -3968,13 +3769,10 @@ irods::error db_del_resc_op(
     }
 
     // =-=-=-=-=-=-=-
-    // JMC - backport 4629
+
     if ( strncmp( _resc_name, BUNDLE_RESC, strlen( BUNDLE_RESC ) ) == 0 ) {
-        char errMsg[155];
-        snprintf( errMsg, 150,
-                  "%s is a built-in resource needed for bundle operations.",
-                  BUNDLE_RESC );
-        addRErrorMsg( &_ctx.comm()->rError, 0, errMsg );
+        addRErrorMsg( &_ctx.comm()->rError, 0,
+            fmt::format("{} is a built-in resource needed for bundle operations.", BUNDLE_RESC).c_str() );
         return ERROR( CAT_PSEUDO_RESC_MODIFY_DISALLOWED, "cannot delete bundle resc" );
     }
     // =-=-=-=-=-=-=-
@@ -3989,11 +3787,8 @@ irods::error db_del_resc_op(
     }
 
     if( has_data   ) {
-        char errMsg[105];
-        snprintf( errMsg, 100,
-                  "resource '%s' contains one or more dataObjects",
-                  _resc_name );
-        addRErrorMsg( &_ctx.comm()->rError, 0, errMsg );
+        addRErrorMsg( &_ctx.comm()->rError, 0,
+            fmt::format("resource '{}' contains one or more dataObjects", _resc_name).c_str() );
         return ERROR( CAT_RESOURCE_NOT_EMPTY, "resc not empty" );
     }
 
@@ -4003,76 +3798,76 @@ irods::error db_del_resc_op(
         return PASS( ret );
     }
 
-    if ( logSQL != 0 ) {
-        log_sql::debug("chlDelResc SQL 2 ");
-    }
-    char rescId[MAX_NAME_LEN]{};
-    {
-        std::vector<std::string> bindVars;
-        bindVars.push_back( _resc_name );
-        status = cmlGetStringValueFromSql(
-                     "select resc_id from R_RESC_MAIN where resc_name=?",
-                     rescId, MAX_NAME_LEN, bindVars, &icss );
-    }
-    if ( status != 0 ) {
-        if ( status == CAT_SUCCESS_BUT_WITH_NO_INFO ) {
-            char errMsg[105];
-            snprintf( errMsg, 100,
-                      "resource '%s' does not exist",
-                      _resc_name );
-            addRErrorMsg( &_ctx.comm()->rError, 0, errMsg );
-            return ERROR( status, "resource does not exits" );
+    log_sql::debug("chlDelResc SQL 2 ");
+    std::string rescId;
+    try {
+        auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
+        namespace gq2 = irods::experimental::genquery2;
+        using gq2::builder::col;
+
+        auto opt_id = irods::experimental::catalog::query_catalog_string(
+            executor, db_conn,
+            gq2::builder::select({"resc_id"})
+                .from("RESOURCE")
+                .where(col("resc_name") == _resc_name)
+                .build());
+        if (!opt_id) {
+            addRErrorMsg( &_ctx.comm()->rError, 0,
+                fmt::format("resource '{}' does not exist", _resc_name).c_str() );
+            return ERROR( CAT_SUCCESS_BUT_WITH_NO_INFO, "resource does not exist" );
         }
+        rescId = *opt_id;
+    }
+    catch (const std::exception& e) {
+        log_db::error("chlDelResc select resc_id failure {}", e.what());
         _rollback( "chlDelResc" );
-        return ERROR( status, "resource does not exist" );
+        return ERROR( CAT_SQL_ERR, "resource does not exist" );
     }
 
-    if ( _rescHasParentOrChild( rescId ) ) {
-        char errMsg[105];
-        snprintf( errMsg, 100,
-                  "resource '%s' has a parent or child",
-                  _resc_name );
-        addRErrorMsg( &_ctx.comm()->rError, 0, errMsg );
+    if ( _rescHasParentOrChild( rescId.c_str() ) ) {
+        addRErrorMsg( &_ctx.comm()->rError, 0,
+            fmt::format("resource '{}' has a parent or child", _resc_name).c_str() );
         return ERROR( CHILD_EXISTS, "resource has a parent or child" );
     }
 
-    cllBindVars[cllBindVarCount++] = _resc_name;
-    if ( logSQL != 0 ) {
+    try {
+        auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
+        nanodbc::transaction trans{db_conn};
+
+        namespace gq2 = irods::experimental::genquery2;
+        using gq2::builder::col;
         log_sql::debug("chlDelResc SQL 3");
-    }
-    status = cmlExecuteNoAnswerSql(
-                 "delete from R_RESC_MAIN where resc_name=?",
-                 &icss );
-    if ( status != 0 ) {
-        if ( status == CAT_SUCCESS_BUT_WITH_NO_INFO ) {
-            char errMsg[105];
-            snprintf( errMsg, 100,
-                      "resource '%s' does not exist",
-                      _resc_name );
-            addRErrorMsg( &_ctx.comm()->rError, 0, errMsg );
-            return ERROR( status, "resource does not exist" );
+        auto del_resc = gq2::builder::remove_from("RESOURCE")
+            .where(col("resc_name") == _resc_name)
+            .build();
+        const auto affected = irods::experimental::catalog::execute_catalog(executor, db_conn, del_resc).affected_rows;
+        if ( affected == 0 ) {
+            addRErrorMsg( &_ctx.comm()->rError, 0,
+                fmt::format("resource '{}' does not exist", _resc_name).c_str() );
+            return ERROR( CAT_SUCCESS_BUT_WITH_NO_INFO, "resource does not exist" );
         }
-        _rollback( "chlDelResc" );
-        return ERROR( status, "resource does not exist" );
-    }
 
-    /* Remove associated AVUs, if any */
-    if (const auto ec = removeMetaMapAndAVU(rescId); ec < 0) {
-        log_db::warn("[{}:{}] - failed to remove associated AVUs [ec=[{}]]", __func__, __LINE__, ec);
-    }
+        /* Remove associated AVUs, if any */
+        if (const auto ec = removeMetaMapAndAVU(rescId.c_str()); ec < 0) {
+            log_db::warn("[{}:{}] - failed to remove associated AVUs [ec=[{}]]", __func__, __LINE__, ec);
+        }
 
-    if ( _dry_run ) { // JMC
-        _rollback( "chlDelResc" );
-        return CODE( status );
-    }
+        if ( _dry_run ) {
+            trans.rollback();
+            return SUCCESS();
+        }
 
-    status =  cmlExecuteNoAnswerSql( "commit", &icss );
-    if ( status != 0 ) {
-        log_db::info("chlDelResc cmlExecuteNoAnswerSql commit failure {}", status);
-        return ERROR( status, "cmlExecuteNoAnswerSql commit failure" );
+        trans.commit();
+        return SUCCESS();
     }
-    return CODE( status );
-
+    catch (const nanodbc::database_error& e) {
+        log_db::error("{}: database error: {}", __FUNCTION__, e.what());
+        return ERROR( CAT_SQL_ERR, e.what() );
+    }
+    catch (const std::exception& e) {
+        log_db::error("{}: exception: {}", __FUNCTION__, e.what());
+        return ERROR( SYS_INTERNAL_ERR, e.what() );
+    }
 } // db_del_resc_op
 
 // =-=-=-=-=-=-=-
@@ -4086,27 +3881,12 @@ irods::error db_rollback_op(
         return PASS( ret );
     }
 
-    // =-=-=-=-=-=-=-
-    // get a postgres object from the context
-    /*irods::postgres_object_ptr pg;
-    ret = make_db_ptr( _ctx.fco(), pg );
-    if ( !ret.ok() ) {
-        return PASS( ret );
+    log_sql::debug("chlRollback - SQL 1 ");
 
-    }*/
-
-    // =-=-=-=-=-=-=-
-    // extract the icss property
-//        icatSessionStruct icss;
-//        _ctx.prop_map().get< icatSessionStruct >( ICSS_PROP, icss );
-    if ( logSQL != 0 ) {
-        log_sql::debug("chlRollback - SQL 1 ");
-    }
-
-    int status =  cmlExecuteNoAnswerSql( "rollback", &icss );
+    int status = db_execute_no_answer_sql( "rollback", &icss );
     if ( status != 0 ) {
-        log_db::info("chlRollback cmlExecuteNoAnswerSql failure {}", status);
-        return ERROR( status, "chlRollback cmlExecuteNoAnswerSql failure" );
+        log_db::info("chlRollback rollback failure {}", status);
+        return ERROR( status, "chlRollback rollback failure" );
     }
 
     return CODE( status );
@@ -4124,26 +3904,11 @@ irods::error db_commit_op(
         return PASS( ret );
     }
 
-    // =-=-=-=-=-=-=-
-    // get a postgres object from the context
-    /*irods::postgres_object_ptr pg;
-    ret = make_db_ptr( _ctx.fco(), pg );
-    if ( !ret.ok() ) {
-        return PASS( ret );
-
-    }*/
-
-    // =-=-=-=-=-=-=-
-    // extract the icss property
-//        icatSessionStruct icss;
-//        _ctx.prop_map().get< icatSessionStruct >( ICSS_PROP, icss );
-    if ( logSQL != 0 ) {
-        log_sql::debug("chlCommit - SQL 1 ");
-    }
-    int status =  cmlExecuteNoAnswerSql( "commit", &icss );
+    log_sql::debug("chlCommit - SQL 1 ");
+    int status = db_execute_no_answer_sql( "commit", &icss );
     if ( status != 0 ) {
-        log_db::info("chlCommit cmlExecuteNoAnswerSql failure {}", status);
-        return ERROR( status, "chlCommit cmlExecuteNoAnswerSql failure" );
+        log_db::info("chlCommit commit failure {}", status);
+        return ERROR( status, "chlCommit commit failure" );
     }
 
     return CODE( status );
@@ -4171,28 +3936,13 @@ irods::error db_del_user_re_op(
                    "null parameter" );
     }
 
-    // =-=-=-=-=-=-=-
-    // get a postgres object from the context
-    /*irods::postgres_object_ptr pg;
-    ret = make_db_ptr( _ctx.fco(), pg );
-    if ( !ret.ok() ) {
-        return PASS( ret );
-
-    }*/
-
-    // =-=-=-=-=-=-=-
-    // extract the icss property
-//        icatSessionStruct icss;
-//        _ctx.prop_map().get< icatSessionStruct >( ICSS_PROP, icss );
     int status;
     char iValStr[200];
     char zoneToUse[MAX_NAME_LEN];
     char userName2[NAME_LEN];
     char zoneName[NAME_LEN];
 
-    if ( logSQL != 0 ) {
-        log_sql::debug("chlDelUserRE");
-    }
+    log_sql::debug("chlDelUserRE");
 
     if ( _ctx.comm()->clientUser.authInfo.authFlag < LOCAL_PRIV_USER_AUTH ) {
         return ERROR( CAT_INSUFFICIENT_PRIVILEGE_LEVEL, "insufficient privilege" );
@@ -4227,113 +3977,75 @@ irods::error db_del_user_re_op(
     }
 
 
-    if ( logSQL != 0 ) {
+    try {
+        auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
+        nanodbc::transaction trans{db_conn};
+
         log_sql::debug("chlDelUserRE SQL 1 ");
-    }
-    {
-        std::vector<std::string> bindVars;
-        bindVars.push_back( userName2 );
-        bindVars.push_back( zoneToUse );
-        status = cmlGetStringValueFromSql(
-                     "select user_id from R_USER_MAIN where user_name=? and zone_name=?",
-                     iValStr, 200, bindVars, &icss );
-    }
-    if ( status == CAT_SUCCESS_BUT_WITH_NO_INFO ||
-            status == CAT_NO_ROWS_FOUND ) {
-        addRErrorMsg( &_ctx.comm()->rError, 0, "Invalid user" );
-        return ERROR( CAT_INVALID_USER, "invalid user" );
-    }
-    if ( status != 0 ) {
-        _rollback( "chlDelUserRE" );
-        return ERROR( status, "failed getting user from table" );
-    }
+        auto opt_user_id = irods::experimental::catalog::query_catalog_string(
+            executor,
+            db_conn,
+            gq2::builder::select({"user_id"})
+                .from("USER")
+                .where(col("user_name") == userName2 && col("zone_name") == zoneToUse)
+                .build());
+        if (!opt_user_id) {
+            addRErrorMsg( &_ctx.comm()->rError, 0, "Invalid user" );
+            return ERROR( CAT_INVALID_USER, "invalid user" );
+        }
+        rstrcpy(iValStr, opt_user_id->c_str(), sizeof(iValStr));
 
-    cllBindVars[cllBindVarCount++] = userName2;
-    cllBindVars[cllBindVarCount++] = zoneToUse;
-    if ( logSQL != 0 ) {
+        namespace gq2 = irods::experimental::genquery2;
+        using gq2::builder::col;
+
         log_sql::debug("chlDelUserRE SQL 2");
-    }
-    status = cmlExecuteNoAnswerSql(
-                 "delete from R_USER_MAIN where user_name=? and zone_name=?",
-                 &icss );
-    if ( status == CAT_SUCCESS_BUT_WITH_NO_INFO ) {
-        return ERROR( CAT_INVALID_USER, "invalid user" );
-    }
-    if ( status != 0 ) {
-        _rollback( "chlDelUserRE" );
-        return ERROR( status, "cmlExecuteNoAnswerSql for delete user failed" );
-    }
+        auto del_user = gq2::builder::remove_from("USER")
+            .where(col("user_name") == userName2 && col("zone_name") == zoneToUse)
+            .build();
+        const auto affected = irods::experimental::catalog::execute_catalog(executor, db_conn, del_user).affected_rows;
+        if ( affected == 0 ) {
+            return ERROR( CAT_INVALID_USER, "invalid user" );
+        }
 
-    cllBindVars[cllBindVarCount++] = iValStr;
-    if ( logSQL != 0 ) {
         log_sql::debug("chlDelUserRE SQL 3");
-    }
-    status = cmlExecuteNoAnswerSql(
-                 "delete from R_USER_PASSWORD where user_id=?",
-                 &icss );
-    if ( status != 0 && status != CAT_SUCCESS_BUT_WITH_NO_INFO ) {
-        char errMsg[MAX_NAME_LEN + 40];
-        log_db::error("chlDelUserRE delete password failure {}", status);
-        snprintf( errMsg, sizeof errMsg, "Error removing password entry" );
-        addRErrorMsg( &_ctx.comm()->rError, 0, errMsg );
-        _rollback( "chlDelUserRE" );
-        return ERROR( status, "Error removing password entry" );
-    }
+        auto del_pw = gq2::builder::remove_from("USER_PASSWORD")
+            .where(col("user_id") == iValStr)
+            .build();
+        irods::experimental::catalog::execute_catalog(executor, db_conn, del_pw);
 
-    // Remove any ACLs associated with the user
-    cllBindVars[cllBindVarCount++] = iValStr;
+        auto del_access = gq2::builder::remove_from("ACCESS")
+            .where(col("user_id") == iValStr)
+            .build();
+        irods::experimental::catalog::execute_catalog(executor, db_conn, del_access);
 
-    status = cmlExecuteNoAnswerSql("delete from R_OBJT_ACCESS where user_id=?", &icss);
-
-    if (status != 0 && status != CAT_SUCCESS_BUT_WITH_NO_INFO) {
-        log_db::error("chlDelUserRE delete ACL failure {}", status);
-        addRErrorMsg(&_ctx.comm()->rError, 0, "Error removing ACLs");
-        _rollback("chlDelUserRE");
-        return ERROR(status, "Error removing ACLs");
-    }
-
-    /* Remove both the special user_id = group_user_id entry and any
-       other access entries for this user (or group) */
-    cllBindVars[cllBindVarCount++] = iValStr;
-    cllBindVars[cllBindVarCount++] = iValStr;
-    if ( logSQL != 0 ) {
         log_sql::debug("chlDelUserRE SQL 4");
-    }
-    status = cmlExecuteNoAnswerSql(
-                 "delete from R_USER_GROUP where user_id=? or group_user_id=?",
-                 &icss );
-    if ( status != 0 && status != CAT_SUCCESS_BUT_WITH_NO_INFO ) {
-        char errMsg[MAX_NAME_LEN + 40];
-        log_db::info("chlDelUserRE delete user_group entry failure {}", status);
-        snprintf( errMsg, sizeof errMsg, "Error removing user_group entry" );
-        addRErrorMsg( &_ctx.comm()->rError, 0, errMsg );
-        _rollback( "chlDelUserRE" );
-        return ERROR( status, "Error removing user_group entry" );
-    }
+        auto del_ug = gq2::builder::remove_from("USER_GROUP")
+            .where(col("user_id") == iValStr || col("group_user_id") == iValStr)
+            .build();
+        irods::experimental::catalog::execute_catalog(executor, db_conn, del_ug);
 
-    /* Remove any R_USER_AUTH rows for this user */
-    cllBindVars[cllBindVarCount++] = iValStr;
-    if ( logSQL != 0 ) {
-        log_sql::debug("chlDelUserRE SQL 4");
-    }
-    status = cmlExecuteNoAnswerSql(
-                 "delete from R_USER_AUTH where user_id=?",
-                 &icss );
-    if ( status != 0 && status != CAT_SUCCESS_BUT_WITH_NO_INFO ) {
-        char errMsg[MAX_NAME_LEN + 40];
-        log_db::info("chlDelUserRE delete user_auth entries failure {}", status);
-        snprintf( errMsg, sizeof errMsg, "Error removing user_auth entries" );
-        addRErrorMsg( &_ctx.comm()->rError, 0, errMsg );
-        _rollback( "chlDelUserRE" );
-        return ERROR( status, "Error removing user_auth entries" );
-    }
+        log_sql::debug("chlDelUserRE SQL 5");
+        auto del_auth = gq2::builder::remove_from("USER_AUTH")
+            .where(col("user_id") == iValStr)
+            .build();
+        irods::experimental::catalog::execute_catalog(executor, db_conn, del_auth);
 
-    /* Remove associated AVUs, if any */
-    if (const auto ec = removeMetaMapAndAVU(iValStr); ec < 0) {
-        log_db::warn("[{}:{}] - failed to remove associated AVUs [ec=[{}]]", __func__, __LINE__, ec);
-    }
+        /* Remove associated AVUs, if any */
+        if (const auto ec = removeMetaMapAndAVU(iValStr); ec < 0) {
+            log_db::warn("[{}:{}] - failed to remove associated AVUs [ec=[{}]]", __func__, __LINE__, ec);
+        }
 
-    return SUCCESS();
+        trans.commit();
+        return SUCCESS();
+    }
+    catch (const nanodbc::database_error& e) {
+        log_db::error("{}: database error: {}", __FUNCTION__, e.what());
+        return ERROR( CAT_SQL_ERR, e.what() );
+    }
+    catch (const std::exception& e) {
+        log_db::error("{}: exception: {}", __FUNCTION__, e.what());
+        return ERROR( SYS_INTERNAL_ERR, e.what() );
+    }
 
 } // db_del_user_re_op
 
@@ -4358,49 +4070,30 @@ irods::error db_reg_coll_by_admin_op(
                    "null parameter" );
     }
 
-    // =-=-=-=-=-=-=-
-    // get a postgres object from the context
-    /*irods::postgres_object_ptr pg;
-    ret = make_db_ptr( _ctx.fco(), pg );
-    if ( !ret.ok() ) {
-        return PASS( ret );
-
-    }*/
-
-    // =-=-=-=-=-=-=-
-    // extract the icss property
-//        icatSessionStruct icss;
-//        _ctx.prop_map().get< icatSessionStruct >( ICSS_PROP, icss );
     char myTime[50];
     char logicalEndName[MAX_NAME_LEN];
     char logicalParentDirName[MAX_NAME_LEN];
-    rodsLong_t iVal;
-    char collIdNum[MAX_NAME_LEN];
-    char nextStr[MAX_NAME_LEN];
-    char currStr[MAX_NAME_LEN];
-    char currStr2[MAX_SQL_SIZE];
     int status;
-    char tSQL[MAX_SQL_SIZE];
     char userName[NAME_LEN];
     char zoneName[NAME_LEN];
 
-    if ( logSQL != 0 ) {
-        log_sql::debug("chlRegCollByAdmin");
-    }
+    log_sql::debug("chlRegCollByAdmin");
 
     if ( !icss.status ) {
         return ERROR( CATALOG_NOT_CONNECTED, "catalog not connected" );
     }
 
     // =-=-=-=-=-=-=-
-    // JMC - backport 4772
+
+    auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
+
     if ( _ctx.comm()->clientUser.authInfo.authFlag < LOCAL_PRIV_USER_AUTH ||
             _ctx.comm()->proxyUser.authInfo.authFlag < LOCAL_PRIV_USER_AUTH ) {
-        int status2;
-        status2  = cmlCheckGroupAdminAccess(
-                       _ctx.comm()->clientUser.userName,
-                       _ctx.comm()->clientUser.rodsZone,
-                       "", &icss );
+        int status2 = irods::experimental::catalog::access_control::check_group_admin_access(
+            executor, db_conn,
+            _ctx.comm()->clientUser.userName,
+            _ctx.comm()->clientUser.rodsZone,
+            "" );
         if ( status2 != 0 ) {
             return ERROR( status2, "no group admin access" );
         }
@@ -4422,40 +4115,28 @@ irods::error db_reg_coll_by_admin_op(
     }
 
     /* Check that the parent collection exists */
-    if ( logSQL != 0 ) {
-        log_sql::debug("chlRegCollByAdmin SQL 1 ");
-    }
-    {
-        std::vector<std::string> bindVars;
-        bindVars.push_back( logicalParentDirName );
-        status = cmlGetIntegerValueFromSql(
-                     "select coll_id from R_COLL_MAIN where coll_name=?",
-                     &iVal, bindVars, &icss );
-    }
-    if ( status < 0 ) {
-        char errMsg[MAX_NAME_LEN + 40];
-        if ( status == CAT_NO_ROWS_FOUND ) {
-            snprintf( errMsg, sizeof errMsg,
-                      "collection '%s' is unknown, cannot create %s under it",
-                      logicalParentDirName, logicalEndName );
-            addRErrorMsg( &_ctx.comm()->rError, 0, errMsg );
-            return ERROR( status, "collection is unknown" );
-        }
-        _rollback( "chlRegCollByAdmin" );
-        return ERROR( status, "collection not found" );
+    log_sql::debug("chlRegCollByAdmin SQL 1 ");
+    auto opt_parent_id = irods::experimental::catalog::query_catalog_integer(
+        executor,
+        db_conn,
+        gq2::builder::select({"coll_id"})
+            .from("COLLECTION")
+            .where(col("coll_name") == logicalParentDirName)
+            .build());
+    if (!opt_parent_id) {
+        addRErrorMsg( &_ctx.comm()->rError, 0,
+            fmt::format("collection '{}' is unknown, cannot create {} under it",
+                        logicalParentDirName, logicalEndName).c_str() );
+        return ERROR( CAT_NO_ROWS_FOUND, "collection is unknown" );
     }
 
-    snprintf( collIdNum, MAX_NAME_LEN, "%d", status );
-
-    /* String to get next sequence item for objects */
-    cllNextValueString( "R_ObjectID", nextStr, MAX_NAME_LEN );
-
-    if ( logSQL != 0 ) {
-        log_sql::debug("chlRegCollByAdmin SQL 2");
+    /* Get next sequence item for objects */
+    const auto seq_val = executor.get_next_sequence_value(db_conn, "R_ObjectID");
+    if (seq_val < 0) {
+        log_db::info("chlRegCollByAdmin get_next_sequence_value failure {}", seq_val);
+        return ERROR(seq_val, "get_next_sequence_value failure");
     }
-    snprintf( tSQL, MAX_SQL_SIZE,
-              "insert into R_COLL_MAIN (coll_id, parent_coll_name, coll_name, coll_owner_name, coll_owner_zone, coll_type, coll_info1, coll_info2, create_ts, modify_ts) values (%s, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-              nextStr );
+    const std::string new_coll_id_str = std::to_string(seq_val);
 
     getNowStr( myTime );
 
@@ -4474,64 +4155,64 @@ irods::error db_reg_coll_by_admin_op(
         rstrcpy( zoneName, zone.c_str(), NAME_LEN );
     }
 
-    cllBindVars[cllBindVarCount++] = logicalParentDirName;
-    cllBindVars[cllBindVarCount++] = _coll_info->collName;
-    cllBindVars[cllBindVarCount++] = userName;
-    if ( strlen( _coll_info->collOwnerZone ) > 0 ) {
-        cllBindVars[cllBindVarCount++] = _coll_info->collOwnerZone;
-    }
-    else {
-        cllBindVars[cllBindVarCount++] = zoneName;
-    }
-    cllBindVars[cllBindVarCount++] = _coll_info->collType;
-    cllBindVars[cllBindVarCount++] = _coll_info->collInfo1;
-    cllBindVars[cllBindVarCount++] = _coll_info->collInfo2;
-    cllBindVars[cllBindVarCount++] = myTime;
-    cllBindVars[cllBindVarCount++] = myTime;
-    if ( logSQL != 0 ) {
-        log_sql::debug("chlRegCollByAdmin SQL 3");
-    }
-    status =  cmlExecuteNoAnswerSql( tSQL,
-                                     &icss );
-    if ( status != 0 ) {
-        char errMsg[105];
-        if ( status == CATALOG_ALREADY_HAS_ITEM_BY_THAT_NAME ) {
-            snprintf( errMsg, 100, "Error %d %s",
-                      status,
-                      "CATALOG_ALREADY_HAS_ITEM_BY_THAT_NAME"
-                    );
-            addRErrorMsg( &_ctx.comm()->rError, 0, errMsg );
+    const std::string owner_zone = strlen(_coll_info->collOwnerZone) > 0 ? _coll_info->collOwnerZone : zoneName;
+
+    try {
+        nanodbc::transaction trans{db_conn};
+
+        log_sql::debug("chlRegCollByAdmin SQL 2");
+        namespace gq2 = irods::experimental::genquery2;
+        auto insert_coll = gq2::builder::insert_into("COLLECTION")
+            .set("coll_id", new_coll_id_str)
+            .set("parent_coll_name", logicalParentDirName)
+            .set("coll_name", _coll_info->collName)
+            .set("coll_owner_name", userName)
+            .set("coll_owner_zone", owner_zone)
+            .set("coll_type", _coll_info->collType)
+            .set("coll_info1", _coll_info->collInfo1)
+            .set("coll_info2", _coll_info->collInfo2)
+            .set("create_ts", myTime)
+            .set("modify_ts", myTime)
+            .build();
+        irods::experimental::catalog::execute_catalog(executor, db_conn, insert_coll);
+
+        log_sql::debug("chlRegCollByAdmin SQL 4");
+        const auto opt_user_id = irods::experimental::catalog::query_catalog_integer(
+            executor,
+            db_conn,
+            gq2::builder::select({"user_id"})
+                .from("USER")
+                .where(col("user_name") == userName && col("zone_name") == zoneName)
+                .build());
+        const auto opt_token_id = irods::experimental::catalog::query_catalog_integer(
+            executor,
+            db_conn,
+            gq2::builder::select({"token_id"})
+                .from("TOKEN")
+                .where(col("token_namespace") == "access_type" && col("token_name") == ACCESS_OWN)
+                .build());
+        if (opt_user_id && opt_token_id) {
+            auto ins_acc = gq2::builder::insert_into("ACCESS")
+                .set("object_id", new_coll_id_str)
+                .set("user_id", std::to_string(*opt_user_id))
+                .set("access_type_id", std::to_string(*opt_token_id))
+                .set("create_ts", myTime)
+                .set("modify_ts", myTime)
+                .build();
+            irods::experimental::catalog::execute_catalog(executor, db_conn, ins_acc);
         }
 
-        log_db::info("chlRegCollByAdmin cmlExecuteNoAnswerSQL(insert) failure {}", status);
-        _rollback( "chlRegCollByAdmin" );
-        return ERROR( status, "cmlExecuteNoAnswerSQL(insert) failure" );
+        trans.commit();
+        return SUCCESS();
     }
-
-    /* String to get current sequence item for objects */
-    cllCurrentValueString( "R_ObjectID", currStr, MAX_NAME_LEN );
-    snprintf( currStr2, MAX_SQL_SIZE, " %s ", currStr );
-
-    cllBindVars[cllBindVarCount++] = userName;
-    cllBindVars[cllBindVarCount++] = zoneName;
-    cllBindVars[cllBindVarCount++] = ACCESS_OWN;
-    cllBindVars[cllBindVarCount++] = myTime;
-    cllBindVars[cllBindVarCount++] = myTime;
-
-    snprintf( tSQL, MAX_SQL_SIZE,
-              "insert into R_OBJT_ACCESS values (%s, (select user_id from R_USER_MAIN where user_name=? and zone_name=?), (select token_id from R_TOKN_MAIN where token_namespace = 'access_type' and token_name = ?), ?, ?)",
-              currStr2 );
-    if ( logSQL != 0 ) {
-        log_sql::debug("chlRegCollByAdmin SQL 4");
+    catch (const nanodbc::database_error& e) {
+        log_db::error("{}: database error: {}", __func__, e.what());
+        return ERROR(CATALOG_ALREADY_HAS_ITEM_BY_THAT_NAME, "CATALOG_ALREADY_HAS_ITEM_BY_THAT_NAME");
     }
-    status =  cmlExecuteNoAnswerSql( tSQL, &icss );
-    if ( status != 0 ) {
-        log_db::info("chlRegCollByAdmin cmlExecuteNoAnswerSql(insert access) failure {}", status);
-        _rollback( "chlRegCollByAdmin" );
-        return ERROR( status, "cmlExecuteNoAnswerSql(insert access) failure" );
+    catch (const std::exception& e) {
+        log_db::error("{}: exception: {}", __func__, e.what());
+        return ERROR(SYS_INTERNAL_ERR, e.what());
     }
-
-    return SUCCESS();
 
 } // db_reg_coll_by_admin_op
 
@@ -4556,34 +4237,13 @@ irods::error db_reg_coll_op(
                    "null parameter" );
     }
 
-    // =-=-=-=-=-=-=-
-    // get a postgres object from the context
-    /*irods::postgres_object_ptr pg;
-    ret = make_db_ptr( _ctx.fco(), pg );
-    if ( !ret.ok() ) {
-        return PASS( ret );
-
-    }*/
-
-    // =-=-=-=-=-=-=-
-    // extract the icss property
-//        icatSessionStruct icss;
-//        _ctx.prop_map().get< icatSessionStruct >( ICSS_PROP, icss );
     char myTime[50];
     char logicalEndName[MAX_NAME_LEN];
     char logicalParentDirName[MAX_NAME_LEN];
-    rodsLong_t iVal;
-    char collIdNum[MAX_NAME_LEN];
-    char nextStr[MAX_NAME_LEN];
-    char currStr[MAX_NAME_LEN];
-    char currStr2[MAX_SQL_SIZE];
     rodsLong_t status;
-    char tSQL[MAX_SQL_SIZE];
     int inheritFlag;
 
-    if ( logSQL != 0 ) {
-        log_sql::debug("chlRegColl");
-    }
+    log_sql::debug("chlRegColl");
 
     if ( !icss.status ) {
         return ERROR( CATALOG_NOT_CONNECTED, "catalog not connected" );
@@ -4602,156 +4262,148 @@ irods::error db_reg_coll_op(
 
     /* Check that the parent collection exists and user has write permission,
        and get the collectionID.  Also get the inherit flag */
-    if ( logSQL != 0 ) {
-        log_sql::debug("chlRegColl SQL 1 ");
-    }
+    log_sql::debug("chlRegColl SQL 1 ");
 
-    status = cmlCheckDirAndGetInheritFlag( logicalParentDirName,
-                                           _ctx.comm()->clientUser.userName,
-                                           _ctx.comm()->clientUser.rodsZone,
-                                           ACCESS_MODIFY_OBJECT, &inheritFlag,
-                                           mySessionTicket, mySessionClientAddr, &icss );
+    {
+        auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
+        status = irods::experimental::catalog::access_control::check_collection_access_and_inherit(
+            executor, db_conn,
+            logicalParentDirName,
+            _ctx.comm()->clientUser.userName,
+            _ctx.comm()->clientUser.rodsZone,
+            ACCESS_MODIFY_OBJECT, &inheritFlag,
+            mySessionTicket, mySessionClientAddr );
+    }
     if ( status < 0 ) {
-        char errMsg[105];
         if ( status == CAT_UNKNOWN_COLLECTION ) {
-            snprintf( errMsg, 100, "collection '%s' is unknown",
-                      logicalParentDirName );
-            addRErrorMsg( &_ctx.comm()->rError, 0, errMsg );
+            addRErrorMsg( &_ctx.comm()->rError, 0,
+                          fmt::format( "collection '{}' is unknown", logicalParentDirName ).c_str() );
             return ERROR( status, "collection is unknown" );
         }
         _rollback( "chlRegColl" );
-        return ERROR( status, "cmlCheckDirAndGetInheritFlag failed" );
+        return ERROR( status, "check_collection_access_and_inherit failed" );
     }
-    snprintf( collIdNum, MAX_NAME_LEN, "%lld", status );
+    const auto collIdNum = std::to_string( status );
 
     /* Check that the path is not already a dataObj */
-    if ( logSQL != 0 ) {
-        log_sql::debug("chlRegColl SQL 2");
-    }
+    log_sql::debug("chlRegColl SQL 2");
     {
-        std::vector<std::string> bindVars;
-        bindVars.push_back( logicalEndName );
-        bindVars.push_back( collIdNum );
-        status = cmlGetIntegerValueFromSql(
-                     "select data_id from R_DATA_MAIN where data_name=? and coll_id=?",
-                     &iVal, bindVars, &icss );
+        auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
+        auto opt_data_id = irods::experimental::catalog::query_catalog_integer(
+            executor,
+            db_conn,
+            gq2::builder::select({"data_id"})
+                .from("DATA_OBJECT")
+                .where(col("data_name") == logicalEndName && col("coll_id") == collIdNum)
+                .build());
+        if ( opt_data_id ) {
+            return ERROR( CAT_NAME_EXISTS_AS_DATAOBJ, "data obj already exists" );
+        }
+
+        const auto seq_val = executor.get_next_sequence_value(db_conn, "R_ObjectID");
+        if ( seq_val < 0 ) {
+            log_db::info("chlRegColl get_next_sequence_value failure {}", seq_val);
+            return ERROR( seq_val, "get_next_sequence_value failure" );
+        }
+        status = seq_val;
     }
 
-    if ( status == 0 ) {
-        return ERROR( CAT_NAME_EXISTS_AS_DATAOBJ, "data obj already exists" );
-    }
-
-
-    /* String to get next sequence item for objects */
-    cllNextValueString( "R_ObjectID", nextStr, MAX_NAME_LEN );
+    const rodsLong_t new_coll_id = status;
+    const std::string new_coll_id_str = std::to_string( new_coll_id );
 
     getNowStr( myTime );
 
-    cllBindVars[cllBindVarCount++] = logicalParentDirName;
-    cllBindVars[cllBindVarCount++] = _coll_info->collName;
-    cllBindVars[cllBindVarCount++] = _ctx.comm()->clientUser.userName;
-    cllBindVars[cllBindVarCount++] = _ctx.comm()->clientUser.rodsZone;
-    cllBindVars[cllBindVarCount++] = _coll_info->collType;
-    cllBindVars[cllBindVarCount++] = _coll_info->collInfo1;
-    cllBindVars[cllBindVarCount++] = _coll_info->collInfo2;
-    cllBindVars[cllBindVarCount++] = myTime;
-    cllBindVars[cllBindVarCount++] = myTime;
-    if ( logSQL != 0 ) {
+    try {
+        auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
+        nanodbc::transaction trans{db_conn};
+
         log_sql::debug("chlRegColl SQL 3");
-    }
-    snprintf( tSQL, MAX_SQL_SIZE,
-              "insert into R_COLL_MAIN (coll_id, parent_coll_name, coll_name, coll_owner_name, coll_owner_zone, coll_type, coll_info1, coll_info2, create_ts, modify_ts) values (%s, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-              nextStr );
-    status =  cmlExecuteNoAnswerSql( tSQL,
-                                     &icss );
-    if ( status != 0 ) {
-        log_db::info("chlRegColl cmlExecuteNoAnswerSql(insert) failure {}", status);
-        _rollback( "chlRegColl" );
-        return ERROR( status, "cmlExecuteNoAnswerSql(insert) failure" );
-    }
+        namespace gq2 = irods::experimental::genquery2;
+        using gq2::builder::col;
+        auto insert_coll = gq2::builder::insert_into("COLLECTION")
+            .set("coll_id", new_coll_id_str)
+            .set("parent_coll_name", logicalParentDirName)
+            .set("coll_name", _coll_info->collName)
+            .set("coll_owner_name", _ctx.comm()->clientUser.userName)
+            .set("coll_owner_zone", _ctx.comm()->clientUser.rodsZone)
+            .set("coll_type", _coll_info->collType)
+            .set("coll_info1", _coll_info->collInfo1)
+            .set("coll_info2", _coll_info->collInfo2)
+            .set("create_ts", myTime)
+            .set("modify_ts", myTime)
+            .build();
+        irods::experimental::catalog::execute_catalog(executor, db_conn, insert_coll);
 
-    /* String to get current sequence item for objects */
-    cllCurrentValueString( "R_ObjectID", currStr, MAX_NAME_LEN );
-    snprintf( currStr2, MAX_SQL_SIZE, " %s ", currStr );
-
-    if ( inheritFlag ) {
-        /* If inherit is set (sticky bit), then add access rows for this
-           collection that match those of the parent collection */
-        cllBindVars[0] = myTime;
-        cllBindVars[1] = myTime;
-        cllBindVars[2] = collIdNum;
-        cllBindVarCount = 3;
-        if ( logSQL != 0 ) {
+        if ( inheritFlag ) {
             log_sql::debug("chlRegColl SQL 4");
-        }
-        snprintf( tSQL, MAX_SQL_SIZE,
-                  "insert into R_OBJT_ACCESS (object_id, user_id, access_type_id, create_ts, modify_ts) (select %s, user_id, access_type_id, ?, ? from R_OBJT_ACCESS where object_id = ?)",
-                  currStr2 );
-        status =  cmlExecuteNoAnswerSql( tSQL, &icss );
-
-        if ( status == 0 ) {
-            if ( logSQL != 0 ) {
-                log_sql::debug("chlRegColl SQL 5");
+            auto q_res = irods::experimental::catalog::execute_catalog(
+                executor, db_conn,
+                gq2::builder::select({"user_id", "access_type_id"})
+                    .from("ACCESS")
+                    .where(col("object_id") == collIdNum)
+                    .build());
+            if (q_res.query_result) {
+                while (q_res.query_result->next()) {
+                    const auto uid = q_res.query_result->get<std::string>(0);
+                    const auto atid = q_res.query_result->get<std::string>(1);
+                    auto ins_acc = gq2::builder::insert_into("ACCESS")
+                        .set("object_id", new_coll_id_str)
+                        .set("user_id", uid)
+                        .set("access_type_id", atid)
+                        .set("create_ts", myTime)
+                        .set("modify_ts", myTime)
+                        .build();
+                    irods::experimental::catalog::execute_catalog(executor, db_conn, ins_acc);
+                }
             }
-#if ORA_ICAT
-            char newCollectionID[MAX_NAME_LEN];
-            /*
-               For Oracle, we can't use currStr2 string in a where clause so
-               do another query to get the new collection id.
-            */
-            status = cmlGetCurrentSeqVal( &icss );
 
-            if ( status > 0 ) {
-                /* And then use it in the where clause for the update */
-                snprintf( newCollectionID, MAX_NAME_LEN, "%lld", status );
-                cllBindVars[cllBindVarCount++] = "1";
-                cllBindVars[cllBindVarCount++] = myTime;
-                cllBindVars[cllBindVarCount++] = newCollectionID;
-                status =  cmlExecuteNoAnswerSql(
-                              "update R_COLL_MAIN set coll_inheritance=?, modify_ts=? where coll_id=?",
-                              &icss );
-            }
-#else
-            /*
-              For Postgres we can, use the currStr2 to get the current id
-              and save a SQL interaction.
-            */
-            cllBindVars[cllBindVarCount++] = "1";
-            cllBindVars[cllBindVarCount++] = myTime;
-            snprintf( tSQL, MAX_SQL_SIZE,
-                      "update R_COLL_MAIN set coll_inheritance=?, modify_ts=? where coll_id=(select %s)",
-                      currStr2 );
-            status =  cmlExecuteNoAnswerSql( tSQL, &icss );
-#endif
+            log_sql::debug("chlRegColl SQL 5");
+            auto update_inherit = gq2::builder::update("COLLECTION")
+                .set("coll_inheritance", "1")
+                .set("modify_ts", myTime)
+                .where(col("coll_id") == new_coll_id_str)
+                .build();
+            irods::experimental::catalog::execute_catalog(executor, db_conn, update_inherit);
         }
-    }
-    else {
-        cllBindVars[cllBindVarCount++] = _ctx.comm()->clientUser.userName;
-        cllBindVars[cllBindVarCount++] = _ctx.comm()->clientUser.rodsZone;
-        cllBindVars[cllBindVarCount++] = ACCESS_OWN;
-        cllBindVars[cllBindVarCount++] = myTime;
-        cllBindVars[cllBindVarCount++] = myTime;
-        snprintf( tSQL, MAX_SQL_SIZE,
-                  "insert into R_OBJT_ACCESS values (%s, (select user_id from R_USER_MAIN where user_name=? and zone_name=?), (select token_id from R_TOKN_MAIN where token_namespace = 'access_type' and token_name = ?), ?, ?)",
-                  currStr2 );
-        if ( logSQL != 0 ) {
+        else {
             log_sql::debug("chlRegColl SQL 6");
+            const auto opt_user_id = irods::experimental::catalog::query_catalog_integer(
+                executor,
+                db_conn,
+                gq2::builder::select({"user_id"})
+                    .from("USER")
+                    .where(col("user_name") == _ctx.comm()->clientUser.userName && col("zone_name") == _ctx.comm()->clientUser.rodsZone)
+                    .build());
+            const auto opt_token_id = irods::experimental::catalog::query_catalog_integer(
+                executor,
+                db_conn,
+                gq2::builder::select({"token_id"})
+                    .from("TOKEN")
+                    .where(col("token_namespace") == "access_type" && col("token_name") == ACCESS_OWN)
+                    .build());
+            if (opt_user_id && opt_token_id) {
+                auto ins_acc = gq2::builder::insert_into("ACCESS")
+                    .set("object_id", new_coll_id_str)
+                    .set("user_id", std::to_string(*opt_user_id))
+                    .set("access_type_id", std::to_string(*opt_token_id))
+                    .set("create_ts", myTime)
+                    .set("modify_ts", myTime)
+                    .build();
+                irods::experimental::catalog::execute_catalog(executor, db_conn, ins_acc);
+            }
         }
-        status =  cmlExecuteNoAnswerSql( tSQL, &icss );
-    }
-    if ( status != 0 ) {
-        log_db::info("chlRegColl cmlExecuteNoAnswerSql(insert access) failure {}", status);
-        _rollback( "chlRegColl" );
-        return ERROR( status, "cmlExecuteNoAnswerSql(insert access) failure" );
-    }
 
-    status =  cmlExecuteNoAnswerSql( "commit", &icss );
-    if ( status != 0 ) {
-        log_db::info("chlRegColl cmlExecuteNoAnswerSql commit failure {}", status);
-        return ERROR( status, "cmlExecuteNoAnswerSql commit failure" );
+        trans.commit();
+        return SUCCESS();
     }
-
-    return CODE( status );
+    catch (const nanodbc::database_error& e) {
+        log_db::error("{}: database error: {}", __FUNCTION__, e.what());
+        return ERROR( CAT_SQL_ERR, e.what() );
+    }
+    catch (const std::exception& e) {
+        log_db::error("{}: exception: {}", __FUNCTION__, e.what());
+        return ERROR( SYS_INTERNAL_ERR, e.what() );
+    }
 
 } // db_reg_coll_op
 
@@ -4776,42 +4428,30 @@ irods::error db_mod_coll_op(
                    "null parameter" );
     }
 
-    // =-=-=-=-=-=-=-
-    // get a postgres object from the context
-    /*irods::postgres_object_ptr pg;
-    ret = make_db_ptr( _ctx.fco(), pg );
-    if ( !ret.ok() ) {
-        return PASS( ret );
-
-    }*/
-
-    // =-=-=-=-=-=-=-
-    // extract the icss property
-//        icatSessionStruct icss;
-//        _ctx.prop_map().get< icatSessionStruct >( ICSS_PROP, icss );
     char myTime[50];
-    rodsLong_t status;
     int count;
     rodsLong_t iVal;
 
-    if ( logSQL != 0 ) {
-        log_sql::debug("chlModColl");
-    }
+    log_sql::debug("chlModColl");
 
     if ( !icss.status ) {
         return ERROR( CATALOG_NOT_CONNECTED, "catalog not connected" );
     }
 
     /* Check that collection exists and user has write permission */
-    iVal = cmlCheckDir( _coll_info->collName,  _ctx.comm()->clientUser.userName,
-                        _ctx.comm()->clientUser.rodsZone,
-                        ACCESS_MODIFY_OBJECT, &icss );
+    {
+        auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
+        iVal = irods::experimental::catalog::access_control::check_collection_access(
+            executor, db_conn,
+            _coll_info->collName,  _ctx.comm()->clientUser.userName,
+            _ctx.comm()->clientUser.rodsZone,
+            ACCESS_MODIFY_OBJECT );
+    }
 
     if ( iVal < 0 ) {
         if ( iVal == CAT_UNKNOWN_COLLECTION ) {
-            std::stringstream errMsg;
-            errMsg << "collection '" << _coll_info->collName << "' is unknown";
-            addRErrorMsg( &_ctx.comm()->rError, 0, errMsg.str().c_str() );
+            addRErrorMsg( &_ctx.comm()->rError, 0,
+                          fmt::format( "collection '{}' is unknown", _coll_info->collName ).c_str() );
             return ERROR( CAT_UNKNOWN_COLLECTION, "unknown collection" );
         }
 
@@ -4821,9 +4461,8 @@ irods::error db_mod_coll_op(
                 iVal = 0;
             }
             else {
-                std::stringstream errMsg;
-                errMsg << "no permission to update collection '" << _coll_info->collName << "'";
-                addRErrorMsg( &_ctx.comm()->rError, 0, errMsg.str().c_str() );
+                addRErrorMsg( &_ctx.comm()->rError, 0,
+                              fmt::format( "no permission to update collection '{}'", _coll_info->collName ).c_str() );
                 return ERROR( CAT_NO_ACCESS_PERMISSION, "no permission" );
             }
         }
@@ -4831,88 +4470,79 @@ irods::error db_mod_coll_op(
         // If client privileges are elevated, then iVal must be checked again because
         // it could have been modified (e.g. irods_rule_engine_plugin-update_collection_mtime).
         if (iVal < 0) {
-            return ERROR( iVal, "cmlCheckDir failed" );
+            return ERROR( iVal, "check_collection_access failed" );
         }
     }
 
-    std::string tSQL( "update R_COLL_MAIN set " );
+    namespace gq2 = irods::experimental::genquery2;
+    using gq2::builder::col;
+
+    auto upd = gq2::builder::update("COLLECTION");
     count = 0;
 
     if ( strlen( _coll_info->collType ) > 0 ) {
         if ( strcmp( _coll_info->collType, "NULL_SPECIAL_VALUE" ) == 0 ) {
-            /* A special value to indicate NULL */
-            cllBindVars[cllBindVarCount++] = "";
+            upd.set("coll_type", "");
         }
         else {
-            cllBindVars[cllBindVarCount++] = _coll_info->collType;
+            upd.set("coll_type", _coll_info->collType);
         }
-        tSQL += "coll_type=? ";
         count++;
     }
 
     if ( strlen( _coll_info->collInfo1 ) > 0 ) {
         if ( strcmp( _coll_info->collInfo1, "NULL_SPECIAL_VALUE" ) == 0 ) {
-            /* A special value to indicate NULL */
-            cllBindVars[cllBindVarCount++] = "";
+            upd.set("coll_info1", "");
         }
         else {
-            cllBindVars[cllBindVarCount++] = _coll_info->collInfo1;
+            upd.set("coll_info1", _coll_info->collInfo1);
         }
-        if ( count > 0 ) {
-            tSQL += ",";
-        }
-        tSQL += "coll_info1=? ";
         count++;
     }
 
     if ( strlen( _coll_info->collInfo2 ) > 0 ) {
         if ( strcmp( _coll_info->collInfo2, "NULL_SPECIAL_VALUE" ) == 0 ) {
-            /* A special value to indicate NULL */
-            cllBindVars[cllBindVarCount++] = "";
+            upd.set("coll_info2", "");
         }
         else {
-            cllBindVars[cllBindVarCount++] = _coll_info->collInfo2;
+            upd.set("coll_info2", _coll_info->collInfo2);
         }
-        if ( count > 0 ) {
-            tSQL += ",";
-        }
-        tSQL += "coll_info2=? ";
         count++;
     }
 
     if (strlen(_coll_info->collModify) > 0) {
-        cllBindVars[cllBindVarCount++] = _coll_info->collModify;
-
-        if (count > 0) {
-            tSQL += ',';
-        }
-
+        upd.set("modify_ts", _coll_info->collModify);
         ++count;
     }
     else {
-        tSQL += ',';
         getNowStr( myTime );
-        cllBindVars[cllBindVarCount++] = myTime;
+        upd.set("modify_ts", myTime);
     }
 
     if ( count == 0 ) {
         return ERROR( CAT_INVALID_ARGUMENT, "count is 0" );
     }
 
-    cllBindVars[cllBindVarCount++] = _coll_info->collName;
-    tSQL += " modify_ts=? where coll_name=?";
+    upd.where(col("coll_name") == _coll_info->collName);
+    auto stmt = upd.build();
 
-    if ( logSQL != 0 ) {
+    try {
+        auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
+        nanodbc::transaction trans{db_conn};
+
         log_sql::debug("chlModColl SQL 1");
+        irods::experimental::catalog::execute_catalog(executor, db_conn, stmt);
+        trans.commit();
+        return SUCCESS();
     }
-    status =  cmlExecuteNoAnswerSql( tSQL.c_str(),
-                                     &icss );
-    if ( status != 0 ) {
-        log_db::info("chlModColl cmlExecuteNoAnswerSQL(update) failure {}", status);
-        return ERROR( status, "cmlExecuteNoAnswerSQL(update) failure" );
+    catch (const nanodbc::database_error& e) {
+        log_db::error("{}: database error: {}", __FUNCTION__, e.what());
+        return ERROR( CAT_SQL_ERR, e.what() );
     }
-
-    return SUCCESS();
+    catch (const std::exception& e) {
+        log_db::error("{}: exception: {}", __FUNCTION__, e.what());
+        return ERROR( SYS_INTERNAL_ERR, e.what() );
+    }
 
 } // db_mod_coll_op
 
@@ -4943,27 +4573,9 @@ irods::error db_reg_zone_op(
                    "null parameter" );
     }
 
-    // =-=-=-=-=-=-=-
-    // get a postgres object from the context
-    /*irods::postgres_object_ptr pg;
-    ret = make_db_ptr( _ctx.fco(), pg );
-    if ( !ret.ok() ) {
-        return PASS( ret );
-
-    }*/
-
-    // =-=-=-=-=-=-=-
-    // extract the icss property
-//        icatSessionStruct icss;
-//        _ctx.prop_map().get< icatSessionStruct >( ICSS_PROP, icss );
-    char nextStr[MAX_NAME_LEN];
-    char tSQL[MAX_SQL_SIZE];
-    int status;
     char myTime[50];
 
-    if ( logSQL != 0 ) {
-        log_sql::debug("chlRegZone");
-    }
+    log_sql::debug("chlRegZone");
 
     if ( !icss.status ) {
         return ERROR( CATALOG_NOT_CONNECTED, "catalog not connected" );
@@ -4994,38 +4606,42 @@ irods::error db_reg_zone_op(
         return ret;
     }
 
-    /* String to get next sequence item for objects */
-    cllNextValueString( "R_ObjectID", nextStr, MAX_NAME_LEN );
-
     getNowStr( myTime );
 
-    if ( logSQL != 0 ) {
+    try {
+        auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
+        nanodbc::transaction trans{db_conn};
+
+        const auto seqNum = executor.get_next_sequence_value(db_conn, "R_ObjectID");
+        if (seqNum < 0) {
+            return ERROR(seqNum, "get_next_sequence_value failed");
+        }
+        const auto zone_id_str = std::to_string(seqNum);
+
         log_sql::debug("chlRegZone SQL 1 ");
-    }
-    cllBindVars[cllBindVarCount++] = _zone_name;
-    cllBindVars[cllBindVarCount++] = _zone_conn_info;
-    cllBindVars[cllBindVarCount++] = _zone_comment;
-    cllBindVars[cllBindVarCount++] = myTime;
-    cllBindVars[cllBindVarCount++] = myTime;
+        namespace gq2 = irods::experimental::genquery2;
+        auto ins = gq2::builder::insert_into("ZONE")
+            .set("zone_id", zone_id_str)
+            .set("zone_name", _zone_name)
+            .set("zone_type_name", "remote")
+            .set("zone_conn_string", _zone_conn_info)
+            .set("r_comment", _zone_comment)
+            .set("create_ts", myTime)
+            .set("modify_ts", myTime)
+            .build();
+        irods::experimental::catalog::execute_catalog(executor, db_conn, ins);
 
-    snprintf( tSQL, MAX_SQL_SIZE,
-              "insert into R_ZONE_MAIN (zone_id, zone_name, zone_type_name, zone_conn_string, r_comment, create_ts, modify_ts) values (%s, ?, 'remote', ?, ?, ?, ?)",
-              nextStr );
-    status =  cmlExecuteNoAnswerSql( tSQL,
-                                     &icss );
-    if ( status != 0 ) {
-        log_db::info("chlRegZone cmlExecuteNoAnswerSql(insert) failure {}", status);
-        _rollback( "chlRegZone" );
-        return ERROR( status, "cmlExecuteNoAnswerSql(insert) failure" );
+        trans.commit();
+        return SUCCESS();
     }
-
-    status =  cmlExecuteNoAnswerSql( "commit", &icss );
-    if ( status != 0 ) {
-        log_db::info("chlRegZone cmlExecuteNoAnswerSql commit failure {}", status);
-        return ERROR( status, "cmlExecuteNoAnswerSql commit failure" );
+    catch (const nanodbc::database_error& e) {
+        log_db::error("{}: database error: {}", __FUNCTION__, e.what());
+        return ERROR( CAT_SQL_ERR, e.what() );
     }
-
-    return SUCCESS();
+    catch (const std::exception& e) {
+        log_db::error("{}: exception: {}", __FUNCTION__, e.what());
+        return ERROR( SYS_INTERNAL_ERR, e.what() );
+    }
 
 } // db_reg_zone_op
 
@@ -5054,26 +4670,7 @@ irods::error db_mod_zone_op(
                    "null parameter" );
     }
 
-    // =-=-=-=-=-=-=-
-    // get a postgres object from the context
-    /*irods::postgres_object_ptr pg;
-    ret = make_db_ptr( _ctx.fco(), pg );
-    if ( !ret.ok() ) {
-        return PASS( ret );
-
-    }*/
-
-    // =-=-=-=-=-=-=-
-    // extract the icss property
-//        icatSessionStruct icss;
-//        _ctx.prop_map().get< icatSessionStruct >( ICSS_PROP, icss );
-    int status, OK;
-    char myTime[50];
-    char zoneId[MAX_NAME_LEN];
-
-    if ( logSQL != 0 ) {
-        log_sql::debug("chlModZone");
-    }
+    log_sql::debug("chlModZone");
 
     if ( *_zone_name == '\0' || *_option == '\0' || *_option_value == '\0' ) {
         return  ERROR( CAT_INVALID_ARGUMENT, "invalid argument value" );
@@ -5092,105 +4689,89 @@ irods::error db_mod_zone_op(
         return PASS( ret );
     }
 
-    zoneId[0] = '\0';
-    if ( logSQL != 0 ) {
+    try {
+        auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
+
         log_sql::debug("chlModZone SQL 1 ");
-    }
-    {
-        std::vector<std::string> bindVars;
-        bindVars.push_back( _zone_name );
-        status = cmlGetStringValueFromSql(
-                     "select zone_id from R_ZONE_MAIN where zone_name=?",
-                     zoneId, MAX_NAME_LEN, bindVars, &icss );
-    }
-    if ( status != 0 ) {
-        if ( status == CAT_NO_ROWS_FOUND ) {
+        auto opt_zone_id = irods::experimental::catalog::query_catalog_string(
+            executor,
+            db_conn,
+            gq2::builder::select({"zone_id"})
+                .from("ZONE")
+                .where(col("zone_name") == _zone_name)
+                .build());
+        if (!opt_zone_id) {
             return ERROR( CAT_INVALID_ZONE, "invalid zone name" );
         }
-        return ERROR( status, "error getting zone" );
-    }
+        const auto& zoneId = *opt_zone_id;
 
-    getNowStr( myTime );
-    OK = 0;
-    if ( strcmp( _option, "comment" ) == 0 ) {
-        cllBindVars[cllBindVarCount++] = _option_value;
-        cllBindVars[cllBindVarCount++] = myTime;
-        cllBindVars[cllBindVarCount++] = zoneId;
-        if ( logSQL != 0 ) {
+        char myTime[50]{};
+        getNowStr( myTime );
+        int OK = 0;
+
+        nanodbc::transaction trans{db_conn};
+
+        namespace gq2 = irods::experimental::genquery2;
+        using gq2::builder::col;
+
+        if ( strcmp( _option, "comment" ) == 0 ) {
             log_sql::debug("chlModZone SQL 3");
+            auto upd = gq2::builder::update("ZONE")
+                .set("r_comment", _option_value)
+                .set("modify_ts", myTime)
+                .where(col("zone_id") == zoneId)
+                .build();
+            irods::experimental::catalog::execute_catalog(executor, db_conn, upd);
+            OK = 1;
         }
-        status =  cmlExecuteNoAnswerSql(
-                      "update R_ZONE_MAIN set r_comment = ?, modify_ts=? where zone_id=?",
-                      &icss );
-        if ( status != 0 ) {
-            log_db::info("chlModZone cmlExecuteNoAnswerSql update failure {}", status);
-            return ERROR( status, "cmlExecuteNoAnswerSql update failure" );
-        }
-        OK = 1;
-    }
-    if (strcmp(_option, "conn") == 0) {
-        // =-=-=-=-=-=-=-
-        // validate the connection string is well formed
-        ret = validate_zone_connection_string(_option_value, _ctx);
-        if (!ret.ok()) {
-            return ret;
-        }
+        if (strcmp(_option, "conn") == 0) {
+            ret = validate_zone_connection_string(_option_value, _ctx);
+            if (!ret.ok()) {
+                return ret;
+            }
 
-        cllBindVars[cllBindVarCount++] = _option_value;
-        cllBindVars[cllBindVarCount++] = myTime;
-        cllBindVars[cllBindVarCount++] = zoneId;
-        if ( logSQL != 0 ) {
             log_sql::debug("chlModZone SQL 5");
+            auto upd = gq2::builder::update("ZONE")
+                .set("zone_conn_string", _option_value)
+                .set("modify_ts", myTime)
+                .where(col("zone_id") == zoneId)
+                .build();
+            irods::experimental::catalog::execute_catalog(executor, db_conn, upd);
+            OK = 1;
         }
-        status =  cmlExecuteNoAnswerSql(
-                      "update R_ZONE_MAIN set zone_conn_string = ?, modify_ts=? where zone_id=?",
-                      &icss );
-        if ( status != 0 ) {
-            log_db::info("chlModZone cmlExecuteNoAnswerSql update failure {}", status);
-            return ERROR( status, "cmlExecuteNoAnswerSql update failure" );
-        }
-        OK = 1;
-    }
-    if ( strcmp( _option, "name" ) == 0 ) {
-        if ( strcmp( _zone_name, zone.c_str() ) == 0 ) {
-            addRErrorMsg( &_ctx.comm()->rError, 0,
-                          "It is not valid to rename the local zone via chlModZone; iadmin should use acRenameLocalZone" );
-            return ERROR( CAT_INVALID_ARGUMENT, "cannot rename localzone" );
-        }
+        if ( strcmp( _option, "name" ) == 0 ) {
+            if ( strcmp( _zone_name, zone.c_str() ) == 0 ) {
+                addRErrorMsg( &_ctx.comm()->rError, 0,
+                              "It is not valid to rename the local zone via chlModZone; iadmin should use acRenameLocalZone" );
+                return ERROR( CAT_INVALID_ARGUMENT, "cannot rename localzone" );
+            }
 
-        if (!irods::is_zone_name_valid(_option_value)) {
-            log_db::error("{}: Zone name [{}] does not satisfy requirements.", __func__, _option_value);
-            addRErrorMsg(&_ctx.comm()->rError, 0, fmt::format("zone name is invalid [{}]", _option_value).c_str());
-            return ERROR(SYS_INVALID_INPUT_PARAM, "Zone name contains invalid characters");
-        }
+            if (!irods::is_zone_name_valid(_option_value)) {
+                log_db::error("{}: Zone name [{}] does not satisfy requirements.", __func__, _option_value);
+                addRErrorMsg(&_ctx.comm()->rError, 0, fmt::format("zone name is invalid [{}]", _option_value).c_str());
+                return ERROR(SYS_INVALID_INPUT_PARAM, "Zone name contains invalid characters");
+            }
 
-        cllBindVars[cllBindVarCount++] = _option_value;
-        cllBindVars[cllBindVarCount++] = myTime;
-        cllBindVars[cllBindVarCount++] = zoneId;
-        if ( logSQL != 0 ) {
             log_sql::debug("chlModZone SQL 5");
+            auto upd = gq2::builder::update("ZONE")
+                .set("zone_name", _option_value)
+                .set("modify_ts", myTime)
+                .where(col("zone_id") == zoneId)
+                .build();
+            irods::experimental::catalog::execute_catalog(executor, db_conn, upd);
+            OK = 1;
         }
-        status =  cmlExecuteNoAnswerSql(
-                      "update R_ZONE_MAIN set zone_name = ?, modify_ts=? where zone_id=?",
-                      &icss );
-        if ( status != 0 ) {
-            log_db::info("chlModZone cmlExecuteNoAnswerSql update failure {}", status);
-            return ERROR( status, "cmlExecuteNoAnswerSql update failure" );
+        if ( OK == 0 ) {
+            return ERROR( CAT_INVALID_ARGUMENT, "invalid option" );
         }
-        OK = 1;
-    }
-    if ( OK == 0 ) {
-        return ERROR( CAT_INVALID_ARGUMENT, "invalid option" );
-    }
 
-    status =  cmlExecuteNoAnswerSql( "commit", &icss );
-    if ( status != 0 ) {
-        log_db::info("chlModZone cmlExecuteNoAnswerSql commit failure {}", status);
-        return ERROR( status, "cmlExecuteNoAnswerSql commit failure" );
+        trans.commit();
+        return SUCCESS();
     }
-
-    return SUCCESS();
-
+    catch (const std::exception& e) {
+        log_db::error("{}: exception: {}", __func__, e.what());
+        return ERROR( CAT_SQL_ERR, e.what() );
+    }
 } // db_mod_zone_op
 
 // =-=-=-=-=-=-=-
@@ -5216,45 +4797,37 @@ irods::error db_rename_coll_op(
                    "null parameter" );
     }
 
-    // =-=-=-=-=-=-=-
-    // get a postgres object from the context
-    /*irods::postgres_object_ptr pg;
-    ret = make_db_ptr( _ctx.fco(), pg );
-    if ( !ret.ok() ) {
-        return PASS( ret );
-
-    }*/
-
-    // =-=-=-=-=-=-=-
-    // extract the icss property
-//        icatSessionStruct icss;
-//        _ctx.prop_map().get< icatSessionStruct >( ICSS_PROP, icss );
-    int status;
-    rodsLong_t status1;
-
     /* See if the input path is a collection and the user owns it,
        and, if so, get the collectionID */
-    if ( logSQL != 0 ) {
-        log_sql::debug("chlRenameColl SQL 1 ");
+    try {
+        auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
+
+        const auto coll_id = irods::experimental::catalog::access_control::check_collection_access(
+            executor, db_conn, _old_coll,
+            _ctx.comm()->clientUser.userName,
+            _ctx.comm()->clientUser.rodsZone,
+            ACCESS_OWN);
+
+        if ( coll_id < 0 ) {
+            return ERROR( coll_id, "check_collection_access failed" );
+        }
+
+        /* call chlRenameObject to rename */
+        const auto status = chlRenameObject( _ctx.comm(), coll_id, _new_coll );
+        if ( status != 0 ) {
+            return ERROR( status, "chlRenameObject failed" );
+        }
+
+        return CODE( status );
     }
-
-    status1 = cmlCheckDir( _old_coll,
-                           _ctx.comm()->clientUser.userName,
-                           _ctx.comm()->clientUser.rodsZone,
-                           ACCESS_OWN,
-                           &icss );
-
-    if ( status1 < 0 ) {
-        return ERROR( status1, "cmlCheckDir failed" );
+    catch (const nanodbc::database_error& e) {
+        log_db::error("{}: database error: {}", __FUNCTION__, e.what());
+        return ERROR( CAT_SQL_ERR, e.what() );
     }
-
-    /* call chlRenameObject to rename */
-    status = chlRenameObject( _ctx.comm(), status1, _new_coll );
-    if (status != 0) {
-        return ERROR( status, "chlRenameObject failed" );
+    catch (const std::exception& e) {
+        log_db::error("{}: exception: {}", __FUNCTION__, e.what());
+        return ERROR( SYS_INTERNAL_ERR, e.what() );
     }
-
-    return CODE( status );
 
 } // db_rename_coll_op
 
@@ -5283,19 +4856,6 @@ irods::error db_mod_zone_coll_acl_op(
                    "null parameter" );
     }
 
-    // =-=-=-=-=-=-=-
-    // get a postgres object from the context
-    /*irods::postgres_object_ptr pg;
-    ret = make_db_ptr( _ctx.fco(), pg );
-    if ( !ret.ok() ) {
-        return PASS( ret );
-
-    }*/
-
-    // =-=-=-=-=-=-=-
-    // extract the icss property
-//        icatSessionStruct icss;
-//        _ctx.prop_map().get< icatSessionStruct >( ICSS_PROP, icss );
     int status;
     if ( *_path_name != '/' ) {
         return ERROR( CAT_INVALID_ARGUMENT, "invalid path name" );
@@ -5340,30 +4900,7 @@ irods::error db_rename_local_zone_op(
                    "null parameter" );
     }
 
-    // =-=-=-=-=-=-=-
-    // get a postgres object from the context
-    /*irods::postgres_object_ptr pg;
-    ret = make_db_ptr( _ctx.fco(), pg );
-    if ( !ret.ok() ) {
-        return PASS( ret );
-
-    }*/
-
-    // =-=-=-=-=-=-=-
-    // extract the icss property
-//        icatSessionStruct icss;
-//        _ctx.prop_map().get< icatSessionStruct >( ICSS_PROP, icss );
-    int status;
-    char zoneId[MAX_NAME_LEN];
-    char myTime[50];
-
-    if ( logSQL != 0 ) {
-        log_sql::debug("chlRenameLocalZone");
-    }
-
-    if ( !icss.status ) {
-        return ERROR( CATALOG_NOT_CONNECTED, "catalog not connected" );
-    }
+    log_sql::debug("chlRenameLocalZone");
 
     if ( _ctx.comm()->clientUser.authInfo.authFlag < LOCAL_PRIV_USER_AUTH ) {
         return ERROR( CAT_INSUFFICIENT_PRIVILEGE_LEVEL, "insufficient privilege" );
@@ -5372,9 +4909,7 @@ irods::error db_rename_local_zone_op(
         return ERROR( CAT_INSUFFICIENT_PRIVILEGE_LEVEL, "insufficient privilege" );
     }
 
-    if ( logSQL != 0 ) {
-        log_sql::debug("chlRenameLocalZone SQL 1 ");
-    }
+    log_sql::debug("chlRenameLocalZone SQL 1 ");
 
     std::string zone;
     ret = getLocalZone( _ctx.prop_map(), &icss, zone );
@@ -5386,116 +4921,91 @@ irods::error db_rename_local_zone_op(
         return ERROR( CAT_INVALID_ARGUMENT, "not the local zone" );
     }
 
-    /* check that the new zone does not exist */
-    zoneId[0] = '\0';
-    if ( logSQL != 0 ) {
+    try {
+        auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
+
+        /* check that the new zone does not exist */
         log_sql::debug("chlRenameLocalZone SQL 2 ");
-    }
-    {
-        std::vector<std::string> bindVars;
-        bindVars.push_back( _new_zone );
-        status = cmlGetStringValueFromSql(
-                     "select zone_id from R_ZONE_MAIN where zone_name=?",
-                     zoneId, MAX_NAME_LEN, bindVars, &icss );
-    }
-    if ( status != CAT_NO_ROWS_FOUND ) {
-        return ERROR( CAT_INVALID_ZONE, "zone not found" );
-    }
+        auto opt_zone_id = irods::experimental::catalog::query_catalog_string(
+            executor,
+            db_conn,
+            gq2::builder::select({"zone_id"})
+                .from("ZONE")
+                .where(col("zone_name") == _new_zone)
+                .build());
+        if ( opt_zone_id ) {
+            return ERROR( CAT_INVALID_ZONE, "zone not found" );
+        }
 
-    getNowStr( myTime );
+        char myTime[50]{};
+        getNowStr( myTime );
 
-    /* update coll_owner_zone in R_COLL_MAIN */
-    cllBindVars[cllBindVarCount++] = _new_zone;
-    cllBindVars[cllBindVarCount++] = myTime;
-    cllBindVars[cllBindVarCount++] = _old_zone;
-    if ( logSQL != 0 ) {
+        nanodbc::transaction trans{db_conn};
+
+        namespace gq2 = irods::experimental::genquery2;
+        using gq2::builder::col;
+
+        /* update coll_owner_zone in R_COLL_MAIN */
         log_sql::debug("chlRenameLocalZone SQL 3 ");
-    }
-    status =  cmlExecuteNoAnswerSql(
-                  "update R_COLL_MAIN set coll_owner_zone = ?, modify_ts=? where coll_owner_zone=?",
-                  &icss );
-    if ( status != 0 ) {
-        log_db::info("chlRenameLocalZone cmlExecuteNoAnswerSql update failure {}", status);
-        return ERROR( status, "cmlExecuteNoAnswerSql update failure" );
-    }
+        auto upd_coll = gq2::builder::update("COLLECTION")
+            .set("coll_owner_zone", _new_zone)
+            .set("modify_ts", myTime)
+            .where(col("coll_owner_zone") == _old_zone)
+            .build();
+        irods::experimental::catalog::execute_catalog(executor, db_conn, upd_coll);
 
-    /* update data_owner_zone in R_DATA_MAIN */
-    cllBindVars[cllBindVarCount++] = _new_zone;
-    cllBindVars[cllBindVarCount++] = myTime;
-    cllBindVars[cllBindVarCount++] = _old_zone;
-    if ( logSQL != 0 ) {
+        /* update data_owner_zone in R_DATA_MAIN */
         log_sql::debug("chlRenameLocalZone SQL 4 ");
-    }
-    status =  cmlExecuteNoAnswerSql(
-                  "update R_DATA_MAIN set data_owner_zone = ?, modify_ts=? where data_owner_zone=?",
-                  &icss );
-    if ( status != 0 && status != CAT_SUCCESS_BUT_WITH_NO_INFO ) {
-        log_db::info("chlRenameLocalZone cmlExecuteNoAnswerSql update failure {}", status);
-        return ERROR( status, "cmlExecuteNoAnswerSql update failure" );
-    }
+        auto upd_data = gq2::builder::update("DATA_OBJECT")
+            .set("data_owner_zone", _new_zone)
+            .set("modify_ts", myTime)
+            .where(col("data_owner_zone") == _old_zone)
+            .build();
+        irods::experimental::catalog::execute_catalog(executor, db_conn, upd_data);
 
-    /* update zone_name in R_RESC_MAIN */
-    cllBindVars[cllBindVarCount++] = _new_zone;
-    cllBindVars[cllBindVarCount++] = myTime;
-    cllBindVars[cllBindVarCount++] = _old_zone;
-    if ( logSQL != 0 ) {
+        /* update zone_name in R_RESC_MAIN */
         log_sql::debug("chlRenameLocalZone SQL 5 ");
-    }
-    status =  cmlExecuteNoAnswerSql(
-                  "update R_RESC_MAIN set zone_name = ?, modify_ts=? where zone_name=?",
-                  &icss );
-    if ( status != 0 && status != CAT_SUCCESS_BUT_WITH_NO_INFO ) {
-        log_db::info("chlRenameLocalZone cmlExecuteNoAnswerSql update failure {}", status);
-        return ERROR( status, "cmlExecuteNoAnswerSql update failure" );
-    }
+        auto upd_resc = gq2::builder::update("RESOURCE")
+            .set("zone_name", _new_zone)
+            .set("modify_ts", myTime)
+            .where(col("zone_name") == _old_zone)
+            .build();
+        irods::experimental::catalog::execute_catalog(executor, db_conn, upd_resc);
 
-    /* update rule_owner_zone in R_RULE_MAIN */
-    cllBindVars[cllBindVarCount++] = _new_zone;
-    cllBindVars[cllBindVarCount++] = myTime;
-    cllBindVars[cllBindVarCount++] = _old_zone;
-    if ( logSQL != 0 ) {
+        /* update rule_owner_zone in R_RULE_MAIN */
         log_sql::debug("chlRenameLocalZone SQL 6 ");
-    }
-    status =  cmlExecuteNoAnswerSql(
-                  "update R_RULE_MAIN set rule_owner_zone=?, modify_ts=? where rule_owner_zone=?",
-                  &icss );
-    if ( status != 0 && status != CAT_SUCCESS_BUT_WITH_NO_INFO ) {
-        log_db::info("chlRenameLocalZone cmlExecuteNoAnswerSql update failure {}", status);
-        return ERROR( status, "cmlExecuteNoAnswerSql update failure" );
-    }
+        auto upd_rule = gq2::builder::update("RULE")
+            .set("rule_owner_zone", _new_zone)
+            .set("modify_ts", myTime)
+            .where(col("rule_owner_zone") == _old_zone)
+            .build();
+        irods::experimental::catalog::execute_catalog(executor, db_conn, upd_rule);
 
-    /* update zone_name in R_USER_MAIN */
-    cllBindVars[cllBindVarCount++] = _new_zone;
-    cllBindVars[cllBindVarCount++] = myTime;
-    cllBindVars[cllBindVarCount++] = _old_zone;
-    if ( logSQL != 0 ) {
+        /* update zone_name in R_USER_MAIN */
         log_sql::debug("chlRenameLocalZone SQL 7 ");
-    }
-    status =  cmlExecuteNoAnswerSql(
-                  "update R_USER_MAIN set zone_name=?, modify_ts=? where zone_name=?",
-                  &icss );
-    if ( status != 0 && status != CAT_SUCCESS_BUT_WITH_NO_INFO ) {
-        log_db::info("chlRenameLocalZone cmlExecuteNoAnswerSql update failure {}", status);
-        return ERROR( status, "cmlExecuteNoAnswerSql update failure" );
-    }
+        auto upd_user = gq2::builder::update("USER")
+            .set("zone_name", _new_zone)
+            .set("modify_ts", myTime)
+            .where(col("zone_name") == _old_zone)
+            .build();
+        irods::experimental::catalog::execute_catalog(executor, db_conn, upd_user);
 
-    /* update zone_name in R_ZONE_MAIN */
-    cllBindVars[cllBindVarCount++] = _new_zone;
-    cllBindVars[cllBindVarCount++] = myTime;
-    cllBindVars[cllBindVarCount++] = _old_zone;
-    if ( logSQL != 0 ) {
+        /* update zone_name in R_ZONE_MAIN */
         log_sql::debug("chlRenameLocalZone SQL 8 ");
-    }
-    status =  cmlExecuteNoAnswerSql(
-                  "update R_ZONE_MAIN set zone_name=?, modify_ts=? where zone_name=?",
-                  &icss );
-    if ( status != 0 ) {
-        log_db::info("chlRenameLocalZone cmlExecuteNoAnswerSql update failure {}", status);
-        return ERROR( status, "cmlExecuteNoAnswerSql update failure" );
-    }
+        auto upd_zone = gq2::builder::update("ZONE")
+            .set("zone_name", _new_zone)
+            .set("modify_ts", myTime)
+            .where(col("zone_name") == _old_zone)
+            .build();
+        irods::experimental::catalog::execute_catalog(executor, db_conn, upd_zone);
 
-    return SUCCESS();
-
+        trans.commit();
+        return SUCCESS();
+    }
+    catch (const std::exception& e) {
+        log_db::error("{}: exception: {}", __func__, e.what());
+        return ERROR( CAT_SQL_ERR, e.what() );
+    }
 } // db_rename_local_zone_op
 
 // =-=-=-=-=-=-=-
@@ -5519,29 +5029,7 @@ irods::error db_del_zone_op(
                    "null parameter" );
     }
 
-    // =-=-=-=-=-=-=-
-    // get a postgres object from the context
-    /*irods::postgres_object_ptr pg;
-    ret = make_db_ptr( _ctx.fco(), pg );
-    if ( !ret.ok() ) {
-        return PASS( ret );
-
-    }*/
-
-    // =-=-=-=-=-=-=-
-    // extract the icss property
-//        icatSessionStruct icss;
-//        _ctx.prop_map().get< icatSessionStruct >( ICSS_PROP, icss );
-    int status;
-    char zoneType[MAX_NAME_LEN];
-
-    if ( logSQL != 0 ) {
-        log_sql::debug("chlDelZone");
-    }
-
-    if ( !icss.status ) {
-        return ERROR( CATALOG_NOT_CONNECTED, "catalog not connected" );
-    }
+    log_sql::debug("chlDelZone");
 
     if ( _ctx.comm()->clientUser.authInfo.authFlag < LOCAL_PRIV_USER_AUTH ) {
         return ERROR( CAT_INSUFFICIENT_PRIVILEGE_LEVEL, "insufficient privilege level" );
@@ -5550,50 +5038,43 @@ irods::error db_del_zone_op(
         return ERROR( CAT_INSUFFICIENT_PRIVILEGE_LEVEL, "insufficient privilege level" );
     }
 
-    if ( logSQL != 0 ) {
-        log_sql::debug("chlDelZone SQL 1 ");
-    }
+    try {
+        auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
 
-    {
-        std::vector<std::string> bindVars;
-        bindVars.push_back( _zone_name );
-        status = cmlGetStringValueFromSql(
-                     "select zone_type_name from R_ZONE_MAIN where zone_name=?",
-                     zoneType, MAX_NAME_LEN, bindVars, &icss );
-    }
-    if ( status != 0 ) {
-        if ( status == CAT_NO_ROWS_FOUND ) {
+        log_sql::debug("chlDelZone SQL 1 ");
+        auto opt_zone_type = irods::experimental::catalog::query_catalog_string(
+            executor,
+            db_conn,
+            gq2::builder::select({"zone_type_name"})
+                .from("ZONE")
+                .where(col("zone_name") == _zone_name)
+                .build());
+        if ( !opt_zone_type ) {
             return ERROR( CAT_INVALID_ZONE, "invalid zone name" );
         }
-        return ERROR( status, "failed to get zone" );
-    }
 
-    if ( strcmp( zoneType, "remote" ) != 0 ) {
-        addRErrorMsg( &_ctx.comm()->rError, 0,
-                      "It is not permitted to remove the local zone" );
-        return ERROR( CAT_INVALID_ARGUMENT, "cannot remove local zone" );
-    }
+        if ( *opt_zone_type != "remote" ) {
+            addRErrorMsg( &_ctx.comm()->rError, 0,
+                          "It is not permitted to remove the local zone" );
+            return ERROR( CAT_INVALID_ARGUMENT, "cannot remove local zone" );
+        }
 
-    cllBindVars[cllBindVarCount++] = _zone_name;
-    if ( logSQL != 0 ) {
+        nanodbc::transaction trans{db_conn};
         log_sql::debug("chlDelZone 2");
-    }
-    status =  cmlExecuteNoAnswerSql(
-                  "delete from R_ZONE_MAIN where zone_name = ?",
-                  &icss );
-    if ( status != 0 ) {
-        log_db::info("chlDelZone cmlExecuteNoAnswerSql delete failure {}", status);
-        return ERROR( status, "cmlExecuteNoAnswerSql delete failure" );
-    }
+        namespace gq2 = irods::experimental::genquery2;
+        using gq2::builder::col;
+        auto del_zone = gq2::builder::remove_from("ZONE")
+            .where(col("zone_name") == _zone_name)
+            .build();
+        irods::experimental::catalog::execute_catalog(executor, db_conn, del_zone);
 
-    status =  cmlExecuteNoAnswerSql( "commit", &icss );
-    if ( status != 0 ) {
-        log_db::info("chlDelZone cmlExecuteNoAnswerSql commit failure {}", status);
-        return ERROR( status, "cmlExecuteNoAnswerSql commit failure" );
+        trans.commit();
+        return SUCCESS();
     }
-
-    return SUCCESS();
-
+    catch (const std::exception& e) {
+        log_db::error("{}: exception: {}", __func__, e.what());
+        return ERROR( CAT_SQL_ERR, e.what() );
+    }
 } // db_del_zone_op
 
 // =-=-=-=-=-=-=-
@@ -5617,39 +5098,15 @@ irods::error db_del_coll_by_admin_op(
                    "null parameter" );
     }
 
-    // =-=-=-=-=-=-=-
-    // get a postgres object from the context
-    /*irods::postgres_object_ptr pg;
-    ret = make_db_ptr( _ctx.fco(), pg );
-    if ( !ret.ok() ) {
-        return PASS( ret );
-
-    }*/
-
-    // =-=-=-=-=-=-=-
-    // extract the icss property
-//        icatSessionStruct icss;
-//        _ctx.prop_map().get< icatSessionStruct >( ICSS_PROP, icss );
-    rodsLong_t iVal;
-    char logicalEndName[MAX_NAME_LEN];
-    char logicalParentDirName[MAX_NAME_LEN];
-    char collIdNum[MAX_NAME_LEN];
-    int status;
-
-    if ( logSQL != 0 ) {
-        log_sql::debug("chlDelCollByAdmin");
-    }
-
-    if ( !icss.status ) {
-        return ERROR( CATALOG_NOT_CONNECTED, "catalog not connected" );
-    }
-
     if ( _ctx.comm()->clientUser.authInfo.authFlag < LOCAL_PRIV_USER_AUTH ) {
         return ERROR( CAT_INSUFFICIENT_PRIVILEGE_LEVEL, "insufficient privilege" );
     }
     if ( _ctx.comm()->proxyUser.authInfo.authFlag < LOCAL_PRIV_USER_AUTH ) {
         return ERROR( CAT_INSUFFICIENT_PRIVILEGE_LEVEL, "insufficient privilege" );
     }
+
+    char logicalEndName[MAX_NAME_LEN];
+    char logicalParentDirName[MAX_NAME_LEN];
 
     if (const auto ec = splitPathByKey(_coll_info->collName, logicalParentDirName, MAX_NAME_LEN, logicalEndName, MAX_NAME_LEN, '/'); ec < 0) {
         return ERROR(ec, fmt::format(
@@ -5662,92 +5119,78 @@ irods::error db_del_coll_by_admin_op(
         snprintf( logicalEndName, sizeof( logicalEndName ), "%s", _coll_info->collName + 1 );
     }
 
-    /* check that the collection is empty (both subdirs and files) */
-    if ( logSQL != 0 ) {
-        log_sql::debug("chlDelCollByAdmin SQL 1 ");
-    }
-    {
-        std::vector<std::string> bindVars;
-        bindVars.push_back( _coll_info->collName );
-        bindVars.push_back( _coll_info->collName );
-        status = cmlGetIntegerValueFromSql(
-                     "select coll_id from R_COLL_MAIN where parent_coll_name=? union select coll_id from R_DATA_MAIN where coll_id=(select coll_id from R_COLL_MAIN where coll_name=?)",
-                     &iVal, bindVars, &icss );
-    }
+    try {
+        auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
 
-    if ( status != CAT_NO_ROWS_FOUND ) {
-        if ( status == 0 ) {
-            char errMsg[105];
-            snprintf( errMsg, 100, "collection '%s' is not empty",
-                      _coll_info->collName );
-            addRErrorMsg( &_ctx.comm()->rError, 0, errMsg );
+        // get coll_id
+        const auto coll_id_opt = irods::experimental::catalog::query_catalog_integer(
+            executor, db_conn,
+            gq2::builder::select({"coll_id"})
+                .from("COLLECTION")
+                .where(col("coll_name") == _coll_info->collName)
+                .build());
+        if ( !coll_id_opt ) {
+            addRErrorMsg( &_ctx.comm()->rError, 0,
+                          fmt::format( "collection '{}' is unknown", _coll_info->collName ).c_str() );
+            return ERROR( CAT_UNKNOWN_COLLECTION, "unknown collection" );
+        }
+
+        const auto collIdNum = std::to_string( *coll_id_opt );
+
+        // check that the collection is empty (subcollections and data objects)
+        const auto subcoll = irods::experimental::catalog::query_catalog_integer(
+            executor, db_conn,
+            gq2::builder::select({"coll_id"})
+                .from("COLLECTION")
+                .where(col("parent_coll_name") == _coll_info->collName)
+                .build());
+        if ( subcoll.has_value() ) {
+            addRErrorMsg( &_ctx.comm()->rError, 0,
+                          fmt::format( "collection '{}' is not empty", _coll_info->collName ).c_str() );
             return ERROR( CAT_COLLECTION_NOT_EMPTY, "collection not empty" );
         }
-        _rollback( "chlDelCollByAdmin" );
-        return ERROR( status, "failed to get collection" );
-    }
 
-    /* remove any access rows */
-    cllBindVars[cllBindVarCount++] = _coll_info->collName;
-    if ( logSQL != 0 ) {
-        log_sql::debug("chlDelCollByAdmin SQL 2");
-    }
-    status =  cmlExecuteNoAnswerSql(
-                  "delete from R_OBJT_ACCESS where object_id=(select coll_id from R_COLL_MAIN where coll_name=?)",
-                  &icss );
-    if ( status != 0 ) {
-        /* error, but let it fall thru to below, probably doesn't exist */
-        log_db::info("chlDelCollByAdmin delete access failure {}", status);
-        _rollback( "chlDelCollByAdmin" );
-    }
+        const auto data_obj = irods::experimental::catalog::query_catalog_integer(
+            executor, db_conn,
+            gq2::builder::select({"data_id"})
+                .from("DATA_OBJECT")
+                .where(col("coll_id") == collIdNum)
+                .build());
+        if ( data_obj.has_value() ) {
+            addRErrorMsg( &_ctx.comm()->rError, 0,
+                          fmt::format( "collection '{}' is not empty", _coll_info->collName ).c_str() );
+            return ERROR( CAT_COLLECTION_NOT_EMPTY, "collection not empty" );
+        }
 
-    /* Remove associated AVUs, if any */
-    if ( logSQL != 0 ) {
-        log_sql::debug("chlDelCollByAdmin SQL 3 ");
-    }
-    {
-        std::vector<std::string> bindVars;
-        bindVars.push_back( _coll_info->collName );
-        status = cmlGetIntegerValueFromSql(
-                     "select coll_id from R_COLL_MAIN where coll_name=?",
-                     &iVal, bindVars, &icss );
-    }
+        nanodbc::transaction trans{db_conn};
 
-    if ( status != 0 ) {
-        _rollback( "db_del_coll_by_admin_op" );
-        std::stringstream msg;
-        msg << "db_del_coll_by_admin_op: should be exactly one collection id corresponding to collection name ["
-            << _coll_info->collName
-            << "]. status ["
-            << status
-            << "]";
-        return ERROR( status, msg.str().c_str() );
+        namespace gq2 = irods::experimental::genquery2;
+        using gq2::builder::col;
+        auto del_access = gq2::builder::remove_from("ACCESS")
+            .where(col("object_id") == collIdNum)
+            .build();
+        irods::experimental::catalog::execute_catalog(executor, db_conn, del_access);
+
+        if (const auto ec = removeMetaMapAndAVU(collIdNum.c_str()); ec < 0) {
+            log_db::warn("[{}:{}] - failed to remove associated AVUs [ec=[{}]]", __func__, __LINE__, ec);
+        }
+
+        auto del_coll = gq2::builder::remove_from("COLLECTION")
+            .where(col("coll_name") == _coll_info->collName)
+            .build();
+        irods::experimental::catalog::execute_catalog(executor, db_conn, del_coll);
+
+        trans.commit();
+        return SUCCESS();
     }
-
-    snprintf( collIdNum, MAX_NAME_LEN, "%lld", iVal );
-    if (const auto ec = removeMetaMapAndAVU(collIdNum); ec < 0) {
-        log_db::warn("[{}:{}] - failed to remove associated AVUs [ec=[{}]]", __func__, __LINE__, ec);
+    catch (const nanodbc::database_error& e) {
+        log_db::error("{}: database error: {}", __FUNCTION__, e.what());
+        return ERROR( CAT_SQL_ERR, e.what() );
     }
-
-    /* delete the row if it exists */
-    cllBindVars[cllBindVarCount++] = _coll_info->collName;
-    if ( logSQL != 0 ) {
-        log_sql::debug("chlDelCollByAdmin SQL 4");
+    catch (const std::exception& e) {
+        log_db::error("{}: exception: {}", __FUNCTION__, e.what());
+        return ERROR( SYS_INTERNAL_ERR, e.what() );
     }
-    status =  cmlExecuteNoAnswerSql( "delete from R_COLL_MAIN where coll_name=?",
-                                     &icss );
-
-    if ( status != 0 ) {
-        char errMsg[105];
-        snprintf( errMsg, 100, "collection '%s' is unknown",
-                  _coll_info->collName );
-        addRErrorMsg( &_ctx.comm()->rError, 0, errMsg );
-        _rollback( "chlDelCollByAdmin" );
-        return ERROR( CAT_UNKNOWN_COLLECTION, "unknown collection" );
-    }
-
-    return SUCCESS();
-
 } // db_del_coll_by_admin_op
 
 // =-=-=-=-=-=-=-
@@ -5771,39 +5214,16 @@ irods::error db_del_coll_op(
                    "null parameter" );
     }
 
-    // =-=-=-=-=-=-=-
-    // get a postgres object from the context
-    /*irods::postgres_object_ptr pg;
-    ret = make_db_ptr( _ctx.fco(), pg );
-    if ( !ret.ok() ) {
-        return PASS( ret );
-
-    }*/
-
-    // =-=-=-=-=-=-=-
-    // extract the icss property
-//        icatSessionStruct icss;
-//        _ctx.prop_map().get< icatSessionStruct >( ICSS_PROP, icss );
     int status;
 
-    if ( logSQL != 0 ) {
-        log_sql::debug("chlDelColl");
-    }
+    log_sql::debug("chlDelColl");
 
     status = _delColl( _ctx.comm(), _coll_info );
     if ( status != 0 ) {
         return ERROR( status, "_delColl failed" );
     }
 
-    status =  cmlExecuteNoAnswerSql( "commit", &icss );
-    if ( status != 0 ) {
-        log_db::info("chlDelColl cmlExecuteNoAnswerSql commit failure {}", status);
-        _rollback( "chlDelColl" );
-        return ERROR( status, "commit failed" );
-    }
-
     return SUCCESS();
-
 } // db_del_coll_op
 
 // =-=-=-=-=-=-=-
@@ -5823,86 +5243,34 @@ irods::error db_check_auth_op(
         return PASS( ret );
     }
 
+    namespace gq2 = irods::experimental::genquery2;
+    using gq2::builder::col;
+
     // =-=-=-=-=-=-=-
     // check the params
     if ( !_challenge || !_response || !_user_name || !_user_priv_level || !_client_priv_level ) {
-        return ERROR(
-                   CAT_INVALID_ARGUMENT,
-                   "null parameter" );
+        return ERROR( CAT_INVALID_ARGUMENT, "null parameter" );
     }
 
-    // =-=-=-=-=-=-=-
-    // get a postgres object from the context
-    /*irods::postgres_object_ptr pg;
-    ret = make_db_ptr( _ctx.fco(), pg );
-    if ( !ret.ok() ) {
-        return PASS( ret );
-
-    }*/
-
-    // =-=-=-=-=-=-=-
-    // extract the icss property
-//        icatSessionStruct icss;
-//        _ctx.prop_map().get< icatSessionStruct >( ICSS_PROP, icss );
-    // =-=-=-=-=-=-=-
-    // All The Variable
-    int status = 0;
-    char md5Buf[CHALLENGE_LEN + MAX_PASSWORD_LEN + 2];
-    char digest[RESPONSE_LEN + 2];
-    const char *cp = NULL;
-    int i = 0, OK = 0, k = 0;
-    char userType[MAX_NAME_LEN];
     static int prevFailure = 0;
-    char goodPw[MAX_PASSWORD_LEN + 10] = "";
-    char lastPw[MAX_PASSWORD_LEN + 10] = "";
-    char goodPwExpiry[MAX_PASSWORD_LEN + 10] = "";
-    char goodPwTs[MAX_PASSWORD_LEN + 10] = "";
-    char goodPwModTs[MAX_PASSWORD_LEN + 10] = "";
-    rodsLong_t expireTime = 0;
-    char *cpw = NULL;
-    int nPasswords = 0;
-    char myTime[50];
-    time_t nowTime;
-    time_t pwExpireMaxCreateTime;
-    char expireStr[50];
-    char expireStrCreate[50];
-    char myUserZone[MAX_NAME_LEN];
-    char userName2[NAME_LEN + 2];
-    char userZone[NAME_LEN + 2];
-    int hashType = 0;
-    char lastPwModTs[MAX_PASSWORD_LEN + 10];
-    snprintf( lastPwModTs, sizeof( lastPwModTs ), "0" );
-    char *cPwTs = NULL;
-    int iTs1 = 0, iTs2 = 0;
-    std::vector<char> pwInfoArray( MAX_PASSWORD_LEN * MAX_PASSWORDS * 4 );
-
-    // This function uses goto statements. You cannot initialize variables after a goto statement.
-    auth_config ac{};
-
-    if ( logSQL != 0 ) {
-        log_sql::debug("chlCheckAuth");
-    }
-
     if ( prevFailure > 1 ) {
-        /* Somebody trying a dictionary attack? */
         if ( prevFailure > 5 ) {
-            sleep( 20 );    /* at least, slow it down */
+            sleep( 20 );
         }
         sleep( 2 );
     }
     *_user_priv_level = NO_USER_AUTH;
     *_client_priv_level = NO_USER_AUTH;
 
-    hashType = HASH_TYPE_MD5;
+    int hashType = HASH_TYPE_MD5;
     std::string user_name( _user_name );
     std::string::size_type pos = user_name.find( SHA1_FLAG_STRING );
     if ( std::string::npos != pos ) {
-        // truncate off the :::sha1 string
         user_name = user_name.substr( pos );
         hashType = HASH_TYPE_SHA1;
     }
 
-    memset( md5Buf, 0, sizeof( md5Buf ) );
+    char md5Buf[CHALLENGE_LEN + MAX_PASSWORD_LEN + 2]{};
     strncpy( md5Buf, _challenge, CHALLENGE_LEN );
     snprintf( prevChalSig, sizeof prevChalSig,
               "%2.2x%2.2x%2.2x%2.2x%2.2x%2.2x%2.2x%2.2x%2.2x%2.2x%2.2x%2.2x%2.2x%2.2x%2.2x%2.2x",
@@ -5914,11 +5282,15 @@ irods::error db_check_auth_op(
               ( unsigned char )md5Buf[10], ( unsigned char )md5Buf[11],
               ( unsigned char )md5Buf[12], ( unsigned char )md5Buf[13],
               ( unsigned char )md5Buf[14], ( unsigned char )md5Buf[15] );
-    status = validateAndParseUserName( user_name.c_str(), userName2, userZone );
+
+    char userName2[NAME_LEN + 2]{};
+    char userZone[NAME_LEN + 2]{};
+    int status = validateAndParseUserName( user_name.c_str(), userName2, userZone );
     if ( status ) {
         return ERROR( status, "Invalid username format" );
     }
 
+    char myUserZone[MAX_NAME_LEN]{};
     if ( userZone[0] == '\0' ) {
         std::string zone;
         ret = getLocalZone( _ctx.prop_map(), &icss, zone );
@@ -5931,338 +5303,229 @@ irods::error db_check_auth_op(
         snprintf( myUserZone, sizeof( myUserZone ), "%s", userZone );
     }
 
-    if ( logSQL != 0 ) {
-        log_sql::debug("chlCheckAuth SQL 1 ");
-    }
-
-    {
-        std::vector<std::string> bindVars;
-        bindVars.push_back( userName2 );
-        bindVars.push_back( myUserZone );
-        /* four strings per password returned */
-        status = cmlGetMultiRowStringValuesFromSql( "select rcat_password, pass_expiry_ts, R_USER_PASSWORD.create_ts, R_USER_PASSWORD.modify_ts from R_USER_PASSWORD, "
-                 "R_USER_MAIN where user_name=? and zone_name=? and R_USER_MAIN.user_id = R_USER_PASSWORD.user_id",
-                 pwInfoArray.data(), MAX_PASSWORD_LEN, MAX_PASSWORDS * 4, bindVars, &icss );
-    }
-
-    if ( status < 4 ) {
-        if ( status == CAT_NO_ROWS_FOUND ) {
-            status = CAT_INVALID_USER; /* Be a little more specific */
-            if ( strncmp( ANONYMOUS_USER, userName2, NAME_LEN ) == 0 ) {
-                /* anonymous user, skip the pw check but do the rest */
-                goto checkLevel;
-            }
-        }
-        return ERROR( status, "select rcat_password failed" );
-    }
-
-    nPasswords = status / 4; /* four strings per password returned */
-    goodPwExpiry[0] = '\0';
-    goodPwTs[0] = '\0';
-    goodPwModTs[0] = '\0';
-
-    if ( nPasswords == MAX_PASSWORDS ) {
-        {
-            std::vector<std::string> bindVars;
-            bindVars.push_back( userName2 );
-            // There are more than MAX_PASSWORDS in the database take the extra time to get them all.
-            status = cmlGetIntegerValueFromSql( "select count(UP.user_id) from R_USER_PASSWORD UP, R_USER_MAIN where user_name=?",
-                                                &MAX_PASSWORDS, bindVars, &icss );
-        }
-        if ( status < 0 ) {
-            log_db::error("cmlGetIntegerValueFromSql failed in db_check_auth_op with status {}", status);
-        }
-        nPasswords = MAX_PASSWORDS;
-        pwInfoArray.resize( MAX_PASSWORD_LEN * MAX_PASSWORDS * 4 );
-
-        {
-            std::vector<std::string> bindVars;
-            bindVars.push_back( userName2 );
-            bindVars.push_back( myUserZone );
-            /* four strings per password returned */
-            status = cmlGetMultiRowStringValuesFromSql( "select rcat_password, pass_expiry_ts, R_USER_PASSWORD.create_ts, R_USER_PASSWORD.modify_ts from R_USER_PASSWORD, "
-                     "R_USER_MAIN where user_name=? and zone_name=? and R_USER_MAIN.user_id = R_USER_PASSWORD.user_id",
-                     pwInfoArray.data(), MAX_PASSWORD_LEN, MAX_PASSWORDS * 4, bindVars, &icss );
-        }
-        if ( status < 0 ) {
-            log_db::error("cmlGetMultiRowStringValuesFromSql failed in db_check_auth_op with status {}", status);
-        }
-    }
-
-    cpw = pwInfoArray.data();
-    for ( k = 0; OK == 0 && k < MAX_PASSWORDS && k < nPasswords; k++ ) {
-        memset( md5Buf, 0, sizeof( md5Buf ) );
-        strncpy( md5Buf, _challenge, CHALLENGE_LEN );
-        rstrcpy( lastPw, cpw, MAX_PASSWORD_LEN );
-        icatDescramble( cpw );
-        strncpy( md5Buf + CHALLENGE_LEN, cpw, MAX_PASSWORD_LEN );
-
-        obfMakeOneWayHash( hashType,
-                           ( unsigned char * )md5Buf, CHALLENGE_LEN + MAX_PASSWORD_LEN,
-                           ( unsigned char * )digest );
-
-        for ( i = 0; i < RESPONSE_LEN; i++ ) {
-            if ( digest[i] == '\0' ) {
-                digest[i]++;
-            }  /* make sure 'string' doesn't end
-                  early (this matches client code) */
-        }
-
-        cp = _response;
-        OK = 1;
-        for ( i = 0; i < RESPONSE_LEN; i++ ) {
-            if ( *cp++ != digest[i] ) {
-                OK = 0;
-            }
-        }
-
-        memset( md5Buf, 0, sizeof( md5Buf ) );
-        if ( OK == 1 ) {
-            rstrcpy( goodPw, cpw, MAX_PASSWORD_LEN );
-            cpw += MAX_PASSWORD_LEN;
-            rstrcpy( goodPwExpiry, cpw, MAX_PASSWORD_LEN );
-            cpw += MAX_PASSWORD_LEN;
-            rstrcpy( goodPwTs, cpw, MAX_PASSWORD_LEN );
-            cpw += MAX_PASSWORD_LEN;
-            rstrcpy( goodPwModTs, cpw, MAX_PASSWORD_LEN );
-        }
-        else {
-            cPwTs = cpw + ( MAX_PASSWORD_LEN * 3 );
-            iTs1 = atoi( cPwTs );
-            iTs2 = atoi( lastPwModTs );
-            if ( iTs1 == iTs2 ) {
-                /* MAX_PASSWORDS at same time-stamp, skip ahead to avoid infinite
-                   loop; things should recover eventually */
-                snprintf( lastPwModTs, sizeof lastPwModTs, "%011d", iTs1 + 1 );
-            }
-            else {
-                /* normal case */
-                rstrcpy( lastPwModTs, cPwTs, sizeof( lastPwModTs ) );
-            }
-
-            cpw += MAX_PASSWORD_LEN * 4;
-        }
-    }
-
-    if ( OK == 0 ) {
-        prevFailure++;
-        return ERROR( CAT_INVALID_AUTHENTICATION, "invalid argument" );
-    }
-
-    expireTime = atoll( goodPwExpiry );
-    getNowStr( myTime );
-
-    if (const auto err = get_auth_config("authentication", ac); !err.ok()) {
-        log_db::error("Failed to get auth configuration. [{}]", err.result());
-        return err;
-    }
-
-    if ((strncmp(goodPwExpiry, "9999", 4) != 0) && expireTime >= ac.password_min_time &&
-        expireTime <= ac.password_max_time) {
-        time_t modTime;
-        /* The used pw is an iRODS-PAM type, so now check if it's expired */
-        getNowStr( myTime );
-        nowTime = atoll( myTime );
-        modTime = atoll( goodPwModTs );
-
-        if ( modTime + expireTime < nowTime ) {
-            /* it is expired, so return the error below and first remove it */
-            cllBindVars[cllBindVarCount++] = lastPw;
-            cllBindVars[cllBindVarCount++] = goodPwTs;
-            cllBindVars[cllBindVarCount++] = userName2;
-            cllBindVars[cllBindVarCount++] = myUserZone;
-            if ( logSQL != 0 ) {
-                log_sql::debug("chlCheckAuth SQL 2");
-            }
-            status = cmlExecuteNoAnswerSql( "delete from R_USER_PASSWORD where rcat_password=? and create_ts=? and user_id = (select user_id from R_USER_MAIN where user_name=? and zone_name=?)", &icss );
-            memset( goodPw, 0, sizeof( goodPw ) );
-            memset( lastPw, 0, sizeof( lastPw ) );
-            if ( status != 0 ) {
-                log_db::info("chlCheckAuth cmlExecuteNoAnswerSql delete expired password failure {}", status);
-                return ERROR( status, "delete expired password failure" );
-            }
-            status =  cmlExecuteNoAnswerSql( "commit", &icss );
-            if ( status != 0 ) {
-                log_db::info("chlCheckAuth cmlExecuteNoAnswerSql commit failure {}", status);
-                return ERROR( status, "commit failure" );
-            }
-            return ERROR( CAT_PASSWORD_EXPIRED, "password expired" );
-        }
-    }
-
-    int temp_password_max_time;
     try {
-        temp_password_max_time = irods::get_advanced_setting<const int>(irods::KW_CFG_MAX_TEMP_PASSWORD_LIFETIME);
-    } catch ( const irods::exception& e ) {
-        return irods::error(e);
-    }
+        auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
 
-    // Only the enigmatic temporary passwords are stored as unscrambled in the catalog, so only perform this bit for
-    // passwords that are not stored as scrambled in the catalog.
-    if (!std::string_view{lastPw}.starts_with(PASSWORD_SCRAMBLE_PREFIX) && expireTime < temp_password_max_time) {
-        int temp_password_time;
-        try {
-            temp_password_time = irods::get_advanced_setting<const int>(irods::KW_CFG_DEF_TEMP_PASSWORD_LIFETIME);
-        } catch ( const irods::exception& e ) {
-            return irods::error(e);
+        struct PasswordEntry {
+            std::string rcat_password;
+            std::string pass_expiry_ts;
+            std::string create_ts;
+            std::string modify_ts;
+        };
+        std::vector<PasswordEntry> passwords;
+
+        const auto opt_user_id = irods::experimental::catalog::query_catalog_integer(
+            executor, db_conn,
+            gq2::builder::select({"user_id"})
+                .from("USER")
+                .where(col("user_name") == userName2 && col("zone_name") == myUserZone)
+                .build());
+        if (opt_user_id) {
+            auto q = gq2::builder::select({"rcat_password", "pass_expiry_ts", "create_ts", "modify_ts"})
+                .from("USER_PASSWORD")
+                .where(col("user_id") == std::to_string(*opt_user_id))
+                .build();
+            auto res = irods::experimental::catalog::execute_catalog(executor, db_conn, q);
+            if (res.query_result) {
+                while (res.query_result->next()) {
+                    passwords.push_back({
+                        res.query_result->get<std::string>(0, ""),
+                        res.query_result->get<std::string>(1, ""),
+                        res.query_result->get<std::string>(2, ""),
+                        res.query_result->get<std::string>(3, "")
+                    });
+                }
+            }
         }
 
-        /* in the form used by temporary, one-time passwords */
+        bool isAnonymous = (strncmp(ANONYMOUS_USER, userName2, NAME_LEN) == 0);
 
-        time_t createTime;
-        int returnExpired;
-
-        /* check if it's expired */
-
-        returnExpired = 0;
-        getNowStr( myTime );
-        nowTime = atoll( myTime );
-        createTime = atoll( goodPwTs );
-        if ( createTime == 0 || nowTime == 0 ) {
-            returnExpired = 1;
-        }
-        if ( createTime + expireTime < nowTime ) {
-            returnExpired = 1;
-        }
-
-
-        /* Remove this temporary, one-time password */
-        cllBindVars[cllBindVarCount++] = goodPw;
-        if ( logSQL != 0 ) {
-            log_sql::debug("chlCheckAuth SQL 2");
-        }
-        status =  cmlExecuteNoAnswerSql(
-                      "delete from R_USER_PASSWORD where rcat_password=?",
-                      &icss );
-        if ( status != 0 ) {
-            log_db::info("chlCheckAuth cmlExecuteNoAnswerSql delete failure {}", status);
-            _rollback( "chlCheckAuth" );
-            return ERROR( status, "delete failure" );
-        }
-
-        /* Also remove any expired temporary passwords */
-
-        if ( logSQL != 0 ) {
-            log_sql::debug("chlCheckAuth SQL 3");
-        }
-        snprintf( expireStr, sizeof expireStr, "%d", temp_password_time );
-        cllBindVars[cllBindVarCount++] = expireStr;
-
-        pwExpireMaxCreateTime = nowTime - temp_password_time;
-        /* Not sure if casting to int is correct but seems OK & avoids warning:*/
-        snprintf( expireStrCreate, sizeof expireStrCreate, "%011d",
-                  ( int )pwExpireMaxCreateTime );
-        cllBindVars[cllBindVarCount++] = expireStrCreate;
-
-        status =  cmlExecuteNoAnswerSql(
-                      "delete from R_USER_PASSWORD where pass_expiry_ts = ? and create_ts < ?",
-                      &icss );
-        if ( status != 0 && status != CAT_SUCCESS_BUT_WITH_NO_INFO ) {
-            log_db::info("chlCheckAuth cmlExecuteNoAnswerSql delete2 failure {}", status);
-            _rollback( "chlCheckAuth" );
-            return ERROR( status, "delete2 failed" );
-        }
-
-        memset( goodPw, 0, MAX_PASSWORD_LEN );
-        if ( returnExpired ) {
-            return ERROR( CAT_PASSWORD_EXPIRED, "password expired" );
-        }
-
-        if ( logSQL != 0 ) {
-            log_sql::debug("chlCheckAuth SQL 4");
-        }
-        status =  cmlExecuteNoAnswerSql( "commit", &icss );
-        if ( status != 0 ) {
-            log_db::info("chlCheckAuth cmlExecuteNoAnswerSql commit failure {}", status);
-            return ERROR( status, "commit failure" );
-        }
-        memset( goodPw, 0, MAX_PASSWORD_LEN );
-        if ( returnExpired ) {
-            return ERROR( CAT_PASSWORD_EXPIRED, "password is expired" );
-        }
-    }
-
-    /* Get the user type so privilege level can be set */
-checkLevel:
-
-    if ( logSQL != 0 ) {
-        log_sql::debug("chlCheckAuth SQL 5");
-    }
-    {
-        std::vector<std::string> bindVars;
-        bindVars.push_back( userName2 );
-        bindVars.push_back( myUserZone );
-        status = cmlGetStringValueFromSql(
-                     "select user_type_name from R_USER_MAIN where user_name=? and zone_name=?",
-                     userType, MAX_NAME_LEN, bindVars, &icss );
-    }
-    if ( status != 0 ) {
-        if ( status == CAT_NO_ROWS_FOUND ) {
-            status = CAT_INVALID_USER; /* Be a little more specific */
+        if (passwords.empty()) {
+            if (!isAnonymous) {
+                return ERROR(CAT_INVALID_USER, "select rcat_password failed");
+            }
+            // anonymous user, skip password check and proceed to privilege check
         }
         else {
-            _rollback( "chlCheckAuth" );
-        }
-        return ERROR( status, "select user_type_name failed" );
-    }
-    *_user_priv_level = LOCAL_USER_AUTH;
-    if ( strcmp( userType, "rodsadmin" ) == 0 ) {
-        *_user_priv_level = LOCAL_PRIV_USER_AUTH;
+            int OK = 0;
+            std::string goodPw;
+            std::string lastPw;
+            std::string goodPwExpiry;
+            std::string goodPwTs;
+            std::string goodPwModTs;
 
-        /* Since the user is admin, also get the client privilege level */
-        if ( strcmp( _ctx.comm()->clientUser.userName, userName2 ) == 0 &&
-                strcmp( _ctx.comm()->clientUser.rodsZone, userZone ) == 0 ) {
-            *_client_priv_level = LOCAL_PRIV_USER_AUTH; /* same user, no query req */
+            for (const auto& entry : passwords) {
+                char cpw[MAX_PASSWORD_LEN + 10]{};
+                rstrcpy(cpw, entry.rcat_password.c_str(), sizeof(cpw));
+                lastPw = entry.rcat_password;
+
+                memset(md5Buf, 0, sizeof(md5Buf));
+                strncpy(md5Buf, _challenge, CHALLENGE_LEN);
+                icatDescramble(cpw);
+                strncpy(md5Buf + CHALLENGE_LEN, cpw, MAX_PASSWORD_LEN);
+
+                char digest[RESPONSE_LEN + 2]{};
+                obfMakeOneWayHash(hashType,
+                                  reinterpret_cast<unsigned char*>(md5Buf),
+                                  CHALLENGE_LEN + MAX_PASSWORD_LEN,
+                                  reinterpret_cast<unsigned char*>(digest));
+
+                for (int i = 0; i < RESPONSE_LEN; i++) {
+                    if (digest[i] == '\0') {
+                        digest[i]++;
+                    }
+                }
+
+                const char* cp = _response;
+                OK = 1;
+                for (int i = 0; i < RESPONSE_LEN; i++) {
+                    if (*cp++ != digest[i]) {
+                        OK = 0;
+                        break;
+                    }
+                }
+
+                if (OK == 1) {
+                    goodPw = cpw;
+                    goodPwExpiry = entry.pass_expiry_ts;
+                    goodPwTs = entry.create_ts;
+                    goodPwModTs = entry.modify_ts;
+                    break;
+                }
+            }
+
+            if (OK == 0) {
+                prevFailure++;
+                return ERROR(CAT_INVALID_AUTHENTICATION, "invalid argument");
+            }
+
+            rodsLong_t expireTime = atoll(goodPwExpiry.c_str());
+            auth_config ac{};
+            if (const auto err = get_auth_config("authentication", ac); !err.ok()) {
+                log_db::error("Failed to get auth configuration. [{}]", err.result());
+                return err;
+            }
+
+            char myTime[50]{};
+            getNowStr(myTime);
+            time_t nowTime = atoll(myTime);
+
+            if ((strncmp(goodPwExpiry.c_str(), "9999", 4) != 0) &&
+                expireTime >= ac.password_min_time &&
+                expireTime <= ac.password_max_time) {
+                time_t modTime = atoll(goodPwModTs.c_str());
+                if (modTime + expireTime < nowTime) {
+                    // Expired PAM password
+                    nanodbc::transaction trans{db_conn};
+                    const auto opt_user_id = irods::experimental::catalog::query_catalog_integer(
+                        executor,
+                        db_conn,
+                        gq2::builder::select({"user_id"})
+                            .from("USER")
+                            .where(col("user_name") == userName2 && col("zone_name") == myUserZone)
+                            .build());
+                    if (opt_user_id) {
+                        auto del_pw = gq2::builder::remove_from("USER_PASSWORD")
+                            .where(col("rcat_password") == lastPw && col("create_ts") == goodPwTs && col("user_id") == std::to_string(*opt_user_id))
+                            .build();
+                        irods::experimental::catalog::execute_catalog(executor, db_conn, del_pw);
+                    }
+                    trans.commit();
+                    return ERROR(CAT_PASSWORD_EXPIRED, "password expired");
+                }
+            }
+
+            int temp_password_max_time = irods::get_advanced_setting<const int>(irods::KW_CFG_MAX_TEMP_PASSWORD_LIFETIME);
+            if (!std::string_view{lastPw}.starts_with(PASSWORD_SCRAMBLE_PREFIX) && expireTime < temp_password_max_time) {
+                int temp_password_time = irods::get_advanced_setting<const int>(irods::KW_CFG_DEF_TEMP_PASSWORD_LIFETIME);
+
+                time_t createTime = atoll(goodPwTs.c_str());
+                bool returnExpired = false;
+                if (createTime == 0 || nowTime == 0 || createTime + expireTime < nowTime) {
+                    returnExpired = true;
+                }
+
+                nanodbc::transaction trans{db_conn};
+
+                auto del_good_pw = gq2::builder::remove_from("USER_PASSWORD")
+                    .where(col("rcat_password") == goodPw)
+                    .build();
+                irods::experimental::catalog::execute_catalog(executor, db_conn, del_good_pw);
+
+                time_t pwExpireMaxCreateTime = nowTime - temp_password_time;
+                char expireStrCreate[50]{};
+                snprintf(expireStrCreate, sizeof(expireStrCreate), "%011d", static_cast<int>(pwExpireMaxCreateTime));
+
+                auto del_expired = gq2::builder::remove_from("USER_PASSWORD")
+                    .where(col("pass_expiry_ts") == std::to_string(temp_password_time) && col("create_ts") < expireStrCreate)
+                    .build();
+                irods::experimental::catalog::execute_catalog(executor, db_conn, del_expired);
+
+                trans.commit();
+
+                if (returnExpired) {
+                    return ERROR(CAT_PASSWORD_EXPIRED, "password expired");
+                }
+            }
         }
-        else {
-            if ( _ctx.comm()->clientUser.userName[0] == '\0' ) {
-                /*
-                   When using GSI, the client might not provide a user
-                   name, in which case we avoid the query below (which
-                   would fail) and instead set up minimal privileges.
-                   This is safe since we have just authenticated the
-                   remote server as an admin account.  This will allow
-                   some queries (including the one needed for retrieving
-                   the client's DNs).  Since the clientUser is not set,
-                   some other queries are still exclued.  The non-IES will
-                   reconnect once the rodsUserName is determined.  In
-                   iRODS 2.3 this would return an error.
-                 */
+
+        // Determine user type and privilege level
+        const auto user_type_opt = irods::experimental::catalog::query_catalog_string(
+            executor,
+            db_conn,
+            gq2::builder::select({"user_type_name"})
+                .from("USER")
+                .where(col("user_name") == userName2 && col("zone_name") == myUserZone)
+                .build());
+        if (!user_type_opt) {
+            return ERROR(CAT_INVALID_USER, "select user_type_name failed");
+        }
+
+        *_user_priv_level = LOCAL_USER_AUTH;
+        if (*user_type_opt == "rodsadmin") {
+            *_user_priv_level = LOCAL_PRIV_USER_AUTH;
+
+            if (strcmp(_ctx.comm()->clientUser.userName, userName2) == 0 &&
+                strcmp(_ctx.comm()->clientUser.rodsZone, userZone) == 0) {
+                *_client_priv_level = LOCAL_PRIV_USER_AUTH;
+            }
+            else if (_ctx.comm()->clientUser.userName[0] == '\0') {
                 *_client_priv_level = REMOTE_USER_AUTH;
                 prevFailure = 0;
                 return SUCCESS();
             }
             else {
-                if ( logSQL != 0 ) {
-                    log_sql::debug("chlCheckAuth SQL 6");
-                }
-                {
-                    std::vector<std::string> bindVars;
-                    bindVars.push_back( _ctx.comm()->clientUser.userName );
-                    bindVars.push_back( _ctx.comm()->clientUser.rodsZone );
-                    status = cmlGetStringValueFromSql(
-                                 "select user_type_name from R_USER_MAIN where user_name=? and zone_name=?",
-                                 userType, MAX_NAME_LEN, bindVars, &icss );
-                }
-                if ( status != 0 ) {
-                    if ( status == CAT_NO_ROWS_FOUND ) {
-                        status = CAT_INVALID_CLIENT_USER; /* more specific */
-                    }
-                    else {
-                        _rollback( "chlCheckAuth" );
-                    }
-                    return ERROR( status, "select user_type_name failed" );
+                const auto client_type_opt = irods::experimental::catalog::query_catalog_string(
+                    executor,
+                    db_conn,
+                    gq2::builder::select({"user_type_name"})
+                        .from("USER")
+                        .where(col("user_name") == _ctx.comm()->clientUser.userName && col("zone_name") == _ctx.comm()->clientUser.rodsZone)
+                        .build());
+                if (!client_type_opt) {
+                    return ERROR(CAT_INVALID_CLIENT_USER, "select user_type_name failed");
                 }
                 *_client_priv_level = LOCAL_USER_AUTH;
-                if ( strcmp( userType, "rodsadmin" ) == 0 ) {
+                if (*client_type_opt == "rodsadmin") {
                     *_client_priv_level = LOCAL_PRIV_USER_AUTH;
                 }
             }
         }
-    }
 
-    prevFailure = 0;
-    return SUCCESS();
+        prevFailure = 0;
+        return SUCCESS();
+    }
+    catch (const nanodbc::database_error& e) {
+        log_db::error("{}: database error: {}", __FUNCTION__, e.what());
+        return ERROR(CAT_SQL_ERR, e.what());
+    }
+    catch (const irods::exception& e) {
+        return irods::error(e);
+    }
+    catch (const std::exception& e) {
+        log_db::error("{}: exception: {}", __FUNCTION__, e.what());
+        return ERROR(SYS_INTERNAL_ERR, e.what());
+    }
 
 } // db_check_auth_op
 
@@ -6272,21 +5535,16 @@ irods::error db_make_temp_pw_op(
     irods::plugin_context& _ctx,
     char*                  _pw_value_to_hash,
     const char*            _other_user ) {
-    // =-=-=-=-=-=-=-
-    // check the context
     irods::error ret = _ctx.valid();
     if ( !ret.ok() ) {
         return PASS( ret );
     }
 
-    // =-=-=-=-=-=-=-
-    // check the params
-    if (
-        !_pw_value_to_hash ||
-        !_other_user ) {
-        return ERROR(
-                   CAT_INVALID_ARGUMENT,
-                   "null parameter" );
+    namespace gq2 = irods::experimental::genquery2;
+    using gq2::builder::col;
+
+    if ( !_pw_value_to_hash || !_other_user ) {
+        return ERROR( CAT_INVALID_ARGUMENT, "null parameter" );
     }
 
     int temp_password_time;
@@ -6296,141 +5554,143 @@ irods::error db_make_temp_pw_op(
         return irods::error(e);
     }
 
-    // =-=-=-=-=-=-=-
-    // get a postgres object from the context
-    /*irods::postgres_object_ptr pg;
-    ret = make_db_ptr( _ctx.fco(), pg );
-    if ( !ret.ok() ) {
-        return PASS( ret );
-
-    }*/
-
-    // =-=-=-=-=-=-=-
-    // extract the icss property
-//        icatSessionStruct icss;
-//        _ctx.prop_map().get< icatSessionStruct >( ICSS_PROP, icss );
-
-    int status;
-    char md5Buf[100];
-    unsigned char digest[RESPONSE_LEN + 2];
-    int i;
-    char password[MAX_PASSWORD_LEN + 10];
-    char newPw[MAX_PASSWORD_LEN + 10];
-    char myTime[50];
-    char myTimeExp[50];
-    char rBuf[200];
-    char hashValue[50];
-    int j = 0;
-    char tSQL[MAX_SQL_SIZE];
-    int useOtherUser = 0;
-
-    if ( logSQL != 0 ) {
-        log_sql::debug("chlMakeTempPw");
-    }
-
-    if ( _other_user != NULL && strlen( _other_user ) > 0 ) {
-        if ( _ctx.comm()->clientUser.authInfo.authFlag < LOCAL_PRIV_USER_AUTH ) {
+    bool useOtherUser = false;
+    if ( strlen( _other_user ) > 0 ) {
+        if ( _ctx.comm()->clientUser.authInfo.authFlag < LOCAL_PRIV_USER_AUTH ||
+             _ctx.comm()->proxyUser.authInfo.authFlag < LOCAL_PRIV_USER_AUTH ) {
             return ERROR( CAT_INSUFFICIENT_PRIVILEGE_LEVEL, "insufficient privilege" );
         }
-        if ( _ctx.comm()->proxyUser.authInfo.authFlag < LOCAL_PRIV_USER_AUTH ) {
-            return ERROR( CAT_INSUFFICIENT_PRIVILEGE_LEVEL, "insufficient privilege" );
+        useOtherUser = true;
+    }
+
+    char password[MAX_PASSWORD_LEN + 10]{};
+    try {
+        auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
+
+        const auto pwd_uid_opt = irods::experimental::catalog::query_catalog_integer(
+            executor, db_conn,
+            gq2::builder::select({"user_id"})
+                .from("USER")
+                .where(col("user_name") == _ctx.comm()->clientUser.userName && col("zone_name") == _ctx.comm()->clientUser.rodsZone)
+                .build());
+        if (!pwd_uid_opt) {
+            return ERROR(CAT_INVALID_USER, "failed to get password");
         }
-        useOtherUser = 1;
-    }
-
-    if ( logSQL != 0 ) {
-        log_sql::debug("chlMakeTempPw SQL 1 ");
-    }
-
-    snprintf( tSQL, MAX_SQL_SIZE,
-              "select rcat_password from R_USER_PASSWORD, R_USER_MAIN where user_name=? and R_USER_MAIN.zone_name=? and R_USER_MAIN.user_id = R_USER_PASSWORD.user_id and pass_expiry_ts != '%d'",
-              temp_password_time );
-
-    {
-        std::vector<std::string> bindVars;
-        bindVars.push_back( _ctx.comm()->clientUser.userName );
-        bindVars.push_back( _ctx.comm()->clientUser.rodsZone );
-        status = cmlGetStringValueFromSql( tSQL, password, MAX_PASSWORD_LEN, bindVars, &icss );
-    }
-    if ( status != 0 ) {
-        if ( status == CAT_NO_ROWS_FOUND ) {
-            status = CAT_INVALID_USER; /* Be a little more specific */
+        const auto pwd_opt = irods::experimental::catalog::query_catalog_string(
+            executor, db_conn,
+            gq2::builder::select({"rcat_password"})
+                .from("USER_PASSWORD")
+                .where(col("user_id") == std::to_string(*pwd_uid_opt) && col("pass_expiry_ts") != std::to_string(temp_password_time))
+                .build());
+        if (!pwd_opt) {
+            return ERROR(CAT_INVALID_USER, "failed to get password");
         }
-        else {
-            _rollback( "chlMakeTempPw" );
+        rstrcpy(password, pwd_opt->c_str(), sizeof(password));
+
+        icatDescramble(password);
+
+        char rBuf[200]{};
+        get64RandomBytes(rBuf);
+        char hashValue[50]{};
+        int j = 0;
+        for (int i = 0; i < 50 && j < MAX_PASSWORD_LEN - 1; i++) {
+            char c = rBuf[i] & 0x7f;
+            if (c < '0') {
+                c += '0';
+            }
+            if ((c > 'a' && c < 'z') || (c > 'A' && c < 'Z') || (c > '0' && c < '9')) {
+                hashValue[j++] = c;
+            }
         }
-        return ERROR( status, "failed to get password" );
-    }
+        hashValue[j] = '\0';
 
-    icatDescramble( password );
+        char md5Buf[100]{};
+        snprintf(md5Buf, sizeof(md5Buf), "%s%s", hashValue, password);
+        unsigned char digest[RESPONSE_LEN + 2]{};
+        obfMakeOneWayHash(HASH_TYPE_DEFAULT, reinterpret_cast<unsigned char*>(md5Buf), 100, digest);
 
-    j = 0;
-    get64RandomBytes( rBuf );
-    for ( i = 0; i < 50 && j < MAX_PASSWORD_LEN - 1; i++ ) {
-        char c;
-        c = rBuf[i] & 0x7f;
-        if ( c < '0' ) {
-            c += '0';
+        char newPw[MAX_PASSWORD_LEN + 10]{};
+        hashToStr(digest, newPw);
+
+        snprintf(_pw_value_to_hash, MAX_PASSWORD_LEN, "%s", hashValue);
+
+        char myTime[50]{};
+        getNowStr(myTime);
+        std::string myTimeExp = std::to_string(temp_password_time);
+
+        std::string targetUser = useOtherUser ? _other_user : _ctx.comm()->clientUser.userName;
+
+        nanodbc::transaction trans{db_conn};
+        const auto target_user_id = irods::experimental::catalog::query_catalog_integer(
+            executor,
+            db_conn,
+            gq2::builder::select({"user_id"})
+                .from("USER")
+                .where(col("user_name") == targetUser && col("zone_name") == _ctx.comm()->clientUser.rodsZone)
+                .build());
+        if (!target_user_id) {
+            return ERROR(CAT_INVALID_USER, "user not found");
         }
-        if ( ( c > 'a' && c < 'z' ) || ( c > 'A' && c < 'Z' ) ||
-                ( c > '0' && c < '9' ) ) {
-            hashValue[j++] = c;
-        }
+
+        auto ins_pw = gq2::builder::insert_into("USER_PASSWORD")
+            .set("user_id", std::to_string(*target_user_id))
+            .set("rcat_password", newPw)
+            .set("pass_expiry_ts", myTimeExp)
+            .set("create_ts", myTime)
+            .set("modify_ts", myTime)
+            .build();
+        irods::experimental::catalog::execute_catalog(executor, db_conn, ins_pw);
+        trans.commit();
+
+        memset(newPw, 0, MAX_PASSWORD_LEN);
+        return SUCCESS();
     }
-    hashValue[j] = '\0';
-    /*   printf("hashValue=%s\n", hashValue); */
-
-    /* calculate the temp password (a hash of the user's main pw and
-       the hashValue) */
-    memset( md5Buf, 0, sizeof( md5Buf ) );
-    snprintf( md5Buf, sizeof( md5Buf ), "%s%s", hashValue, password );
-
-    obfMakeOneWayHash( HASH_TYPE_DEFAULT,
-                       ( unsigned char * ) md5Buf, 100, ( unsigned char * ) digest );
-
-    hashToStr( digest, newPw );
-    /*   printf("newPw=%s\n", newPw); */
-
-    snprintf( _pw_value_to_hash, MAX_PASSWORD_LEN, "%s", hashValue );
-
-    /* Insert the temporary, one-time password */
-
-    getNowStr( myTime );
-    sprintf( myTimeExp, "%d", temp_password_time );  /* seconds from create time
-                                                      when it will expire */
-    if ( useOtherUser == 1 ) {
-        cllBindVars[cllBindVarCount++] = _other_user;
+    catch (const nanodbc::database_error& e) {
+        log_db::error("{}: database error: {}", __FUNCTION__, e.what());
+        return ERROR(CAT_SQL_ERR, e.what());
     }
-    else {
-        cllBindVars[cllBindVarCount++] = _ctx.comm()->clientUser.userName;
+    catch (const std::exception& e) {
+        log_db::error("{}: exception: {}", __FUNCTION__, e.what());
+        return ERROR(SYS_INTERNAL_ERR, e.what());
     }
-    cllBindVars[cllBindVarCount++] = _ctx.comm()->clientUser.rodsZone,
-    cllBindVars[cllBindVarCount++] = newPw;
-    cllBindVars[cllBindVarCount++] = myTimeExp;
-    cllBindVars[cllBindVarCount++] = myTime;
-    cllBindVars[cllBindVarCount++] = myTime;
-    if ( logSQL != 0 ) {
-        log_sql::debug("chlMakeTempPw SQL 2");
-    }
-    status =  cmlExecuteNoAnswerSql(
-                  "insert into R_USER_PASSWORD (user_id, rcat_password, pass_expiry_ts,  create_ts, modify_ts) values ((select user_id from R_USER_MAIN where user_name=? and zone_name=?), ?, ?, ?, ?)",
-                  &icss );
-    if ( status != 0 ) {
-        log_db::info("chlMakeTempPw cmlExecuteNoAnswerSql insert failure {}", status);
-        _rollback( "chlMakeTempPw" );
-        return ERROR( status, "insert failed" );
-    }
-
-    status =  cmlExecuteNoAnswerSql( "commit", &icss );
-    if ( status != 0 ) {
-        log_db::info("chlMakeTempPw cmlExecuteNoAnswerSql commit failure {}", status);
-        return ERROR( status, "commit failed" );
-    }
-
-    memset( newPw, 0, MAX_PASSWORD_LEN );
-    return SUCCESS();
-
 } // db_make_temp_pw_op
+
+namespace
+{
+    void delete_expired_passwords(
+        irods::experimental::catalog::nanodbc_executor& _exec,
+        nanodbc::connection& _conn,
+        const auth_config& _ac,
+        const char* _now_time_str)
+    {
+        namespace gq2 = irods::experimental::genquery2;
+        using gq2::builder::col;
+        auto pw_res = irods::experimental::catalog::execute_catalog(
+            _exec, _conn,
+            gq2::builder::select({"user_id", "rcat_password", "pass_expiry_ts", "modify_ts"})
+                .from("USER_PASSWORD")
+                .build());
+        if (pw_res.query_result) {
+            time_t now_ts = std::atoll(_now_time_str);
+            while (pw_res.query_result->next()) {
+                const auto uid = pw_res.query_result->get<std::string>(0);
+                const auto pw = pw_res.query_result->get<std::string>(1);
+                const auto exp_str = pw_res.query_result->get<std::string>(2);
+                const auto mod_str = pw_res.query_result->get<std::string>(3);
+                if (!exp_str.starts_with("9999")) {
+                    time_t exp_ts = std::atoll(exp_str.c_str());
+                    time_t mod_ts = std::atoll(mod_str.c_str());
+                    if (exp_ts >= _ac.password_min_time && exp_ts <= _ac.password_max_time && (exp_ts + mod_ts < now_ts)) {
+                        auto del_stmt = gq2::builder::remove_from("USER_PASSWORD")
+                            .where(col("user_id") == uid && col("rcat_password") == pw)
+                            .build();
+                        irods::experimental::catalog::execute_catalog(_exec, _conn, del_stmt);
+                    }
+                }
+            }
+        }
+    }
+} // anonymous namespace
 
 // =-=-=-=-=-=-=-
 // authenticate user
@@ -6438,20 +5698,16 @@ irods::error db_make_limited_pw_op(
     irods::plugin_context& _ctx,
     int                    _ttl,
     char*                  _pw_value_to_hash ) {
-    // =-=-=-=-=-=-=-
-    // check the context
     irods::error ret = _ctx.valid();
     if ( !ret.ok() ) {
         return PASS( ret );
     }
 
-    // =-=-=-=-=-=-=-
-    // check the params
-    if (
-        !_pw_value_to_hash ) {
-        return ERROR(
-                   CAT_INVALID_ARGUMENT,
-                   "null parameter" );
+    namespace gq2 = irods::experimental::genquery2;
+    using gq2::builder::col;
+
+    if ( !_pw_value_to_hash ) {
+        return ERROR( CAT_INVALID_ARGUMENT, "null parameter" );
     }
 
     int temp_password_time;
@@ -6461,193 +5717,134 @@ irods::error db_make_limited_pw_op(
         return irods::error(e);
     }
 
-    // =-=-=-=-=-=-=-
-    // get a postgres object from the context
-    /*irods::postgres_object_ptr pg;
-    ret = make_db_ptr( _ctx.fco(), pg );
-    if ( !ret.ok() ) {
-        return PASS( ret );
+    char password[MAX_PASSWORD_LEN + 10]{};
+    try {
+        auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
 
-    }*/
-
-    // =-=-=-=-=-=-=-
-    // extract the icss property
-//        icatSessionStruct icss;
-//        _ctx.prop_map().get< icatSessionStruct >( ICSS_PROP, icss );
-    int status;
-    char md5Buf[100];
-    unsigned char digest[RESPONSE_LEN + 2];
-    int i;
-    char password[MAX_PASSWORD_LEN + 10];
-    char newPw[MAX_PASSWORD_LEN + 10];
-    char myTime[50];
-    char rBuf[200];
-    char hashValue[50];
-    int j = 0;
-    char tSQL[MAX_SQL_SIZE];
-    char expTime[50];
-
-    if ( logSQL != 0 ) {
-        log_sql::debug("chlMakeLimitedPw");
-    }
-
-    if ( logSQL != 0 ) {
-        log_sql::debug("chlMakeLimitedPw SQL 1 ");
-    }
-
-    snprintf( tSQL, MAX_SQL_SIZE,
-              "select rcat_password from R_USER_PASSWORD, R_USER_MAIN where user_name=? and R_USER_MAIN.zone_name=? and R_USER_MAIN.user_id = R_USER_PASSWORD.user_id and pass_expiry_ts != '%d'",
-              temp_password_time );
-
-    {
-        std::vector<std::string> bindVars;
-        bindVars.push_back( _ctx.comm()->clientUser.userName );
-        bindVars.push_back( _ctx.comm()->clientUser.rodsZone );
-        status = cmlGetStringValueFromSql( tSQL, password, MAX_PASSWORD_LEN, bindVars, &icss );
-    }
-    if ( status != 0 ) {
-        if ( status == CAT_NO_ROWS_FOUND ) {
-            status = CAT_INVALID_USER; /* Be a little more specific */
+        const auto pwd_uid_opt = irods::experimental::catalog::query_catalog_integer(
+            executor, db_conn,
+            gq2::builder::select({"user_id"})
+                .from("USER")
+                .where(col("user_name") == _ctx.comm()->clientUser.userName && col("zone_name") == _ctx.comm()->clientUser.rodsZone)
+                .build());
+        if (!pwd_uid_opt) {
+            return ERROR(CAT_INVALID_USER, "get password failed");
         }
-        else {
-            _rollback( "chlMakeLimitedPw" );
+        const auto pwd_opt = irods::experimental::catalog::query_catalog_string(
+            executor, db_conn,
+            gq2::builder::select({"rcat_password"})
+                .from("USER_PASSWORD")
+                .where(col("user_id") == std::to_string(*pwd_uid_opt) && col("pass_expiry_ts") != std::to_string(temp_password_time))
+                .build());
+        if (!pwd_opt) {
+            return ERROR(CAT_INVALID_USER, "get password failed");
         }
-        return ERROR( status, "get password failed" );
-    }
+        rstrcpy(password, pwd_opt->c_str(), sizeof(password));
 
-    icatDescramble( password );
+        icatDescramble(password);
 
-    j = 0;
-    get64RandomBytes( rBuf );
-    for ( i = 0; i < 50 && j < MAX_PASSWORD_LEN - 1; i++ ) {
-        char c;
-        c = rBuf[i] & 0x7f;
-        if ( c < '0' ) {
-            c += '0';
+        char rBuf[200]{};
+        get64RandomBytes(rBuf);
+        char hashValue[50]{};
+        int j = 0;
+        for (int i = 0; i < 50 && j < MAX_PASSWORD_LEN - 1; i++) {
+            char c = rBuf[i] & 0x7f;
+            if (c < '0') {
+                c += '0';
+            }
+            if ((c > 'a' && c < 'z') || (c > 'A' && c < 'Z') || (c > '0' && c < '9')) {
+                hashValue[j++] = c;
+            }
         }
-        if ( ( c > 'a' && c < 'z' ) || ( c > 'A' && c < 'Z' ) ||
-                ( c > '0' && c < '9' ) ) {
-            hashValue[j++] = c;
+        hashValue[j] = '\0';
+
+        char md5Buf[100]{};
+        snprintf(md5Buf, sizeof(md5Buf), "%s%s", hashValue, password);
+        unsigned char digest[RESPONSE_LEN + 2]{};
+        obfMakeOneWayHash(HASH_TYPE_DEFAULT, reinterpret_cast<unsigned char*>(md5Buf), 100, digest);
+
+        char newPw[MAX_PASSWORD_LEN + 10]{};
+        hashToStr(digest, newPw);
+        icatScramble(newPw);
+
+        snprintf(_pw_value_to_hash, MAX_PASSWORD_LEN, "%s", hashValue);
+
+        auth_config ac{};
+        if (const auto err = get_auth_config("authentication", ac); !err.ok()) {
+            log_db::error("Failed to get auth configuration. [{}]", err.result());
+            return err;
         }
+
+        int timeToLive = _ttl * 3600;
+        if (timeToLive < ac.password_min_time || timeToLive > ac.password_max_time) {
+            log_db::error("Invalid TTL - min time: [{}] max time:[{}] ttl: [{}]",
+                          ac.password_min_time, ac.password_max_time, timeToLive);
+            return ERROR(PAM_AUTH_PASSWORD_INVALID_TTL, "invalid ttl");
+        }
+
+        char myTime[50]{};
+        getNowStr(myTime);
+
+        nanodbc::transaction trans{db_conn};
+
+        const auto opt_user_id = irods::experimental::catalog::query_catalog_integer(
+            executor,
+            db_conn,
+            gq2::builder::select({"user_id"})
+                .from("USER")
+                .where(col("user_name") == _ctx.comm()->clientUser.userName && col("zone_name") == _ctx.comm()->clientUser.rodsZone)
+                .build());
+        if (!opt_user_id) {
+            return ERROR(CAT_INVALID_USER, "user not found");
+        }
+
+        auto ins_pw = gq2::builder::insert_into("USER_PASSWORD")
+            .set("user_id", std::to_string(*opt_user_id))
+            .set("rcat_password", newPw)
+            .set("pass_expiry_ts", std::to_string(timeToLive))
+            .set("create_ts", myTime)
+            .set("modify_ts", myTime)
+            .build();
+        irods::experimental::catalog::execute_catalog(executor, db_conn, ins_pw);
+
+        delete_expired_passwords(executor, db_conn, ac, myTime);
+
+        trans.commit();
+
+        memset(newPw, 0, MAX_PASSWORD_LEN);
+        return SUCCESS();
     }
-    hashValue[j] = '\0';
-
-    /* calculate the limited password (a hash of the user's main pw and
-       the hashValue) */
-    memset( md5Buf, 0, sizeof( md5Buf ) );
-    snprintf( md5Buf, sizeof( md5Buf ), "%s%s", hashValue, password );
-
-    obfMakeOneWayHash( HASH_TYPE_DEFAULT,
-                       ( unsigned char * ) md5Buf, 100, ( unsigned char * ) digest );
-
-    hashToStr( digest, newPw );
-
-    icatScramble( newPw );
-
-    snprintf( _pw_value_to_hash, MAX_PASSWORD_LEN, "%s", hashValue );
-
-    getNowStr( myTime );
-
-    auth_config ac{};
-    if (const auto err = get_auth_config("authentication", ac); !err.ok()) {
-        log_db::error("Failed to get auth configuration. [{}]", err.result());
-        return err;
+    catch (const nanodbc::database_error& e) {
+        log_db::error("{}: database error: {}", __FUNCTION__, e.what());
+        return ERROR(CAT_SQL_ERR, e.what());
     }
-
-    // NOLINTNEXTLINE(cppcoreguidelines-avoid-magic-numbers,readability-magic-numbers)
-    int timeToLive = _ttl * 3600; /* convert input hours to seconds */
-    if (timeToLive < ac.password_min_time || timeToLive > ac.password_max_time) {
-        log_db::error("Invalid TTL - min time: [{}] max time:[{}] ttl: [{}]",
-                      ac.password_min_time,
-                      ac.password_max_time,
-                      timeToLive);
-        return ERROR( PAM_AUTH_PASSWORD_INVALID_TTL, "invalid ttl" );
+    catch (const std::exception& e) {
+        log_db::error("{}: exception: {}", __FUNCTION__, e.what());
+        return ERROR(SYS_INTERNAL_ERR, e.what());
     }
-
-    /* Insert the limited password */
-    snprintf( expTime, sizeof expTime, "%d", timeToLive );
-    cllBindVars[cllBindVarCount++] = _ctx.comm()->clientUser.userName;
-    // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-constant-array-index)
-    cllBindVars[cllBindVarCount++] = _ctx.comm()->clientUser.rodsZone;
-    // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-constant-array-index)
-    cllBindVars[cllBindVarCount++] = newPw;
-    // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-constant-array-index)
-    cllBindVars[cllBindVarCount++] = expTime;
-    // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-constant-array-index)
-    cllBindVars[cllBindVarCount++] = myTime;
-    cllBindVars[cllBindVarCount++] = myTime;
-    if ( logSQL != 0 ) {
-        log_sql::debug("chlMakeLimitedPw SQL 2");
-    }
-    status =  cmlExecuteNoAnswerSql(
-                  "insert into R_USER_PASSWORD (user_id, rcat_password, pass_expiry_ts,  create_ts, modify_ts) values ((select user_id from R_USER_MAIN where user_name=? and zone_name=?), ?, ?, ?, ?)",
-                  &icss );
-    if ( status != 0 ) {
-        log_db::info("chlMakeLimitedPw cmlExecuteNoAnswerSql insert failure {}", status);
-        _rollback( "chlMakeLimitedPw" );
-        return ERROR( status, "insert failure" );
-    }
-
-    /* Also delete any that are expired */
-    if ( logSQL != 0 ) {
-        log_sql::debug("chlMakeLimitedPw SQL 3");
-    }
-
-    const auto password_min_time_str = std::to_string(ac.password_min_time);
-    const auto password_max_time_str = std::to_string(ac.password_max_time);
-
-    // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-constant-array-index)
-    cllBindVars[cllBindVarCount++] = password_min_time_str.c_str();
-    // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-constant-array-index)
-    cllBindVars[cllBindVarCount++] = password_max_time_str.c_str();
-    cllBindVars[cllBindVarCount++] = myTime;
-#if MY_ICAT
-    status = cmlExecuteNoAnswerSql( "delete from R_USER_PASSWORD where pass_expiry_ts not like '9999%' and cast(pass_expiry_ts as signed integer)>=? and cast(pass_expiry_ts as signed integer)<=? and (cast(pass_expiry_ts as signed integer) + cast(modify_ts as signed integer) < ?)",
-                                     &icss );
-#else
-    status = cmlExecuteNoAnswerSql( "delete from R_USER_PASSWORD where pass_expiry_ts not like '9999%' and cast(pass_expiry_ts as integer)>=? and cast(pass_expiry_ts as integer)<=? and (cast(pass_expiry_ts as integer) + cast(modify_ts as integer) < ?)",
-                                     &icss );
-#endif
-    // CAT_SUCCESS_BUT_WITH_NO_INFO indicates that no expired passwords exist, which is okay.
-    if ( status != 0 && status != CAT_SUCCESS_BUT_WITH_NO_INFO ) {
-        log_db::info("chlMakeLimitedPw cmlExecuteNoAnswerSql delete failure {}", status);
-        _rollback( "chlMakeLimitedPw" );
-        return ERROR( status, "delete failure" );
-    }
-
-    status =  cmlExecuteNoAnswerSql( "commit", &icss );
-    if ( status != 0 ) {
-        log_db::info("chlMakeLimitedPw cmlExecuteNoAnswerSql commit failure {}", status);
-        return ERROR( status, "commit failed" );
-    }
-
-    memset( newPw, 0, MAX_PASSWORD_LEN );
-
-    return SUCCESS();
-
 } // db_make_limited_pw_op
 
 // =-=-=-=-=-=-=-
 // authenticate user
 auto db_update_pam_password_op(irods::plugin_context& _ctx,
-                               const char* _user_name,
-                               int _ttl,
-                               const char* _test_time,
-                               char** _password_buffer,
-                               std::size_t _password_buffer_size) -> irods::error
+                                const char* _user_name,
+                                int _ttl,
+                                const char* _test_time,
+                                char** _password_buffer,
+                                std::size_t _password_buffer_size) -> irods::error
 {
-    // =-=-=-=-=-=-=-
-    // check the context
     irods::error ret = _ctx.valid();
     if ( !ret.ok() ) {
         return PASS( ret );
     }
 
+    namespace gq2 = irods::experimental::genquery2;
+    using gq2::builder::col;
+
     if (!_user_name || !_password_buffer) {
         return ERROR(CAT_INVALID_ARGUMENT, "null parameter");
     }
 
-    // Plus 1 for null terminator.
     std::array<char, MAX_PASSWORD_LEN + 1> password_in_database_buffer{};
     if (password_in_database_buffer.size() > _password_buffer_size) {
         return ERROR(
@@ -6658,35 +5855,17 @@ auto db_update_pam_password_op(irods::plugin_context& _ctx,
                         _password_buffer_size));
     }
 
-    // =-=-=-=-=-=-=-
-    // get a postgres object from the context
-    /*irods::postgres_object_ptr pg;
-    ret = make_db_ptr( _ctx.fco(), pg );
-    if ( !ret.ok() ) {
-        return PASS( ret );
-
-    }*/
-
-    // =-=-=-=-=-=-=-
-    // extract the icss property
-//        icatSessionStruct icss;
-//        _ctx.prop_map().get< icatSessionStruct >( ICSS_PROP, icss );
-
-    char myTime[50];
-    int status;
-    char passwordModifyTime[50];
-    char *cVal[3];
-    int iVal[3];
-    char selUserId[MAX_NAME_LEN];
-    char expTime[50];
-
     std::string zone;
     ret = getLocalZone( _ctx.prop_map(), &icss, zone );
     if ( !ret.ok() ) {
         return PASS( ret );
     }
 
+    char myTime[50]{};
     getNowStr( myTime );
+    if ( _test_time != NULL && strlen( _test_time ) > 0 ) {
+        snprintf( myTime, sizeof( myTime ), "%s", _test_time );
+    }
 
     auth_config ac{};
     if (const auto err = get_auth_config("authentication", ac); !err.ok()) {
@@ -6694,172 +5873,118 @@ auto db_update_pam_password_op(irods::plugin_context& _ctx,
         return err;
     }
 
-    /* if ttl is unset, use the default (minimum password lifetime) */
+    std::string expTime;
     if ( _ttl == 0 ) {
-        rstrcpy(expTime, std::to_string(ac.password_min_time).c_str(), sizeof expTime);
+        expTime = std::to_string(ac.password_min_time);
     }
     else {
-        /* convert ttl to seconds and make sure ttl is within the limits */
         _ttl = _ttl * 3600;
         if (_ttl < ac.password_min_time || _ttl > ac.password_max_time) {
             return ERROR( PAM_AUTH_PASSWORD_INVALID_TTL, "pam ttl invalid" );
         }
-        snprintf( expTime, sizeof expTime, "%d", _ttl );
+        expTime = std::to_string(_ttl);
     }
 
-    /* get user id */
-    if ( logSQL != 0 ) {
-        log_sql::debug("chlUpdateIrodsPamPassword SQL 1");
-    }
-    {
-        std::vector<std::string> bindVars;
-        bindVars.push_back( _user_name );
-        bindVars.push_back( zone );
-        status = cmlGetStringValueFromSql(
-                     "select user_id from R_USER_MAIN where user_name=? and zone_name=? and user_type_name!='rodsgroup'",
-                     selUserId, MAX_NAME_LEN, bindVars, &icss );
-    }
-    if ( status == CAT_NO_ROWS_FOUND ) {
-        return  ERROR( CAT_INVALID_USER, "invalid user" );
-    }
-    if ( status ) {
-        return ERROR( status, "failed to get user id" );
-    }
+    try {
+        auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
 
-    /* first delete any that are expired */
-    if ( logSQL != 0 ) {
-        log_sql::debug("chlUpdateIrodsPamPassword SQL 2");
-    }
+        // get user id
+        const auto user_id_opt = irods::experimental::catalog::query_catalog_string(
+            executor,
+            db_conn,
+            gq2::builder::select({"user_id"})
+                .from("USER")
+                .where(col("user_name") == _user_name && col("zone_name") == zone && col("user_type_name") != "rodsgroup")
+                .build());
+        if (!user_id_opt) {
+            return ERROR(CAT_INVALID_USER, "invalid user");
+        }
+        const std::string selUserId = *user_id_opt;
 
-    const auto password_min_time_str = std::to_string(ac.password_min_time);
-    const auto password_max_time_str = std::to_string(ac.password_max_time);
+        // first delete any that are expired
+        nanodbc::transaction trans{db_conn};
 
-    // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-constant-array-index)
-    cllBindVars[cllBindVarCount++] = password_min_time_str.c_str();
-    // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-constant-array-index)
-    cllBindVars[cllBindVarCount++] = password_max_time_str.c_str();
-    cllBindVars[cllBindVarCount++] = myTime;
-#if MY_ICAT
-    status = cmlExecuteNoAnswerSql( "delete from R_USER_PASSWORD where pass_expiry_ts not like '9999%' and cast(pass_expiry_ts as signed integer)>=? and cast(pass_expiry_ts as signed integer)<=? and (cast(pass_expiry_ts as signed integer) + cast(modify_ts as signed integer) < ?)",
-#else
-    status = cmlExecuteNoAnswerSql( "delete from R_USER_PASSWORD where pass_expiry_ts not like '9999%' and cast(pass_expiry_ts as integer)>=? and cast(pass_expiry_ts as integer)<=? and (cast(pass_expiry_ts as integer) + cast(modify_ts as integer) < ?)",
-#endif
-                                     & icss );
-    // CAT_SUCCESS_BUT_WITH_NO_INFO indicates that no expired passwords exist, which is okay.
-    if ( status != 0 && status != CAT_SUCCESS_BUT_WITH_NO_INFO ) {
-        log_db::info("chlUpdateIrodsPamPassword cmlExecuteNoAnswerSql delete failure {}", status);
-        _rollback( "chlUpdateIrodsPamPassword" );
-        return ERROR( status, "delete failure" );
-    }
+        delete_expired_passwords(executor, db_conn, ac, myTime);
 
-    if (logSQL != 0) {
-        log_sql::debug("chlUpdateIrodsPamPassword SQL 3");
-    }
+        // check if existing valid PAM password exists
+        auto sel_res = irods::experimental::catalog::execute_catalog(
+            executor, db_conn,
+            gq2::builder::select({"rcat_password", "pass_expiry_ts"})
+                .from("USER_PASSWORD")
+                .where(col("user_id") == selUserId)
+                .build());
 
-    cVal[0] = password_in_database_buffer.data();
-    iVal[0] = MAX_PASSWORD_LEN;
-    cVal[1] = passwordModifyTime;
-    iVal[1] = sizeof( passwordModifyTime );
-    {
-        std::vector<std::string> bindVars;
-        bindVars.emplace_back(selUserId);
-        bindVars.emplace_back(password_min_time_str.c_str());
-        bindVars.emplace_back(password_max_time_str.c_str());
-        status = cmlGetStringValuesFromSql(
-#if MY_ICAT
-                     "select rcat_password, modify_ts from R_USER_PASSWORD where user_id=? and pass_expiry_ts not like '9999%' and cast(pass_expiry_ts as signed integer) >= ? and cast (pass_expiry_ts as signed integer) <= ?",
-#else
-                     "select rcat_password, modify_ts from R_USER_PASSWORD where user_id=? and pass_expiry_ts not like '9999%' and cast(pass_expiry_ts as integer) >= ? and cast (pass_expiry_ts as integer) <= ?",
-#endif
-                     cVal, iVal, 2, bindVars, &icss );
-    }
-
-    if ( status == 0 ) {
-        if (ac.password_extend_lifetime) {
-            if ( logSQL != 0 ) {
-                log_sql::debug("chlUpdateIrodsPamPassword SQL 4");
-            }
-            cllBindVars[cllBindVarCount++] = myTime;
-            cllBindVars[cllBindVarCount++] = expTime;
-            cllBindVars[cllBindVarCount++] = selUserId;
-            // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-constant-array-index)
-            cllBindVars[cllBindVarCount++] = password_in_database_buffer.data();
-            status =  cmlExecuteNoAnswerSql( "update R_USER_PASSWORD set modify_ts=?, pass_expiry_ts=? where user_id = ? and rcat_password = ?",
-                                             &icss );
-            if ( status ) {
-                return ERROR( status, "password update error" );
-            }
-
-            status =  cmlExecuteNoAnswerSql( "commit", &icss );
-            if ( status != 0 ) {
-                log_db::info("chlUpdateIrodsPamPassword cmlExecuteNoAnswerSql commit failure {}", status);
-                return ERROR( status, "commit failure" );
+        std::string existing_pw;
+        bool has_valid_pam = false;
+        if (sel_res.query_result) {
+            while (sel_res.query_result->next()) {
+                auto pw = sel_res.query_result->get<std::string>(0);
+                auto exp_str = sel_res.query_result->get<std::string>(1);
+                if (!exp_str.starts_with("9999")) {
+                    auto exp_val = std::atoll(exp_str.c_str());
+                    if (exp_val >= ac.password_min_time && exp_val <= ac.password_max_time) {
+                        existing_pw = pw;
+                        has_valid_pam = true;
+                        break;
+                    }
+                }
             }
         }
 
-        // password_in_database_buffer holds the randomly generated password in a scrambled form. It needs to be
-        // descrambled before returning to the caller.
-        icatDescramble(password_in_database_buffer.data());
+        if (has_valid_pam) {
+            if (ac.password_extend_lifetime) {
+                auto upd_pw = gq2::builder::update("USER_PASSWORD")
+                    .set("modify_ts", myTime)
+                    .set("pass_expiry_ts", expTime)
+                    .where(col("user_id") == selUserId && col("rcat_password") == existing_pw)
+                    .build();
+                irods::experimental::catalog::execute_catalog(executor, db_conn, upd_pw);
+            }
+            trans.commit();
 
-        // The descrambled password at time of generation is 50 characters or less (see below).
-        std::strncpy(*_password_buffer, password_in_database_buffer.data(), _password_buffer_size);
+            rstrcpy(password_in_database_buffer.data(), existing_pw.c_str(), password_in_database_buffer.size());
+            icatDescramble(password_in_database_buffer.data());
+            std::strncpy(*_password_buffer, password_in_database_buffer.data(), _password_buffer_size);
+            return SUCCESS();
+        }
 
+        constexpr auto random_password_len = MAX_PASSWORD_LEN - 8;
+        if (random_password_len + 1 > _password_buffer_size) {
+            return ERROR(
+                SYS_INVALID_INPUT_PARAM,
+                fmt::format("{}: Buffer not large enough to hold password. Requires [{}] bytes, received [{}] bytes.",
+                            __func__,
+                            random_password_len + 1,
+                            _password_buffer_size));
+        }
+
+        std::array<char, MAX_PASSWORD_LEN + 1> scrambled_random_password{};
+        const auto random_password = irods::generate_random_alphanumeric_string(random_password_len);
+        std::strncpy(scrambled_random_password.data(), random_password.c_str(), random_password_len + 1);
+        icatScramble(scrambled_random_password.data());
+
+        auto ins_pw = gq2::builder::insert_into("USER_PASSWORD")
+            .set("user_id", selUserId)
+            .set("rcat_password", scrambled_random_password.data())
+            .set("pass_expiry_ts", expTime)
+            .set("create_ts", myTime)
+            .set("modify_ts", myTime)
+            .build();
+        irods::experimental::catalog::execute_catalog(executor, db_conn, ins_pw);
+
+        trans.commit();
+
+        std::strncpy(*_password_buffer, random_password.c_str(), _password_buffer_size);
         return SUCCESS();
     }
-
-    // See db_mod_user_op operation "password" for explanation about password lengths. This is apparently the enforced
-    // longest password length for native authentication. The random password is used with native authentication and so
-    // it cannot exceed this size. Also, make sure the output buffer can hold the randomly generated password.
-    constexpr auto random_password_len = MAX_PASSWORD_LEN - 8;
-    if (random_password_len + 1 > _password_buffer_size) {
-        return ERROR(
-            SYS_INVALID_INPUT_PARAM,
-            fmt::format("{}: Buffer not large enough to hold password. Requires [{}] bytes, received [{}] bytes.",
-                        __func__,
-                        random_password_len + 1,
-                        _password_buffer_size));
+    catch (const nanodbc::database_error& e) {
+        log_db::error("{}: database error: {}", __FUNCTION__, e.what());
+        return ERROR(CAT_SQL_ERR, e.what());
     }
-
-    // The length of the randomly generated password must fit into the buffer for the random password in scrambled form.
-    std::array<char, MAX_PASSWORD_LEN + 1> scrambled_random_password{}; // +1 for null terminator
-    static_assert(random_password_len < scrambled_random_password.size());
-
-    // Historically, the randomly generated password had been a string no longer than MAX_PASSWORD_LEN with characters
-    // in the set [1-8B-Yb-y]. The string is now guaranteed to be the specified length and contain characters in the
-    // set of alphanumeric characters.
-    const auto random_password = irods::generate_random_alphanumeric_string(random_password_len);
-
-    // Copy the randomly generated password because icatScramble modifies the passed-in buffer. We want to retain the
-    // unscrambled password so that it can be returned to the user for future authentication purposes.
-    std::strncpy(scrambled_random_password.data(), random_password.c_str(), random_password_len + 1);
-    icatScramble(scrambled_random_password.data());
-
-    if ( _test_time != NULL && strlen( _test_time ) > 0 ) {
-        snprintf( myTime, sizeof( myTime ), "%s", _test_time );
+    catch (const std::exception& e) {
+        log_db::error("{}: exception: {}", __FUNCTION__, e.what());
+        return ERROR(SYS_INTERNAL_ERR, e.what());
     }
-
-    if (logSQL != 0)
-        log_sql::debug("chlUpdateIrodsPamPassword SQL 5");
-    cllBindVars[cllBindVarCount++] = selUserId;
-    // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-constant-array-index)
-    cllBindVars[cllBindVarCount++] = scrambled_random_password.data();
-    cllBindVars[cllBindVarCount++] = expTime;
-    cllBindVars[cllBindVarCount++] = myTime;
-    cllBindVars[cllBindVarCount++] = myTime;
-    status =  cmlExecuteNoAnswerSql( "insert into R_USER_PASSWORD (user_id, rcat_password, pass_expiry_ts,  create_ts, modify_ts) values (?, ?, ?, ?, ?)",
-                                     &icss );
-    if ( status ) return ERROR( status, "insert failure" );
-
-    status =  cmlExecuteNoAnswerSql( "commit", &icss );
-    if ( status != 0 ) {
-        log_db::info("chlUpdateIrodsPamPassword cmlExecuteNoAnswerSql commit failure {}", status);
-        return ERROR( status, "commit failure" );
-    }
-
-    // Return the unscrambled, randomly generated password to the user.
-    std::strncpy(*_password_buffer, random_password.c_str(), _password_buffer_size);
-
-    return SUCCESS();
 } // db_update_pam_password_op
 
 // =-=-=-=-=-=-=-
@@ -6869,63 +5994,13 @@ irods::error db_mod_user_op(
     const char*            _user_name,
     const char*            _option,
     const char*            _new_value ) {
-    // =-=-=-=-=-=-=-
-    // check the context
     irods::error ret = _ctx.valid();
     if ( !ret.ok() ) {
         return PASS( ret );
     }
 
-    // =-=-=-=-=-=-=-
-    // check the params
-    if (
-        !_user_name ||
-        !_option    ||
-        !_new_value ) {
-        return ERROR(
-                   CAT_INVALID_ARGUMENT,
-                   "null parameter" );
-    }
-
-    // =-=-=-=-=-=-=-
-    // get a postgres object from the context
-    /*irods::postgres_object_ptr pg;
-    ret = make_db_ptr( _ctx.fco(), pg );
-    if ( !ret.ok() ) {
-        return PASS( ret );
-
-    }*/
-
-    // =-=-=-=-=-=-=-
-    // extract the icss property
-//        icatSessionStruct icss;
-//        _ctx.prop_map().get< icatSessionStruct >( ICSS_PROP, icss );
-    int status;
-    int opType;
-    char decoded[MAX_PASSWORD_LEN + 20];
-    char tSQL[MAX_SQL_SIZE];
-    char form1[] = "update R_USER_MAIN set %s=?, modify_ts=? where user_name=? and zone_name=?";
-    char form2[] = "update R_USER_MAIN set %s=%s, modify_ts=? where user_name=? and zone_name=?";
-    char form3[] = "update R_USER_PASSWORD set rcat_password=?, modify_ts=? where user_id=?";
-    char form4[] = "insert into R_USER_PASSWORD (user_id, rcat_password, pass_expiry_ts,  create_ts, modify_ts) values ((select user_id from R_USER_MAIN where user_name=? and zone_name=?), ?, ?, ?, ?)";
-    char form5[] = "insert into R_USER_AUTH (user_id, user_auth_name, create_ts) values ((select user_id from R_USER_MAIN where user_name=? and zone_name=?), ?, ?)";
-    char form6[] = "delete from R_USER_AUTH where user_id = (select user_id from R_USER_MAIN where user_name=? and zone_name=?) and user_auth_name = ?";
-#if MY_ICAT
-    char form7[] = "delete from R_USER_PASSWORD where pass_expiry_ts not like '9999%' and cast(pass_expiry_ts as signed integer)>=? and cast(pass_expiry_ts as signed integer)<=? and user_id = (select user_id from R_USER_MAIN where user_name=? and zone_name=?)";
-#else
-    char form7[] = "delete from R_USER_PASSWORD where pass_expiry_ts not like '9999%' and cast(pass_expiry_ts as integer)>=? and cast(pass_expiry_ts as integer)<=? and user_id = (select user_id from R_USER_MAIN where user_name=? and zone_name=?)";
-#endif
-
-    char myTime[50];
-    rodsLong_t iVal;
-
-    int groupAdminSettingPassword; // JMC - backport 4772
-
-    char userName2[NAME_LEN];
-    char zoneName[NAME_LEN];
-
-    if ( logSQL != 0 ) {
-        log_sql::debug("chlModUser");
+    if ( !_user_name || !_option || !_new_value ) {
+        return ERROR( CAT_INVALID_ARGUMENT, "null parameter" );
     }
 
     if ( *_user_name == '\0' || *_option == '\0' ) {
@@ -6940,268 +6015,249 @@ irods::error db_mod_user_op(
         return ERROR( CAT_INVALID_ARGUMENT, "new value is empty" );
     }
 
-    // =-=-=-=-=-=-=-
-    // JMC - backport 4772
-    groupAdminSettingPassword = 0;
-    if ( _ctx.comm()->clientUser.authInfo.authFlag >= LOCAL_PRIV_USER_AUTH && // JMC - backport 4773
-            _ctx.comm()->proxyUser.authInfo.authFlag >= LOCAL_PRIV_USER_AUTH ) {
-        /* user is OK */
-    }
-    else {
-        /* need to check */
-        if ( strcmp( _option, "password" ) != 0 ) {
-            /* only password (in cases below) is allowed */
-            return ERROR( CAT_INSUFFICIENT_PRIVILEGE_LEVEL, "insufficient privilege" );
-        }
-        if ( 0 != strcmp( _user_name, _ctx.comm()->clientUser.userName ) )  {
-            int status2 = cmlCheckGroupAdminAccess(
-                           _ctx.comm()->clientUser.userName,
-                           _ctx.comm()->clientUser.rodsZone,
-                           "", &icss );
-            if ( status2 != 0 ) {
-                return ERROR( status2, "cmlCheckGroupAdminAccess failed" );
-            }
-            groupAdminSettingPassword = 1;
-        }
-    }
+    try {
+        auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
 
-    std::string zone;
-    ret = getLocalZone( _ctx.prop_map(), &icss, zone );
-    if ( !ret.ok() ) {
-        return PASS( ret );
-    }
+        namespace gq2 = irods::experimental::genquery2;
+        using gq2::builder::col;
 
-    tSQL[0] = '\0';
-    opType = 0;
-
-    getNowStr( myTime );
-
-    status = validateAndParseUserName( _user_name, userName2, zoneName );
-    if ( status ) {
-        return ERROR( status, "Invalid username format" );
-    }
-    if ( zoneName[0] == '\0' ) {
-        rstrcpy( zoneName, zone.c_str(), NAME_LEN );
-    }
-
-    if ( strcmp( _option, "type" ) == 0 ||
-            strcmp( _option, "user_type_name" ) == 0 ) {
-        char tsubSQL[MAX_SQL_SIZE];
-        snprintf( tsubSQL, MAX_SQL_SIZE, "(select token_name from R_TOKN_MAIN where token_namespace='user_type' and token_name=?)" );
-        cllBindVars[cllBindVarCount++] = _new_value;
-        snprintf( tSQL, MAX_SQL_SIZE, form2,
-                  "user_type_name", tsubSQL );
-        cllBindVars[cllBindVarCount++] = myTime;
-        cllBindVars[cllBindVarCount++] = userName2;
-        cllBindVars[cllBindVarCount++] = zoneName;
-        opType = 1;
-        if ( logSQL != 0 ) {
-            log_sql::debug("chlModUser SQL 2");
-        }
-    }
-    if ( strcmp( _option, "addAuth" ) == 0 ) {
-        opType = 4;
-        if ( !_userInRUserAuth( userName2, zoneName, _new_value ) ) {
-            rstrcpy( tSQL, form5, MAX_SQL_SIZE );
-            cllBindVars[cllBindVarCount++] = userName2;
-            cllBindVars[cllBindVarCount++] = zoneName;
-            cllBindVars[cllBindVarCount++] = _new_value;
-            cllBindVars[cllBindVarCount++] = myTime;
-        } else {
-            return SUCCESS();
-        }
-
-        if ( logSQL != 0 ) {
-            log_sql::debug("chlModUser SQL 4");
-        }
-    }
-    if ( strcmp( _option, "rmAuth" ) == 0 ) {
-        rstrcpy( tSQL, form6, MAX_SQL_SIZE );
-        cllBindVars[cllBindVarCount++] = userName2;
-        cllBindVars[cllBindVarCount++] = zoneName;
-        cllBindVars[cllBindVarCount++] = _new_value;
-        if ( logSQL != 0 ) {
-            log_sql::debug("chlModUser SQL 5");
-        }
-    }
-
-    if ( strncmp( _option, "rmPamPw", 9 ) == 0 ) {
-        auth_config ac{};
-        if (const auto err = get_auth_config("authentication", ac); !err.ok()) {
-            log_db::error("Failed to get auth configuration. [{}]", err.result());
-            return err;
-        }
-
-        const auto password_min_time_str = std::to_string(ac.password_min_time);
-        const auto password_max_time_str = std::to_string(ac.password_max_time);
-
-        rstrcpy( tSQL, form7, MAX_SQL_SIZE );
-        // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-constant-array-index)
-        cllBindVars[cllBindVarCount++] = password_min_time_str.c_str();
-        // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-constant-array-index)
-        cllBindVars[cllBindVarCount++] = password_max_time_str.c_str();
-        cllBindVars[cllBindVarCount++] = userName2;
-        cllBindVars[cllBindVarCount++] = zoneName;
-        if ( logSQL != 0 ) {
-            log_sql::debug("chlModUser SQL 6");
-        }
-    }
-
-    if ( strcmp( _option, "info" ) == 0 ||
-            strcmp( _option, "user_info" ) == 0 ) {
-        snprintf( tSQL, MAX_SQL_SIZE, form1,
-                  "user_info" );
-        cllBindVars[cllBindVarCount++] = _new_value;
-        cllBindVars[cllBindVarCount++] = myTime;
-        cllBindVars[cllBindVarCount++] = userName2;
-        cllBindVars[cllBindVarCount++] = zoneName;
-        if ( logSQL != 0 ) {
-            log_sql::debug("chlModUser SQL 6");
-        }
-    }
-    if ( strcmp( _option, "comment" ) == 0 ||
-            strcmp( _option, "r_comment" ) == 0 ) {
-        snprintf( tSQL, MAX_SQL_SIZE, form1,
-                  "r_comment" );
-        cllBindVars[cllBindVarCount++] = _new_value;
-        cllBindVars[cllBindVarCount++] = myTime;
-        cllBindVars[cllBindVarCount++] = userName2;
-        cllBindVars[cllBindVarCount++] = zoneName;
-        if ( logSQL != 0 ) {
-            log_sql::debug("chlModUser SQL 7");
-        }
-    }
-    if ( strcmp( _option, "password" ) == 0 ) {
-        int i;
-        char userIdStr[MAX_NAME_LEN];
-        i = decodePw( _ctx.comm(), _new_value, decoded );
-        if (i == CAT_PASSWORD_ENCODING_ERROR || strlen(decoded) > MAX_PASSWORD_LEN - 8) {
-            // Password encoding error occurs when the password is not of the correct
-            // length.  Pop the existing CAT_PASSWORD_ENCODING_ERROR and return PASSWORD_EXCEEDS_MAX_SIZE
-            // error.  See issue 6764.
-            // Note that there are other conditions that may cause CAT_PASSWORD_ENCODING_ERROR but
-            // the most likely one is a password of invalid length.
-            irods::pop_error_message(_ctx.comm()->rError);
-            return ERROR(PASSWORD_EXCEEDS_MAX_SIZE, "Password must be between 3 and 42 characters");
-        }
-        int status2 = icatApplyRule( _ctx.comm(), ( char* )"acCheckPasswordStrength", decoded );
-        if ( status2 == NO_RULE_OR_MSI_FUNCTION_FOUND_ERR ) {
-            addRErrorMsg( &_ctx.comm()->rError, 0, "acCheckPasswordStrength rule not found" );
-        }
-
-
-        if ( status2 ) {
-            return ERROR( status2, "icatApplyRule failed" );
-        }
-
-        icatScramble( decoded );
-
-        if ( i ) {
-            return ERROR( i, "password scramble failed" );
-        }
-        if ( logSQL != 0 ) {
-            log_sql::debug("chlModUser SQL 8");
-        }
-        {
-            std::vector<std::string> bindVars;
-            bindVars.push_back( userName2 );
-            bindVars.push_back( zoneName );
-            i = cmlGetStringValueFromSql(
-                    "select R_USER_PASSWORD.user_id from R_USER_PASSWORD, R_USER_MAIN where R_USER_MAIN.user_name=? and R_USER_MAIN.zone_name=? and R_USER_MAIN.user_id = R_USER_PASSWORD.user_id",
-                    userIdStr, MAX_NAME_LEN, bindVars, &icss );
-        }
-        if ( i != 0 && i != CAT_NO_ROWS_FOUND ) {
-            return ERROR( i, "get user password failed" );
-        }
-        if ( i == 0 ) {
-            if ( groupAdminSettingPassword == 1 ) { // JMC - backport 4772
-                /* Group admin can only set the initial password, not update */
-                return ERROR( CAT_INSUFFICIENT_PRIVILEGE_LEVEL, "insufficient privilege level" );
-            }
-            rstrcpy( tSQL, form3, MAX_SQL_SIZE );
-            cllBindVars[cllBindVarCount++] = decoded;
-            cllBindVars[cllBindVarCount++] = myTime;
-            cllBindVars[cllBindVarCount++] = userIdStr;
-            if ( logSQL != 0 ) {
-                log_sql::debug("chlModUser SQL 9");
-            }
+        int groupAdminSettingPassword = 0;
+        if ( _ctx.comm()->clientUser.authInfo.authFlag >= LOCAL_PRIV_USER_AUTH &&
+             _ctx.comm()->proxyUser.authInfo.authFlag >= LOCAL_PRIV_USER_AUTH ) {
+            // user is OK
         }
         else {
-            opType = 4;
-            rstrcpy( tSQL, form4, MAX_SQL_SIZE );
-            cllBindVars[cllBindVarCount++] = userName2;
-            cllBindVars[cllBindVarCount++] = zoneName;
-            cllBindVars[cllBindVarCount++] = decoded;
-            cllBindVars[cllBindVarCount++] = "9999-12-31-23.59.01";
-            cllBindVars[cllBindVarCount++] = myTime;
-            cllBindVars[cllBindVarCount++] = myTime;
-            if ( logSQL != 0 ) {
-                log_sql::debug("chlModUser SQL 10");
+            if ( strcmp( _option, "password" ) != 0 ) {
+                return ERROR( CAT_INSUFFICIENT_PRIVILEGE_LEVEL, "insufficient privilege" );
+            }
+            if ( 0 != strcmp( _user_name, _ctx.comm()->clientUser.userName ) ) {
+                int status2 = irods::experimental::catalog::access_control::check_group_admin_access(
+                    executor, db_conn, _ctx.comm()->clientUser.userName, _ctx.comm()->clientUser.rodsZone, "" );
+                if ( status2 != 0 ) {
+                    return ERROR( status2, "check_group_admin_access failed" );
+                }
+                groupAdminSettingPassword = 1;
             }
         }
-    }
 
-    if ( tSQL[0] == '\0' ) {
-        return ERROR( CAT_INVALID_ARGUMENT, "invalid argument" );
-    }
+        std::string zone;
+        ret = getLocalZone( _ctx.prop_map(), &icss, zone );
+        if ( !ret.ok() ) {
+            return PASS( ret );
+        }
 
-    status =  cmlExecuteNoAnswerSql( tSQL, &icss );
-    memset( decoded, 0, MAX_PASSWORD_LEN );
+        char userName2[NAME_LEN]{};
+        char zoneName[NAME_LEN]{};
+        int status = validateAndParseUserName( _user_name, userName2, zoneName );
+        if ( status ) {
+            return ERROR( status, "Invalid username format" );
+        }
+        if ( zoneName[0] == '\0' ) {
+            rstrcpy( zoneName, zone.c_str(), NAME_LEN );
+        }
 
-    if ( status != 0 ) { /* error */
-        if ( opType == 1 ) { /* doing a type change, check if user_type problem */
-            int status2;
-            if ( logSQL != 0 ) {
-                log_sql::debug("chlModUser SQL 11");
-            }
-            {
-                std::vector<std::string> bindVars;
-                bindVars.push_back( _new_value );
-                status2 = cmlGetIntegerValueFromSql(
-                              "select token_name from R_TOKN_MAIN where token_namespace='user_type' and token_name=?",
-                              &iVal, bindVars, &icss );
-            }
-            if ( status2 != 0 ) {
-                char errMsg[105];
-                snprintf( errMsg, 100, "user_type '%s' is not valid",
-                          _new_value );
-                addRErrorMsg( &_ctx.comm()->rError, 0, errMsg );
+        char myTime[50]{};
+        getNowStr( myTime );
 
-                log_db::info("chlModUser invalid user_type");
+        nanodbc::transaction trans{db_conn};
+
+        if ( strcmp( _option, "type" ) == 0 || strcmp( _option, "user_type_name" ) == 0 ) {
+            int tokStatus = irods::experimental::catalog::access_control::check_name_token(
+                executor, db_conn, "user_type", _new_value );
+            if ( tokStatus != 0 ) {
+                addRErrorMsg( &_ctx.comm()->rError, 0,
+                              fmt::format( "user_type '{}' is not valid", _new_value ).c_str() );
                 return ERROR( CAT_INVALID_USER_TYPE, "invalid user type" );
             }
-        }
-        if ( opType == 4 ) { /* trying to insert password or auth-name */
-            /* check if user exists */
-            int status2;
-            _rollback( "chlModUser" );
-            if ( logSQL != 0 ) {
-                log_sql::debug("chlModUser SQL 12");
-            }
-            {
-                std::vector<std::string> bindVars;
-                bindVars.push_back( userName2 );
-                bindVars.push_back( zoneName );
-                status2 = cmlGetIntegerValueFromSql(
-                              "select user_id from R_USER_MAIN where user_name=? and zone_name=?",
-                              &iVal, bindVars, &icss );
-            }
-            if ( status2 != 0 ) {
-                log_db::info("chlModUser invalid user {} zone {}", userName2, zoneName);
+
+            auto upd_stmt = gq2::builder::update("USER")
+                .set("user_type_name", _new_value)
+                .set("modify_ts", myTime)
+                .where(col("user_name") == userName2 && col("zone_name") == zoneName)
+                .build();
+            auto res = irods::experimental::catalog::execute_catalog(executor, db_conn, upd_stmt);
+            if ( res.affected_rows == 0 ) {
                 return ERROR( CAT_INVALID_USER, "invalid user" );
             }
         }
-        log_db::info("chlModUser cmlExecuteNoAnswerSql failure {}", status);
-        return ERROR( status, "get user_id failed" );
-    }
+        else if ( strcmp( _option, "addAuth" ) == 0 ) {
+            if ( _userInRUserAuth( userName2, zoneName, _new_value ) ) {
+                return SUCCESS();
+            }
 
-    status =  cmlExecuteNoAnswerSql( "commit", &icss );
-    if ( status != 0 ) {
-        log_db::info("chlModUser cmlExecuteNoAnswerSql commit failure {}", status);
-        return ERROR( status, "commit failed" );
-    }
+            const auto uid_opt = irods::experimental::catalog::query_catalog_integer(
+                executor,
+                db_conn,
+                gq2::builder::select({"user_id"})
+                    .from("USER")
+                    .where(col("user_name") == userName2 && col("zone_name") == zoneName)
+                    .build());
+            if (!uid_opt) {
+                return ERROR( CAT_INVALID_USER, "invalid user" );
+            }
 
-    return SUCCESS();
+            auto ins_stmt = gq2::builder::insert_into("USER_AUTH")
+                .set("user_id", std::to_string(*uid_opt))
+                .set("user_auth_name", _new_value)
+                .set("create_ts", myTime)
+                .build();
+            irods::experimental::catalog::execute_catalog(executor, db_conn, ins_stmt);
+        }
+        else if ( strcmp( _option, "rmAuth" ) == 0 ) {
+            const auto uid_opt = irods::experimental::catalog::query_catalog_integer(
+                executor,
+                db_conn,
+                gq2::builder::select({"user_id"})
+                    .from("USER")
+                    .where(col("user_name") == userName2 && col("zone_name") == zoneName)
+                    .build());
+            if (uid_opt) {
+                auto del_stmt = gq2::builder::remove_from("USER_AUTH")
+                    .where(col("user_id") == std::to_string(*uid_opt) && col("user_auth_name") == _new_value)
+                    .build();
+                irods::experimental::catalog::execute_catalog(executor, db_conn, del_stmt);
+            }
+        }
+        else if ( strncmp( _option, "rmPamPw", 9 ) == 0 ) {
+            auth_config ac{};
+            if (const auto err = get_auth_config("authentication", ac); !err.ok()) {
+                log_db::error("Failed to get auth configuration. [{}]", err.result());
+                return err;
+            }
+            const auto password_min_time_str = std::to_string(ac.password_min_time);
+            const auto password_max_time_str = std::to_string(ac.password_max_time);
+
+            const auto uid_opt = irods::experimental::catalog::query_catalog_integer(
+                executor,
+                db_conn,
+                gq2::builder::select({"user_id"})
+                    .from("USER")
+                    .where(col("user_name") == userName2 && col("zone_name") == zoneName)
+                    .build());
+            if (uid_opt) {
+                auto pw_res = irods::experimental::catalog::execute_catalog(
+                    executor, db_conn,
+                    gq2::builder::select({"rcat_password", "pass_expiry_ts"})
+                        .from("USER_PASSWORD")
+                        .where(col("user_id") == std::to_string(*uid_opt))
+                        .build());
+                if (pw_res.query_result) {
+                    while (pw_res.query_result->next()) {
+                        const auto pw = pw_res.query_result->get<std::string>(0);
+                        const auto expiry_str = pw_res.query_result->get<std::string>(1);
+                        if (!expiry_str.starts_with("9999")) {
+                            const auto expiry = std::atoll(expiry_str.c_str());
+                            if (expiry >= ac.password_min_time && expiry <= ac.password_max_time) {
+                                auto del_pw = gq2::builder::remove_from("USER_PASSWORD")
+                                    .where(col("user_id") == std::to_string(*uid_opt) && col("rcat_password") == pw)
+                                    .build();
+                                irods::experimental::catalog::execute_catalog(executor, db_conn, del_pw);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        else if ( strcmp( _option, "info" ) == 0 || strcmp( _option, "user_info" ) == 0 ) {
+            auto upd_stmt = gq2::builder::update("USER")
+                .set("user_info", _new_value)
+                .set("modify_ts", myTime)
+                .where(col("user_name") == userName2 && col("zone_name") == zoneName)
+                .build();
+            auto res = irods::experimental::catalog::execute_catalog(executor, db_conn, upd_stmt);
+            if ( res.affected_rows == 0 ) {
+                return ERROR( CAT_INVALID_USER, "invalid user" );
+            }
+        }
+        else if ( strcmp( _option, "comment" ) == 0 || strcmp( _option, "r_comment" ) == 0 ) {
+            auto upd_stmt = gq2::builder::update("USER")
+                .set("r_comment", _new_value)
+                .set("modify_ts", myTime)
+                .where(col("user_name") == userName2 && col("zone_name") == zoneName)
+                .build();
+            auto res = irods::experimental::catalog::execute_catalog(executor, db_conn, upd_stmt);
+            if ( res.affected_rows == 0 ) {
+                return ERROR( CAT_INVALID_USER, "invalid user" );
+            }
+        }
+        else if ( strcmp( _option, "password" ) == 0 ) {
+            char decoded[MAX_PASSWORD_LEN + 20]{};
+            int decStatus = decodePw( _ctx.comm(), _new_value, decoded );
+            if ( decStatus == CAT_PASSWORD_ENCODING_ERROR || strlen(decoded) > MAX_PASSWORD_LEN - 8 ) {
+                irods::pop_error_message(_ctx.comm()->rError);
+                return ERROR( PASSWORD_EXCEEDS_MAX_SIZE, "Password must be between 3 and 42 characters" );
+            }
+            int ruleStatus = icatApplyRule( _ctx.comm(), ( char* )"acCheckPasswordStrength", decoded );
+            if ( ruleStatus == NO_RULE_OR_MSI_FUNCTION_FOUND_ERR ) {
+                addRErrorMsg( &_ctx.comm()->rError, 0, "acCheckPasswordStrength rule not found" );
+            }
+            if ( ruleStatus ) {
+                return ERROR( ruleStatus, "icatApplyRule failed" );
+            }
+
+            icatScramble( decoded );
+            if ( decStatus ) {
+                return ERROR( decStatus, "password scramble failed" );
+            }
+
+            const auto uid_opt = irods::experimental::catalog::query_catalog_string(
+                executor,
+                db_conn,
+                gq2::builder::select({"user_id"})
+                    .from("USER")
+                    .where(col("user_name") == userName2 && col("zone_name") == zoneName)
+                    .build());
+            if (!uid_opt) {
+                return ERROR( CAT_INVALID_USER, "invalid user" );
+            }
+
+            const auto pwd_uid_opt = irods::experimental::catalog::query_catalog_string(
+                executor,
+                db_conn,
+                gq2::builder::select({"user_id"})
+                    .from("USER_PASSWORD")
+                    .where(col("user_id") == *uid_opt)
+                    .build());
+
+            if ( pwd_uid_opt.has_value() ) {
+                if ( groupAdminSettingPassword == 1 ) {
+                    return ERROR( CAT_INSUFFICIENT_PRIVILEGE_LEVEL, "insufficient privilege level" );
+                }
+                auto upd_stmt = gq2::builder::update("USER_PASSWORD")
+                    .set("rcat_password", decoded)
+                    .set("modify_ts", myTime)
+                    .where(col("user_id") == *pwd_uid_opt)
+                    .build();
+                irods::experimental::catalog::execute_catalog(executor, db_conn, upd_stmt);
+            }
+            else {
+                auto ins_stmt = gq2::builder::insert_into("USER_PASSWORD")
+                    .set("user_id", *uid_opt)
+                    .set("rcat_password", decoded)
+                    .set("pass_expiry_ts", "9999-12-31-23.59.01")
+                    .set("create_ts", myTime)
+                    .set("modify_ts", myTime)
+                    .build();
+                irods::experimental::catalog::execute_catalog(executor, db_conn, ins_stmt);
+            }
+
+            memset( decoded, 0, MAX_PASSWORD_LEN );
+        }
+        else {
+            return ERROR( CAT_INVALID_ARGUMENT, "invalid argument" );
+        }
+
+        trans.commit();
+        return SUCCESS();
+    }
+    catch (const nanodbc::database_error& e) {
+        log_db::error("{}: database error: {}", __FUNCTION__, e.what());
+        return ERROR( CAT_SQL_ERR, e.what() );
+    }
+    catch (const std::exception& e) {
+        log_db::error("{}: exception: {}", __FUNCTION__, e.what());
+        return ERROR( SYS_INTERNAL_ERR, e.what() );
+    }
 
 } // db_mod_user_op
 
@@ -7213,196 +6269,132 @@ irods::error db_mod_group_op(
     const char*            _option,
     const char*            _user_name,
     const char*            _user_zone ) {
-    // =-=-=-=-=-=-=-
-    // check the context
     irods::error ret = _ctx.valid();
     if ( !ret.ok() ) {
         return PASS( ret );
     }
 
-    // =-=-=-=-=-=-=-
-    // check the params
-    if (
-        !_group_name ||
-        !_option     ||
-        !_user_name ) {
-        return ERROR(
-                   CAT_INVALID_ARGUMENT,
-                   "null parameter" );
-    }
-
-    // =-=-=-=-=-=-=-
-    // get a postgres object from the context
-    /*irods::postgres_object_ptr pg;
-    ret = make_db_ptr( _ctx.fco(), pg );
-    if ( !ret.ok() ) {
-        return PASS( ret );
-
-    }*/
-
-    // =-=-=-=-=-=-=-
-    // extract the icss property
-//        icatSessionStruct icss;
-//        _ctx.prop_map().get< icatSessionStruct >( ICSS_PROP, icss );
-    int status, OK;
-    char myTime[50];
-    char userId[MAX_NAME_LEN];
-    char groupId[MAX_NAME_LEN];
-    char zoneToUse[MAX_NAME_LEN];
-
-    char userName2[NAME_LEN];
-    char zoneName[NAME_LEN];
-
-    if ( logSQL != 0 ) {
-        log_sql::debug("chlModGroup");
+    if ( !_group_name || !_option || !_user_name ) {
+        return ERROR( CAT_INVALID_ARGUMENT, "null parameter" );
     }
 
     if ( *_group_name == '\0' || *_option == '\0' || *_user_name == '\0' ) {
         return ERROR( CAT_INVALID_ARGUMENT, "argument is empty" );
     }
 
-    if ( _ctx.comm()->clientUser.authInfo.authFlag < LOCAL_PRIV_USER_AUTH ||
-            _ctx.comm()->proxyUser.authInfo.authFlag < LOCAL_PRIV_USER_AUTH ) {
-        int status2;
-        status2  = cmlCheckGroupAdminAccess(
-                       _ctx.comm()->clientUser.userName,
-                       _ctx.comm()->clientUser.rodsZone, _group_name, &icss );
-        if ( status2 != 0 ) {
-            /* User is not a groupadmin that is a member of this group. */
-            /* But if we're doing an 'add' and they are a groupadmin
-                and the group is empty, allow it */
-            if ( strcmp( _option, "add" ) == 0 ) {
-                int status3 =  cmlCheckGroupAdminAccess(
-                                   _ctx.comm()->clientUser.userName,
-                                   _ctx.comm()->clientUser.rodsZone, "", &icss );
-                if ( status3 == 0 ) {
-                    int status4 = cmlGetGroupMemberCount( _group_name, &icss );
-                    if ( status4 == 0 ) { /* call succeeded and the total is 0 */
-                        status2 = 0;    /* reset the error to success to allow it */
+    try {
+        auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
+
+        if ( _ctx.comm()->clientUser.authInfo.authFlag < LOCAL_PRIV_USER_AUTH ||
+             _ctx.comm()->proxyUser.authInfo.authFlag < LOCAL_PRIV_USER_AUTH ) {
+            int status2 = irods::experimental::catalog::access_control::check_group_admin_access(
+                executor, db_conn, _ctx.comm()->clientUser.userName, _ctx.comm()->clientUser.rodsZone, _group_name );
+            if ( status2 != 0 ) {
+                if ( strcmp( _option, "add" ) == 0 ) {
+                    int status3 = irods::experimental::catalog::access_control::check_group_admin_access(
+                        executor, db_conn, _ctx.comm()->clientUser.userName, _ctx.comm()->clientUser.rodsZone, "" );
+                    if ( status3 == 0 ) {
+                        int status4 = irods::experimental::catalog::access_control::get_group_member_count(
+                            executor, db_conn, _group_name );
+                        if ( status4 == 0 ) {
+                            status2 = 0;
+                        }
                     }
                 }
             }
+            if ( status2 != 0 ) {
+                return ERROR( status2, "group admin access invalid" );
+            }
         }
-        if ( status2 != 0 ) {
-            return ERROR( status2, "group admin access invalid" );
+
+        std::string zone;
+        ret = getLocalZone( _ctx.prop_map(), &icss, zone );
+        if ( !ret.ok() ) {
+            return PASS( ret );
         }
-    }
 
-    std::string zone;
-    ret = getLocalZone( _ctx.prop_map(), &icss, zone );
-    if ( !ret.ok() ) {
-        return PASS( ret );
-    }
+        char zoneToUse[MAX_NAME_LEN]{};
+        if ( _user_zone != NULL && *_user_zone != '\0' ) {
+            snprintf( zoneToUse, MAX_NAME_LEN, "%s", _user_zone );
+        }
+        else {
+            snprintf( zoneToUse, MAX_NAME_LEN, "%s", zone.c_str() );
+        }
 
-    if ( _user_zone != NULL && *_user_zone != '\0' ) {
-        snprintf( zoneToUse, MAX_NAME_LEN, "%s", _user_zone );
-    }
-    else {
-        snprintf( zoneToUse, MAX_NAME_LEN, "%s", zone.c_str() );
-    }
+        char userName2[NAME_LEN]{};
+        char zoneName[NAME_LEN]{};
+        int status = validateAndParseUserName( _user_name, userName2, zoneName );
+        if ( status ) {
+            return ERROR( status, "Invalid username format" );
+        }
+        if ( zoneName[0] != '\0' ) {
+            rstrcpy( zoneToUse, zoneName, NAME_LEN );
+        }
 
-    status = validateAndParseUserName( _user_name, userName2, zoneName );
-    if ( status ) {
-        return ERROR( status, "Invalid username format" );
-    }
-    if ( zoneName[0] != '\0' ) {
-        rstrcpy( zoneToUse, zoneName, NAME_LEN );
-    }
-
-    userId[0] = '\0';
-    if ( logSQL != 0 ) {
-        log_sql::debug("chlModGroup SQL 1 ");
-    }
-    {
-        std::vector<std::string> bindVars;
-        bindVars.push_back( userName2 );
-        bindVars.push_back( zoneToUse );
-        status = cmlGetStringValueFromSql(
-                     "select user_id from R_USER_MAIN where user_name=? and R_USER_MAIN.zone_name=? and user_type_name !='rodsgroup'",
-                     userId, MAX_NAME_LEN, bindVars, &icss );
-    }
-    if ( status != 0 ) {
-        if ( status == CAT_NO_ROWS_FOUND ) {
+        const auto userIdOpt = irods::experimental::catalog::query_catalog_string(
+            executor,
+            db_conn,
+            gq2::builder::select({"user_id"})
+                .from("USER")
+                .where(col("user_name") == userName2 && col("zone_name") == zoneToUse && col("user_type_name") != "rodsgroup")
+                .build());
+        if (!userIdOpt) {
             return ERROR( CAT_INVALID_USER, "user not found" );
         }
-        _rollback( "chlModGroup" );
-        return ERROR( status, "failed to get user" );
-    }
+        const std::string userId = *userIdOpt;
 
-    groupId[0] = '\0';
-    if ( logSQL != 0 ) {
-        log_sql::debug("chlModGroup SQL 2");
-    }
-    {
-        std::vector<std::string> bindVars;
-        bindVars.push_back( _group_name );
-        bindVars.push_back( zone );
-        status = cmlGetStringValueFromSql(
-                     "select user_id from R_USER_MAIN where user_name=? and R_USER_MAIN.zone_name=? and user_type_name='rodsgroup'",
-                     groupId, MAX_NAME_LEN, bindVars, &icss );
-    }
-    if ( status != 0 ) {
-        if ( status == CAT_NO_ROWS_FOUND ) {
+        const auto groupIdOpt = irods::experimental::catalog::query_catalog_string(
+            executor,
+            db_conn,
+            gq2::builder::select({"user_id"})
+                .from("USER")
+                .where(col("user_name") == _group_name && col("zone_name") == zone && col("user_type_name") == "rodsgroup")
+                .build());
+        if (!groupIdOpt) {
             return ERROR( CAT_INVALID_GROUP, "invalid group" );
         }
-        _rollback( "chlModGroup" );
-        return ERROR( status, "failed to get group" );
-    }
-    OK = 0;
-    if ( strcmp( _option, "remove" ) == 0 ) {
-        if ( logSQL != 0 ) {
-            log_sql::debug("chlModGroup SQL 3");
-        }
-        cllBindVars[cllBindVarCount++] = groupId;
-        cllBindVars[cllBindVarCount++] = userId;
-        status =  cmlExecuteNoAnswerSql(
-                      "delete from R_USER_GROUP where group_user_id = ? and user_id = ?",
-                      &icss );
-        if ( status != 0 ) {
-            if (CAT_SUCCESS_BUT_WITH_NO_INFO == status) {
-                // If the removal resulted in nothing happening, the target user is not a member of the target group.
-                // Some clients and REPs do not acknowledge CAT_SUCCESS_BUT_WITH_NO_INFO so we need to return something
-                // a little more specific to indicate the state of affairs.
-                status = USER_NOT_IN_GROUP;
+        const std::string groupId = *groupIdOpt;
+
+        nanodbc::transaction trans{db_conn};
+
+        namespace gq2 = irods::experimental::genquery2;
+        using gq2::builder::col;
+
+        if ( strcmp( _option, "remove" ) == 0 ) {
+            auto del_stmt = gq2::builder::remove_from("USER_GROUP")
+                .where(col("group_user_id") == groupId && col("user_id") == userId)
+                .build();
+            const auto res = irods::experimental::catalog::execute_catalog(executor, db_conn, del_stmt);
+            if ( res.affected_rows == 0 ) {
+                return ERROR( USER_NOT_IN_GROUP, "user not in group" );
             }
-            log_db::info("chlModGroup cmlExecuteNoAnswerSql delete failure {}", status);
-            _rollback( "chlModGroup" );
-            return ERROR( status, "delete failure" );
         }
-        OK = 1;
-    }
-
-    if ( strcmp( _option, "add" ) == 0 ) {
-        getNowStr( myTime );
-        cllBindVars[cllBindVarCount++] = groupId;
-        cllBindVars[cllBindVarCount++] = userId;
-        cllBindVars[cllBindVarCount++] = myTime;
-        cllBindVars[cllBindVarCount++] = myTime;
-        if ( logSQL != 0 ) {
-            log_sql::debug("chlModGroup SQL 4");
+        else if ( strcmp( _option, "add" ) == 0 ) {
+            char myTime[50]{};
+            getNowStr( myTime );
+            auto ins_stmt = gq2::builder::insert_into("USER_GROUP")
+                .set("group_user_id", groupId)
+                .set("user_id", userId)
+                .set("create_ts", myTime)
+                .set("modify_ts", myTime)
+                .build();
+            irods::experimental::catalog::execute_catalog(executor, db_conn, ins_stmt);
         }
-        status =  cmlExecuteNoAnswerSql(
-                      "insert into R_USER_GROUP (group_user_id, user_id , create_ts, modify_ts) values (?, ?, ?, ?)",
-                      &icss );
-        if ( status != 0 ) {
-            log_db::info("chlModGroup cmlExecuteNoAnswerSql add failure {}", status);
-            _rollback( "chlModGroup" );
-            return ERROR( status, "add failure" );
+        else {
+            return ERROR( CAT_INVALID_ARGUMENT, "invalid option" );
         }
-        OK = 1;
-    }
 
-    if ( OK == 0 ) {
-        return ERROR( CAT_INVALID_ARGUMENT, "invalid option" );
+        trans.commit();
+        return SUCCESS();
     }
-
-    status =  cmlExecuteNoAnswerSql( "commit", &icss );
-    if ( status != 0 ) {
-        log_db::info("chlModGroup cmlExecuteNoAnswerSql commit failure {}", status);
-        return ERROR( status, "commit failure" );
+    catch (const nanodbc::database_error& e) {
+        log_db::error("{}: database error: {}", __FUNCTION__, e.what());
+        return ERROR( CAT_SQL_ERR, e.what() );
     }
-
-    return SUCCESS();
+    catch (const std::exception& e) {
+        log_db::error("{}: exception: {}", __FUNCTION__, e.what());
+        return ERROR( SYS_INTERNAL_ERR, e.what() );
+    }
 
 } // db_mod_group_op
 
@@ -7431,28 +6423,6 @@ irods::error db_mod_resc_op(
                    "null parameter" );
     }
 
-    // =-=-=-=-=-=-=-
-    // get a postgres object from the context
-    /*irods::postgres_object_ptr pg;
-    ret = make_db_ptr( _ctx.fco(), pg );
-    if ( !ret.ok() ) {
-        return PASS( ret );
-
-    }*/
-
-    // =-=-=-=-=-=-=-
-    // extract the icss property
-//        icatSessionStruct icss;
-//        _ctx.prop_map().get< icatSessionStruct >( ICSS_PROP, icss );
-    int status = 0, OK = 0;
-    char rescId[MAX_NAME_LEN];
-    char rescPath[MAX_NAME_LEN] = "";
-    char rescPathMsg[MAX_NAME_LEN + 100];
-
-    if ( logSQL != 0 ) {
-        log_sql::debug("chlModResc");
-    }
-
     if ( *_resc_name == '\0' || *_option == '\0' ) {
         return ERROR( CAT_INVALID_ARGUMENT, "argument is empty" );
     }
@@ -7465,13 +6435,10 @@ irods::error db_mod_resc_op(
     }
 
     // =-=-=-=-=-=-=-
-    // JMC - backport 4629
+
     if ( strncmp( _resc_name, BUNDLE_RESC, strlen( BUNDLE_RESC ) ) == 0 ) {
-        char errMsg[155];
-        snprintf( errMsg, 150,
-                  "%s is a built-in resource needed for bundle operations.",
-                  BUNDLE_RESC );
-        addRErrorMsg( &_ctx.comm()->rError, 0, errMsg );
+        addRErrorMsg( &_ctx.comm()->rError, 0,
+                      fmt::format( "{} is a built-in resource needed for bundle operations.", BUNDLE_RESC ).c_str() );
         return ERROR( CAT_PSEUDO_RESC_MODIFY_DISALLOWED, "cannot mod bundle resc" );
     }
     // =-=-=-=-=-=-=-
@@ -7482,338 +6449,224 @@ irods::error db_mod_resc_op(
         return PASS( ret );
     }
 
-    rescId[0] = '\0';
-    if ( logSQL != 0 ) {
-        log_sql::debug("chlModResc SQL 1 ");
-    }
-    {
-        std::vector<std::string> bindVars;
-        bindVars.push_back( _resc_name );
-        bindVars.push_back( zone );
-        status = cmlGetStringValueFromSql(
-                     "select resc_id from R_RESC_MAIN where resc_name=? and zone_name=?",
-                     rescId, MAX_NAME_LEN, bindVars, &icss );
-    }
-    if ( status != 0 ) {
-        if ( status == CAT_NO_ROWS_FOUND ) {
+    try {
+        auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
+        nanodbc::transaction trans{db_conn};
+
+        namespace gq2 = irods::experimental::genquery2;
+        using gq2::builder::col;
+
+        auto resc_id_opt = irods::experimental::catalog::query_catalog_string(
+            executor, db_conn,
+            gq2::builder::select({"resc_id"})
+                .from("RESOURCE")
+                .where(col("resc_name") == _resc_name && col("zone_name") == zone)
+                .build());
+        if ( !resc_id_opt.has_value() ) {
             return ERROR( CAT_INVALID_RESOURCE, "invalid resource" );
         }
-        _rollback( "chlModResc" );
-        return ERROR( status, "failed to get resource id" );
+        const std::string resc_id = *resc_id_opt;
+
+        const auto [current_time_secs, current_time_msecs] = get_current_time();
+        int OK = 0;
+        std::string previous_resc_path;
+
+        namespace gq2 = irods::experimental::genquery2;
+        using gq2::builder::col;
+
+        if ( strcmp( _option, "comment" ) == 0 ) {
+            auto stmt = gq2::builder::update("RESOURCE")
+                .set("r_comment", _option_value)
+                .set("modify_ts", current_time_secs)
+                .set("modify_ts_millis", current_time_msecs)
+                .where(col("resc_id") == resc_id)
+                .build();
+            irods::experimental::catalog::execute_catalog(executor, db_conn, stmt);
+            OK = 1;
+        }
+        else if ( *_option_value == '\0' ) {
+            return ERROR( CAT_INVALID_ARGUMENT, "argument is empty" );
+        }
+
+        if ( strcmp( _option, "info" ) == 0 ) {
+            auto stmt = gq2::builder::update("RESOURCE")
+                .set("resc_info", _option_value)
+                .set("modify_ts", current_time_secs)
+                .set("modify_ts_millis", current_time_msecs)
+                .where(col("resc_id") == resc_id)
+                .build();
+            irods::experimental::catalog::execute_catalog(executor, db_conn, stmt);
+            OK = 1;
+        }
+
+        if ( strcmp( _option, "freespace" ) == 0 || strcmp( _option, "free_space" ) == 0 ) {
+            int inType = 0;
+            const char* opt_val = _option_value;
+            if ( *opt_val == '+' ) {
+                inType = 1;
+                opt_val++;
+            }
+            else if ( *opt_val == '-' ) {
+                inType = 2;
+                opt_val++;
+            }
+
+            std::string final_free_space;
+            if ( inType == 0 ) {
+                final_free_space = opt_val;
+            }
+            else {
+                auto current_fs_opt = irods::experimental::catalog::query_catalog_string(
+                    executor, db_conn,
+                    gq2::builder::select({"free_space"})
+                        .from("RESOURCE")
+                        .where(col("resc_id") == resc_id)
+                        .build());
+                int64_t current_fs = 0;
+                if (current_fs_opt && !current_fs_opt->empty()) {
+                    try {
+                        current_fs = std::stoll(*current_fs_opt);
+                    } catch (...) {
+                        current_fs = 0;
+                    }
+                }
+                int64_t delta = 0;
+                try {
+                    delta = std::stoll(opt_val);
+                } catch (...) {
+                    delta = 0;
+                }
+                int64_t new_fs = (inType == 1) ? (current_fs + delta) : (current_fs - delta);
+                final_free_space = std::to_string(new_fs);
+            }
+
+            auto stmt = gq2::builder::update("RESOURCE")
+                .set("free_space", final_free_space)
+                .set("free_space_ts", current_time_secs)
+                .set("modify_ts", current_time_secs)
+                .set("modify_ts_millis", current_time_msecs)
+                .where(col("resc_id") == resc_id)
+                .build();
+            irods::experimental::catalog::execute_catalog(executor, db_conn, stmt);
+            OK = 1;
+        }
+
+        if ( strcmp( _option, "host" ) == 0 ) {
+            _resolveHostName( _ctx.comm(), _option_value );
+            auto stmt = gq2::builder::update("RESOURCE")
+                .set("resc_net", _option_value)
+                .set("modify_ts", current_time_secs)
+                .set("modify_ts_millis", current_time_msecs)
+                .where(col("resc_id") == resc_id)
+                .build();
+            irods::experimental::catalog::execute_catalog(executor, db_conn, stmt);
+            OK = 1;
+        }
+
+        if ( strcmp( _option, "type" ) == 0 ) {
+            auto stmt = gq2::builder::update("RESOURCE")
+                .set("resc_type_name", _option_value)
+                .set("modify_ts", current_time_secs)
+                .set("modify_ts_millis", current_time_msecs)
+                .where(col("resc_id") == resc_id)
+                .build();
+            irods::experimental::catalog::execute_catalog(executor, db_conn, stmt);
+            OK = 1;
+        }
+
+        if ( strcmp( _option, "path" ) == 0 ) {
+            ret = verify_non_root_vault_path( _ctx, std::string( _option_value ) );
+            if ( !ret.ok() ) {
+                return PASS( ret );
+            }
+
+            auto path_opt = irods::experimental::catalog::query_catalog_string(
+                executor, db_conn,
+                gq2::builder::select({"resc_def_path"}).from("RESOURCE").where(col("resc_id") == resc_id).build());
+            if ( !path_opt.has_value() ) {
+                return ERROR( CAT_INVALID_RESOURCE, "failed to get path" );
+            }
+            previous_resc_path = *path_opt;
+
+            auto stmt = gq2::builder::update("RESOURCE")
+                .set("resc_def_path", _option_value)
+                .set("modify_ts", current_time_secs)
+                .set("modify_ts_millis", current_time_msecs)
+                .where(col("resc_id") == resc_id)
+                .build();
+            irods::experimental::catalog::execute_catalog(executor, db_conn, stmt);
+            OK = 1;
+        }
+
+        if ( strcmp( _option, "status" ) == 0 ) {
+            auto stmt = gq2::builder::update("RESOURCE")
+                .set("resc_status", _option_value)
+                .set("modify_ts", current_time_secs)
+                .set("modify_ts_millis", current_time_msecs)
+                .where(col("resc_id") == resc_id)
+                .build();
+            irods::experimental::catalog::execute_catalog(executor, db_conn, stmt);
+            OK = 1;
+        }
+
+        if ( strcmp( _option, "name" ) == 0 ) {
+            auto stmt = gq2::builder::update("RESOURCE")
+                .set("resc_name", _option_value)
+                .set("modify_ts", current_time_secs)
+                .set("modify_ts_millis", current_time_msecs)
+                .where(col("resc_id") == resc_id)
+                .build();
+            irods::experimental::catalog::execute_catalog(executor, db_conn, stmt);
+
+            auto load_stmt = gq2::builder::update("R_SERVER_LOAD")
+                .set("resc_name", _option_value)
+                .where(col("resc_name") == _resc_name)
+                .build();
+            irods::experimental::catalog::execute_catalog(executor, db_conn, load_stmt);
+
+            auto digest_stmt = gq2::builder::update("R_SERVER_LOAD_DIGEST")
+                .set("resc_name", _option_value)
+                .where(col("resc_name") == _resc_name)
+                .build();
+            irods::experimental::catalog::execute_catalog(executor, db_conn, digest_stmt);
+
+            OK = 1;
+        }
+
+        if ( strcmp( _option, "context" ) == 0 ) {
+            auto stmt = gq2::builder::update("RESOURCE")
+                .set("resc_context", _option_value)
+                .set("modify_ts", current_time_secs)
+                .set("modify_ts_millis", current_time_msecs)
+                .where(col("resc_id") == resc_id)
+                .build();
+            irods::experimental::catalog::execute_catalog(executor, db_conn, stmt);
+            OK = 1;
+        }
+
+        if ( OK == 0 ) {
+            return ERROR( CAT_INVALID_ARGUMENT, "invalid option" );
+        }
+
+        trans.commit();
+
+        if ( !previous_resc_path.empty() ) {
+            char rescPathMsg[MAX_NAME_LEN + 100];
+            snprintf( rescPathMsg, sizeof( rescPathMsg ), "Previous resource path: %s",
+                      previous_resc_path.c_str() );
+            addRErrorMsg( &_ctx.comm()->rError, 0, rescPathMsg );
+        }
+
+        return SUCCESS();
     }
-
-    const auto [current_time_secs, current_time_msecs] = get_current_time();
-    OK = 0;
-
-    if ( strcmp( _option, "comment" ) == 0 ) {
-        cllBindVars[cllBindVarCount++] = _option_value;
-        cllBindVars[cllBindVarCount++] = current_time_secs.c_str();
-        cllBindVars[cllBindVarCount++] = current_time_msecs.c_str();
-        cllBindVars[cllBindVarCount++] = rescId;
-        if ( logSQL != 0 ) {
-            log_sql::debug("chlModResc SQL 3");
-        }
-        status = cmlExecuteNoAnswerSql(
-            "update R_RESC_MAIN set r_comment=?, modify_ts=?, modify_ts_millis=? where resc_id=?", &icss);
-        if ( status != 0 ) {
-            log_db::info("chlModResc cmlExecuteNoAnswerSql update failure {}", status);
-            _rollback( "chlModResc" );
-            return ERROR( status, "failed to update comment" );
-        }
-
-        OK = 1;
-
+    catch (const nanodbc::database_error& e) {
+        log_db::error("{}: database error: {}", __FUNCTION__, e.what());
+        return ERROR( CAT_SQL_ERR, e.what() );
     }
-    else if ( *_option_value == '\0' ) {
-        return ERROR(
-                   CAT_INVALID_ARGUMENT,
-                   "argument is empty" );
+    catch (const std::exception& e) {
+        log_db::error("{}: exception: {}", __FUNCTION__, e.what());
+        return ERROR( SYS_INTERNAL_ERR, e.what() );
     }
-
-    if ( strcmp( _option, "info" ) == 0 ) {
-        cllBindVars[cllBindVarCount++] = _option_value;
-        cllBindVars[cllBindVarCount++] = current_time_secs.c_str();
-        cllBindVars[cllBindVarCount++] = current_time_msecs.c_str();
-        cllBindVars[cllBindVarCount++] = rescId;
-        if ( logSQL != 0 ) {
-            log_sql::debug("chlModResc SQL 2");
-        }
-        status = cmlExecuteNoAnswerSql(
-            "update R_RESC_MAIN set resc_info=?, modify_ts=?, modify_ts_millis=? where resc_id=?", &icss);
-        if ( status != 0 ) {
-            log_db::info("chlModResc cmlExecuteNoAnswerSql update failure {}", status);
-            _rollback( "chlModResc" );
-            return ERROR( status, "failed to update info" );
-        }
-        OK = 1;
-    }
-
-
-    if (strcmp(_option, "freespace") == 0 || strcmp(_option, "free_space") == 0) {
-        int inType = 0;    /* regular mode, just set as provided */
-        if ( *_option_value == '+' ) {
-            inType = 1;     /* increment by the input value */
-            _option_value++;  /* skip over the + */
-        }
-        if ( *_option_value == '-' ) {
-            inType = 2;    /* decrement by the value */
-            _option_value++; /* skip over the - */
-        }
-        cllBindVars[cllBindVarCount++] = _option_value;
-        cllBindVars[cllBindVarCount++] = current_time_secs.c_str();
-        cllBindVars[cllBindVarCount++] = current_time_secs.c_str();
-        cllBindVars[cllBindVarCount++] = current_time_msecs.c_str();
-        cllBindVars[cllBindVarCount++] = rescId;
-        if ( logSQL != 0 ) {
-            log_sql::debug("chlModResc SQL 4");
-        }
-        if ( inType == 0 ) {
-            status = cmlExecuteNoAnswerSql(
-                "update R_RESC_MAIN set free_space=?, free_space_ts=?, modify_ts=?, modify_ts_millis=? where resc_id=?",
-                &icss);
-        }
-        else if (inType == 1) {
-#if ORA_ICAT
-            /* For Oracle cast is to integer, for Postgres to bigint,for MySQL no cast*/
-            status =
-                cmlExecuteNoAnswerSql("update R_RESC_MAIN set free_space = cast(free_space as integer) + cast(? as "
-                                      "integer), free_space_ts = ?, modify_ts=?, modify_ts_millis=? where resc_id=?",
-                                      &icss);
-#elif MY_ICAT
-            status = cmlExecuteNoAnswerSql("update R_RESC_MAIN set free_space = free_space + ?, free_space_ts = ?, "
-                                           "modify_ts=?, modify_ts_millis=? where resc_id=?",
-                                           &icss);
-#else
-            status =
-                cmlExecuteNoAnswerSql("update R_RESC_MAIN set free_space = cast(free_space as bigint) + cast(? as "
-                                      "bigint), free_space_ts = ?, modify_ts=?, modify_ts_millis=? where resc_id=?",
-                                      &icss);
-#endif
-        }
-        else if (inType == 2) {
-#if ORA_ICAT
-            /* For Oracle cast is to integer, for Postgres to bigint,for MySQL no cast*/
-            status =
-                cmlExecuteNoAnswerSql("update R_RESC_MAIN set free_space = cast(free_space as integer) - cast(? as "
-                                      "integer), free_space_ts = ?, modify_ts=?, modify_ts_millis=? where resc_id=?",
-                                      &icss);
-#elif MY_ICAT
-            status = cmlExecuteNoAnswerSql("update R_RESC_MAIN set free_space = free_space - ?, free_space_ts = ?, "
-                                           "modify_ts=?, modify_ts_millis=? where resc_id=?",
-                                           &icss);
-#else
-            status =
-                cmlExecuteNoAnswerSql("update R_RESC_MAIN set free_space = cast(free_space as bigint) - cast(? as "
-                                      "bigint), free_space_ts = ?, modify_ts=?, modify_ts_millis=? where resc_id=?",
-                                      &icss);
-#endif
-        }
-        if ( status != 0 ) {
-            log_db::info("chlModResc cmlExecuteNoAnswerSql update failure {}", status);
-            _rollback( "chlModResc" );
-            return ERROR( status, "failed to update freespace" );
-        }
-        OK = 1;
-    }
-
-    if ( strcmp( _option, "host" ) == 0 ) {
-        // =-=-=-=-=-=-=-
-        // JMC - backport 4597
-        _resolveHostName( _ctx.comm(), _option_value);
-
-        // =-=-=-=-=-=-=-
-        cllBindVars[cllBindVarCount++] = _option_value;
-        cllBindVars[cllBindVarCount++] = current_time_secs.c_str();
-        cllBindVars[cllBindVarCount++] = current_time_msecs.c_str();
-        cllBindVars[cllBindVarCount++] = rescId;
-        if ( logSQL != 0 ) {
-            log_sql::debug("chlModResc SQL 5");
-        }
-        status = cmlExecuteNoAnswerSql(
-            "update R_RESC_MAIN set resc_net=?, modify_ts=?, modify_ts_millis=? where resc_id=?", &icss);
-        if ( status != 0 ) {
-            log_db::info("chlModResc cmlExecuteNoAnswerSql update failure {}", status);
-            _rollback( "chlModResc" );
-            return ERROR( status, "failed to set host" );
-        }
-        OK = 1;
-    }
-
-    if ( strcmp( _option, "type" ) == 0 ) {
-        if ( logSQL != 0 ) {
-            log_sql::debug("chlModResc SQL 6");
-        }
-
-        cllBindVars[cllBindVarCount++] = _option_value;
-        cllBindVars[cllBindVarCount++] = current_time_secs.c_str();
-        cllBindVars[cllBindVarCount++] = current_time_msecs.c_str();
-        cllBindVars[cllBindVarCount++] = rescId;
-        if ( logSQL != 0 ) {
-            log_sql::debug("chlModResc SQL 7");
-        }
-        status = cmlExecuteNoAnswerSql(
-            "update R_RESC_MAIN set resc_type_name = ?, modify_ts=?, modify_ts_millis=? where resc_id=?", &icss);
-        if ( status != 0 ) {
-            log_db::info("chlModResc cmlExecuteNoAnswerSql update failure {}", status);
-            _rollback( "chlModResc" );
-            return ERROR( status, "failed to set type" );
-        }
-        OK = 1;
-    }
-
-    if ( strcmp( _option, "path" ) == 0 ) {
-        // Root dir is not a valid vault path
-        ret = verify_non_root_vault_path(_ctx, std::string(_option_value));
-        if (!ret.ok()) {
-            return PASS(ret);
-        }
-
-        if ( logSQL != 0 ) {
-            log_sql::debug("chlModResc SQL 10");
-        }
-        {
-            std::vector<std::string> bindVars;
-            bindVars.push_back( rescId );
-            status = cmlGetStringValueFromSql(
-                         "select resc_def_path from R_RESC_MAIN where resc_id=?",
-                         rescPath, MAX_NAME_LEN, bindVars, &icss );
-        }
-        if ( status != 0 ) {
-            log_db::info("chlModResc cmlGetStringValueFromSql query failure {}", status);
-            _rollback( "chlModResc" );
-            return ERROR( status, "failed to get path" );
-        }
-
-        if ( logSQL != 0 ) {
-            log_sql::debug("chlModResc SQL 11");
-        }
-
-        cllBindVars[cllBindVarCount++] = _option_value;
-        cllBindVars[cllBindVarCount++] = current_time_secs.c_str();
-        cllBindVars[cllBindVarCount++] = current_time_msecs.c_str();
-        cllBindVars[cllBindVarCount++] = rescId;
-        status = cmlExecuteNoAnswerSql(
-            "update R_RESC_MAIN set resc_def_path=?, modify_ts=?, modify_ts_millis=? where resc_id=?", &icss);
-        if ( status != 0 ) {
-            log_db::info("chlModResc cmlExecuteNoAnswerSql update failure {}", status);
-            _rollback( "chlModResc" );
-            return ERROR( status, "failed to set path" );
-        }
-        OK = 1;
-    }
-
-    if ( strcmp( _option, "status" ) == 0 ) {
-        if ( logSQL != 0 ) {
-            log_sql::debug("chlModResc SQL 12");
-        }
-        cllBindVars[cllBindVarCount++] = _option_value;
-        cllBindVars[cllBindVarCount++] = current_time_secs.c_str();
-        cllBindVars[cllBindVarCount++] = current_time_msecs.c_str();
-        cllBindVars[cllBindVarCount++] = rescId;
-        status = cmlExecuteNoAnswerSql(
-            "update R_RESC_MAIN set resc_status=?, modify_ts=?, modify_ts_millis=? where resc_id=?", &icss);
-        if ( status != 0 ) {
-            log_db::info("chlModResc cmlExecuteNoAnswerSql update failure {}", status);
-            _rollback( "chlModResc" );
-            return ERROR( status, "failed to set status" );
-        }
-        OK = 1;
-    }
-
-    if ( strcmp( _option, "name" ) == 0 ) {
-        if ( logSQL != 0 ) {
-            log_sql::debug("chlModResc SQL 13");
-        }
-        cllBindVars[cllBindVarCount++] = _option_value;
-        cllBindVars[cllBindVarCount++] = current_time_secs.c_str();
-        cllBindVars[cllBindVarCount++] = current_time_msecs.c_str();
-        cllBindVars[cllBindVarCount++] = rescId;
-        /*    If the new name is not unique, this will return an error */
-        status = cmlExecuteNoAnswerSql(
-            "update R_RESC_MAIN set resc_name=?, modify_ts=?, modify_ts_millis=? where resc_id=?", &icss);
-        if ( status != 0 ) {
-            log_db::info("chlModResc cmlExecuteNoAnswerSql update failure {}", status);
-            _rollback( "chlModResc" );
-            return ERROR( status, "failed to set resc name with modify time" );
-        }
-
-        if ( logSQL != 0 ) {
-            log_sql::debug("chlModResc SQL 14");
-        }
-
-        // JMC :: remove update r_data_main with resc_name
-        if ( logSQL != 0 ) {
-            log_sql::debug("chlModResc SQL 15");
-        }
-        cllBindVars[cllBindVarCount++] = _option_value;
-        cllBindVars[cllBindVarCount++] = _resc_name;
-        status =  cmlExecuteNoAnswerSql(
-                      "update R_SERVER_LOAD set resc_name=? where resc_name=?",
-                      &icss );
-        if ( status == CAT_SUCCESS_BUT_WITH_NO_INFO ) {
-            status = 0;
-        }
-        if ( status != 0 ) {
-            log_db::info("chlModResc cmlExecuteNoAnswerSql update failure {}", status);
-            _rollback( "chlModResc" );
-            return ERROR( status, "failed to update server load" );
-        }
-
-        if ( logSQL != 0 ) {
-            log_sql::debug("chlModResc SQL 16");
-        }
-        cllBindVars[cllBindVarCount++] = _option_value;
-        cllBindVars[cllBindVarCount++] = _resc_name;
-        status =  cmlExecuteNoAnswerSql(
-                      "update R_SERVER_LOAD_DIGEST set resc_name=? where resc_name=?",
-                      &icss );
-        if ( status == CAT_SUCCESS_BUT_WITH_NO_INFO ) {
-            status = 0;
-        }
-        if ( status != 0 ) {
-            log_db::info("chlModResc cmlExecuteNoAnswerSql update failure {}", status);
-            _rollback( "chlModResc" );
-            return ERROR( status, "failed to set load digest" );
-        }
-
-        OK = 1;
-
-    } // if name
-
-    if ( strcmp( _option, "context" ) == 0 ) {
-        cllBindVars[cllBindVarCount++] = _option_value;
-        cllBindVars[cllBindVarCount++] = current_time_secs.c_str();
-        cllBindVars[cllBindVarCount++] = current_time_msecs.c_str();
-        cllBindVars[cllBindVarCount++] = rescId;
-        status = cmlExecuteNoAnswerSql(
-            "update R_RESC_MAIN set resc_context=?, modify_ts=?, modify_ts_millis=? where resc_id=?", &icss);
-        if ( status != 0 ) {
-            log_db::info("chlModResc cmlExecuteNoAnswerSql update failure for resc context {}", status);
-            _rollback( "chlModResc" );
-            return ERROR( status, "failed to set context" );
-        }
-        OK = 1;
-    }
-
-    if ( OK == 0 ) {
-        return ERROR( CAT_INVALID_ARGUMENT, "invalid option" );
-    }
-
-    status =  cmlExecuteNoAnswerSql( "commit", &icss );
-    if ( status != 0 ) {
-        log_db::info("chlModResc cmlExecuteNoAnswerSql commit failure {}", status);
-        return ERROR( status, "commit failure" );
-    }
-
-    if ( rescPath[0] != '\0' ) {
-        /* if the path was gotten, return it */
-
-        snprintf( rescPathMsg, sizeof( rescPathMsg ), "Previous resource path: %s",
-                  rescPath );
-        addRErrorMsg( &_ctx.comm()->rError, 0, rescPathMsg );
-    }
-
-    return SUCCESS();
 } // db_mod_resc_op
 
 // =-=-=-=-=-=-=-
@@ -7842,48 +6695,20 @@ irods::error db_mod_resc_data_paths_op(
                    "null parameter" );
     }
 
-    // =-=-=-=-=-=-=-
-    // get a postgres object from the context
-    /*irods::postgres_object_ptr pg;
-    ret = make_db_ptr( _ctx.fco(), pg );
-    if ( !ret.ok() ) {
-        return PASS( ret );
-
-    }*/
-
-    // =-=-=-=-=-=-=-
-    // extract the icss property
-//        icatSessionStruct icss;
-//        _ctx.prop_map().get< icatSessionStruct >( ICSS_PROP, icss );
-    char rescId[MAX_NAME_LEN];
-    int status, len, rows;
-    const char *cptr;
-    //   char userId[NAME_LEN]="";
-    char userZone[NAME_LEN];
-    char zoneToUse[NAME_LEN];
-    char userName2[NAME_LEN];
-
-
-    if ( logSQL != 0 ) {
-        log_sql::debug("chlModRescDataPaths");
-    }
-
     if ( *_resc_name == '\0' || *_old_path == '\0' || *_new_path == '\0' ) {
         return ERROR( CAT_INVALID_ARGUMENT, "argument is empty" );
     }
 
     /* the paths must begin and end with / */
-    if ( *_old_path != '/' or * _new_path != '/' ) {
+    if ( *_old_path != '/' || *_new_path != '/' ) {
         return ERROR( CAT_INVALID_ARGUMENT, "invalid path" );
     }
-    len = strlen( _old_path );
-    cptr = _old_path + len - 1;
-    if ( *cptr != '/' ) {
+    const auto old_len = strlen( _old_path );
+    if ( _old_path[old_len - 1] != '/' ) {
         return ERROR( CAT_INVALID_ARGUMENT, "invalid old path" );
     }
-    len = strlen( _new_path );
-    cptr = _new_path + len - 1;
-    if ( *cptr != '/' ) {
+    const auto new_len = strlen( _new_path );
+    if ( _new_path[new_len - 1] != '/' ) {
         return ERROR( CAT_INVALID_ARGUMENT, "invalid new path" );
     }
 
@@ -7900,94 +6725,97 @@ irods::error db_mod_resc_data_paths_op(
         return PASS( ret );
     }
 
-    rescId[0] = '\0';
-    if ( logSQL != 0 ) {
-        log_sql::debug("chlModRescDataPaths SQL 1 ");
-    }
-    {
-        std::vector<std::string> bindVars;
-        bindVars.push_back( _resc_name );
-        bindVars.push_back( zone );
-        status = cmlGetStringValueFromSql(
-                     "select resc_id from R_RESC_MAIN where resc_name=? and zone_name=?",
-                     rescId, MAX_NAME_LEN, bindVars, &icss );
-    }
-    if ( status != 0 ) {
-        if ( status == CAT_NO_ROWS_FOUND ) {
+    try {
+        auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
+        nanodbc::transaction trans{db_conn};
+
+        namespace gq2 = irods::experimental::genquery2;
+        using gq2::builder::col;
+
+        auto resc_id_opt = irods::experimental::catalog::query_catalog_string(
+            executor, db_conn,
+            gq2::builder::select({"resc_id"})
+                .from("RESOURCE")
+                .where(col("resc_name") == _resc_name && col("zone_name") == zone)
+                .build());
+        if ( !resc_id_opt.has_value() ) {
             return ERROR( CAT_INVALID_RESOURCE, "invalid resource" );
         }
-        _rollback( "chlModRescDataPaths" );
-        return ERROR( status, "failed to get resource id" );
-    }
+        const std::string resc_id = *resc_id_opt;
 
-    /* This is needed for like clause which is needed to get the
-       correct number of rows that were updated (seems like the DBMS will
-       return a row count for rows looked at for the replace). */
-    char oldPath2[MAX_NAME_LEN];
-    snprintf( oldPath2, sizeof( oldPath2 ), "%s%%", _old_path );
+        const std::string old_path_like = std::string(_old_path) + "%";
+        int rows = 0;
 
-    if ( _user_name != NULL && *_user_name != '\0' ) {
-        status = validateAndParseUserName( _user_name, userName2, userZone );
-        if ( status ) {
-            return ERROR( status, "Invalid username format" );
-        }
-        if ( userZone[0] != '\0' ) {
-            snprintf( zoneToUse, sizeof( zoneToUse ), "%s", userZone );
+        std::vector<std::tuple<std::string, std::string, std::string>> updates;
+        if ( _user_name != nullptr && *_user_name != '\0' ) {
+            char user_name2[NAME_LEN]{};
+            char user_zone[NAME_LEN]{};
+            int status = validateAndParseUserName( _user_name, user_name2, user_zone );
+            if ( status != 0 ) {
+                return ERROR( status, "Invalid username format" );
+            }
+            const std::string zone_to_use = user_zone[0] != '\0' ? user_zone : zone;
+
+            auto sel = gq2::builder::select({"data_id", "data_repl_num", "data_path"})
+                .from("DATA_OBJECT")
+                .where(col("resc_id") == resc_id && col("data_path").like(old_path_like) &&
+                       col("data_owner_name") == user_name2 && col("data_owner_zone") == zone_to_use)
+                .build();
+            auto res = irods::experimental::catalog::execute_catalog(executor, db_conn, sel);
+            if (res.query_result) {
+                while (res.query_result->next()) {
+                    updates.emplace_back(
+                        res.query_result->get<std::string>(0),
+                        res.query_result->get<std::string>(1),
+                        res.query_result->get<std::string>(2));
+                }
+            }
         }
         else {
-            snprintf( zoneToUse, sizeof( zoneToUse ), "%s", zone.c_str() );
+            auto sel = gq2::builder::select({"data_id", "data_repl_num", "data_path"})
+                .from("DATA_OBJECT")
+                .where(col("resc_id") == resc_id && col("data_path").like(old_path_like))
+                .build();
+            auto res = irods::experimental::catalog::execute_catalog(executor, db_conn, sel);
+            if (res.query_result) {
+                while (res.query_result->next()) {
+                    updates.emplace_back(
+                        res.query_result->get<std::string>(0),
+                        res.query_result->get<std::string>(1),
+                        res.query_result->get<std::string>(2));
+                }
+            }
         }
 
-        if ( logSQL != 0 ) {
-            log_sql::debug("chlModRescDataPaths SQL 2");
+        for (const auto& [did, repl, p] : updates) {
+            std::string new_p = p;
+            boost::replace_all(new_p, _old_path, _new_path);
+            auto upd = gq2::builder::update("DATA_OBJECT")
+                .set("data_path", new_p)
+                .where(col("data_id") == did && col("data_repl_num") == repl)
+                .build();
+            irods::experimental::catalog::execute_catalog(executor, db_conn, upd);
+            rows++;
         }
 
-        cllBindVars[cllBindVarCount++] = _old_path;
-        cllBindVars[cllBindVarCount++] = _new_path;
-        cllBindVars[cllBindVarCount++] = rescId;
-        cllBindVars[cllBindVarCount++] = oldPath2;
-        cllBindVars[cllBindVarCount++] = userName2;
-        cllBindVars[cllBindVarCount++] = zoneToUse;
-        status =  cmlExecuteNoAnswerSql(
-                      "update R_DATA_MAIN set data_path = replace (R_DATA_MAIN.data_path, ?, ?) where resc_id=? and data_path like ? and data_owner_name=? and data_owner_zone=?",
-                      &icss );
-    }
-    else {
-        if ( logSQL != 0 ) {
-            log_sql::debug("chlModRescDataPaths SQL 3");
+        trans.commit();
+
+        if ( rows > 0 ) {
+            char rowsMsg[100];
+            snprintf( rowsMsg, sizeof(rowsMsg), "%d rows updated", rows );
+            addRErrorMsg( &_ctx.comm()->rError, 0, rowsMsg );
         }
 
-        cllBindVars[cllBindVarCount++] = _old_path;
-        cllBindVars[cllBindVarCount++] = _new_path;
-        cllBindVars[cllBindVarCount++] = rescId;
-        cllBindVars[cllBindVarCount++] = oldPath2;
-        status =  cmlExecuteNoAnswerSql(
-                      "update R_DATA_MAIN set data_path = replace (R_DATA_MAIN.data_path, ?, ?) where resc_id=? and data_path like ?",
-                      &icss );
+        return SUCCESS();
     }
-    if ( status != 0 ) {
-        log_db::info("chlModRescDataPaths cmlExecuteNoAnswerSql update failure {}", status);
-        _rollback( "chlModResc" );
-        return ERROR( status, "failed to update path" );
+    catch (const nanodbc::database_error& e) {
+        log_db::error("{}: database error: {}", __FUNCTION__, e.what());
+        return ERROR( CAT_SQL_ERR, e.what() );
     }
-
-    rows = cllGetRowCount( &icss, -1 );
-
-    status =  cmlExecuteNoAnswerSql( "commit", &icss );
-    if ( status != 0 ) {
-        log_db::info("chlModResc cmlExecuteNoAnswerSql commit failure {}", status);
-        return ERROR( status, "commit failed" );
+    catch (const std::exception& e) {
+        log_db::error("{}: exception: {}", __FUNCTION__, e.what());
+        return ERROR( SYS_INTERNAL_ERR, e.what() );
     }
-
-    if ( rows > 0 ) {
-        char rowsMsg[100];
-        snprintf( rowsMsg, 100, "%d rows updated",
-                  rows );
-        addRErrorMsg( &_ctx.comm()->rError, 0, rowsMsg );
-    }
-
-    return SUCCESS();
-
 } // db_mod_resc_data_paths_op
 
 // =-=-=-=-=-=-=-
@@ -8012,33 +6840,9 @@ irods::error db_mod_resc_freespace_op(
                    "null parameter" );
     }
 
-    // =-=-=-=-=-=-=-
-    // get a postgres object from the context
-    /*irods::postgres_object_ptr pg;
-    ret = make_db_ptr( _ctx.fco(), pg );
-    if ( !ret.ok() ) {
-        return PASS( ret );
-
-    }*/
-
-    // =-=-=-=-=-=-=-
-    // extract the icss property
-//        icatSessionStruct icss;
-//        _ctx.prop_map().get< icatSessionStruct >( ICSS_PROP, icss );
-    int status;
-    char updateValueStr[MAX_NAME_LEN];
-
-    if ( logSQL != 0 ) {
-        log_sql::debug("chlModRescFreeSpace");
-    }
-
     if ( *_resc_name == '\0' ) {
         return ERROR( CAT_INVALID_ARGUMENT, "resc name is empty" );
     }
-
-    /* The following checks may not be needed long term, but
-       shouldn't hurt, for now.
-    */
 
     if ( _ctx.comm()->clientUser.authInfo.authFlag < LOCAL_PRIV_USER_AUTH ) {
         return ERROR( CAT_INSUFFICIENT_PRIVILEGE_LEVEL, "insufficient privilege level" );
@@ -8047,30 +6851,36 @@ irods::error db_mod_resc_freespace_op(
         return ERROR( CAT_INSUFFICIENT_PRIVILEGE_LEVEL, "insufficient privilege level" );
     }
 
-    snprintf( updateValueStr, MAX_NAME_LEN, "%d", _update_value );
+    try {
+        auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
+        nanodbc::transaction trans{db_conn};
 
-    const auto [current_time_secs, current_time_msecs] = get_current_time();
+        const auto [current_time_secs, current_time_msecs] = get_current_time();
+        const std::string update_val_str = std::to_string( _update_value );
 
-    cllBindVars[cllBindVarCount++] = updateValueStr;
-    cllBindVars[cllBindVarCount++] = current_time_secs.c_str();
-    cllBindVars[cllBindVarCount++] = current_time_secs.c_str();
-    cllBindVars[cllBindVarCount++] = current_time_msecs.c_str();
-    cllBindVars[cllBindVarCount++] = _resc_name;
+        namespace gq2 = irods::experimental::genquery2;
+        using gq2::builder::col;
 
-    if ( logSQL != 0 ) {
-        log_sql::debug("chlModRescFreeSpace SQL 1 ");
+        auto stmt = gq2::builder::update("RESOURCE")
+            .set("free_space", update_val_str)
+            .set("free_space_ts", current_time_secs)
+            .set("modify_ts", current_time_secs)
+            .set("modify_ts_millis", current_time_msecs)
+            .where(col("resc_name") == _resc_name)
+            .build();
+        irods::experimental::catalog::execute_catalog(executor, db_conn, stmt);
+
+        trans.commit();
+        return SUCCESS();
     }
-    status = cmlExecuteNoAnswerSql(
-        "update R_RESC_MAIN set free_space = ?, free_space_ts=?, modify_ts=?, modify_ts_millis=? where resc_name=?",
-        &icss);
-    if ( status != 0 ) {
-        log_db::info("chlModRescFreeSpace cmlExecuteNoAnswerSql update failure {}", status);
-        _rollback( "chlModRescFreeSpace" );
-        return ERROR( status, "update freespace error" );
+    catch (const nanodbc::database_error& e) {
+        log_db::error("{}: database error: {}", __FUNCTION__, e.what());
+        return ERROR( CAT_SQL_ERR, e.what() );
     }
-
-    return SUCCESS();
-
+    catch (const std::exception& e) {
+        log_db::error("{}: exception: {}", __FUNCTION__, e.what());
+        return ERROR( SYS_INTERNAL_ERR, e.what() );
+    }
 } // db_mod_resc_freespace_op
 
 // =-=-=-=-=-=-=-
@@ -8094,22 +6904,8 @@ irods::error db_reg_user_re_op(
                    "null parameter" );
     }
 
-    // =-=-=-=-=-=-=-
-    // get a postgres object from the context
-    /*irods::postgres_object_ptr pg;
-    ret = make_db_ptr( _ctx.fco(), pg );
-    if ( !ret.ok() ) {
-        return PASS( ret );
-
-    }*/
-
-    // =-=-=-=-=-=-=-
-    // extract the icss property
-//        icatSessionStruct icss;
-//        _ctx.prop_map().get< icatSessionStruct >( ICSS_PROP, icss );
     char myTime[50];
     int status;
-    char seqStr[MAX_NAME_LEN];
     char userZone[MAX_NAME_LEN];
     char zoneId[MAX_NAME_LEN];
 
@@ -8120,9 +6916,7 @@ irods::error db_reg_user_re_op(
     static char lastValidUserType[MAX_NAME_LEN] = "";
     static char userTypeTokenName[MAX_NAME_LEN] = "";
 
-    if ( logSQL != 0 ) {
-        log_sql::debug("chlRegUserRE");
-    }
+    log_sql::debug("chlRegUserRE");
 
     if ( !icss.status ) {
         return ERROR( CATALOG_NOT_CONNECTED, "catalog is not connected" );
@@ -8136,15 +6930,16 @@ irods::error db_reg_user_re_op(
     }
 
     // =-=-=-=-=-=-=-
-    // JMC - backport 4772
+
+    auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
+
     if ( _ctx.comm()->clientUser.authInfo.authFlag < LOCAL_PRIV_USER_AUTH ||
             _ctx.comm()->proxyUser.authInfo.authFlag  < LOCAL_PRIV_USER_AUTH ) {
-        int status2;
-        status2  = cmlCheckGroupAdminAccess(
-                       _ctx.comm()->clientUser.userName,
-                       _ctx.comm()->clientUser.rodsZone,
-                       "",
-                       &icss );
+        int status2 = irods::experimental::catalog::access_control::check_group_admin_access(
+            executor, db_conn,
+            _ctx.comm()->clientUser.userName,
+            _ctx.comm()->clientUser.rodsZone,
+            "" );
         if ( status2 != 0 ) {
             return ERROR( status2, "invalid group admin access" );
         }
@@ -8158,24 +6953,21 @@ irods::error db_reg_user_re_op(
     */
     if ( *_user_info->userType == '\0' ||
             strcmp( _user_info->userType, lastValidUserType ) != 0 ) {
-        char errMsg[105];
-        if ( logSQL != 0 ) {
-            log_sql::debug("chlRegUserRE SQL 1 ");
-        }
-        {
-            std::vector<std::string> bindVars;
-            bindVars.push_back( _user_info->userType );
-            status = cmlGetStringValueFromSql(
-                         "select token_name from R_TOKN_MAIN where token_namespace='user_type' and token_name=?",
-                         userTypeTokenName, MAX_NAME_LEN, bindVars, &icss );
-        }
-        if ( status == 0 ) {
+        log_sql::debug("chlRegUserRE SQL 1 ");
+        auto opt_type = irods::experimental::catalog::query_catalog_string(
+            executor,
+            db_conn,
+            gq2::builder::select({"token_name"})
+                .from("TOKEN")
+                .where(col("token_namespace") == "user_type" && col("token_name") == _user_info->userType)
+                .build());
+        if ( opt_type ) {
             snprintf( lastValidUserType, sizeof( lastValidUserType ), "%s", _user_info->userType );
+            rstrcpy( userTypeTokenName, opt_type->c_str(), sizeof( userTypeTokenName ) );
         }
         else {
-            snprintf( errMsg, 100, "user_type '%s' is not valid",
-                      _user_info->userType );
-            addRErrorMsg( &_ctx.comm()->rError, 0, errMsg );
+            addRErrorMsg( &_ctx.comm()->rError, 0,
+                          fmt::format( "user_type '{}' is not valid", _user_info->userType ).c_str() );
             return ERROR( CAT_INVALID_USER_TYPE, "invalid user type" );
         }
     }
@@ -8207,84 +6999,66 @@ irods::error db_reg_user_re_op(
     if ( zoneForm ) {
         /* check that the zone exists (if not defaulting to local) */
         zoneId[0] = '\0';
-        if ( logSQL != 0 ) {
-            log_sql::debug("chlRegUserRE SQL 5 ");
+        log_sql::debug("chlRegUserRE SQL 5 ");
+        auto opt_zone = irods::experimental::catalog::query_catalog_string(
+            executor,
+            db_conn,
+            gq2::builder::select({"zone_id"})
+                .from("ZONE")
+                .where(col("zone_name") == userZone)
+                .build());
+        if ( !opt_zone ) {
+            addRErrorMsg( &_ctx.comm()->rError, 0,
+                          fmt::format( "zone '{}' does not exist", userZone ).c_str() );
+            return ERROR( CAT_INVALID_ZONE, "invalid zone name" );
         }
-        {
-            std::vector<std::string> bindVars;
-            bindVars.push_back( userZone );
-            status = cmlGetStringValueFromSql(
-                         "select zone_id from R_ZONE_MAIN where zone_name=?",
-                         zoneId, MAX_NAME_LEN, bindVars, &icss );
-        }
-        if ( status != 0 ) {
-            if ( status == CAT_NO_ROWS_FOUND ) {
-                char errMsg[105];
-                snprintf( errMsg, 100,
-                          "zone '%s' does not exist",
-                          userZone );
-                addRErrorMsg( &_ctx.comm()->rError, 0, errMsg );
-                return ERROR( CAT_INVALID_ZONE, "invalid zone name" );
-            }
-            return ERROR( status, "get zone id failure" );
-        }
+        rstrcpy( zoneId, opt_zone->c_str(), sizeof( zoneId ) );
     }
 
-    if ( logSQL != 0 ) {
-        log_sql::debug("chlRegUserRE SQL 2");
+    log_sql::debug("chlRegUserRE SQL 2");
+    const auto seq_val = executor.get_next_sequence_value(db_conn, "R_ObjectID");
+    if ( seq_val < 0 ) {
+        log_db::info("chlRegUserRE get_next_sequence_value failure {}", seq_val);
+        return ERROR( seq_val, "get_next_sequence_value failure" );
     }
-    status = cmlGetNextSeqStr( seqStr, MAX_NAME_LEN, &icss );
-    if ( status != 0 ) {
-        log_db::info("chlRegUserRE cmlGetNextSeqStr failure {}", status);
-        return ERROR( status, "cmlGetNextSeqStr failure" );
-    }
+    const auto seqStr = std::to_string( static_cast<long long>(seq_val) );
 
     getNowStr( myTime );
 
-    cllBindVars[cllBindVarCount++] = seqStr;
-    cllBindVars[cllBindVarCount++] = userName2;
-    cllBindVars[cllBindVarCount++] = userTypeTokenName;
-    cllBindVars[cllBindVarCount++] = userZone;
-    cllBindVars[cllBindVarCount++] = myTime;
-    cllBindVars[cllBindVarCount++] = myTime;
+    try {
+        nanodbc::transaction trans{db_conn};
 
-    if ( logSQL != 0 ) {
+        namespace gq2 = irods::experimental::genquery2;
+
         log_sql::debug("chlRegUserRE SQL 3");
-    }
-    status =  cmlExecuteNoAnswerSql(
-                  "insert into R_USER_MAIN (user_id, user_name, user_type_name, zone_name, create_ts, modify_ts) values (?, ?, ?, ?, ?, ?)",
-                  &icss );
+        auto ins_user = gq2::builder::insert_into("USER")
+            .set("user_id", seqStr)
+            .set("user_name", userName2)
+            .set("user_type_name", userTypeTokenName)
+            .set("zone_name", userZone)
+            .set("create_ts", myTime)
+            .set("modify_ts", myTime)
+            .build();
+        irods::experimental::catalog::execute_catalog(executor, db_conn, ins_user);
 
-    if ( status != 0 ) {
-        if ( status == CATALOG_ALREADY_HAS_ITEM_BY_THAT_NAME ) {
-            char errMsg[105];
-            snprintf( errMsg, 100, "Error %d %s",
-                      status,
-                      "CATALOG_ALREADY_HAS_ITEM_BY_THAT_NAME"
-                    );
-            addRErrorMsg( &_ctx.comm()->rError, 0, errMsg );
-        }
-        _rollback( "chlRegUserRE" );
-        log_db::info("chlRegUserRE insert failure {}", status);
-        return ERROR( status, "insert failure" );
-    }
-
-
-    cllBindVars[cllBindVarCount++] = seqStr;
-    cllBindVars[cllBindVarCount++] = seqStr;
-    cllBindVars[cllBindVarCount++] = myTime;
-    cllBindVars[cllBindVarCount++] = myTime;
-
-    if ( logSQL != 0 ) {
         log_sql::debug("chlRegUserRE SQL 4");
+        auto ins_ug = gq2::builder::insert_into("USER_GROUP")
+            .set("group_user_id", seqStr)
+            .set("user_id", seqStr)
+            .set("create_ts", myTime)
+            .set("modify_ts", myTime)
+            .build();
+        irods::experimental::catalog::execute_catalog(executor, db_conn, ins_ug);
+
+        trans.commit();
     }
-    status =  cmlExecuteNoAnswerSql(
-                  "insert into R_USER_GROUP (group_user_id, user_id, create_ts, modify_ts) values (?, ?, ?, ?)",
-                  &icss );
-    if ( status != 0 ) {
-        log_db::info("chlRegUserRE insert into R_USER_GROUP failure {}", status);
-        _rollback( "chlRegUserRE" );
-        return ERROR( status, "insert into r_user_group failure" );
+    catch (const nanodbc::database_error& e) {
+        log_db::error("{}: database error: {}", __FUNCTION__, e.what());
+        return ERROR( translate_nanodbc_error(e), e.what() );
+    }
+    catch (const std::exception& e) {
+        log_db::error("{}: exception: {}", __FUNCTION__, e.what());
+        return ERROR( SYS_INTERNAL_ERR, e.what() );
     }
 
 
@@ -8331,19 +7105,6 @@ irods::error db_set_avu_metadata_op(
         return ERROR( CAT_INVALID_ARGUMENT, "null parameter" );
     }
 
-    // =-=-=-=-=-=-=-
-    // get a postgres object from the context
-    /*irods::postgres_object_ptr pg;
-    ret = make_db_ptr( _ctx.fco(), pg );
-    if ( !ret.ok() ) {
-        return PASS( ret );
-
-    }*/
-
-    // =-=-=-=-=-=-=-
-    // extract the icss property
-//        icatSessionStruct icss;
-//        _ctx.prop_map().get< icatSessionStruct >( ICSS_PROP, icss );
     int status;
     char myTime[50];
     rodsLong_t objId;
@@ -8351,17 +7112,13 @@ irods::error db_set_avu_metadata_op(
     char objIdStr[MAX_NAME_LEN];
 
     memset( metaIdStr, 0, sizeof( metaIdStr ) );
-    if ( logSQL != 0 ) {
-        log_sql::debug("chlSetAVUMetadata");
-    }
+    log_sql::debug("chlSetAVUMetadata");
 
     if ( !icss.status ) {
         return ERROR( CATALOG_NOT_CONNECTED, "catalog not connected" );
     }
 
-    if ( logSQL != 0 ) {
-        log_sql::debug("chlSetAVUMetadata SQL 1 ");
-    }
+    log_sql::debug("chlSetAVUMetadata SQL 1 ");
     objId = checkAndGetObjectId(_ctx.comm(), _ctx.prop_map(), _type, _name, ACCESS_CREATE_METADATA,
                                 getValByKey(_cond_input, ADMIN_KW));
     if ( objId < 0 ) {
@@ -8369,9 +7126,7 @@ irods::error db_set_avu_metadata_op(
     }
     snprintf( objIdStr, MAX_NAME_LEN, "%lld", objId );
 
-    if ( logSQL != 0 ) {
-        log_sql::debug("chlSetAVUMetadata SQL 2");
-    }
+    log_sql::debug("chlSetAVUMetadata SQL 2");
 
     /* Treat unspecified unit as empty string */
     if ( _new_unit == NULL ) {
@@ -8391,29 +7146,68 @@ irods::error db_set_avu_metadata_op(
      *                     object has an AVU with this A and said AVU is shared with another object
      */
 
-    {
-        std::vector<std::string> bindVars;
-        bindVars.push_back( _attribute );
-        bindVars.push_back( objIdStr );
-        status = cmlGetMultiRowStringValuesFromSql( "select meta_id from R_OBJT_METAMAP where meta_id in "
-                "(select meta_id from R_META_MAIN where meta_attr_name = ? and meta_id in "
-                "(select meta_id from R_OBJT_METAMAP where object_id = ?)) limit 3",
-                 metaIdStr, MAX_NAME_LEN, 2, bindVars, &icss );
-    }
+    int row_count = 0;
+    try {
+        auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
 
-    if ( status <= 0 ) {
-        if ( status == CAT_NO_ROWS_FOUND ) {
-            // Need to add the metadata.
-            status = chlAddAVUMetadata( _ctx.comm(), _type, _name, _attribute,
-                                        _new_value, _new_unit, _cond_input );
+        namespace gq2 = irods::experimental::genquery2;
+        using gq2::builder::col;
+
+        auto meta_ids = irods::experimental::catalog::query_catalog_strings(
+            executor, db_conn,
+            gq2::builder::select({"meta_id"})
+                .from("METADATA_MAP")
+                .where(col("object_id") == objIdStr)
+                .build());
+
+        std::vector<std::string> matching_meta_ids;
+        for (const auto& mid : meta_ids) {
+            auto match = irods::experimental::catalog::query_catalog_string(
+                executor, db_conn,
+                gq2::builder::select({"meta_id"})
+                    .from("METADATA")
+                    .where(col("meta_id") == mid && col("meta_attr_name") == _attribute)
+                    .build());
+            if (match) {
+                matching_meta_ids.push_back(mid);
+            }
+        }
+
+        if (matching_meta_ids.size() == 1) {
+            auto ref_count = irods::experimental::catalog::query_catalog_integer(
+                executor, db_conn,
+                gq2::builder::select({gq2::builder::count("object_id")})
+                    .from("METADATA_MAP")
+                    .where(col("meta_id") == matching_meta_ids[0])
+                    .build());
+            if (ref_count && *ref_count == 1) {
+                row_count = 1;
+                rstrcpy(metaIdStr, matching_meta_ids[0].c_str(), sizeof(metaIdStr));
+            }
+            else {
+                row_count = 2; // shared with other objects
+            }
+        }
+        else if (matching_meta_ids.size() > 1) {
+            row_count = 2; // multiple AVUs with this attribute
         }
         else {
-            log_db::info("chlSetAVUMetadata cmlGetMultiRowStringValuesFromSql failure {}", status);
+            row_count = 0; // zero AVUs with matching attribute
         }
+    }
+    catch (const std::exception& e) {
+        log_db::info("chlSetAVUMetadata nanodbc query failure {}", e.what());
+        return ERROR( CAT_SQL_ERR, "get avu failed" );
+    }
+
+    if ( row_count == 0 ) {
+        // Need to add the metadata.
+        status = chlAddAVUMetadata( _ctx.comm(), _type, _name, _attribute,
+                                    _new_value, _new_unit, _cond_input );
         return ERROR( status, "get avu failed" );
     }
 
-    if ( status > 1 ) {
+    if ( row_count > 1 ) {
         /* Cannot update AVU in-place, need to do a delete with wildcards then add */
         status = chlDeleteAVUMetadata( _ctx.comm(), 1, _type, _name, _attribute, "%",
                                        "%", 1, _cond_input );
@@ -8457,36 +7251,35 @@ irods::error db_set_avu_metadata_op(
     /* Only one metaId for this Attribute and Object has been found, and the metaID is not shared */
     log_db::debug("chlSetAVUMetadata found metaId {}", metaIdStr);
 
-    if ( logSQL != 0 ) {
-        log_sql::debug("chlSetAVUMetadata SQL 4");
-    }
+    log_sql::debug("chlSetAVUMetadata SQL 4");
 
     getNowStr( myTime );
-    cllBindVarCount = 0;
-    cllBindVars[cllBindVarCount++] = _new_value;
-    cllBindVars[cllBindVarCount++] = _new_unit;
-    cllBindVars[cllBindVarCount++] = myTime;
-    cllBindVars[cllBindVarCount++] = metaIdStr;
+    try {
+        auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
+        nanodbc::transaction trans{db_conn};
 
-    if ( logSQL != 0 ) {
         log_sql::debug("chlSetAVUMetadata SQL 5");
-    }
-    status = cmlExecuteNoAnswerSql( "update R_META_MAIN set meta_attr_value=?,meta_attr_unit=?,modify_ts=? where meta_id=?",
-                                    &icss );
+        namespace gq2 = irods::experimental::genquery2;
+        using gq2::builder::col;
+        auto stmt = gq2::builder::update("METADATA")
+            .set("meta_attr_value", _new_value ? _new_value : "")
+            .set("meta_attr_unit", _new_unit ? _new_unit : "")
+            .set("modify_ts", myTime)
+            .where(col("meta_id") == metaIdStr)
+            .build();
+        irods::experimental::catalog::execute_catalog(executor, db_conn, stmt);
 
-    if ( status != 0 ) {
-        log_db::info("chlSetAVUMetadata cmlExecuteNoAnswerSql update failure {}", status);
-        _rollback( "chlSetAVUMetadata" );
-        return ERROR( status, "set avu failed" );
+        trans.commit();
+        return SUCCESS();
     }
-
-    status =  cmlExecuteNoAnswerSql( "commit", &icss );
-    if ( status != 0 ) {
-        log_db::info("chlSetAVUMetadata cmlExecuteNoAnswerSql commit failure {}", status);
-        return ERROR( status, "commit failed" );
+    catch (const nanodbc::database_error& e) {
+        log_db::error("{}: database error: {}", __FUNCTION__, e.what());
+        return ERROR( translate_nanodbc_error(e), e.what() );
     }
-
-    return CODE( status );
+    catch (const std::exception& e) {
+        log_db::error("{}: exception: {}", __FUNCTION__, e.what());
+        return ERROR( SYS_INTERNAL_ERR, e.what() );
+    }
 } // db_set_avu_metadata_op
 
 irods::error db_add_avu_metadata_op(
@@ -8511,33 +7304,16 @@ irods::error db_add_avu_metadata_op(
         return ERROR( CAT_INVALID_ARGUMENT, "null parameter" );
     }
 
-    // =-=-=-=-=-=-=-
-    // get a postgres object from the context
-    /*irods::postgres_object_ptr pg;
-    ret = make_db_ptr( _ctx.fco(), pg );
-    if ( !ret.ok() ) {
-        return PASS( ret );
-
-    }*/
-
-    // =-=-=-=-=-=-=-
-    // extract the icss property
-//        icatSessionStruct icss;
-//        _ctx.prop_map().get< icatSessionStruct >( ICSS_PROP, icss );
     int itype;
     char myTime[50];
     char logicalEndName[MAX_NAME_LEN];
     char logicalParentDirName[MAX_NAME_LEN];
     rodsLong_t seqNum;
     rodsLong_t objId, status;
-    char objIdStr[MAX_NAME_LEN];
-    char seqNumStr[MAX_NAME_LEN];
     char userName[NAME_LEN];
     char userZone[NAME_LEN];
 
-    if ( logSQL != 0 ) {
-        log_sql::debug("chlAddAVUMetadata");
-    }
+    log_sql::debug("chlAddAVUMetadata");
 
     if ( !icss.status ) {
         return ERROR( CATALOG_NOT_CONNECTED, "catalog not connected" );
@@ -8574,6 +7350,8 @@ irods::error db_add_avu_metadata_op(
         return ERROR( CAT_INVALID_ARGUMENT, "invalid type argument" );
     }
 
+    auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
+
     // Data Objects
     if (itype == 1) {
         const auto ec = splitPathByKey(_name, logicalParentDirName, MAX_NAME_LEN, logicalEndName, MAX_NAME_LEN, '/'); 
@@ -8588,14 +7366,14 @@ irods::error db_add_avu_metadata_op(
             snprintf(logicalEndName, sizeof(logicalEndName), "%s", _name);
         }
 
-        if (logSQL != 0) {
-            log_sql::debug("chlAddAVUMetadata SQL 2");
-        }
+        log_sql::debug("chlAddAVUMetadata SQL 2");
 
-        status = cmlCheckDataObjOnly(logicalParentDirName, logicalEndName,
-                                     _ctx.comm()->clientUser.userName,
-                                     _ctx.comm()->clientUser.rodsZone,
-                                     ACCESS_CREATE_METADATA, &icss, admin_mode);
+        status = irods::experimental::catalog::access_control::check_data_object_only(
+            executor, db_conn,
+            logicalParentDirName, logicalEndName,
+            _ctx.comm()->clientUser.userName,
+            _ctx.comm()->clientUser.rodsZone,
+            ACCESS_CREATE_METADATA, admin_mode);
 
         if (status < 0) {
             _rollback("chlAddAVUMetadata");
@@ -8609,29 +7387,27 @@ irods::error db_add_avu_metadata_op(
     if (itype == 2) {
         // Check that the collection exists and user has create_metadata
         // permission, and get the collectionID.
-        if ( logSQL != 0 ) {
-            log_sql::debug("chlAddAVUMetadata SQL 4");
-        }
+        log_sql::debug("chlAddAVUMetadata SQL 4");
 
-        status = cmlCheckDir(_name,
-                             _ctx.comm()->clientUser.userName,
-                             _ctx.comm()->clientUser.rodsZone,
-                             ACCESS_CREATE_METADATA, &icss, admin_mode);
+        status = irods::experimental::catalog::access_control::check_collection_access(
+            executor, db_conn,
+            _name,
+            _ctx.comm()->clientUser.userName,
+            _ctx.comm()->clientUser.rodsZone,
+            ACCESS_CREATE_METADATA, admin_mode);
 
         if ( status < 0 ) {
-            char errMsg[105];
-
             _rollback( "chlAddAVUMetadata" ); // TODO We've rolled back here, so why the extra call below?
 
             if ( status == CAT_UNKNOWN_COLLECTION ) {
-                snprintf( errMsg, 100, "collection '%s' is unknown", _name );
-                addRErrorMsg( &_ctx.comm()->rError, 0, errMsg );
+                addRErrorMsg( &_ctx.comm()->rError, 0,
+                              fmt::format( "collection '{}' is unknown", _name ).c_str() );
             }
             else {
                 _rollback( "chlAddAVUMetadata" ); // TODO Why do we rollback again?
             }
 
-            return ERROR( status, "cmlCheckDir failed" );
+            return ERROR( status, "check_collection_access failed" );
         }
 
         objId = status;
@@ -8648,25 +7424,18 @@ irods::error db_add_avu_metadata_op(
             return PASS( ret );
         }
 
-        objId = 0;
-        if ( logSQL != 0 ) {
-            log_sql::debug("chlAddAVUMetadata SQL 5");
-        }
-        {
-            std::vector<std::string> bindVars;
-            bindVars.push_back( _name );
-            bindVars.push_back( zone );
-            status = cmlGetIntegerValueFromSql(
-                         "select resc_id from R_RESC_MAIN where resc_name=? and zone_name=?",
-                         &objId, bindVars, &icss );
-        }
-        if ( status != 0 ) {
+        log_sql::debug("chlAddAVUMetadata SQL 5");
+        auto opt_resc = irods::experimental::catalog::query_catalog_integer(
+            executor, db_conn,
+            gq2::builder::select({"resc_id"})
+                .from("RESOURCE")
+                .where(col("resc_name") == _name && col("zone_name") == zone)
+                .build());
+        if ( !opt_resc ) {
             _rollback( "chlAddAVUMetadata" );
-            if ( status == CAT_NO_ROWS_FOUND ) {
-                return ERROR( CAT_INVALID_RESOURCE, "invalid resource" );
-            }
-            return ERROR( status, "select resc_id failed" );
+            return ERROR( CAT_INVALID_RESOURCE, "invalid resource" );
         }
+        objId = *opt_resc;
     }
 
     if ( itype == 4 ) {
@@ -8687,25 +7456,19 @@ irods::error db_add_avu_metadata_op(
             snprintf( userZone, NAME_LEN, "%s", zone.c_str() );
         }
 
-        objId = 0;
-        if ( logSQL != 0 ) {
-            log_sql::debug("chlAddAVUMetadata SQL 6");
-        }
-        {
-            std::vector<std::string> bindVars;
-            bindVars.push_back( userName );
-            bindVars.push_back( userZone );
-            status = cmlGetIntegerValueFromSql(
-                         "select user_id from R_USER_MAIN where user_name=? and zone_name=?",
-                         &objId, bindVars, &icss );
-        }
-        if ( status != 0 ) {
+        log_sql::debug("chlAddAVUMetadata SQL 6");
+        auto opt_user = irods::experimental::catalog::query_catalog_integer(
+            executor,
+            db_conn,
+            gq2::builder::select({"user_id"})
+                .from("USER")
+                .where(col("user_name") == userName && col("zone_name") == userZone)
+                .build());
+        if ( !opt_user ) {
             _rollback( "chlAddAVUMetadata" );
-            if ( status == CAT_NO_ROWS_FOUND ) {
-                return ERROR( CAT_INVALID_USER, "invalid user" );
-            }
-            return ERROR( status, "select user_id failed" );
+            return ERROR( CAT_INVALID_USER, "invalid user" );
         }
+        objId = *opt_user;
     }
 
     if ( itype == 5 ) {
@@ -8719,24 +7482,19 @@ irods::error db_add_avu_metadata_op(
             return PASS( ret );
         }
 
-        objId = 0;
-        if ( logSQL != 0 ) {
-            log_sql::debug("chlAddAVUMetadata SQL 7");
-        }
-        {
-            std::vector<std::string> bindVars;
-            bindVars.push_back( _name );
-            status = cmlGetIntegerValueFromSql(
-                         "select distinct resc_group_id from R_RESC_GROUP where resc_group_name=?",
-                         &objId, bindVars, &icss );
-        }
-        if ( status != 0 ) {
+        log_sql::debug("chlAddAVUMetadata SQL 7");
+        auto opt_group = irods::experimental::catalog::query_catalog_integer(
+            executor, db_conn,
+            gq2::builder::select({"resc_group_id"})
+                .distinct()
+                .from("RESOURCE_GROUP")
+                .where(col("resc_group_name") == _name)
+                .build());
+        if ( !opt_group ) {
             _rollback( "chlAddAVUMetadata" );
-            if ( status == CAT_NO_ROWS_FOUND ) {
-                return ERROR( CAT_INVALID_RESOURCE, "invalid resource" );
-            }
-            return ERROR( status, "select failure" );
+            return ERROR( CAT_INVALID_RESOURCE, "invalid resource" );
         }
+        objId = *opt_group;
     }
 
     status = findOrInsertAVU( _attribute, _value, _units );
@@ -8748,31 +7506,32 @@ irods::error db_add_avu_metadata_op(
     seqNum = status;
 
     getNowStr( myTime );
-    snprintf( objIdStr, sizeof objIdStr, "%lld", objId );
-    snprintf( seqNumStr, sizeof seqNumStr, "%lld", seqNum );
-    cllBindVars[cllBindVarCount++] = objIdStr;
-    cllBindVars[cllBindVarCount++] = seqNumStr;
-    cllBindVars[cllBindVarCount++] = myTime;
-    cllBindVars[cllBindVarCount++] = myTime;
-    if ( logSQL != 0 ) {
+
+    try {
+        auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
+        nanodbc::transaction trans{db_conn};
+
         log_sql::debug("chlAddAVUMetadata SQL 7");
-    }
-    status =  cmlExecuteNoAnswerSql(
-                  "insert into R_OBJT_METAMAP (object_id, meta_id, create_ts, modify_ts) values (?, ?, ?, ?)",
-                  &icss );
-    if ( status != 0 ) {
-        log_db::info("chlAddAVUMetadata cmlExecuteNoAnswerSql insert failure {}", status);
-        _rollback( "chlAddAVUMetadata" );
-        return ERROR( status, "insert failure" );
-    }
+        namespace gq2 = irods::experimental::genquery2;
+        auto ins_stmt = gq2::builder::insert_into("METADATA_MAP")
+            .set("object_id", std::to_string(objId))
+            .set("meta_id", std::to_string(seqNum))
+            .set("create_ts", myTime)
+            .set("modify_ts", myTime)
+            .build();
+        irods::experimental::catalog::execute_catalog(executor, db_conn, ins_stmt);
 
-    status =  cmlExecuteNoAnswerSql( "commit", &icss );
-    if ( status != 0 ) {
-        log_db::info("chlAddAVUMetadata cmlExecuteNoAnswerSql commit failure {}", status);
-        return ERROR( status, "commit failure" );
+        trans.commit();
+        return SUCCESS();
     }
-
-    return CODE( status );
+    catch (const nanodbc::database_error& e) {
+        log_db::error("{}: database error: {}", __FUNCTION__, e.what());
+        return ERROR( translate_nanodbc_error(e), e.what() );
+    }
+    catch (const std::exception& e) {
+        log_db::error("{}: exception: {}", __FUNCTION__, e.what());
+        return ERROR( SYS_INTERNAL_ERR, e.what() );
+    }
 } // db_add_avu_metadata_op
 
 irods::error db_mod_avu_metadata_op(
@@ -8916,32 +7675,17 @@ irods::error db_del_avu_metadata_op(
         return ERROR( CAT_INVALID_ARGUMENT, "null parameter" );
     }
 
-    // =-=-=-=-=-=-=-
-    // get a postgres object from the context
-    /*irods::postgres_object_ptr pg;
-    ret = make_db_ptr( _ctx.fco(), pg );
-    if ( !ret.ok() ) {
-        return PASS( ret );
-
-    }*/
-
-    // =-=-=-=-=-=-=-
-    // extract the icss property
-//        icatSessionStruct icss;
-//        _ctx.prop_map().get< icatSessionStruct >( ICSS_PROP, icss );
     int itype;
     char logicalEndName[MAX_NAME_LEN];
     char logicalParentDirName[MAX_NAME_LEN];
     rodsLong_t status;
     rodsLong_t objId;
-    char objIdStr[MAX_NAME_LEN];
+    std::string objIdStr;
     int allowNullUnits;
     char userName[NAME_LEN];
     char userZone[NAME_LEN];
 
-    if ( logSQL != 0 ) {
-        log_sql::debug("chlDeleteAVUMetadata");
-    }
+    log_sql::debug("chlDeleteAVUMetadata");
 
     if ( !icss.status ) {
         return ERROR( CATALOG_NOT_CONNECTED, "catalog not connected" );
@@ -8985,14 +7729,16 @@ irods::error db_del_avu_metadata_op(
             snprintf( logicalEndName, sizeof( logicalEndName ), "%s", _name );
         }
 
-        if ( logSQL != 0 ) {
-            log_sql::debug("chlDeleteAVUMetadata SQL 1 ");
-        }
+        log_sql::debug("chlDeleteAVUMetadata SQL 1 ");
 
-        status = cmlCheckDataObjOnly(logicalParentDirName, logicalEndName,
-                                     _ctx.comm()->clientUser.userName,
-                                     _ctx.comm()->clientUser.rodsZone,
-                                     ACCESS_DELETE_METADATA, &icss, admin_mode);
+        auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
+
+        status = irods::experimental::catalog::access_control::check_data_object_only(
+            executor, db_conn,
+            logicalParentDirName, logicalEndName,
+            _ctx.comm()->clientUser.userName,
+            _ctx.comm()->clientUser.rodsZone,
+            ACCESS_DELETE_METADATA, admin_mode);
         if ( status < 0 ) {
             if ( _nocommit != 1 ) {
                 _rollback( "chlDeleteAVUMetadata" );
@@ -9007,24 +7753,24 @@ irods::error db_del_avu_metadata_op(
     if ( itype == 2 ) {
         // Check that the collection exists and user has delete_metadata permission,
         // and get the collectionID.
-        if ( logSQL != 0 ) {
-            log_sql::debug("chlDeleteAVUMetadata SQL 2");
-        }
+        log_sql::debug("chlDeleteAVUMetadata SQL 2");
 
-        status = cmlCheckDir(_name,
-                             _ctx.comm()->clientUser.userName,
-                             _ctx.comm()->clientUser.rodsZone,
-                             ACCESS_DELETE_METADATA, &icss, admin_mode);
+        auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
+
+        status = irods::experimental::catalog::access_control::check_collection_access(
+            executor, db_conn,
+            _name,
+            _ctx.comm()->clientUser.userName,
+            _ctx.comm()->clientUser.rodsZone,
+            ACCESS_DELETE_METADATA, admin_mode);
 
         if ( status < 0 ) {
-            char errMsg[105];
-
             if ( status == CAT_UNKNOWN_COLLECTION ) {
-                snprintf( errMsg, 100, "collection '%s' is unknown", _name );
-                addRErrorMsg( &_ctx.comm()->rError, 0, errMsg );
+                addRErrorMsg( &_ctx.comm()->rError, 0,
+                              fmt::format( "collection '{}' is unknown", _name ).c_str() );
             }
 
-            return ERROR( status, "cmlCheckDir failed" );
+            return ERROR( status, "check_collection_access failed" );
         }
 
         objId = status;
@@ -9041,27 +7787,19 @@ irods::error db_del_avu_metadata_op(
             return PASS( ret );
         }
 
-        objId = 0;
-        if ( logSQL != 0 ) {
-            log_sql::debug("chlDeleteAVUMetadata SQL 3");
+        log_sql::debug("chlDeleteAVUMetadata SQL 3");
+        auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
+
+        auto opt_resc = irods::experimental::catalog::query_catalog_integer(
+            executor, db_conn,
+            gq2::builder::select({"resc_id"})
+                .from("RESOURCE")
+                .where(col("resc_name") == _name && col("zone_name") == zone)
+                .build());
+        if ( !opt_resc ) {
+            return ERROR( CAT_INVALID_RESOURCE, "invalid resource" );
         }
-        {
-            std::vector<std::string> bindVars;
-            bindVars.push_back( _name );
-            bindVars.push_back( zone );
-            status = cmlGetIntegerValueFromSql(
-                         "select resc_id from R_RESC_MAIN where resc_name=? and zone_name=?",
-                         &objId, bindVars, &icss );
-        }
-        if ( status != 0 ) {
-            if ( status == CAT_NO_ROWS_FOUND ) {
-                return ERROR( CAT_INVALID_RESOURCE, "invalid resource" );
-            }
-            if ( _nocommit != 1 ) {
-                _rollback( "chlDeleteAVUMetadata" );
-            }
-            return ERROR( status, "select resc_id failed" );
-        }
+        objId = *opt_resc;
     }
 
     if ( itype == 4 ) {
@@ -9082,27 +7820,20 @@ irods::error db_del_avu_metadata_op(
             snprintf( userZone, sizeof( userZone ), "%s", zone.c_str() );
         }
 
-        objId = 0;
-        if ( logSQL != 0 ) {
-            log_sql::debug("chlDeleteAVUMetadata SQL 4");
+        log_sql::debug("chlDeleteAVUMetadata SQL 4");
+        auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
+
+        auto opt_user = irods::experimental::catalog::query_catalog_integer(
+            executor,
+            db_conn,
+            gq2::builder::select({"user_id"})
+                .from("USER")
+                .where(col("user_name") == userName && col("zone_name") == userZone)
+                .build());
+        if ( !opt_user ) {
+            return ERROR( CAT_INVALID_USER, "invalid user" );
         }
-        {
-            std::vector<std::string> bindVars;
-            bindVars.push_back( userName );
-            bindVars.push_back( userZone );
-            status = cmlGetIntegerValueFromSql(
-                         "select user_id from R_USER_MAIN where user_name=? and zone_name=?",
-                         &objId, bindVars, &icss );
-        }
-        if ( status != 0 ) {
-            if ( status == CAT_NO_ROWS_FOUND ) {
-                return ERROR( CAT_INVALID_USER, "invalid user" );
-            }
-            if ( _nocommit != 1 ) {
-                _rollback( "chlDeleteAVUMetadata" );
-            }
-            return ERROR( status, "select user_id failed" );
-        }
+        objId = *opt_user;
     }
 
     if ( itype == 5 ) {
@@ -9116,63 +7847,54 @@ irods::error db_del_avu_metadata_op(
             return PASS( ret );
         }
 
-        objId = 0;
-        if ( logSQL != 0 ) {
-            log_sql::debug("chlDeleteAVUMetadata SQL 5");
+        log_sql::debug("chlDeleteAVUMetadata SQL 5");
+        auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
+
+        auto opt_group = irods::experimental::catalog::query_catalog_integer(
+            executor, db_conn,
+            gq2::builder::select({"resc_group_id"})
+                .from("RESOURCE_GROUP")
+                .where(col("resc_group_name") == _name)
+                .build());
+        if ( !opt_group ) {
+            return ERROR( CAT_INVALID_RESOURCE, "invalid resource" );
         }
-        {
-            std::vector<std::string> bindVars;
-            bindVars.push_back( _name );
-            status = cmlGetIntegerValueFromSql(
-                         "select resc_group_id from R_RESC_GROUP where resc_group_name=?",
-                         &objId, bindVars, &icss );
-        }
-        if ( status != 0 ) {
-            if ( status == CAT_NO_ROWS_FOUND ) {
-                return ERROR( CAT_INVALID_RESOURCE, "invalid resource" );
-            }
-            if ( _nocommit != 1 ) {
-                _rollback( "chlDeleteAVUMetadata" );
-            }
-            return ERROR( status, "select failure" );
-        }
+        objId = *opt_group;
     }
 
 
-    snprintf( objIdStr, MAX_NAME_LEN, "%lld", objId );
+    objIdStr = std::to_string( objId );
     if ( _option == 2 ) {
-        cllBindVars[cllBindVarCount++] = objIdStr;
-        cllBindVars[cllBindVarCount++] = _attribute; /* attribute is really id */
+        try {
+            auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
+            std::unique_ptr<nanodbc::transaction> trans;
+            if (_nocommit != 1) {
+                trans = std::make_unique<nanodbc::transaction>(db_conn);
+            }
 
-        if ( logSQL != 0 ) {
+
             log_sql::debug("chlDeleteAVUMetadata SQL 9");
-        }
-        status =  cmlExecuteNoAnswerSql(
-                      "delete from R_OBJT_METAMAP where object_id=? and meta_id =?",
-                      &icss );
-        if ( status != 0 ) {
-            log_db::info("chlDeleteAVUMetadata cmlExecuteNoAnswerSql delete failure {}", status);
-            if ( _nocommit != 1 ) {
-                _rollback( "chlDeleteAVUMetadata" );
-            }
+            namespace gq2 = irods::experimental::genquery2;
+            using gq2::builder::col;
+            auto del_stmt = gq2::builder::remove_from("METADATA_MAP")
+                .where(col("object_id") == objIdStr && col("meta_id") == (_attribute ? _attribute : ""))
+                .build();
+            irods::experimental::catalog::execute_catalog(executor, db_conn, del_stmt);
 
-            return ERROR( status, "delete failure" );
-        }
-
-        if ( _nocommit != 1 ) {
-            status =  cmlExecuteNoAnswerSql( "commit", &icss );
-            if ( status != 0 ) {
-                log_db::info("chlDeleteAVUMetadata cmlExecuteNoAnswerSql commit failure {}", status);
-                return ERROR( status, "commit failure" );
+            if (trans) {
+                trans->commit();
             }
+            return SUCCESS();
         }
-        return ERROR( status, "delete failure" );
+        catch (const nanodbc::database_error& e) {
+            log_db::error("{}: database error: {}", __FUNCTION__, e.what());
+            return ERROR( CAT_SQL_ERR, e.what() );
+        }
+        catch (const std::exception& e) {
+            log_db::error("{}: exception: {}", __FUNCTION__, e.what());
+            return ERROR( SYS_INTERNAL_ERR, e.what() );
+        }
     }
-
-    cllBindVars[cllBindVarCount++] = objIdStr;
-    cllBindVars[cllBindVarCount++] = _attribute;
-    cllBindVars[cllBindVarCount++] = _value;
-    cllBindVars[cllBindVarCount++] = _unit;
 
     allowNullUnits = 0;
     if ( *_unit == '\0' ) {
@@ -9182,59 +7904,69 @@ irods::error db_del_avu_metadata_op(
         allowNullUnits = 1; /* wildcard and just % */
     }
 
-    if ( allowNullUnits ) {
-        if ( _option == 1 ) { /* use wildcards ('like') */
-            if ( logSQL != 0 ) {
-                log_sql::debug("chlDeleteAVUMetadata SQL 5");
+    try {
+        auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
+        std::unique_ptr<nanodbc::transaction> trans;
+        if (_nocommit != 1) {
+            trans = std::make_unique<nanodbc::transaction>(db_conn);
+        }
+
+
+        namespace gq2 = irods::experimental::genquery2;
+        using gq2::builder::col;
+
+        const std::string attr = _attribute ? _attribute : "";
+        const std::string val = _value ? _value : "";
+        const std::string unit = _unit ? _unit : "";
+
+        gq2::builder::condition_builder cond = (_option == 1)
+            ? (col("meta_attr_name").like(attr) && col("meta_attr_value").like(val))
+            : (col("meta_attr_name") == attr && col("meta_attr_value") == val);
+
+        if ( allowNullUnits ) {
+            if ( _option == 1 ) {
+                cond = cond && (col("meta_attr_unit").like(unit) || col("meta_attr_unit").is_null());
             }
-            status =  cmlExecuteNoAnswerSql(
-                          "delete from R_OBJT_METAMAP where object_id=? and meta_id IN (select meta_id from R_META_MAIN where meta_attr_name like ? and meta_attr_value like ? and (meta_attr_unit like ? or meta_attr_unit IS NULL) )",
-                          &icss );
+            else {
+                cond = cond && (col("meta_attr_unit") == unit || col("meta_attr_unit").is_null());
+            }
         }
         else {
-            if ( logSQL != 0 ) {
-                log_sql::debug("chlDeleteAVUMetadata SQL 6");
+            if ( _option == 1 ) {
+                cond = cond && col("meta_attr_unit").like(unit);
             }
-            status =  cmlExecuteNoAnswerSql(
-                          "delete from R_OBJT_METAMAP where object_id=? and meta_id IN (select meta_id from R_META_MAIN where meta_attr_name = ? and meta_attr_value = ? and (meta_attr_unit = ? or meta_attr_unit IS NULL) )",
-                          &icss );
-        }
-    }
-    else {
-        if ( _option == 1 ) { /* use wildcards ('like') */
-            if ( logSQL != 0 ) {
-                log_sql::debug("chlDeleteAVUMetadata SQL 7");
+            else {
+                cond = cond && col("meta_attr_unit") == unit;
             }
-            status =  cmlExecuteNoAnswerSql(
-                          "delete from R_OBJT_METAMAP where object_id=? and meta_id IN (select meta_id from R_META_MAIN where meta_attr_name like ? and meta_attr_value like ? and meta_attr_unit like ?)",
-                          &icss );
         }
-        else {
-            if ( logSQL != 0 ) {
-                log_sql::debug("chlDeleteAVUMetadata SQL 8");
-            }
-            status =  cmlExecuteNoAnswerSql(
-                          "delete from R_OBJT_METAMAP where object_id=? and meta_id IN (select meta_id from R_META_MAIN where meta_attr_name = ? and meta_attr_value = ? and meta_attr_unit = ?)",
-                          &icss );
-        }
-    }
-    if ( status != 0 ) {
-        log_db::info("chlDeleteAVUMetadata cmlExecuteNoAnswerSql delete failure {}", status);
-        if ( _nocommit != 1 ) {
-            _rollback( "chlDeleteAVUMetadata" );
-        }
-        return ERROR( status, "delete failure" );
-    }
 
-    if ( _nocommit != 1 ) {
-        status =  cmlExecuteNoAnswerSql( "commit", &icss );
-        if ( status != 0 ) {
-            log_db::info("chlDeleteAVUMetadata cmlExecuteNoAnswerSql commit failure {}", status);
-            return ERROR( status, "commit failure" );
-        }
-    }
+        auto meta_ids = irods::experimental::catalog::query_catalog_strings(
+            executor, db_conn,
+            gq2::builder::select({"meta_id"})
+                .from("METADATA")
+                .where(std::move(cond))
+                .build());
 
-    return CODE( status );
+        for (const auto& mid : meta_ids) {
+            auto del = gq2::builder::remove_from("METADATA_MAP")
+                .where(col("object_id") == objIdStr && col("meta_id") == mid)
+                .build();
+            irods::experimental::catalog::execute_catalog(executor, db_conn, del);
+        }
+
+        if (trans) {
+            trans->commit();
+        }
+        return SUCCESS();
+    }
+    catch (const nanodbc::database_error& e) {
+        log_db::error("{}: database error: {}", __FUNCTION__, e.what());
+        return ERROR( CAT_SQL_ERR, e.what() );
+    }
+    catch (const std::exception& e) {
+        log_db::error("{}: exception: {}", __FUNCTION__, e.what());
+        return ERROR( SYS_INTERNAL_ERR, e.what() );
+    }
 } // db_del_avu_metadata_op
 
 irods::error db_copy_avu_metadata_op(
@@ -9259,14 +7991,9 @@ irods::error db_copy_avu_metadata_op(
     }
 
     char myTime[50];
-    int status;
     rodsLong_t objId1, objId2;
-    char objIdStr1[MAX_NAME_LEN];
-    char objIdStr2[MAX_NAME_LEN];
 
-    if ( logSQL != 0 ) {
-        log_sql::debug("chlCopyAVUMetadata");
-    }
+    log_sql::debug("chlCopyAVUMetadata");
 
     if ( !icss.status ) {
         return ERROR( CATALOG_NOT_CONNECTED, "catalog not connected" );
@@ -9278,50 +8005,60 @@ irods::error db_copy_avu_metadata_op(
         return ERROR(CAT_INSUFFICIENT_PRIVILEGE_LEVEL, "Insufficient privileges");
     }
 
-    if ( logSQL != 0 ) {
-        log_sql::debug("chlCopyAVUMetadata SQL 1 ");
-    }
+    log_sql::debug("chlCopyAVUMetadata SQL 1 ");
     objId1 = checkAndGetObjectId(_ctx.comm(), _ctx.prop_map(), _type1, _name1, ACCESS_READ_METADATA, admin_mode);
     if ( objId1 < 0 ) {
         return ERROR( objId1, "checkAndGetObjectId failure" );
     }
 
-    if ( logSQL != 0 ) {
-        log_sql::debug("chlCopyAVUMetadata SQL 2");
-    }
+    log_sql::debug("chlCopyAVUMetadata SQL 2");
     objId2 = checkAndGetObjectId(_ctx.comm(), _ctx.prop_map(), _type2, _name2, ACCESS_CREATE_METADATA, admin_mode);
     if ( objId2 < 0 ) {
         return ERROR( objId2, "checkAndGetObjectId failure" );
     }
 
-    snprintf( objIdStr1, MAX_NAME_LEN, "%lld", objId1 );
-    snprintf( objIdStr2, MAX_NAME_LEN, "%lld", objId2 );
-
     getNowStr( myTime );
-    cllBindVars[cllBindVarCount++] = objIdStr2;
-    cllBindVars[cllBindVarCount++] = myTime;
-    cllBindVars[cllBindVarCount++] = myTime;
-    cllBindVars[cllBindVarCount++] = objIdStr1;
-    if ( logSQL != 0 ) {
+    try {
+        auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
+        nanodbc::transaction trans{db_conn};
+
         log_sql::debug("chlCopyAVUMetadata SQL 3");
+        namespace gq2 = irods::experimental::genquery2;
+        using gq2::builder::col;
+
+        const std::string obj1_str = std::to_string(objId1);
+        const std::string obj2_str = std::to_string(objId2);
+
+        auto meta_ids = irods::experimental::catalog::query_catalog_strings(
+            executor, db_conn,
+            gq2::builder::select({"meta_id"})
+                .from("METADATA_MAP")
+                .where(col("object_id") == obj1_str)
+                .build());
+
+        for (const auto& mid : meta_ids) {
+            auto ins = gq2::builder::insert_into("METADATA_MAP")
+                .set("object_id", obj2_str)
+                .set("meta_id", mid)
+                .set("create_ts", myTime)
+                .set("modify_ts", myTime)
+                .build();
+            irods::experimental::catalog::execute_catalog(executor, db_conn, ins);
+        }
+
+        trans.commit();
+        return SUCCESS();
     }
-    status = cmlExecuteNoAnswerSql(
-                  "insert into R_OBJT_METAMAP (object_id, meta_id, create_ts, modify_ts) "
-                  "select ?, meta_id, ?, ? from R_OBJT_METAMAP where object_id=?",
-                  &icss );
-    if ( status != 0 ) {
-        log_db::info("chlCopyAVUMetadata cmlExecuteNoAnswerSql insert failure {}", status);
+    catch (const nanodbc::database_error& e) {
+        log_db::error("{}: database error: {}", __FUNCTION__, e.what());
         _rollback( "chlCopyAVUMetadata" );
-        return ERROR( status, "insert failure" );
+        return ERROR( translate_nanodbc_error(e), e.what() );
     }
-
-    status =  cmlExecuteNoAnswerSql( "commit", &icss );
-    if ( status != 0 ) {
-        log_db::info("chlCopyAVUMetadata cmlExecuteNoAnswerSql commit failure {}", status);
-        return ERROR( status, "commit failure" );
+    catch (const std::exception& e) {
+        log_db::error("{}: exception: {}", __FUNCTION__, e.what());
+        _rollback( "chlCopyAVUMetadata" );
+        return ERROR( SYS_INTERNAL_ERR, e.what() );
     }
-
-    return CODE( status );
 } // db_copy_avu_metadata_op
 
 irods::error db_mod_access_control_resc_op(
@@ -9337,158 +8074,121 @@ irods::error db_mod_access_control_resc_op(
         return PASS( ret );
     }
 
-    // =-=-=-=-=-=-=-
-    // get a postgres object from the context
-    /*irods::postgres_object_ptr pg;
-    ret = make_db_ptr( _ctx.fco(), pg );
-    if ( !ret.ok() ) {
-        return PASS( ret );
+    if ( !_access_level || !_user_name || !_resc_name ) {
+        return ERROR( CAT_INVALID_ARGUMENT, "null parameter" );
+    }
 
-    }*/
+    const std::string myAccessStr = _access_level + strlen( MOD_RESC_PREFIX );
 
-    // =-=-=-=-=-=-=-
-    // extract the icss property
-//        icatSessionStruct icss;
-//        _ctx.prop_map().get< icatSessionStruct >( ICSS_PROP, icss );
-    char myAccessStr[LONG_NAME_LEN];
-    char rescIdStr[MAX_NAME_LEN];
-    char *myAccessLev = NULL;
+    const char* myAccessLev = nullptr;
     int rmFlag = 0;
-    rodsLong_t status;
-    const char *myZone;
-    rodsLong_t userId;
-    char userIdStr[MAX_NAME_LEN];
-    char myTime[50];
-    rodsLong_t iVal;
-
-    snprintf( myAccessStr, sizeof( myAccessStr ), "%s", _access_level + strlen( MOD_RESC_PREFIX ) );
-
-    if ( strcmp( myAccessStr, AP_NULL ) == 0 ) {
+    if ( myAccessStr == AP_NULL ) {
         myAccessLev = ACCESS_NULL;
         rmFlag = 1;
     }
-    else if ( strcmp( myAccessStr, AP_READ ) == 0 ) {
+    else if ( myAccessStr == AP_READ ) {
         myAccessLev = ACCESS_READ_OBJECT;
     }
-    else if ( strcmp( myAccessStr, AP_WRITE ) == 0 ) {
+    else if ( myAccessStr == AP_WRITE ) {
         myAccessLev = ACCESS_MODIFY_OBJECT;
     }
-    else if ( strcmp( myAccessStr, AP_OWN ) == 0 ) {
+    else if ( myAccessStr == AP_OWN ) {
         myAccessLev = ACCESS_OWN;
     }
     else {
-        char errMsg[105];
-        snprintf( errMsg, 100, "access level '%s' is invalid for a resource",
-                  myAccessStr );
-        addRErrorMsg( &_ctx.comm()->rError, 0, errMsg );
+        addRErrorMsg( &_ctx.comm()->rError, 0,
+                      fmt::format( "access level '{}' is invalid for a resource", myAccessStr ).c_str() );
         return ERROR( CAT_INVALID_ARGUMENT, "invalid argument" );
     }
 
-    if ( _ctx.comm()->clientUser.authInfo.authFlag >= LOCAL_PRIV_USER_AUTH ) {
-        /* admin, so just get the resc_id */
-        if ( logSQL != 0 ) {
-            log_sql::debug("chlModAccessControlResc SQL 1");
-        }
-        {
-            std::vector<std::string> bindVars;
-            bindVars.push_back( _resc_name );
-            status = cmlGetIntegerValueFromSql(
-                         "select resc_id from R_RESC_MAIN where resc_name=?",
-                         &iVal, bindVars, &icss );
-        }
-        if ( status == CAT_NO_ROWS_FOUND ) {
-            return ERROR( CAT_UNKNOWN_RESOURCE, "unknown resource" );
-        }
-        if ( status < 0 ) {
-            return ERROR( status, "select resc_id failure" );
-        }
-        status = iVal;
-    }
-    else {
-        status = cmlCheckResc( _resc_name,
-                               _ctx.comm()->clientUser.userName,
-                               _ctx.comm()->clientUser.rodsZone,
-                               ACCESS_OWN,
-                               &icss );
-        if ( status < 0 ) {
-            return ERROR( status, "cmlCheckResc error" );
-        }
-    }
-    snprintf( rescIdStr, MAX_NAME_LEN, "%lld", status );
-
-    /* Check that the receiving user exists and if so get the userId */
     std::string zone;
     ret = getLocalZone( _ctx.prop_map(), &icss, zone );
     if ( !ret.ok() ) {
         return PASS( ret );
     }
 
-    myZone = _zone;
-    if ( _zone == NULL || strlen( _zone ) == 0 ) {
-        myZone = zone.c_str();
-    }
+    const std::string my_zone = (_zone == nullptr || strlen(_zone) == 0) ? zone : _zone;
 
-    userId = 0;
-    if ( logSQL != 0 ) {
-        log_sql::debug("chlModAccessControlResc SQL 2");
-    }
-    {
-        std::vector<std::string> bindVars;
-        bindVars.push_back( _user_name );
-        bindVars.push_back( myZone );
-        status = cmlGetIntegerValueFromSql(
-                     "select user_id from R_USER_MAIN where user_name=? and R_USER_MAIN.zone_name=?",
-                     &userId, bindVars, &icss );
-    }
-    if ( status != 0 ) {
-        if ( status == CAT_NO_ROWS_FOUND ) {
+    try {
+        auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
+        nanodbc::transaction trans{db_conn};
+
+        int64_t resc_id = 0;
+        if ( _ctx.comm()->clientUser.authInfo.authFlag >= LOCAL_PRIV_USER_AUTH ) {
+            auto resc_id_opt = irods::experimental::catalog::query_catalog_integer(
+                executor, db_conn,
+                gq2::builder::select({"resc_id"}).from("RESOURCE").where(col("resc_name") == _resc_name).build());
+            if ( !resc_id_opt.has_value() ) {
+                return ERROR( CAT_UNKNOWN_RESOURCE, "unknown resource" );
+            }
+            resc_id = *resc_id_opt;
+        }
+        else {
+            auto access_status = irods::experimental::catalog::access_control::check_resource_access(
+                executor, db_conn, _resc_name,
+                _ctx.comm()->clientUser.userName,
+                _ctx.comm()->clientUser.rodsZone,
+                ACCESS_OWN);
+            if ( access_status < 0 ) {
+                return ERROR( access_status, "check_resource_access error" );
+            }
+            resc_id = access_status;
+        }
+
+        const std::string resc_id_str = std::to_string( resc_id );
+
+        auto user_id_opt = irods::experimental::catalog::query_catalog_integer(
+            executor,
+            db_conn,
+            gq2::builder::select({"user_id"})
+                .from("USER")
+                .where(col("user_name") == _user_name && col("zone_name") == my_zone)
+                .build());
+        if ( !user_id_opt.has_value() ) {
             return ERROR( CAT_INVALID_USER, "invalid user" );
         }
-        return ERROR( status, "select user_id failure" );
-    }
+        const std::string user_id_str = std::to_string( *user_id_opt );
 
-    snprintf( userIdStr, MAX_NAME_LEN, "%lld", userId );
+        namespace gq2 = irods::experimental::genquery2;
+        using gq2::builder::col;
 
-    /* remove any access permissions */
-    cllBindVars[cllBindVarCount++] = userIdStr;
-    cllBindVars[cllBindVarCount++] = rescIdStr;
-    if ( logSQL != 0 ) {
-        log_sql::debug("chlModAccessControlResc SQL 3");
-    }
-    status =  cmlExecuteNoAnswerSql(
-                  "delete from R_OBJT_ACCESS where user_id=? and object_id=?",
-                  &icss );
-    if ( status != 0 && status != CAT_SUCCESS_BUT_WITH_NO_INFO ) {
-        return ERROR( status, "delete failure" );
-    }
+        auto del_stmt = gq2::builder::remove_from("ACCESS")
+            .where(col("user_id") == user_id_str && col("object_id") == resc_id_str)
+            .build();
+        irods::experimental::catalog::execute_catalog(executor, db_conn, del_stmt);
 
-    /* If not just removing, add the new value */
-    if ( rmFlag == 0 ) {
-        getNowStr( myTime );
-        cllBindVars[cllBindVarCount++] = rescIdStr;
-        cllBindVars[cllBindVarCount++] = userIdStr;
-        cllBindVars[cllBindVarCount++] = myAccessLev;
-        cllBindVars[cllBindVarCount++] = myTime;
-        cllBindVars[cllBindVarCount++] = myTime;
-        if ( logSQL != 0 ) {
-            log_sql::debug("chlModAccessControlResc SQL 4");
+        if ( rmFlag == 0 ) {
+            char myTime[50];
+            getNowStr( myTime );
+            const auto opt_token_id = irods::experimental::catalog::query_catalog_integer(
+                executor, db_conn,
+                gq2::builder::select({"token_id"})
+                    .from("TOKEN")
+                    .where(col("token_namespace") == "access_type" && col("token_name") == myAccessLev)
+                    .build());
+            if (opt_token_id) {
+                auto ins_stmt = gq2::builder::insert_into("ACCESS")
+                    .set("object_id", resc_id_str)
+                    .set("user_id", user_id_str)
+                    .set("access_type_id", std::to_string(*opt_token_id))
+                    .set("create_ts", myTime)
+                    .set("modify_ts", myTime)
+                    .build();
+                irods::experimental::catalog::execute_catalog(executor, db_conn, ins_stmt);
+            }
         }
-        status =  cmlExecuteNoAnswerSql(
-                      "insert into R_OBJT_ACCESS (object_id, user_id, access_type_id, create_ts, modify_ts)  values (?, ?, (select token_id from R_TOKN_MAIN where token_namespace = 'access_type' and token_name = ?), ?, ?)",
-                      &icss );
-        if ( status != 0 ) {
-            _rollback( "chlModAccessControlResc" );
-            return ERROR( status, "insert failure" );
-        }
+
+        trans.commit();
+        return SUCCESS();
     }
-
-    status =  cmlExecuteNoAnswerSql( "commit", &icss );
-    if ( status < 0 ) {
-        return ERROR( status, "commit failure" );
+    catch (const nanodbc::database_error& e) {
+        log_db::error("{}: database error: {}", __FUNCTION__, e.what());
+        return ERROR( CAT_SQL_ERR, e.what() );
     }
-
-    return SUCCESS();
-
+    catch (const std::exception& e) {
+        log_db::error("{}: exception: {}", __FUNCTION__, e.what());
+        return ERROR( SYS_INTERNAL_ERR, e.what() );
+    }
 } // db_mod_access_control_resc_op
 
 irods::error db_mod_access_control_op(
@@ -9504,9 +8204,7 @@ irods::error db_mod_access_control_op(
         return PASS( ret );
     }
 
-    if ( logSQL != 0 ) {
-        log_sql::debug("chlModAccessControl");
-    }
+    log_sql::debug("chlModAccessControl");
 
     if ( strncmp( _access_level, MOD_RESC_PREFIX, strlen( MOD_RESC_PREFIX ) ) == 0 ) {
         ret = db_mod_access_control_resc_op(
@@ -9577,9 +8275,8 @@ irods::error db_mod_access_control_op(
             }
         }
         if (myAccessLev == NULL) {
-            char errMsg[105];
-            snprintf(errMsg, 100, "access level '%s' is invalid", _access_level);
-            addRErrorMsg(&_ctx.comm()->rError, 0, errMsg);
+            const auto errMsg = fmt::format("access level '{}' is invalid", _access_level);
+            addRErrorMsg(&_ctx.comm()->rError, 0, errMsg.c_str());
             return ERROR(CAT_INVALID_ARGUMENT, errMsg);
         }
     }
@@ -9588,48 +8285,45 @@ irods::error db_mod_access_control_op(
         return ERROR( CATALOG_NOT_CONNECTED, "catalog not connected" );
     }
 
+    auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
+
     int status1;
     if ( adminMode ) {
         /* See if the input path is a collection
            and, if so, get the collectionID */
-        if ( logSQL != 0 ) {
-            log_sql::debug("chlModAccessControl SQL 14");
+        log_sql::debug("chlModAccessControl SQL 14");
+        auto opt_coll_id = irods::experimental::catalog::query_catalog_integer(
+            executor,
+            db_conn,
+            gq2::builder::select({"coll_id"})
+                .from("COLLECTION")
+                .where(col("coll_name") == _path_name)
+                .build());
+        if ( !opt_coll_id ) {
+            status1 = CAT_UNKNOWN_COLLECTION;
         }
-        {
-            rodsLong_t iVal = 0;
-            std::vector<std::string> bindVars;
-            bindVars.push_back( _path_name );
-            status1 = cmlGetIntegerValueFromSql(
-                          "select coll_id from R_COLL_MAIN where coll_name=?",
-                          &iVal, bindVars, &icss );
-            if ( status1 == CAT_NO_ROWS_FOUND ) {
-                status1 = CAT_UNKNOWN_COLLECTION;
-            }
-            else if ( status1 == 0 ) {
-                status1 = iVal;
-            }
+        else {
+            status1 = *opt_coll_id;
         }
     }
     else {
         /* See if the input path is a collection and the user owns it,
            and, if so, get the collectionID */
-        if ( logSQL != 0 ) {
-            log_sql::debug("chlModAccessControl SQL 1 ");
-        }
-        status1 = cmlCheckDir( _path_name,
-                               _ctx.comm()->clientUser.userName,
-                               _ctx.comm()->clientUser.rodsZone,
-                               ACCESS_OWN,
-                               &icss );
+        log_sql::debug("chlModAccessControl SQL 1 ");
+        status1 = irods::experimental::catalog::access_control::check_collection_access(
+            executor, db_conn,
+            _path_name,
+            _ctx.comm()->clientUser.userName,
+            _ctx.comm()->clientUser.rodsZone,
+            ACCESS_OWN );
     }
-    char collIdStr[MAX_NAME_LEN];
+    std::string collIdStr;
     if ( status1 >= 0 ) {
-        snprintf( collIdStr, MAX_NAME_LEN, "%d", status1 );
+        collIdStr = std::to_string( status1 );
     }
 
     if ( status1 < 0 && inheritFlag != 0 ) {
-        char errMsg[105];
-        snprintf( errMsg, 100, "either the collection does not exist or you do not have sufficient access" );
+        constexpr auto errMsg = "either the collection does not exist or you do not have sufficient access";
         addRErrorMsg( &_ctx.comm()->rError, 0, errMsg );
         return ERROR( CAT_NO_ACCESS_PERMISSION, errMsg );
     }
@@ -9653,48 +8347,50 @@ irods::error db_mod_access_control_op(
 
         int status2 = 0;
         if ( adminMode ) {
-            if ( logSQL != 0 ) {
-                log_sql::debug("chlModAccessControl SQL 15");
+            log_sql::debug("chlModAccessControl SQL 15");
+            const auto opt_parent_id = irods::experimental::catalog::query_catalog_integer(
+                executor,
+                db_conn,
+                gq2::builder::select({"coll_id"})
+                    .from("COLLECTION")
+                    .where(col("coll_name") == logicalParentDirName)
+                    .build());
+            std::optional<int64_t> opt_data_id;
+            if (opt_parent_id) {
+                opt_data_id = irods::experimental::catalog::query_catalog_integer(
+                    executor,
+                    db_conn,
+                    gq2::builder::select({"data_id"})
+                        .from("DATA_OBJECT")
+                        .where(col("data_name") == logicalEndName && col("coll_id") == std::to_string(*opt_parent_id))
+                        .build());
             }
-            {
-                rodsLong_t iVal = 0;
-                std::vector<std::string> bindVars;
-                bindVars.push_back( logicalEndName );
-                bindVars.push_back( logicalParentDirName );
-                status2 = cmlGetIntegerValueFromSql(
-                              "select data_id from R_DATA_MAIN DM, R_COLL_MAIN CM where DM.data_name=? and DM.coll_id=CM.coll_id and CM.coll_name=?",
-                              &iVal, bindVars, &icss );
-                if ( status2 == CAT_NO_ROWS_FOUND ) {
-                    status2 = CAT_UNKNOWN_FILE;
-                }
-                if ( status2 == 0 ) {
-                    status2 = iVal;
-                }
+            if ( !opt_data_id ) {
+                status2 = CAT_UNKNOWN_FILE;
+            }
+            else {
+                status2 = *opt_data_id;
             }
         }
         else {
             /* Not a collection with access, so see if the input path dataObj
                exists and the user owns it, and, if so, get the objectID */
-            if ( logSQL != 0 ) {
-                log_sql::debug("chlModAccessControl SQL 2");
-            }
-            status2 = cmlCheckDataObjOnly( logicalParentDirName, logicalEndName,
-                                           _ctx.comm()->clientUser.userName,
-                                           _ctx.comm()->clientUser.rodsZone,
-                                           ACCESS_OWN, &icss );
+            log_sql::debug("chlModAccessControl SQL 2");
+            status2 = irods::experimental::catalog::access_control::check_data_object_only(
+                executor, db_conn,
+                logicalParentDirName, logicalEndName,
+                _ctx.comm()->clientUser.userName,
+                _ctx.comm()->clientUser.rodsZone,
+                ACCESS_OWN );
         }
         if ( status2 > 0 ) {
             objId = status2;
         }
         /* If both failed, it doesn't exist or there's no permission */
         else if ( status2 < 0 ) {
-            char errMsg[205];
-
             if ( status1 == CAT_UNKNOWN_COLLECTION && status2 == CAT_UNKNOWN_FILE ) {
-                snprintf( errMsg, 200,
-                          "Input path is not a collection and not a dataObj: %s",
-                          _path_name );
-                addRErrorMsg( &_ctx.comm()->rError, 0, errMsg );
+                addRErrorMsg( &_ctx.comm()->rError, 0,
+                              fmt::format( "Input path is not a collection and not a dataObj: {}", _path_name ).c_str() );
                 return ERROR( CAT_INVALID_ARGUMENT, "unknown collection or file" );
             }
             if ( status1 != CAT_UNKNOWN_COLLECTION ) {
@@ -9715,7 +8411,7 @@ irods::error db_mod_access_control_op(
                             _path_name));
                 }
                 else {
-                    return ERROR( status2, "cmlCheckDataObjOnly failed" );
+                    return ERROR( status2, "check_data_object_only failed" );
                 }
             }
         }
@@ -9723,8 +8419,11 @@ irods::error db_mod_access_control_op(
 
     /* Doing inheritance */
     if ( inheritFlag != 0 ) {
-        int status = _modInheritance( inheritFlag, _recursive_flag, collIdStr, _path_name );
-        return ERROR( status, "_modInheritance failed" );
+        const int status = _modInheritance( inheritFlag, _recursive_flag, collIdStr.c_str(), _path_name );
+        if ( status != 0 ) {
+            return ERROR( status, "_modInheritance failed" );
+        }
+        return SUCCESS();
     }
 
     /* Check that the receiving user exists and if so get the userId */
@@ -9737,316 +8436,203 @@ irods::error db_mod_access_control_op(
     const char *myZone = ( _zone && strlen( _zone ) != 0 ) ? _zone : zone.c_str();
 
     rodsLong_t userId = 0;
-    if ( logSQL != 0 ) {
-        log_sql::debug("chlModAccessControl SQL 3");
-    }
+    log_sql::debug("chlModAccessControl SQL 3");
     {
-        std::vector<std::string> bindVars;
-        bindVars.push_back( _user_name );
-        bindVars.push_back( myZone );
-        int status = cmlGetIntegerValueFromSql(
-                         "select user_id from R_USER_MAIN where user_name=? and R_USER_MAIN.zone_name=?",
-                         &userId, bindVars, &icss );
-        if ( status != 0 ) {
-            if ( status == CAT_NO_ROWS_FOUND ) {
-                return ERROR( CAT_INVALID_USER, "invalid user" );
-            }
-            return ERROR( status, "select user_id failure" );
+        auto opt_user_id = irods::experimental::catalog::query_catalog_integer(
+            executor,
+            db_conn,
+            gq2::builder::select({"user_id"})
+                .from("USER")
+                .where(col("user_name") == _user_name && col("zone_name") == myZone)
+                .build());
+        if ( !opt_user_id ) {
+            return ERROR( CAT_INVALID_USER, "invalid user" );
         }
+        userId = *opt_user_id;
     }
 
-    char userIdStr[MAX_NAME_LEN];
-    snprintf( userIdStr, sizeof( userIdStr ), "%lld", userId );
-
-    char objIdStr[MAX_NAME_LEN];
-    snprintf( objIdStr, sizeof( objIdStr ), "%lld", objId );
+    const auto userIdStr = std::to_string( userId );
+    const auto objIdStr = std::to_string( objId );
 
     log_db::debug("recursiveFlag {}", _recursive_flag);
 
     /* non-Recursive mode */
     if ( _recursive_flag == 0 ) {
+        try {
+            nanodbc::transaction trans{db_conn};
+            namespace gq2 = irods::experimental::genquery2;
+            using gq2::builder::col;
 
-        /* doing a dataObj */
-        if ( objId ) {
-            cllBindVars[cllBindVarCount++] = userIdStr;
-            cllBindVars[cllBindVarCount++] = objIdStr;
-            if ( logSQL != 0 ) {
+            /* doing a dataObj */
+            if ( objId ) {
                 log_sql::debug("chlModAccessControl SQL 4");
+                auto del_stmt = gq2::builder::remove_from("ACCESS")
+                    .where(col("user_id") == userIdStr && col("object_id") == objIdStr)
+                    .build();
+                irods::experimental::catalog::execute_catalog(executor, db_conn, del_stmt);
+
+                if ( rmFlag == 0 ) { /* if not just removing: */
+                    char myTime[50];
+                    getNowStr( myTime );
+                    log_sql::debug("chlModAccessControl SQL 5");
+                    const auto opt_token_id = irods::experimental::catalog::query_catalog_integer(
+                        executor, db_conn,
+                        gq2::builder::select({"token_id"})
+                            .from("TOKEN")
+                            .where(col("token_namespace") == "access_type" && col("token_name") == myAccessLev)
+                            .build());
+                    if (opt_token_id) {
+                        auto ins_stmt = gq2::builder::insert_into("ACCESS")
+                            .set("object_id", objIdStr)
+                            .set("user_id", userIdStr)
+                            .set("access_type_id", std::to_string(*opt_token_id))
+                            .set("create_ts", myTime)
+                            .set("modify_ts", myTime)
+                            .build();
+                        irods::experimental::catalog::execute_catalog(executor, db_conn, ins_stmt);
+                    }
+                }
+
+                trans.commit();
+                return SUCCESS();
             }
-            int status = cmlExecuteNoAnswerSql(
-                             "delete from R_OBJT_ACCESS where user_id=? and object_id=?",
-                             &icss );
-            if ( status != 0 && status != CAT_SUCCESS_BUT_WITH_NO_INFO ) {
-                return ERROR( status, "delete failure" );
-            }
-            if ( rmFlag == 0 ) { /* if not just removing: */
+
+            /* doing a collection, non-recursive */
+            log_sql::debug("chlModAccessControl SQL 6");
+            auto del_stmt = gq2::builder::remove_from("ACCESS")
+                .where(col("user_id") == userIdStr && col("object_id") == collIdStr)
+                .build();
+            irods::experimental::catalog::execute_catalog(executor, db_conn, del_stmt);
+
+            if ( rmFlag == 0 ) {
                 char myTime[50];
                 getNowStr( myTime );
-                cllBindVars[cllBindVarCount++] = objIdStr;
-                cllBindVars[cllBindVarCount++] = userIdStr;
-                cllBindVars[cllBindVarCount++] = myAccessLev;
-                cllBindVars[cllBindVarCount++] = myTime;
-                cllBindVars[cllBindVarCount++] = myTime;
-                if ( logSQL != 0 ) {
-                    log_sql::debug("chlModAccessControl SQL 5");
-                }
-                int status = cmlExecuteNoAnswerSql(
-                                 "insert into R_OBJT_ACCESS (object_id, user_id, access_type_id, create_ts, modify_ts)  values (?, ?, (select token_id from R_TOKN_MAIN where token_namespace = 'access_type' and token_name = ?), ?, ?)",
-                                 &icss );
-                if ( status != 0 ) {
-                    _rollback( "chlModAccessControl" );
-                    return ERROR( status, "insert failure" );
+                log_sql::debug("chlModAccessControl SQL 7");
+                const auto opt_token_id = irods::experimental::catalog::query_catalog_integer(
+                    executor, db_conn,
+                    gq2::builder::select({"token_id"})
+                        .from("TOKEN")
+                        .where(col("token_namespace") == "access_type" && col("token_name") == myAccessLev)
+                        .build());
+                if (opt_token_id) {
+                    auto ins_stmt = gq2::builder::insert_into("ACCESS")
+                        .set("object_id", collIdStr)
+                        .set("user_id", userIdStr)
+                        .set("access_type_id", std::to_string(*opt_token_id))
+                        .set("create_ts", myTime)
+                        .set("modify_ts", myTime)
+                        .build();
+                    irods::experimental::catalog::execute_catalog(executor, db_conn, ins_stmt);
                 }
             }
 
-            status =  cmlExecuteNoAnswerSql( "commit", &icss );
-            return ERROR( status, "commit failure" );
+            trans.commit();
+            return SUCCESS();
         }
-
-        /* doing a collection, non-recursive */
-        cllBindVars[cllBindVarCount++] = userIdStr;
-        cllBindVars[cllBindVarCount++] = collIdStr;
-        if ( logSQL != 0 ) {
-            log_sql::debug("chlModAccessControl SQL 6");
+        catch (const nanodbc::database_error& e) {
+            log_db::error("{}: database error: {}", __FUNCTION__, e.what());
+            return ERROR( CAT_SQL_ERR, e.what() );
         }
-        int status =  cmlExecuteNoAnswerSql(
-                          "delete from R_OBJT_ACCESS where user_id=? and object_id=?",
-                          &icss );
-        if ( status != 0 && status != CAT_SUCCESS_BUT_WITH_NO_INFO ) {
-            _rollback( "chlModAccessControl" );
-            return ERROR( status, "delete failure" );
+        catch (const std::exception& e) {
+            log_db::error("{}: exception: {}", __FUNCTION__, e.what());
+            return ERROR( SYS_INTERNAL_ERR, e.what() );
         }
-        if ( rmFlag ) { /* just removing */
-            status =  cmlExecuteNoAnswerSql( "commit", &icss );
-            return ERROR( status, "commit failure" );
-        }
-
-        char myTime[50];
-        getNowStr( myTime );
-        cllBindVars[cllBindVarCount++] = collIdStr;
-        cllBindVars[cllBindVarCount++] = userIdStr;
-        cllBindVars[cllBindVarCount++] = myAccessLev;
-        cllBindVars[cllBindVarCount++] = myTime;
-        cllBindVars[cllBindVarCount++] = myTime;
-        if ( logSQL != 0 ) {
-            log_sql::debug("chlModAccessControl SQL 7");
-        }
-        status =  cmlExecuteNoAnswerSql(
-                      "insert into R_OBJT_ACCESS (object_id, user_id, access_type_id, create_ts, modify_ts)  values (?, ?, (select token_id from R_TOKN_MAIN where token_namespace = 'access_type' and token_name = ?), ?, ?)",
-                      &icss );
-
-        if ( status != 0 ) {
-            _rollback( "chlModAccessControl" );
-            return ERROR( status, "insert failure" );
-        }
-        status =  cmlExecuteNoAnswerSql( "commit", &icss );
-        return ERROR( status, "commit failure" );
     }
 
 
     /* Recursive */
     if ( objId ) {
-        char errMsg[205];
-
-        snprintf( errMsg, 200,
-                  "Input path is not a collection and recursion was requested: %s",
-                  _path_name );
-        addRErrorMsg( &_ctx.comm()->rError, 0, errMsg );
+        const auto errMsg = fmt::format(
+            "Input path is not a collection and recursion was requested: {}",
+            _path_name );
+        addRErrorMsg( &_ctx.comm()->rError, 0, errMsg.c_str() );
         return ERROR( CAT_INVALID_ARGUMENT, errMsg );
     }
 
 
     std::string pathStart = makeEscapedPath( _path_name ) + "/%";
-    int status;
 
-#if (defined ORA_ICAT || defined MY_ICAT)
-#else
-    /* The temporary table created and used below has been found to
-       greatly speed up the execution of subsequent deletes and
-       updates.  We did a lot of testing and 'explain' SQL using a copy
-       (minus passwords) of the large iPlant ICAT DB to find this.  It
-       makes sense that using a table like this will speed it up,
-       except for the constraints aspect (further below).
+    try {
+        nanodbc::transaction trans{db_conn};
+        namespace gq2 = irods::experimental::genquery2;
+        using gq2::builder::col;
 
-       It is very likely that the same temporary table would also speed
-       up Oracle and MySQL ICATs but we didn't have time to test that
-       so this is only for Postgres for now.  The SQL for creating the
-       table is probably a bit different for Oracle and MySQL but
-       otherwise I expect this would work for them.
+        // Query all matching collection IDs (root + subcollections)
+        auto matching_colls = irods::experimental::catalog::query_catalog_strings(
+            executor, db_conn,
+            gq2::builder::select({"coll_id"})
+                .from("COLLECTION")
+                .where(col("coll_name") == _path_name || col("coll_name").like(pathStart))
+                .build());
 
-       Before this change the SQL could take minutes on a very large
-       instance.  With this, it can take less than a second on a
-       'ichmod -r' on a small sub-collection, and is fairly fast on
-       moderate sized ones.  I expect it will perform somewhat better
-       than the old SQL on large ones, but I was unable to reliably
-       test this on our fairly modest hardware.
+        // Resolve access token if adding/modifying permission
+        std::string access_token_str;
+        char myTime[50]{};
+        if ( !rmFlag ) {
+            getNowStr( myTime );
+            const auto opt_token_id = irods::experimental::catalog::query_catalog_integer(
+                executor, db_conn,
+                gq2::builder::select({"token_id"})
+                    .from("TOKEN")
+                    .where(col("token_namespace") == "access_type" && col("token_name") == myAccessLev)
+                    .build());
+            if ( opt_token_id ) {
+                access_token_str = std::to_string(*opt_token_id);
+            }
+        }
 
-       Since these SQL statements are only for Postgres, we can't add
-       log_sql::debug( ...) calls (so 'devtest' will verify it is
-       called), but since the later postgres SQL depends on this table,
-       we can be sure this is exercised if "chlModAccessControl SQL 8" is.
-    */
-    status =  cmlExecuteNoAnswerSql( "create temporary table R_MOD_ACCESS_TEMP1 (coll_id bigint not null, coll_name varchar(2700) not null) on commit drop",
-                                     &icss );
-    if ( status == CAT_SUCCESS_BUT_WITH_NO_INFO ) {
-        status = 0;
-    }
-    if ( status != 0 ) {
-        log_db::info("chlModAccessControl cmlExecuteNoAnswerSql create temp table failure {}", status);
-        _rollback( "chlModAccessControl" );
-        return ERROR( status, "chlModAccessControl cmlExecuteNoAnswerSql create temp table failure" );
-    }
+        for ( const auto& cid : matching_colls ) {
+            // Collection access
+            auto del_coll_access = gq2::builder::remove_from("ACCESS")
+                .where(col("user_id") == userIdStr && col("object_id") == cid)
+                .build();
+            irods::experimental::catalog::execute_catalog(executor, db_conn, del_coll_access);
 
-    status =  cmlExecuteNoAnswerSql( "create unique index idx_r_mod_access_temp1 on R_MOD_ACCESS_TEMP1 (coll_name)",
-                                     &icss );
-    if ( status == CAT_SUCCESS_BUT_WITH_NO_INFO ) {
-        status = 0;
-    }
-    if ( status != 0 ) {
-        log_db::info("chlModAccessControl cmlExecuteNoAnswerSql create index failure {}", status);
-        _rollback( "chlModAccessControl" );
-        return ERROR( status, "chlModAccessControl cmlExecuteNoAnswerSql create index failure" );
-    }
+            if ( !rmFlag && !access_token_str.empty() ) {
+                auto ins_coll_access = gq2::builder::insert_into("ACCESS")
+                    .set("object_id", cid)
+                    .set("user_id", userIdStr)
+                    .set("access_type_id", access_token_str)
+                    .set("create_ts", myTime)
+                    .set("modify_ts", myTime)
+                    .build();
+                irods::experimental::catalog::execute_catalog(executor, db_conn, ins_coll_access);
+            }
 
-    cllBindVars[cllBindVarCount++] = _path_name;
-    cllBindVars[cllBindVarCount++] = pathStart.c_str();
-    status =  cmlExecuteNoAnswerSql( "insert into R_MOD_ACCESS_TEMP1 (coll_id, coll_name) select  coll_id, coll_name from R_COLL_MAIN where coll_name = ? or coll_name like ?",
-                                     &icss );
-    if ( status == CAT_SUCCESS_BUT_WITH_NO_INFO ) {
-        status = 0;
-    }
-    if ( status != 0 ) {
-        log_db::info("chlModAccessControl cmlExecuteNoAnswerSql insert failure {}", status);
-        _rollback( "chlModAccessControl" );
-        return ERROR( status, "chlModAccessControl cmlExecuteNoAnswerSql insert failure" );
-    }
-#endif
+            // Data objects in this collection
+            auto coll_data_ids = irods::experimental::catalog::query_catalog_strings(
+                executor, db_conn,
+                gq2::builder::select({"data_id"})
+                    .from("DATA_OBJECT")
+                    .where(col("coll_id") == cid)
+                    .build());
 
-    cllBindVars[cllBindVarCount++] = userIdStr;
-    cllBindVars[cllBindVarCount++] = _path_name;
-    cllBindVars[cllBindVarCount++] = pathStart.c_str();
+            for ( const auto& did : coll_data_ids ) {
+                auto del_data_access = gq2::builder::remove_from("ACCESS")
+                    .where(col("user_id") == userIdStr && col("object_id") == did)
+                    .build();
+                irods::experimental::catalog::execute_catalog(executor, db_conn, del_data_access);
 
-    if ( logSQL != 0 ) {
-        log_sql::debug("chlModAccessControl SQL 8");
-    }
-    status =  cmlExecuteNoAnswerSql(
-#if defined ORA_ICAT
-                  "delete from R_OBJT_ACCESS where user_id=? and object_id = ANY (select data_id from R_DATA_MAIN where coll_id in (select coll_id from R_COLL_MAIN where coll_name = ? or coll_name like ? ESCAPE '\\'))",
-#elif defined MY_ICAT
-                  "delete from R_OBJT_ACCESS where user_id=? and object_id = ANY (select data_id from R_DATA_MAIN where coll_id in (select coll_id from R_COLL_MAIN where coll_name = ? or coll_name like ?))",
-#else
-                  /*  Use the temporary table to greatly speed up this operation
-                  (and similar ones below).  The last constraint, the 'where
-                  coll_name = ? or coll_name like ?' isn't really needed (since
-                  that table was populated via constraints like those) but,
-                  oddly, does seem to make it run much faster.  Using 'explain'
-                  SQL and test runs confirmed that it is faster with those
-                  constraints.
-                  */
-                  "delete from R_OBJT_ACCESS where user_id=? and object_id = ANY(ARRAY(select data_id from R_DATA_MAIN where coll_id in (select coll_id from R_MOD_ACCESS_TEMP1 where coll_name = ? or coll_name like ?)))",
-#endif
-                  & icss );
+                if ( !rmFlag && !access_token_str.empty() ) {
+                    auto ins_data_access = gq2::builder::insert_into("ACCESS")
+                        .set("object_id", did)
+                        .set("user_id", userIdStr)
+                        .set("access_type_id", access_token_str)
+                        .set("create_ts", myTime)
+                        .set("modify_ts", myTime)
+                        .build();
+                    irods::experimental::catalog::execute_catalog(executor, db_conn, ins_data_access);
+                }
+            }
+        }
 
-    if ( status != 0 && status != CAT_SUCCESS_BUT_WITH_NO_INFO ) {
-        _rollback( "chlModAccessControl" );
-        return ERROR( status, "delete failure" );
+        trans.commit();
+        return SUCCESS();
     }
-
-    cllBindVars[cllBindVarCount++] = userIdStr;
-    cllBindVars[cllBindVarCount++] = _path_name;
-    cllBindVars[cllBindVarCount++] = pathStart.c_str();
-
-    if ( logSQL != 0 ) {
-        log_sql::debug("chlModAccessControl SQL 9");
+    catch (const std::exception& e) {
+        log_db::error("{}: exception: {}", __FUNCTION__, e.what());
+        return ERROR( SYS_INTERNAL_ERR, e.what() );
     }
-    status =  cmlExecuteNoAnswerSql(
-#if defined ORA_ICAT
-                  "delete from R_OBJT_ACCESS where user_id=? and object_id = ANY (select coll_id from R_COLL_MAIN where coll_name = ? or coll_name like ? ESCAPE '\\')",
-#elif defined MY_ICAT
-                  "delete from R_OBJT_ACCESS where user_id=? and object_id = ANY (select coll_id from R_COLL_MAIN where coll_name = ? or coll_name like ?)",
-#else
-                  "delete from R_OBJT_ACCESS where user_id=? and object_id = ANY(ARRAY(select coll_id from R_MOD_ACCESS_TEMP1 where coll_name = ? or coll_name like ?))",
-#endif
-                  & icss );
-    if ( status != 0 && status != CAT_SUCCESS_BUT_WITH_NO_INFO ) {
-        _rollback( "chlModAccessControl" );
-        return ERROR( status, "delete failure" );
-    }
-    if ( rmFlag ) { /* just removing */
-        status =  cmlExecuteNoAnswerSql( "commit", &icss );
-        return ERROR( status, "commit failure" );
-    }
-
-    char myTime[50];
-    getNowStr( myTime );
-    cllBindVars[cllBindVarCount++] = userIdStr;
-    cllBindVars[cllBindVarCount++] = myAccessLev;
-    cllBindVars[cllBindVarCount++] = myTime;
-    cllBindVars[cllBindVarCount++] = myTime;
-    cllBindVars[cllBindVarCount++] = _path_name;
-    cllBindVars[cllBindVarCount++] = pathStart.c_str();
-    if ( logSQL != 0 ) {
-        log_sql::debug("chlModAccessControl SQL 10");
-    }
-#if ORA_ICAT
-    /* For Oracle cast is to integer, for Postgres to bigint,for MySQL no cast*/
-    status =  cmlExecuteNoAnswerSql(
-                  "insert into R_OBJT_ACCESS (object_id, user_id, access_type_id, create_ts, modify_ts)  (select distinct data_id, cast(? as integer), (select token_id from R_TOKN_MAIN where token_namespace = 'access_type' and token_name = ?), ?, ? from R_DATA_MAIN where coll_id in (select coll_id from R_COLL_MAIN where coll_name = ? or coll_name like ? ESCAPE '\\'))",
-                  &icss );
-#elif MY_ICAT
-    status =  cmlExecuteNoAnswerSql(
-                  "insert into R_OBJT_ACCESS (object_id, user_id, access_type_id, create_ts, modify_ts)  (select distinct data_id, ?, (select token_id from R_TOKN_MAIN where token_namespace = 'access_type' and token_name = ?), ?, ? from R_DATA_MAIN where coll_id in (select coll_id from R_COLL_MAIN where coll_name = ? or coll_name like ?))",
-                  &icss );
-#else
-    /* For Postgres, also use the temporary R_MOD_ACCESS_TEMP1 table */
-    status =  cmlExecuteNoAnswerSql(
-                  "insert into R_OBJT_ACCESS (object_id, user_id, access_type_id, create_ts, modify_ts)  (select distinct data_id, cast(? as bigint), (select token_id from R_TOKN_MAIN where token_namespace = 'access_type' and token_name = ?), ?, ? from R_DATA_MAIN where coll_id in (select coll_id from R_MOD_ACCESS_TEMP1 where coll_name = ? or coll_name like ?))",
-                  &icss );
-#endif
-    if ( status == CAT_SUCCESS_BUT_WITH_NO_INFO ) {
-        status = 0;    /* no files, OK */
-    }
-    if ( status != 0 ) {
-        _rollback( "chlModAccessControl" );
-        return ERROR( status, "insert failure" );
-    }
-
-
-    /* Now set the collections */
-    cllBindVars[cllBindVarCount++] = userIdStr;
-    cllBindVars[cllBindVarCount++] = myAccessLev;
-    cllBindVars[cllBindVarCount++] = myTime;
-    cllBindVars[cllBindVarCount++] = myTime;
-    cllBindVars[cllBindVarCount++] = _path_name;
-    cllBindVars[cllBindVarCount++] = pathStart.c_str();
-    if ( logSQL != 0 ) {
-        log_sql::debug("chlModAccessControl SQL 11");
-    }
-#if ORA_ICAT
-    /* For Oracle cast is to integer, for Postgres to bigint,for MySQL no cast*/
-    status =  cmlExecuteNoAnswerSql(
-                  "insert into R_OBJT_ACCESS (object_id, user_id, access_type_id, create_ts, modify_ts)  (select distinct coll_id, cast(? as integer), (select token_id from R_TOKN_MAIN where token_namespace = 'access_type' and token_name = ?), ?, ? from R_COLL_MAIN where coll_name = ? or coll_name like ? ESCAPE '\\')",
-                  &icss );
-#elif MY_ICAT
-    status =  cmlExecuteNoAnswerSql(
-                  "insert into R_OBJT_ACCESS (object_id, user_id, access_type_id, create_ts, modify_ts)  (select distinct coll_id, ?, (select token_id from R_TOKN_MAIN where token_namespace = 'access_type' and token_name = ?), ?, ? from R_COLL_MAIN where coll_name = ? or coll_name like ?)",
-                  &icss );
-#else
-    status =  cmlExecuteNoAnswerSql(
-                  "insert into R_OBJT_ACCESS (object_id, user_id, access_type_id, create_ts, modify_ts)  (select distinct coll_id, cast(? as bigint), (select token_id from R_TOKN_MAIN where token_namespace = 'access_type' and token_name = ?), ?, ? from R_COLL_MAIN where coll_name = ? or coll_name like ?)",
-                  &icss );
-#endif
-    if ( status != 0 ) {
-        _rollback( "chlModAccessControl" );
-        return ERROR( status, "insert failure" );
-    }
-
-    status =  cmlExecuteNoAnswerSql( "commit", &icss );
-    if ( status < 0 ) {
-        return ERROR( status, "commit failed" );
-    }
-
-    return CODE( status );
 
 } // db_mod_access_control_op
 
@@ -10060,337 +8646,220 @@ irods::error db_rename_object_op(
         return PASS( ret );
     }
 
-    // =-=-=-=-=-=-=-
-    // get a postgres object from the context
-    /*irods::postgres_object_ptr pg;
-    ret = make_db_ptr( _ctx.fco(), pg );
-    if ( !ret.ok() ) {
-        return PASS( ret );
-
-    }*/
-
-    // =-=-=-=-=-=-=-
-    // extract the icss property
-//        icatSessionStruct icss;
-//        _ctx.prop_map().get< icatSessionStruct >( ICSS_PROP, icss );
-    int status;
-    rodsLong_t collId;
-    rodsLong_t otherDataId;
-    rodsLong_t otherCollId;
-    char myTime[50];
-
-    char parentCollName[MAX_NAME_LEN] = "";
-    char collName[MAX_NAME_LEN] = "";
-    char *cVal[3];
-    int iVal[3];
-    int pLen, cLen;
-    int isRootDir = 0;
-    char objIdString[MAX_NAME_LEN];
-    char collIdString[MAX_NAME_LEN];
-    char collNameTmp[MAX_NAME_LEN];
-
-    char collNameSlash[MAX_NAME_LEN];
-    char slashNewName[MAX_NAME_LEN];
-
-    if ( logSQL != 0 ) {
-        log_sql::debug("chlRenameObject");
+    if ( !_new_name ) {
+        return ERROR( CAT_INVALID_ARGUMENT, "null parameter" );
     }
 
     if ( strstr( _new_name, PATH_SEPARATOR ) ) {
         return ERROR( CAT_INVALID_ARGUMENT, "new name invalid" );
     }
 
-    /* See if it's a dataObj and if so get the coll_id
-       check the access permission at the same time */
-    collId = 0;
+    const std::string obj_id_str = std::to_string( _obj_id );
+    const std::string user_name = _ctx.comm()->clientUser.userName;
+    const std::string user_zone = _ctx.comm()->clientUser.rodsZone;
 
-    snprintf( objIdString, MAX_NAME_LEN, "%lld", _obj_id );
-    if ( logSQL != 0 ) {
-        log_sql::debug("chlRenameObject SQL 1 ");
-    }
+    try {
+        auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
+        nanodbc::transaction trans{db_conn};
 
-    {
-        std::vector<std::string> bindVars;
-        bindVars.push_back( objIdString );
-        bindVars.push_back( _ctx.comm()->clientUser.userName );
-        bindVars.push_back( _ctx.comm()->clientUser.rodsZone );
-        status = cmlGetIntegerValueFromSql(
-                     "select coll_id from R_DATA_MAIN DM, R_OBJT_ACCESS OA, R_USER_GROUP UG, R_USER_MAIN UM, R_TOKN_MAIN TM where DM.data_id=? and UM.user_name=? and UM.zone_name=? and UM.user_type_name!='rodsgroup' and UM.user_id = UG.user_id and OA.object_id = DM.data_id and UG.group_user_id = OA.user_id and OA.access_type_id >= TM.token_id and TM.token_namespace ='access_type' and TM.token_name = 'own'",
-                     &collId, bindVars,  &icss );
-    }
+        namespace gq2 = irods::experimental::genquery2;
+        using gq2::builder::col;
 
-    if ( status == 0 ) { /* it is a dataObj and user has access to it */
+        // Try as data object
+        int own_access = irods::experimental::catalog::access_control::check_data_object_id(
+            executor, db_conn, obj_id_str, user_name, user_zone, ACCESS_OWN);
+        if ( own_access == 0 ) {
+            auto coll_id_opt = irods::experimental::catalog::query_catalog_integer(
+                executor, db_conn,
+                gq2::builder::select({"COLL_ID"})
+                    .from("DATA_OBJECT")
+                    .where(col("DATA_ID") == obj_id_str)
+                    .build());
+            if ( coll_id_opt.has_value() ) {
+                const int64_t coll_id = *coll_id_opt;
+                const std::string coll_id_str = std::to_string( coll_id );
 
-        /* check that no other dataObj exists with this name in this collection*/
-        snprintf( collIdString, MAX_NAME_LEN, "%lld", collId );
-        if ( logSQL != 0 ) {
-            log_sql::debug("chlRenameObject SQL 2");
-        }
-        {
-            std::vector<std::string> bindVars;
-            bindVars.push_back( _new_name );
-            bindVars.push_back( collIdString );
-            status = cmlGetIntegerValueFromSql(
-                         "select data_id from R_DATA_MAIN where data_name=? and coll_id=?",
-                         &otherDataId, bindVars, &icss );
-        }
-        if ( status != CAT_NO_ROWS_FOUND ) {
-            return ERROR( CAT_NAME_EXISTS_AS_DATAOBJ, "select data_id failed" );
-        }
+                // Check that no other dataObj exists with this name in this collection
+                auto other_data = irods::experimental::catalog::query_catalog_integer(
+                    executor, db_conn,
+                    gq2::builder::select({"DATA_ID"})
+                        .from("DATA_OBJECT")
+                        .where(col("DATA_NAME") == _new_name && col("COLL_ID") == coll_id_str)
+                        .build());
+                if ( other_data.has_value() ) {
+                    return ERROR( CAT_NAME_EXISTS_AS_DATAOBJ, "select data_id failed" );
+                }
 
-        /* check that no subcoll exists in this collection,
-           with the _new_name */
-        snprintf( collNameTmp, MAX_NAME_LEN, "/%s", _new_name );
-        if ( logSQL != 0 ) {
-            log_sql::debug("chlRenameObject SQL 3");
-        }
-        {
-            std::vector<std::string> bindVars;
-            bindVars.push_back( collIdString );
-            bindVars.push_back( collNameTmp );
-            status = cmlGetIntegerValueFromSql(
-                         "select coll_id from R_COLL_MAIN where coll_name = ( select coll_name from R_COLL_MAIN where coll_id=? ) || ?",
-                         &otherCollId, bindVars, &icss );
-        }
-        if ( status != CAT_NO_ROWS_FOUND ) {
-            return ERROR( CAT_NAME_EXISTS_AS_COLLECTION, "select coll_id failed" );
-        }
+                // Check that no subcoll exists in this collection with the _new_name
+                auto current_coll_name = irods::experimental::catalog::query_catalog_string(
+                    executor, db_conn,
+                    gq2::builder::select({"COLL_NAME"})
+                        .from("COLLECTION")
+                        .where(col("COLL_ID") == coll_id_str)
+                        .build());
+                if ( current_coll_name.has_value() ) {
+                    const std::string coll_name_tmp = *current_coll_name + "/" + _new_name;
+                    auto other_coll = irods::experimental::catalog::query_catalog_integer(
+                        executor, db_conn,
+                        gq2::builder::select({"COLL_ID"})
+                            .from("COLLECTION")
+                            .where(col("COLL_NAME") == coll_name_tmp)
+                            .build());
+                    if ( other_coll.has_value() ) {
+                        return ERROR( CAT_NAME_EXISTS_AS_COLLECTION, "select coll_id failed" );
+                    }
+                }
 
-        /* update the tables */
-        getNowStr( myTime );
-        cllBindVars[cllBindVarCount++] = _new_name;
-        cllBindVars[cllBindVarCount++] = objIdString;
-        if ( logSQL != 0 ) {
-            log_sql::debug("chlRenameObject SQL 4");
-        }
-        status =  cmlExecuteNoAnswerSql(
-                      "update R_DATA_MAIN set data_name = ? where data_id=?",
-                      &icss );
-        if ( status != 0 ) {
-            log_db::info("chlRenameObject cmlExecuteNoAnswerSql update1 failure {}", status);
-            _rollback( "chlRenameObject" );
-            return ERROR( status, "cmlExecuteNoAnswerSql update1 failure" );
-        }
+                char my_time[50];
+                getNowStr( my_time );
 
-        cllBindVars[cllBindVarCount++] = myTime;
-        cllBindVars[cllBindVarCount++] = collIdString;
-        if ( logSQL != 0 ) {
-            log_sql::debug("chlRenameObject SQL 5");
-        }
-        status =  cmlExecuteNoAnswerSql(
-                      "update R_COLL_MAIN set modify_ts=? where coll_id=?",
-                      &icss );
-        if ( status != 0 ) {
-            log_db::info("chlRenameObject cmlExecuteNoAnswerSql update2 failure {}", status);
-            _rollback( "chlRenameObject" );
-            return ERROR( status, "cmlExecuteNoAnswerSql update2 failure" );
-        }
+                auto upd_data = gq2::builder::update("DATA_OBJECT")
+                    .set("data_name", _new_name)
+                    .where(col("data_id") == obj_id_str)
+                    .build();
+                irods::experimental::catalog::execute_catalog(executor, db_conn, upd_data);
 
-        return CODE( status );
-    }
+                auto upd_coll = gq2::builder::update("COLLECTION")
+                    .set("modify_ts", my_time)
+                    .where(col("coll_id") == coll_id_str)
+                    .build();
+                irods::experimental::catalog::execute_catalog(executor, db_conn, upd_coll);
 
-    /* See if it's a collection, and get the parentCollName and
-       collName, and check permission at the same time */
-
-    cVal[0] = parentCollName;
-    iVal[0] = MAX_NAME_LEN;
-    cVal[1] = collName;
-    iVal[1] = MAX_NAME_LEN;
-
-    snprintf( objIdString, MAX_NAME_LEN, "%lld", _obj_id );
-    if ( logSQL != 0 ) {
-        log_sql::debug("chlRenameObject SQL 6");
-    }
-
-    {
-        std::vector<std::string> bindVars;
-        bindVars.push_back( objIdString );
-        bindVars.push_back( _ctx.comm()->clientUser.userName );
-        bindVars.push_back( _ctx.comm()->clientUser.rodsZone );
-        status = cmlGetStringValuesFromSql(
-                     "select parent_coll_name, coll_name from R_COLL_MAIN CM, R_OBJT_ACCESS OA, R_USER_GROUP UG, R_USER_MAIN UM, R_TOKN_MAIN TM where CM.coll_id=? and UM.user_name=? and UM.zone_name=? and UM.user_type_name!='rodsgroup' and UM.user_id = UG.user_id and OA.object_id = CM.coll_id and UG.group_user_id = OA.user_id and OA.access_type_id >= TM.token_id and TM.token_namespace ='access_type' and TM.token_name = 'own'",
-                     cVal, iVal, 2, bindVars, &icss );
-    }
-    if ( status == 0 ) {
-        /* it is a collection and user has access to it */
-
-        /* check that no other dataObj exists with this name in this collection*/
-        if ( logSQL != 0 ) {
-            log_sql::debug("chlRenameObject SQL 7");
-        }
-        {
-            std::vector<std::string> bindVars;
-            bindVars.push_back( _new_name );
-            bindVars.push_back( parentCollName );
-            status = cmlGetIntegerValueFromSql(
-                         "select data_id from R_DATA_MAIN where data_name=? and coll_id= (select coll_id from R_COLL_MAIN  where coll_name = ?)",
-                         &otherDataId, bindVars, &icss );
-        }
-        if ( status != CAT_NO_ROWS_FOUND ) {
-            return ERROR( CAT_NAME_EXISTS_AS_DATAOBJ, "select data_id failed" );
-        }
-
-        /* check that no subcoll exists in the parent collection,
-           with the _new_name */
-        snprintf( collNameTmp, MAX_NAME_LEN, "%s/%s", parentCollName, _new_name );
-        if ( logSQL != 0 ) {
-            log_sql::debug("chlRenameObject SQL 8");
-        }
-        {
-            std::vector<std::string> bindVars;
-            bindVars.push_back( collNameTmp );
-            status = cmlGetIntegerValueFromSql(
-                         "select coll_id from R_COLL_MAIN where coll_name = ?",
-                         &otherCollId, bindVars, &icss );
-        }
-        if ( status != CAT_NO_ROWS_FOUND ) {
-            return ERROR( CAT_NAME_EXISTS_AS_COLLECTION, "select coll_id failed" );
-        }
-
-        /* update the table */
-        pLen = strlen( parentCollName );
-        cLen = strlen( collName );
-        if ( pLen <= 0 || cLen <= 0 ) {
-            return ERROR( CAT_INVALID_ARGUMENT, "coll name or parent is invalid" );
-        }  /* invalid
-                                                                   argument is not really right, but something is really wrong */
-
-        if ( pLen == 1 ) {
-            if ( strncmp( parentCollName, PATH_SEPARATOR, 20 ) == 0 ) { /* just to be sure */
-                isRootDir = 1; /* need to treat a little special below */
+                trans.commit();
+                return SUCCESS();
             }
         }
 
-        /* set any collection names that are under this collection to
-           the new name, putting the string together from the the old upper
-           part, _new_name string, and then (if any for each row) the
-           tailing part of the name.
-           (In the sql substr function, the index for sql is 1 origin.) */
-        snprintf(collNameSlash, MAX_NAME_LEN, "%s/", collName);
-        snprintf( slashNewName, MAX_NAME_LEN, "/%s", _new_name );
-        if ( isRootDir ) {
-            snprintf( slashNewName, MAX_NAME_LEN, "%s", _new_name );
-        }
-        /* Instead of preparing the string length here, we have the RDBMS do its own length
-         * calculations on the strings that we pass on via binded variables.
-         * This method avoids string length interpretation issues related to
-         * encoding transformations of multi-byte Unicode characters.
-         */
-        cllBindVars[cllBindVarCount++] = parentCollName;
-        cllBindVars[cllBindVarCount++] = slashNewName;
-        cllBindVars[cllBindVarCount++] = collName;
-        cllBindVars[cllBindVarCount++] = collNameSlash;
-        cllBindVars[cllBindVarCount++] = collNameSlash;
-        cllBindVars[cllBindVarCount++] = collName;
-        if ( logSQL != 0 ) {
-            log_sql::debug("chlRenameObject SQL 9");
-        }
-#ifdef ORA_ICAT
-        status = cmlExecuteNoAnswerSql(
-            "update R_COLL_MAIN set coll_name = SUBSTR(coll_name, 1, LENGTH(?)) || ? || SUBSTR(coll_name, LENGTH(?) + "
-            "1) where SUBSTR(parent_coll_name, 1, LENGTH(?)) = ? or parent_coll_name = ?",
-            &icss);
-#else
-        status = cmlExecuteNoAnswerSql(
-            "update R_COLL_MAIN set coll_name = substr(coll_name, 1, char_length(?)) || ? || substr(coll_name, "
-            "char_length(?) + 1) where substr(parent_coll_name, 1, char_length(?)) = ? or parent_coll_name = ?",
-            &icss);
-#endif
-        if ( status != 0 && status != CAT_SUCCESS_BUT_WITH_NO_INFO ) {
-            log_db::info("chlRenameObject cmlExecuteNoAnswerSql update failure {}", status);
-            _rollback( "chlRenameObject" );
-            return ERROR( status, "cmlExecuteNoAnswerSql update failure" );
+        // Try as collection
+        int coll_access = irods::experimental::catalog::access_control::check_collection_id(
+            executor, db_conn, obj_id_str, user_name, user_zone, ACCESS_OWN);
+        if ( coll_access >= 0 ) {
+            auto coll_res = irods::experimental::catalog::execute_catalog(
+                executor, db_conn,
+                gq2::builder::select({"parent_coll_name", "coll_name"})
+                    .from("COLLECTION")
+                    .where(col("coll_id") == obj_id_str)
+                    .build());
+            if ( coll_res.query_result && coll_res.query_result->next() ) {
+                const std::string parent_coll_name = coll_res.query_result->get<std::string>(0, "");
+                const std::string coll_name = coll_res.query_result->get<std::string>(1, "");
+
+                // Check that no other dataObj exists with this name in parent collection
+                auto parent_coll_id = irods::experimental::catalog::query_catalog_integer(
+                    executor, db_conn,
+                    gq2::builder::select({"COLL_ID"})
+                        .from("COLLECTION")
+                        .where(col("COLL_NAME") == parent_coll_name)
+                        .build());
+                if ( parent_coll_id.has_value() ) {
+                    auto other_data = irods::experimental::catalog::query_catalog_integer(
+                        executor, db_conn,
+                        gq2::builder::select({"DATA_ID"})
+                            .from("DATA_OBJECT")
+                            .where(col("DATA_NAME") == _new_name && col("COLL_ID") == std::to_string(*parent_coll_id))
+                            .build());
+                    if ( other_data.has_value() ) {
+                        return ERROR( CAT_NAME_EXISTS_AS_DATAOBJ, "select data_id failed" );
+                    }
+                }
+
+                // Check that no subcoll exists in the parent collection with the _new_name
+                const std::string coll_name_tmp = parent_coll_name + "/" + _new_name;
+                auto other_coll = irods::experimental::catalog::query_catalog_integer(
+                    executor, db_conn,
+                    gq2::builder::select({"COLL_ID"})
+                        .from("COLLECTION")
+                        .where(col("COLL_NAME") == coll_name_tmp)
+                        .build());
+                if ( other_coll.has_value() ) {
+                    return ERROR( CAT_NAME_EXISTS_AS_COLLECTION, "select coll_id failed" );
+                }
+
+                if ( parent_coll_name.empty() || coll_name.empty() ) {
+                    return ERROR( CAT_INVALID_ARGUMENT, "coll name or parent is invalid" );
+                }
+
+                const bool is_root_dir = ( parent_coll_name == "/" );
+                const std::string final_coll_name = is_root_dir ? (parent_coll_name + _new_name) : (parent_coll_name + "/" + _new_name);
+
+                // Update subcollections under this collection
+                const std::string coll_name_slash = coll_name + "/";
+                auto subcolls = irods::experimental::catalog::execute_catalog(
+                    executor, db_conn,
+                    gq2::builder::select({"coll_id", "coll_name", "parent_coll_name"})
+                        .from("COLLECTION")
+                        .where(col("parent_coll_name") == coll_name || col("parent_coll_name").like(coll_name_slash + "%"))
+                        .build());
+
+                std::vector<std::tuple<std::string, std::string, std::string>> sub_updates;
+                if (subcolls.query_result) {
+                    while (subcolls.query_result->next()) {
+                        auto cid = subcolls.query_result->get<std::string>(0);
+                        auto cname = subcolls.query_result->get<std::string>(1);
+                        auto pname = subcolls.query_result->get<std::string>(2);
+                        if (cname == coll_name) {
+                            cname = final_coll_name;
+                        } else if (cname.starts_with(coll_name_slash)) {
+                            cname = final_coll_name + cname.substr(coll_name.size());
+                        }
+                        if (pname == coll_name) {
+                            pname = final_coll_name;
+                        } else if (pname.starts_with(coll_name_slash)) {
+                            pname = final_coll_name + pname.substr(coll_name.size());
+                        }
+                        sub_updates.emplace_back(std::move(cid), std::move(cname), std::move(pname));
+                    }
+                }
+
+                for (const auto& [cid, new_cname, new_pname] : sub_updates) {
+                    auto upd = gq2::builder::update("COLLECTION")
+                        .set("coll_name", new_cname)
+                        .set("parent_coll_name", new_pname)
+                        .where(col("coll_id") == cid)
+                        .build();
+                    irods::experimental::catalog::execute_catalog(executor, db_conn, upd);
+                }
+
+                char my_time[50];
+                getNowStr( my_time );
+
+                auto upd_coll = gq2::builder::update("COLLECTION")
+                    .set("coll_name", final_coll_name)
+                    .set("modify_ts", my_time)
+                    .where(col("coll_id") == obj_id_str)
+                    .build();
+                irods::experimental::catalog::execute_catalog(executor, db_conn, upd_coll);
+
+                trans.commit();
+                return SUCCESS();
+            }
         }
 
-        /* like above, but for the parent_coll_name's */
-        cllBindVars[cllBindVarCount++] = parentCollName;
-        cllBindVars[cllBindVarCount++] = slashNewName;
-        cllBindVars[cllBindVarCount++] = collName;
-        cllBindVars[cllBindVarCount++] = collNameSlash;
-        cllBindVars[cllBindVarCount++] = collNameSlash;
-        cllBindVars[cllBindVarCount++] = collName;
-        if ( logSQL != 0 ) {
-            log_sql::debug("chlRenameObject SQL 10");
-        }
-#ifdef ORA_ICAT
-        status = cmlExecuteNoAnswerSql("update R_COLL_MAIN set parent_coll_name = SUBSTR(parent_coll_name, 1, "
-                                       "LENGTH(?)) || ? || SUBSTR(parent_coll_name, LENGTH(?) + 1) where "
-                                       "SUBSTR(parent_coll_name, 1, LENGTH(?)) = ? or parent_coll_name = ?",
-                                       &icss);
-#else
-        status = cmlExecuteNoAnswerSql("update R_COLL_MAIN set parent_coll_name = substr(parent_coll_name, 1, "
-                                       "char_length(?)) || ? || substr(parent_coll_name, char_length(?) + 1) where "
-                                       "substr(parent_coll_name, 1, char_length(?)) = ? or parent_coll_name = ?",
-                                       &icss);
-#endif
-        if ( status != 0 && status != CAT_SUCCESS_BUT_WITH_NO_INFO ) {
-            log_db::info("chlRenameObject cmlExecuteNoAnswerSql update failure {}", status);
-            _rollback( "chlRenameObject" );
-            return ERROR( status, "cmlExecuteNoAnswerSql update failure" );
+        // Both collection and dataObj failed, check if object exists to return proper error
+        auto data_check = irods::experimental::catalog::query_catalog_integer(
+            executor, db_conn,
+            gq2::builder::select({"COLL_ID"}).from("DATA_OBJECT").where(col("DATA_ID") == obj_id_str).build());
+        if ( data_check.has_value() ) {
+            return ERROR( CAT_NO_ACCESS_PERMISSION, "select coll_id failed" );
         }
 
-        /* And now, update the row for this collection */
-        getNowStr( myTime );
-        snprintf( collNameTmp, MAX_NAME_LEN, "%s/%s", parentCollName, _new_name );
-        if ( isRootDir ) {
-            snprintf( collNameTmp, MAX_NAME_LEN, "%s%s", parentCollName, _new_name );
-        }
-        cllBindVars[cllBindVarCount++] = collNameTmp;
-        cllBindVars[cllBindVarCount++] = myTime;
-        cllBindVars[cllBindVarCount++] = objIdString;
-        if ( logSQL != 0 ) {
-            log_sql::debug("chlRenameObject SQL 11");
-        }
-        status =  cmlExecuteNoAnswerSql(
-                      "update R_COLL_MAIN set coll_name=?, modify_ts=? where coll_id=?",
-                      &icss );
-        if ( status != 0 ) {
-            log_db::info("chlRenameObject cmlExecuteNoAnswerSql update failure {}", status);
-            _rollback( "chlRenameObject" );
-            return ERROR( status, "cmlExecuteNoAnswerSql update failure" );
+        auto coll_check = irods::experimental::catalog::query_catalog_integer(
+            executor, db_conn,
+            gq2::builder::select({"COLL_ID"}).from("COLLECTION").where(col("COLL_ID") == obj_id_str).build());
+        if ( coll_check.has_value() ) {
+            return ERROR( CAT_NO_ACCESS_PERMISSION, "select coll_id failed" );
         }
 
-        return CODE( status );
+        return ERROR( CAT_NOT_A_DATAOBJ_AND_NOT_A_COLLECTION, "not a collection" );
     }
-
-
-    /* Both collection and dataObj failed, go thru the sql in smaller
-       steps to return a specific error */
-
-    snprintf( objIdString, MAX_NAME_LEN, "%lld", _obj_id );
-    if ( logSQL != 0 ) {
-        log_sql::debug("chlRenameObject SQL 12");
+    catch (const nanodbc::database_error& e) {
+        log_db::error("{}: database error: {}", __FUNCTION__, e.what());
+        return ERROR( CAT_SQL_ERR, e.what() );
     }
-    {
-        std::vector<std::string> bindVars;
-        bindVars.push_back( objIdString );
-        status = cmlGetIntegerValueFromSql(
-                     "select coll_id from R_DATA_MAIN where data_id=?",
-                     &otherDataId, bindVars, &icss );
+    catch (const std::exception& e) {
+        log_db::error("{}: exception: {}", __FUNCTION__, e.what());
+        return ERROR( SYS_INTERNAL_ERR, e.what() );
     }
-    if ( status == 0 ) {
-        /* it IS a data obj, must be permission error */
-        return ERROR( CAT_NO_ACCESS_PERMISSION, "select coll_id failed" );
-    }
-
-    snprintf( collIdString, MAX_NAME_LEN, "%lld", _obj_id );
-    if ( logSQL != 0 ) {
-        log_sql::debug("chlRenameObject SQL 12");
-    }
-    {
-        std::vector<std::string> bindVars;
-        bindVars.push_back( collIdString );
-        status = cmlGetIntegerValueFromSql(
-                     "select coll_id from R_COLL_MAIN where coll_id=?",
-                     &otherDataId, bindVars, &icss );
-    }
-    if ( status == 0 ) {
-        /* it IS a collection, must be permission error */
-        return ERROR( CAT_NO_ACCESS_PERMISSION, "select coll_id failed" );
-    }
-
-    return ERROR( CAT_NOT_A_DATAOBJ_AND_NOT_A_COLLECTION, "not a collection" );
-
 } // db_rename_object_op
 
 irods::error db_move_object_op(
@@ -10403,387 +8872,228 @@ irods::error db_move_object_op(
         return PASS( ret );
     }
 
-    // =-=-=-=-=-=-=-
-    // get a postgres object from the context
-    /*irods::postgres_object_ptr pg;
-    ret = make_db_ptr( _ctx.fco(), pg );
-    if ( !ret.ok() ) {
-        return PASS( ret );
+    const std::string obj_id_str = std::to_string( _obj_id );
+    const std::string target_coll_id_str = std::to_string( _target_coll_id );
+    const std::string user_name = _ctx.comm()->clientUser.userName;
+    const std::string user_zone = _ctx.comm()->clientUser.rodsZone;
 
-    }*/
+    try {
+        auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
+        nanodbc::transaction trans{db_conn};
 
-    // =-=-=-=-=-=-=-
-    // extract the icss property
-//        icatSessionStruct icss;
-//        _ctx.prop_map().get< icatSessionStruct >( ICSS_PROP, icss );
-    int status;
-    rodsLong_t collId;
-    rodsLong_t otherDataId;
-    rodsLong_t otherCollId;
-    char myTime[50];
+        namespace gq2 = irods::experimental::genquery2;
+        using gq2::builder::col;
 
-    char dataObjName[MAX_NAME_LEN] = "";
-    char *cVal[3];
-    int iVal[3];
-
-    char parentCollName[MAX_NAME_LEN] = "";
-    char oldCollName[MAX_NAME_LEN] = "";
-    char endCollName[MAX_NAME_LEN] = "";  /* for example: d1 portion of
-                                           /tempZone/home/d1  */
-
-    char targetCollName[MAX_NAME_LEN] = "";
-    char parentTargetCollName[MAX_NAME_LEN] = "";
-    char newCollName[MAX_NAME_LEN] = "";
-    int pLen, ocLen;
-    int i, OK;
-    char *cp;
-    char objIdString[MAX_NAME_LEN];
-    char collIdString[MAX_NAME_LEN];
-    char nameTmp[MAX_NAME_LEN];
-    char collNameSlash[MAX_NAME_LEN];
-
-    if ( logSQL != 0 ) {
-        log_sql::debug("chlMoveObject");
-    }
-
-    /* check that the target collection exists and user has write
-       permission, and get the names while at it */
-    cVal[0] = parentTargetCollName;
-    iVal[0] = MAX_NAME_LEN;
-    cVal[1] = targetCollName;
-    iVal[1] = MAX_NAME_LEN;
-    snprintf( objIdString, MAX_NAME_LEN, "%lld", _target_coll_id );
-    if ( logSQL != 0 ) {
-        log_sql::debug("chlMoveObject SQL 1 ");
-    }
-    {
-        std::vector<std::string> bindVars;
-        bindVars.push_back( objIdString );
-        bindVars.push_back( _ctx.comm()->clientUser.userName );
-        bindVars.push_back( _ctx.comm()->clientUser.rodsZone );
-        status = cmlGetStringValuesFromSql(
-            "select parent_coll_name, coll_name from R_COLL_MAIN CM, R_OBJT_ACCESS OA, R_USER_GROUP UG, R_USER_MAIN "
-            "UM, R_TOKN_MAIN TM where CM.coll_id=? and UM.user_name=? and UM.zone_name=? and "
-            "UM.user_type_name!='rodsgroup' and UM.user_id = UG.user_id and OA.object_id = CM.coll_id and "
-            "UG.group_user_id = OA.user_id and OA.access_type_id >= TM.token_id and TM.token_namespace ='access_type' "
-            "and TM.token_name = 'modify_object'",
-            cVal,
-            iVal,
-            2,
-            bindVars,
-            &icss);
-    }
-    snprintf( collIdString, MAX_NAME_LEN, "%lld", _target_coll_id );
-    if ( status != 0 ) {
-        if ( logSQL != 0 ) {
-            log_sql::debug("chlMoveObject SQL 2");
-        }
-        {
-            std::vector<std::string> bindVars;
-            bindVars.push_back( collIdString );
-            status = cmlGetIntegerValueFromSql(
-                         "select coll_id from R_COLL_MAIN where coll_id=?",
-                         &collId, bindVars, &icss );
-        }
-        if ( status == 0 ) {
-            return  ERROR( CAT_NO_ACCESS_PERMISSION, "permission error" );  /* does exist, must be
-                                                   permission error */
-        }
-        return ERROR( CAT_UNKNOWN_COLLECTION, "target is not a collection" );      /* isn't a coll */
-    }
-
-
-    /* See if we're moving a dataObj and if so get the data_name;
-       and at the same time check the access permission */
-    snprintf( objIdString, MAX_NAME_LEN, "%lld", _obj_id );
-    if ( logSQL != 0 ) {
-        log_sql::debug("chlMoveObject SQL 3");
-    }
-    {
-        std::vector<std::string> bindVars;
-        bindVars.push_back( objIdString );
-        bindVars.push_back( _ctx.comm()->clientUser.userName );
-        bindVars.push_back( _ctx.comm()->clientUser.rodsZone );
-        status = cmlGetStringValueFromSql(
-                     "select data_name from R_DATA_MAIN DM, R_OBJT_ACCESS OA, R_USER_GROUP UG, R_USER_MAIN UM, R_TOKN_MAIN TM where DM.data_id=? and UM.user_name=? and UM.zone_name=? and UM.user_type_name!='rodsgroup' and UM.user_id = UG.user_id and OA.object_id = DM.data_id and UG.group_user_id = OA.user_id and OA.access_type_id >= TM.token_id and TM.token_namespace ='access_type' and TM.token_name = 'own'",
-                     dataObjName, MAX_NAME_LEN, bindVars, &icss );
-    }
-    snprintf( collIdString, MAX_NAME_LEN, "%lld", _target_coll_id );
-    if ( status == 0 ) { /* it is a dataObj and user has access to it */
-
-        /* check that no other dataObj exists with the ObjName in the
-           target collection */
-        if ( logSQL != 0 ) {
-            log_sql::debug("chlMoveObject SQL 4");
-        }
-        {
-            std::vector<std::string> bindVars;
-            bindVars.push_back( dataObjName );
-            bindVars.push_back( collIdString );
-            status = cmlGetIntegerValueFromSql(
-                         "select data_id from R_DATA_MAIN where data_name=? and coll_id=?",
-                         &otherDataId, bindVars, &icss );
-        }
-        if ( status != CAT_NO_ROWS_FOUND ) {
-            return ERROR( CAT_NAME_EXISTS_AS_DATAOBJ, "select data_id failed" );
+        // Check that target collection exists and user has write (modify_object) permission
+        int target_access = irods::experimental::catalog::access_control::check_collection_id(
+            executor, db_conn, target_coll_id_str, user_name, user_zone, ACCESS_MODIFY_OBJECT);
+        if ( target_access < 0 ) {
+            // Does target coll exist?
+            auto exists = irods::experimental::catalog::query_catalog_integer(
+                executor, db_conn,
+                gq2::builder::select({"COLL_ID"}).from("COLLECTION").where(col("COLL_ID") == target_coll_id_str).build());
+            if ( exists.has_value() ) {
+                return ERROR( CAT_NO_ACCESS_PERMISSION, "permission error" );
+            }
+            return ERROR( CAT_UNKNOWN_COLLECTION, "target is not a collection" );
         }
 
-        /* check that no subcoll exists in the target collection, with
-           the name of the object */
-        /* //not needed, I think   snprintf(collIdString, MAX_NAME_LEN, "%d", collId); */
-        snprintf( nameTmp, MAX_NAME_LEN, "/%s", dataObjName );
-        if ( logSQL != 0 ) {
-            log_sql::debug("chlMoveObject SQL 5");
-        }
-        {
-            std::vector<std::string> bindVars;
-            bindVars.push_back( collIdString );
-            bindVars.push_back( nameTmp );
-            status = cmlGetIntegerValueFromSql(
-                         "select coll_id from R_COLL_MAIN where coll_name = ( select coll_name from R_COLL_MAIN where coll_id=? ) || ?",
-                         &otherCollId, bindVars, &icss );
-        }
-        if ( status != CAT_NO_ROWS_FOUND ) {
-            return ERROR( CAT_NAME_EXISTS_AS_COLLECTION, "select coll_id failed" );
-        }
+        auto target_coll_name_opt = irods::experimental::catalog::query_catalog_string(
+            executor, db_conn,
+            gq2::builder::select({"COLL_NAME"}).from("COLLECTION").where(col("COLL_ID") == target_coll_id_str).build());
+        const std::string target_coll_name = target_coll_name_opt.value_or("");
 
-        /* update the table */
-        getNowStr( myTime );
-        cllBindVars[cllBindVarCount++] = collIdString;
-        cllBindVars[cllBindVarCount++] = myTime;
-        cllBindVars[cllBindVarCount++] = objIdString;
-        if ( logSQL != 0 ) {
-            log_sql::debug("chlMoveObject SQL 6");
-        }
-        status =  cmlExecuteNoAnswerSql(
-                      "update R_DATA_MAIN set coll_id=?, modify_ts=? where data_id=?",
-                      &icss );
-        if ( status != 0 ) {
-            log_db::info("chlMoveObject cmlExecuteNoAnswerSql update1 failure {}", status);
-            _rollback( "chlMoveObject" );
-            return ERROR( status, "cmlExecuteNoAnswerSql update1 failure" );
-        }
+        // Try as data object
+        int own_access = irods::experimental::catalog::access_control::check_data_object_id(
+            executor, db_conn, obj_id_str, user_name, user_zone, ACCESS_OWN);
+        if ( own_access == 0 ) {
+            auto data_name_opt = irods::experimental::catalog::query_catalog_string(
+                executor, db_conn,
+                gq2::builder::select({"DATA_NAME"}).from("DATA_OBJECT").where(col("DATA_ID") == obj_id_str).build());
+            if ( data_name_opt.has_value() ) {
+                const std::string data_obj_name = *data_name_opt;
 
+                // Check that no other dataObj exists with this name in target coll
+                auto other_data = irods::experimental::catalog::query_catalog_integer(
+                    executor, db_conn,
+                    gq2::builder::select({"DATA_ID"})
+                        .from("DATA_OBJECT")
+                        .where(col("DATA_NAME") == data_obj_name && col("COLL_ID") == target_coll_id_str)
+                        .build());
+                if ( other_data.has_value() ) {
+                    return ERROR( CAT_NAME_EXISTS_AS_DATAOBJ, "select data_id failed" );
+                }
 
-        cllBindVars[cllBindVarCount++] = myTime;
-        cllBindVars[cllBindVarCount++] = collIdString;
-        if ( logSQL != 0 ) {
-            log_sql::debug("chlMoveObject SQL 7");
-        }
-        status =  cmlExecuteNoAnswerSql(
-                      "update R_COLL_MAIN set modify_ts=? where coll_id=?",
-                      &icss );
-        if ( status != 0 ) {
-            log_db::info("chlMoveObject cmlExecuteNoAnswerSql update2 failure {}", status);
-            _rollback( "chlMoveObject" );
-            return ERROR( status, "cmlExecuteNoAnswerSql update2 failure" );
-        }
+                // Check that no subcoll exists in the target collection with the name of the object
+                const std::string subcoll_target_name = target_coll_name + "/" + data_obj_name;
+                auto other_coll = irods::experimental::catalog::query_catalog_integer(
+                    executor, db_conn,
+                    gq2::builder::select({"COLL_ID"})
+                        .from("COLLECTION")
+                        .where(col("COLL_NAME") == subcoll_target_name)
+                        .build());
+                if ( other_coll.has_value() ) {
+                    return ERROR( CAT_NAME_EXISTS_AS_COLLECTION, "select coll_id failed" );
+                }
 
-        return CODE( status );
-    }
+                char my_time[50];
+                getNowStr( my_time );
 
-    /* See if it's a collection, and get the parentCollName and
-       oldCollName, and check permission at the same time */
-    cVal[0] = parentCollName;
-    iVal[0] = MAX_NAME_LEN;
-    cVal[1] = oldCollName;
-    iVal[1] = MAX_NAME_LEN;
+                auto upd_data = gq2::builder::update("DATA_OBJECT")
+                    .set("coll_id", target_coll_id_str)
+                    .set("modify_ts", my_time)
+                    .where(col("data_id") == obj_id_str)
+                    .build();
+                irods::experimental::catalog::execute_catalog(executor, db_conn, upd_data);
 
-    if ( logSQL != 0 ) {
-        log_sql::debug("chlMoveObject SQL 8");
-    }
-    {
-        std::vector<std::string> bindVars;
-        bindVars.push_back( objIdString );
-        bindVars.push_back( _ctx.comm()->clientUser.userName );
-        bindVars.push_back( _ctx.comm()->clientUser.rodsZone );
-        status = cmlGetStringValuesFromSql(
-                     "select parent_coll_name, coll_name from R_COLL_MAIN CM, R_OBJT_ACCESS OA, R_USER_GROUP UG, R_USER_MAIN UM, R_TOKN_MAIN TM where CM.coll_id=? and UM.user_name=? and UM.zone_name=? and UM.user_type_name!='rodsgroup' and UM.user_id = UG.user_id and OA.object_id = CM.coll_id and UG.group_user_id = OA.user_id and OA.access_type_id >= TM.token_id and TM.token_namespace ='access_type' and TM.token_name = 'own'",
-                     cVal, iVal, 2, bindVars, &icss );
-    }
-    if ( status == 0 ) {
-        /* it is a collection and user has access to it */
+                auto upd_coll = gq2::builder::update("COLLECTION")
+                    .set("modify_ts", my_time)
+                    .where(col("coll_id") == target_coll_id_str)
+                    .build();
+                irods::experimental::catalog::execute_catalog(executor, db_conn, upd_coll);
 
-        pLen = strlen( parentCollName );
-
-        ocLen = strlen( oldCollName );
-        if ( pLen <= 0 || ocLen <= 0 ) {
-            return ERROR( CAT_INVALID_ARGUMENT, "parent or coll name null" );
-        }  /* invalid
-                                                                    argument is not really the right error code, but something
-                                                                    is really wrong */
-        OK = 0;
-        for ( i = ocLen; i > 0; i-- ) {
-            if ( oldCollName[i] == '/' ) {
-                OK = 1;
-                snprintf( endCollName, sizeof( endCollName ), "%s", ( char* )&oldCollName[i + 1] );
-                break;
+                trans.commit();
+                return SUCCESS();
             }
         }
-        if ( OK == 0 ) {
-            return ERROR( CAT_INVALID_ARGUMENT, "OK == 0" );    /* not really, but...*/
+
+        // Try as collection
+        int coll_access = irods::experimental::catalog::access_control::check_collection_id(
+            executor, db_conn, obj_id_str, user_name, user_zone, ACCESS_OWN);
+        if ( coll_access >= 0 ) {
+            auto coll_res = irods::experimental::catalog::execute_catalog(
+                executor, db_conn,
+                gq2::builder::select({"parent_coll_name", "coll_name"}).from("COLLECTION").where(col("coll_id") == obj_id_str).build());
+            if ( coll_res.query_result && coll_res.query_result->next() ) {
+                const std::string parent_coll_name = coll_res.query_result->get<std::string>(0, "");
+                const std::string old_coll_name = coll_res.query_result->get<std::string>(1, "");
+
+                if ( parent_coll_name.empty() || old_coll_name.empty() ) {
+                    return ERROR( CAT_INVALID_ARGUMENT, "parent or coll name null" );
+                }
+
+                const auto last_slash = old_coll_name.rfind('/');
+                if ( last_slash == std::string::npos ) {
+                    return ERROR( CAT_INVALID_ARGUMENT, "OK == 0" );
+                }
+                const std::string end_coll_name = old_coll_name.substr(last_slash + 1);
+
+                // Check write access to source collection
+                const auto dir_access = irods::experimental::catalog::access_control::check_collection_access(
+                    executor, db_conn, parent_coll_name, user_name, user_zone, ACCESS_MODIFY_OBJECT);
+                if ( dir_access < 0 ) {
+                    return ERROR( dir_access, "check_collection_access failed" );
+                }
+
+                // Check that no other dataObj exists with end_coll_name in target coll
+                auto other_data = irods::experimental::catalog::query_catalog_integer(
+                    executor, db_conn,
+                    gq2::builder::select({"DATA_ID"})
+                        .from("DATA_OBJECT")
+                        .where(col("DATA_NAME") == end_coll_name && col("COLL_ID") == target_coll_id_str)
+                        .build());
+                if ( other_data.has_value() ) {
+                    return ERROR( CAT_NAME_EXISTS_AS_DATAOBJ, "select data_id failed" );
+                }
+
+                // Check that no subcoll exists in target collection with end_coll_name
+                const std::string new_coll_name = target_coll_name + "/" + end_coll_name;
+                auto other_coll = irods::experimental::catalog::query_catalog_integer(
+                    executor, db_conn,
+                    gq2::builder::select({"COLL_ID"})
+                        .from("COLLECTION")
+                        .where(col("COLL_NAME") == new_coll_name)
+                        .build());
+                if ( other_coll.has_value() ) {
+                    return ERROR( CAT_NAME_EXISTS_AS_COLLECTION, "select coll_id failed" );
+                }
+
+                // Check that we're not moving the coll down into its own subtree
+                if ( target_coll_name.rfind(old_coll_name, 0) == 0 &&
+                     (target_coll_name.size() == old_coll_name.size() || target_coll_name[old_coll_name.size()] == '/') ) {
+                    return ERROR( CAT_RECURSIVE_MOVE, "moving coll into own subtree" );
+                }
+
+                // Update this collection's row
+                char my_time[50];
+                getNowStr( my_time );
+
+                auto upd_coll_main = gq2::builder::update("COLLECTION")
+                    .set("coll_name", new_coll_name)
+                    .set("parent_coll_name", target_coll_name)
+                    .set("modify_ts", my_time)
+                    .where(col("coll_id") == obj_id_str)
+                    .build();
+                irods::experimental::catalog::execute_catalog(executor, db_conn, upd_coll_main);
+
+                // Update any collections under this collection
+                const std::string coll_name_slash = old_coll_name + "/";
+                auto subcolls = irods::experimental::catalog::execute_catalog(
+                    executor, db_conn,
+                    gq2::builder::select({"coll_id", "coll_name", "parent_coll_name"})
+                        .from("COLLECTION")
+                        .where(col("parent_coll_name") == old_coll_name || col("parent_coll_name").like(coll_name_slash + "%"))
+                        .build());
+
+                std::vector<std::tuple<std::string, std::string, std::string>> sub_updates;
+                if (subcolls.query_result) {
+                    while (subcolls.query_result->next()) {
+                        auto cid = subcolls.query_result->get<std::string>(0);
+                        auto cname = subcolls.query_result->get<std::string>(1);
+                        auto pname = subcolls.query_result->get<std::string>(2);
+                        if (cname == old_coll_name) {
+                            cname = new_coll_name;
+                        } else if (cname.starts_with(coll_name_slash)) {
+                            cname = new_coll_name + cname.substr(old_coll_name.size());
+                        }
+                        if (pname == old_coll_name) {
+                            pname = new_coll_name;
+                        } else if (pname.starts_with(coll_name_slash)) {
+                            pname = new_coll_name + pname.substr(old_coll_name.size());
+                        }
+                        sub_updates.emplace_back(std::move(cid), std::move(cname), std::move(pname));
+                    }
+                }
+
+                for (const auto& [cid, updated_cname, updated_pname] : sub_updates) {
+                    auto upd = gq2::builder::update("COLLECTION")
+                        .set("coll_name", updated_cname)
+                        .set("parent_coll_name", updated_pname)
+                        .where(col("coll_id") == cid)
+                        .build();
+                    irods::experimental::catalog::execute_catalog(executor, db_conn, upd);
+                }
+
+                trans.commit();
+                return SUCCESS();
+            }
         }
 
-        /* check that the user has write access to the source collection */
-        if ( logSQL != 0 ) {
-            log_sql::debug("chlMoveObject SQL 9");
-        }
-        status = cmlCheckDir( parentCollName,  _ctx.comm()->clientUser.userName,
-                              _ctx.comm()->clientUser.rodsZone,
-                              ACCESS_MODIFY_OBJECT, &icss );
-        if ( status < 0 ) {
-            return ERROR( status, "cmlCheckDir failed" );
+        // Both collection and dataObj failed, determine specific error
+        auto data_check = irods::experimental::catalog::query_catalog_integer(
+            executor, db_conn,
+            gq2::builder::select({"COLL_ID"}).from("DATA_OBJECT").where(col("DATA_ID") == obj_id_str).build());
+        if ( data_check.has_value() ) {
+            return ERROR( CAT_NO_ACCESS_PERMISSION, "select coll_id failed" );
         }
 
-        /* check that no other dataObj exists with the ObjName in the
-           target collection */
-        snprintf( collIdString, MAX_NAME_LEN, "%lld", _target_coll_id );
-        if ( logSQL != 0 ) {
-            log_sql::debug("chlMoveObject SQL 10");
-        }
-        {
-            std::vector<std::string> bindVars;
-            bindVars.push_back( endCollName );
-            bindVars.push_back( collIdString );
-            status = cmlGetIntegerValueFromSql(
-                         "select data_id from R_DATA_MAIN where data_name=? and coll_id=?",
-                         &otherDataId, bindVars, &icss );
-        }
-        if ( status != CAT_NO_ROWS_FOUND ) {
-            return ERROR( CAT_NAME_EXISTS_AS_DATAOBJ, "select data_id failed" );
+        auto coll_check = irods::experimental::catalog::query_catalog_integer(
+            executor, db_conn,
+            gq2::builder::select({"COLL_ID"}).from("COLLECTION").where(col("COLL_ID") == obj_id_str).build());
+        if ( coll_check.has_value() ) {
+            return ERROR( CAT_NO_ACCESS_PERMISSION, "select coll_id failed" );
         }
 
-        /* check that no subcoll exists in the target collection, with
-           the name of the object */
-        snprintf( newCollName, sizeof( newCollName ), "%s", targetCollName );
-        strncat( newCollName, PATH_SEPARATOR, strlen(PATH_SEPARATOR) );
-        strncat( newCollName, endCollName, strlen(endCollName) );
-
-        if ( logSQL != 0 ) {
-            log_sql::debug("chlMoveObject SQL 11");
-        }
-        {
-            std::vector<std::string> bindVars;
-            bindVars.push_back( newCollName );
-            status = cmlGetIntegerValueFromSql(
-                         "select coll_id from R_COLL_MAIN where coll_name = ?",
-                         &otherCollId, bindVars, &icss );
-        }
-        if ( status != CAT_NO_ROWS_FOUND ) {
-            return ERROR( CAT_NAME_EXISTS_AS_COLLECTION, "select coll_id failed" );
-        }
-
-
-        /* Check that we're not moving the coll down into it's own
-           subtree (which would create a recursive loop) */
-        cp = strstr( targetCollName, oldCollName );
-        if ( cp == targetCollName &&
-                ( targetCollName[strlen( oldCollName )] == '/' ||
-                  targetCollName[strlen( oldCollName )] == '\0' ) ) {
-            return ERROR( CAT_RECURSIVE_MOVE, "moving coll into own subtree" );
-        }
-
-
-        /* Update the table */
-
-        /* First, set the collection name and parent collection to the
-        new strings, and update the modify-time */
-        getNowStr( myTime );
-        cllBindVars[cllBindVarCount++] = newCollName;
-        cllBindVars[cllBindVarCount++] = targetCollName;
-        cllBindVars[cllBindVarCount++] = myTime;
-        cllBindVars[cllBindVarCount++] = objIdString;
-        if ( logSQL != 0 ) {
-            log_sql::debug("chlMoveObject SQL 12");
-        }
-        status =  cmlExecuteNoAnswerSql(
-                      "update R_COLL_MAIN set coll_name = ?, parent_coll_name=?, modify_ts=? where coll_id = ?",
-                      &icss );
-        if ( status != 0 ) {
-            log_db::info("chlMoveObject cmlExecuteNoAnswerSql update failure {}", status);
-            _rollback( "chlMoveObject" );
-            return ERROR( status, "cmlExecuteNoAnswerSql update failure" );
-        }
-
-        /* Now set any collection names that are under this collection to
-           the new name, putting the string together from the the new upper
-           part, endCollName string, and then (if any for each row) the
-           tailing part of the name.
-           (In the sql substr function, the index for sql is 1 origin.) */
-        snprintf( collNameSlash, MAX_NAME_LEN, "%s/", oldCollName );
-
-        /* See remark earlier on rationale for having string length calculations
-         * done by the RDBMS rather than here
-         */
-        cllBindVars[cllBindVarCount++] = newCollName;
-        cllBindVars[cllBindVarCount++] = oldCollName;
-        cllBindVars[cllBindVarCount++] = newCollName;
-        cllBindVars[cllBindVarCount++] = oldCollName;
-        cllBindVars[cllBindVarCount++] = collNameSlash;
-        cllBindVars[cllBindVarCount++] = collNameSlash;
-        cllBindVars[cllBindVarCount++] = oldCollName;
-        if ( logSQL != 0 ) {
-            log_sql::debug("chlMoveObject SQL 13");
-        }
-#ifdef ORA_ICAT
-        status = cmlExecuteNoAnswerSql(
-            "update R_COLL_MAIN set parent_coll_name = ? || SUBSTR(parent_coll_name, LENGTH(?) + 1), coll_name = ? || "
-            "SUBSTR(coll_name, LENGTH(?) + 1) where SUBSTR(parent_coll_name, 1, LENGTH(?)) = ? or parent_coll_name = ?",
-            &icss);
-#else
-        status = cmlExecuteNoAnswerSql("update R_COLL_MAIN set parent_coll_name = ? || substr(parent_coll_name, "
-                                       "char_length(?) + 1), coll_name = ? || substr(coll_name, char_length(?) + 1) "
-                                       "where substr(parent_coll_name, 1, char_length(?)) = ? or parent_coll_name = ?",
-                                       &icss);
-#endif
-        if ( status == CAT_SUCCESS_BUT_WITH_NO_INFO ) {
-            status = 0;
-        }
-        if ( status != 0 ) {
-            log_db::info("chlMoveObject cmlExecuteNoAnswerSql update failure {}", status);
-            _rollback( "chlMoveObject" );
-            return ERROR( status, "cmlExecuteNoAnswerSql update failure" );
-        }
-
-        return CODE( status );
+        return ERROR( CAT_NOT_A_DATAOBJ_AND_NOT_A_COLLECTION, "invalid object or collection" );
     }
-
-
-    /* Both collection and dataObj failed, go thru the sql in smaller
-       steps to return a specific error */
-    snprintf( objIdString, MAX_NAME_LEN, "%lld", _obj_id );
-    if ( logSQL != 0 ) {
-        log_sql::debug("chlMoveObject SQL 14");
+    catch (const nanodbc::database_error& e) {
+        log_db::error("{}: database error: {}", __FUNCTION__, e.what());
+        return ERROR( CAT_SQL_ERR, e.what() );
     }
-    {
-        std::vector<std::string> bindVars;
-        bindVars.push_back( objIdString );
-        status = cmlGetIntegerValueFromSql(
-                     "select coll_id from R_DATA_MAIN where data_id=?",
-                     &otherDataId, bindVars, &icss );
+    catch (const std::exception& e) {
+        log_db::error("{}: exception: {}", __FUNCTION__, e.what());
+        return ERROR( SYS_INTERNAL_ERR, e.what() );
     }
-    if ( status == 0 ) {
-        /* it IS a data obj, must be permission error */
-        return ERROR( CAT_NO_ACCESS_PERMISSION, "select coll_id failed" );
-    }
-
-    if ( logSQL != 0 ) {
-        log_sql::debug("chlMoveObject SQL 15");
-    }
-    {
-        std::vector<std::string> bindVars;
-        bindVars.push_back( objIdString );
-        status = cmlGetIntegerValueFromSql(
-                     "select coll_id from R_COLL_MAIN where coll_id=?",
-                     &otherDataId, bindVars, &icss );
-    }
-    if ( status == 0 ) {
-        /* it IS a collection, must be permission error */
-        return  ERROR( CAT_NO_ACCESS_PERMISSION, "select coll_id failed" );
-    }
-
-    return ERROR( CAT_NOT_A_DATAOBJ_AND_NOT_A_COLLECTION, "invalid object or collection" );
-
 } // db_move_object_op
 
 irods::error db_reg_token_op(
@@ -10794,40 +9104,12 @@ irods::error db_reg_token_op(
     const char*            _value2,
     const char*            _value3,
     const char*            _comment ) {
-    // =-=-=-=-=-=-=-
-    // check the context
     irods::error ret = _ctx.valid();
     if ( !ret.ok() ) {
         return PASS( ret );
     }
 
-    // =-=-=-=-=-=-=-
-    // get a postgres object from the context
-    /*irods::postgres_object_ptr pg;
-    ret = make_db_ptr( _ctx.fco(), pg );
-    if ( !ret.ok() ) {
-        return PASS( ret );
-
-    }*/
-
-    // =-=-=-=-=-=-=-
-    // extract the icss property
-//        icatSessionStruct icss;
-//        _ctx.prop_map().get< icatSessionStruct >( ICSS_PROP, icss );
-    int status;
-    rodsLong_t objId;
-    const char *myValue1;
-    const char *myValue2;
-    const char *myValue3;
-    const char *myComment;
-    char myTime[50];
-    rodsLong_t seqNum;
-    char errMsg[205];
-    char seqNumStr[MAX_NAME_LEN];
-
-    if ( logSQL != 0 ) {
-        log_sql::debug("chlRegToken");
-    }
+    log_sql::debug("chlRegToken");
 
     if ( _name_space == NULL || strlen( _name_space ) == 0 ) {
         return ERROR( CAT_INVALID_ARGUMENT, "namespace null or 0 len" );
@@ -10836,135 +9118,91 @@ irods::error db_reg_token_op(
         return ERROR( CAT_INVALID_ARGUMENT, "name null or 0 len" );
     }
 
-    if ( logSQL != 0 ) {
+    try {
+        auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
+        nanodbc::transaction trans{db_conn};
+
+        namespace gq2 = irods::experimental::genquery2;
+        using gq2::builder::col;
+
         log_sql::debug("chlRegToken SQL 1 ");
-    }
-    {
-        std::vector<std::string> bindVars;
-        bindVars.push_back( "token_namespace" );
-        bindVars.push_back( _name_space );
-        status = cmlGetIntegerValueFromSql(
-                     "select token_id from R_TOKN_MAIN where token_namespace=? and token_name=?",
-                     &objId, bindVars, &icss );
-    }
-    if ( status != 0 ) {
-        snprintf( errMsg, 200,
-                  "Token namespace '%s' does not exist",
-                  _name_space );
-        addRErrorMsg( &_ctx.comm()->rError, 0, errMsg );
-        return  ERROR( CAT_INVALID_ARGUMENT, "namespace does not exist" );
-    }
+        const auto ns_id = irods::experimental::catalog::query_catalog_integer(
+            executor,
+            db_conn,
+            gq2::builder::select({"token_id"})
+                .from("TOKEN")
+                .where(col("token_namespace") == "token_namespace" && col("token_name") == _name_space)
+                .build());
 
-    if ( logSQL != 0 ) {
+        if (!ns_id.has_value()) {
+            addRErrorMsg( &_ctx.comm()->rError, 0,
+                          fmt::format( "Token namespace '{}' does not exist", _name_space ).c_str() );
+            return ERROR( CAT_INVALID_ARGUMENT, "namespace does not exist" );
+        }
+
         log_sql::debug("chlRegToken SQL 2");
-    }
-    {
-        std::vector<std::string> bindVars;
-        bindVars.push_back( _name_space );
-        bindVars.push_back( _name );
-        status = cmlGetIntegerValueFromSql(
-                     "select token_id from R_TOKN_MAIN where token_namespace=? and token_name=?",
-                     &objId, bindVars, &icss );
-    }
-    if ( status == 0 ) {
-        snprintf( errMsg, 200,
-                  "Token '%s' already exists in namespace '%s'",
-                  _name, _name_space );
-        addRErrorMsg( &_ctx.comm()->rError, 0, errMsg );
-        return ERROR( CAT_INVALID_ARGUMENT, "token is already in namespace" );
-    }
+        const auto token_id = irods::experimental::catalog::query_catalog_integer(
+            executor,
+            db_conn,
+            gq2::builder::select({"token_id"})
+                .from("TOKEN")
+                .where(col("token_namespace") == _name_space && col("token_name") == _name)
+                .build());
 
-    myValue1 = _value;
-    if ( myValue1 == NULL ) {
-        myValue1 = "";
-    }
-    myValue2 = _value2;
-    if ( myValue2 == NULL ) {
-        myValue2 = "";
-    }
-    myValue3 = _value3;
-    if ( myValue3 == NULL ) {
-        myValue3 = "";
-    }
-    myComment = _comment;
-    if ( myComment == NULL ) {
-        myComment = "";
-    }
+        if (token_id.has_value()) {
+            addRErrorMsg( &_ctx.comm()->rError, 0,
+                          fmt::format( "Token '{}' already exists in namespace '{}'", _name, _name_space ).c_str() );
+            return ERROR( CAT_INVALID_ARGUMENT, "token is already in namespace" );
+        }
 
-    if ( logSQL != 0 ) {
+        const char *myValue1 = _value ? _value : "";
+        const char *myValue2 = _value2 ? _value2 : "";
+        const char *myValue3 = _value3 ? _value3 : "";
+        const char *myComment = _comment ? _comment : "";
+
         log_sql::debug("chlRegToken SQL 3");
-    }
-    seqNum = cmlGetNextSeqVal( &icss );
-    if ( seqNum < 0 ) {
-        log_db::info("chlRegToken cmlGetNextSeqVal failure {}", seqNum);
-        return ERROR( seqNum, "chlRegToken cmlGetNextSeqVal failure" );
-    }
+        const int64_t seqNum = executor.get_next_sequence_value(db_conn, "R_ObjectID");
 
-    getNowStr( myTime );
-    snprintf( seqNumStr, sizeof seqNumStr, "%lld", seqNum );
-    cllBindVars[cllBindVarCount++] = _name_space;
-    cllBindVars[cllBindVarCount++] = seqNumStr;
-    cllBindVars[cllBindVarCount++] = _name;
-    cllBindVars[cllBindVarCount++] = myValue1;
-    cllBindVars[cllBindVarCount++] = myValue2;
-    cllBindVars[cllBindVarCount++] = myValue3;
-    cllBindVars[cllBindVarCount++] = myComment;
-    cllBindVars[cllBindVarCount++] = myTime;
-    cllBindVars[cllBindVarCount++] = myTime;
-    if ( logSQL != 0 ) {
+        char myTime[50];
+        getNowStr( myTime );
+
         log_sql::debug("chlRegToken SQL 4");
-    }
-    status =  cmlExecuteNoAnswerSql(
-                  "insert into R_TOKN_MAIN values (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                  &icss );
-    if ( status != 0 ) {
-        _rollback( "chlRegToken" );
-        return ERROR( status, "insert failure" );
-    }
+        auto ins = gq2::builder::insert_into("TOKEN")
+            .set("token_namespace", _name_space)
+            .set("token_id", std::to_string(seqNum))
+            .set("token_name", _name)
+            .set("token_value", myValue1)
+            .set("token_value2", myValue2)
+            .set("token_value3", myValue3)
+            .set("r_comment", myComment)
+            .set("create_ts", myTime)
+            .set("modify_ts", myTime)
+            .build();
+        irods::experimental::catalog::execute_catalog(executor, db_conn, ins);
 
-    status =  cmlExecuteNoAnswerSql( "commit", &icss );
-    if ( status < 0 ) {
-        return ERROR( status, "commit error" );
+        trans.commit();
+        return SUCCESS();
     }
-    else {
-        return CODE( status );
+    catch (const nanodbc::database_error& e) {
+        log_db::error("{}: database error: {}", __FUNCTION__, e.what());
+        return ERROR( CAT_SQL_ERR, e.what() );
     }
-
+    catch (const std::exception& e) {
+        log_db::error("{}: exception: {}", __FUNCTION__, e.what());
+        return ERROR( SYS_INTERNAL_ERR, e.what() );
+    }
 } // db_reg_token_op
 
 irods::error db_del_token_op(
     irods::plugin_context& _ctx,
     const char*            _name_space,
     const char*            _name ) {
-    // =-=-=-=-=-=-=-
-    // check the context
     irods::error ret = _ctx.valid();
     if ( !ret.ok() ) {
         return PASS( ret );
     }
 
-    // =-=-=-=-=-=-=-
-    // get a postgres object from the context
-    /*irods::postgres_object_ptr pg;
-    ret = make_db_ptr( _ctx.fco(), pg );
-    if ( !ret.ok() ) {
-        return PASS( ret );
-
-    }*/
-
-    // =-=-=-=-=-=-=-
-    // extract the icss property
-//        icatSessionStruct icss;
-//        _ctx.prop_map().get< icatSessionStruct >( ICSS_PROP, icss );
-
-
-    int status;
-    rodsLong_t objId;
-    char errMsg[205];
-
-    if ( logSQL != 0 ) {
-        log_sql::debug("chlDelToken");
-    }
+    log_sql::debug("chlDelToken");
 
     if ( _name_space == NULL || strlen( _name_space ) == 0 ) {
         return ERROR( CAT_INVALID_ARGUMENT, "namespace is null or 0 len" );
@@ -10973,46 +9211,47 @@ irods::error db_del_token_op(
         return ERROR( CAT_INVALID_ARGUMENT, "name is null or 0 len" );
     }
 
-    if ( logSQL != 0 ) {
+    try {
+        auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
+        nanodbc::transaction trans{db_conn};
+
+        namespace gq2 = irods::experimental::genquery2;
+        using gq2::builder::col;
+
         log_sql::debug("chlDelToken SQL 1 ");
-    }
-    {
-        std::vector<std::string> bindVars;
-        bindVars.push_back( _name_space );
-        bindVars.push_back( _name );
-        status = cmlGetIntegerValueFromSql(
-                     "select token_id from R_TOKN_MAIN where token_namespace=? and token_name=?",
-                     &objId, bindVars, &icss );
-    }
-    if ( status != 0 ) {
-        snprintf( errMsg, 200,
-                  "Token '%s' does not exist in namespace '%s'",
-                  _name, _name_space );
-        addRErrorMsg( &_ctx.comm()->rError, 0, errMsg );
-        return  ERROR( CAT_INVALID_ARGUMENT, "token is not in namespace" );
-    }
+        const auto objId = irods::experimental::catalog::query_catalog_integer(
+            executor,
+            db_conn,
+            gq2::builder::select({"token_id"})
+                .from("TOKEN")
+                .where(col("token_namespace") == _name_space && col("token_name") == _name)
+                .build());
 
-    if ( logSQL != 0 ) {
+        if (!objId.has_value()) {
+            addRErrorMsg( &_ctx.comm()->rError, 0,
+                          fmt::format( "Token '{}' does not exist in namespace '{}'", _name, _name_space ).c_str() );
+            return ERROR( CAT_INVALID_ARGUMENT, "token is not in namespace" );
+        }
+
         log_sql::debug("chlDelToken SQL 2");
-    }
-    cllBindVars[cllBindVarCount++] = _name_space;
-    cllBindVars[cllBindVarCount++] = _name;
-    status =  cmlExecuteNoAnswerSql(
-                  "delete from R_TOKN_MAIN where token_namespace=? and token_name=?",
-                  &icss );
-    if ( status != 0 ) {
-        _rollback( "chlDelToken" );
-        return ERROR( status, "delete failure" );
-    }
+        namespace gq2 = irods::experimental::genquery2;
+        using gq2::builder::col;
+        auto del_tokn = gq2::builder::remove_from("TOKEN")
+            .where(col("token_namespace") == _name_space && col("token_name") == _name)
+            .build();
+        irods::experimental::catalog::execute_catalog(executor, db_conn, del_tokn);
 
-    status =  cmlExecuteNoAnswerSql( "commit", &icss );
-    if ( status < 0 ) {
-        return ERROR( status, "commit failed" );
-    }
-    else {
+        trans.commit();
         return SUCCESS();
     }
-
+    catch (const nanodbc::database_error& e) {
+        log_db::error("{}: database error: {}", __FUNCTION__, e.what());
+        return ERROR( CAT_SQL_ERR, e.what() );
+    }
+    catch (const std::exception& e) {
+        log_db::error("{}: exception: {}", __FUNCTION__, e.what());
+        return ERROR( SYS_INTERNAL_ERR, e.what() );
+    }
 } // db_del_token_op
 
 irods::error db_reg_server_load_op(
@@ -11026,285 +9265,187 @@ irods::error db_reg_server_load_op(
     const char*            _disk_space,
     const char*            _net_input,
     const char*            _net_output ) {
-    // =-=-=-=-=-=-=-
-    // check the context
     irods::error ret = _ctx.valid();
     if ( !ret.ok() ) {
         return PASS( ret );
     }
 
-    // =-=-=-=-=-=-=-
-    // get a postgres object from the context
-    /*irods::postgres_object_ptr pg;
-    ret = make_db_ptr( _ctx.fco(), pg );
-    if ( !ret.ok() ) {
-        return PASS( ret );
-
-    }*/
-
-    // =-=-=-=-=-=-=-
-    // extract the icss property
-//        icatSessionStruct icss;
-//        _ctx.prop_map().get< icatSessionStruct >( ICSS_PROP, icss );
-    char myTime[50];
-    int status;
-    int i;
-
-    if ( logSQL != 0 ) {
-        log_sql::debug("chlRegServerLoad");
-    }
+    log_sql::debug("chlRegServerLoad");
 
     if ( _ctx.comm()->clientUser.authInfo.authFlag < LOCAL_PRIV_USER_AUTH ) {
         return ERROR( CAT_INSUFFICIENT_PRIVILEGE_LEVEL, "insufficient privilege" );
     }
 
-    if ( !icss.status ) {
-        return ERROR( CATALOG_NOT_CONNECTED, "catalog not connected" );
-    }
+    try {
+        auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
+        nanodbc::transaction trans{db_conn};
 
-    getNowStr( myTime );
+        char myTime[50];
+        getNowStr( myTime );
 
-    i = 0;
-    cllBindVars[i++] = _host_name;
-    cllBindVars[i++] = _resc_name;
-    cllBindVars[i++] = _cpu_used;
-    cllBindVars[i++] = _mem_used;
-    cllBindVars[i++] = _swap_used;
-    cllBindVars[i++] = _run_q_load;
-    cllBindVars[i++] = _disk_space;
-    cllBindVars[i++] = _net_input;
-    cllBindVars[i++] = _net_output;
-    cllBindVars[i++] = myTime;
-    cllBindVarCount = i;
-    if ( logSQL != 0 ) {
         log_sql::debug("chlRegServerLoad SQL 1");
-    }
-    status =  cmlExecuteNoAnswerSql(
-                  "insert into R_SERVER_LOAD (host_name, resc_name, cpu_used, mem_used, swap_used, runq_load, disk_space, net_input, net_output, create_ts) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                  &icss );
-    if ( status != 0 ) {
-        log_db::info("chlRegServerLoad cmlExecuteNoAnswerSql failure {}", status);
-        _rollback( "chlRegServerLoad" );
-        return ERROR( status, "cmlExecuteNoAnswerSql failure" );
-    }
+        namespace gq2 = irods::experimental::genquery2;
+        auto ins = gq2::builder::insert_into("SERVER_LOAD")
+            .set("host_name", _host_name ? _host_name : "")
+            .set("resc_name", _resc_name ? _resc_name : "")
+            .set("cpu_used", _cpu_used ? _cpu_used : "")
+            .set("mem_used", _mem_used ? _mem_used : "")
+            .set("swap_used", _swap_used ? _swap_used : "")
+            .set("runq_load", _run_q_load ? _run_q_load : "")
+            .set("disk_space", _disk_space ? _disk_space : "")
+            .set("net_input", _net_input ? _net_input : "")
+            .set("net_output", _net_output ? _net_output : "")
+            .set("create_ts", myTime)
+            .build();
+        irods::experimental::catalog::execute_catalog(executor, db_conn, ins);
 
-    status =  cmlExecuteNoAnswerSql( "commit", &icss );
-    if ( status != 0 ) {
-        log_db::info("chlRegServerLoad cmlExecuteNoAnswerSql commit failure {}", status);
-        return ERROR( status, "commit failure" );
+        trans.commit();
+        return SUCCESS();
     }
-
-    return SUCCESS();
-
+    catch (const nanodbc::database_error& e) {
+        log_db::error("{}: database error: {}", __FUNCTION__, e.what());
+        return ERROR( CAT_SQL_ERR, e.what() );
+    }
+    catch (const std::exception& e) {
+        log_db::error("{}: exception: {}", __FUNCTION__, e.what());
+        return ERROR( SYS_INTERNAL_ERR, e.what() );
+    }
 } // db_reg_server_load_op
 
 irods::error db_purge_server_load_op(
     irods::plugin_context& _ctx,
     const char*            _seconds_ago ) {
-    // =-=-=-=-=-=-=-
-    // check the context
     irods::error ret = _ctx.valid();
     if ( !ret.ok() ) {
         return PASS( ret );
     }
 
-    // =-=-=-=-=-=-=-
-    // get a postgres object from the context
-    /*irods::postgres_object_ptr pg;
-    ret = make_db_ptr( _ctx.fco(), pg );
-    if ( !ret.ok() ) {
-        return PASS( ret );
-
-    }*/
-
-    // =-=-=-=-=-=-=-
-    // extract the icss property
-//        icatSessionStruct icss;
-//        _ctx.prop_map().get< icatSessionStruct >( ICSS_PROP, icss );
-
-    // =-=-=-=-=-=-=-
-    // delete from R_LOAD_SERVER where (%i -exe_time) > %i
-    int status;
-    char nowStr[50];
-    static char thenStr[50];
-    time_t nowTime;
-    time_t thenTime;
-    time_t secondsAgoTime;
-
-    if ( logSQL != 0 ) {
-        log_sql::debug("chlPurgeServerLoad");
-    }
+    log_sql::debug("chlPurgeServerLoad");
 
     if ( _ctx.comm()->clientUser.authInfo.authFlag < LOCAL_PRIV_USER_AUTH ) {
         return ERROR( CAT_INSUFFICIENT_PRIVILEGE_LEVEL, "insufficient privilege" );
     }
 
-    getNowStr( nowStr );
-    nowTime = atoll( nowStr );
-    secondsAgoTime = atoll( _seconds_ago );
-    thenTime = nowTime - secondsAgoTime;
-    snprintf( thenStr, sizeof thenStr, "%011d", ( uint ) thenTime );
+    try {
+        auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
+        nanodbc::transaction trans{db_conn};
 
-    if ( logSQL != 0 ) {
+        char nowStr[50];
+        getNowStr( nowStr );
+        time_t nowTime = atoll( nowStr );
+        time_t secondsAgoTime = atoll( _seconds_ago );
+        time_t thenTime = nowTime - secondsAgoTime;
+        const auto thenStr = fmt::format( "{:011d}", static_cast<unsigned int>( thenTime ) );
+
         log_sql::debug("chlPurgeServerLoad SQL 1");
-    }
+        namespace gq2 = irods::experimental::genquery2;
+        using gq2::builder::col;
+        auto del_load = gq2::builder::remove_from("R_SERVER_LOAD")
+            .where(col("create_ts") < thenStr)
+            .build();
+        irods::experimental::catalog::execute_catalog(executor, db_conn, del_load);
 
-    cllBindVars[cllBindVarCount++] = thenStr;
-    status =  cmlExecuteNoAnswerSql(
-                  "delete from R_SERVER_LOAD where create_ts <?",
-                  &icss );
-    if ( status != 0 ) {
-        _rollback( "chlPurgeServerLoad" );
-        return ERROR( status, "delete failed" );
-    }
-
-    status =  cmlExecuteNoAnswerSql( "commit", &icss );
-    if ( status < 0 ) {
-        return ERROR( status, "commit failed" );
-    }
-    else {
+        trans.commit();
         return SUCCESS();
     }
-
+    catch (const nanodbc::database_error& e) {
+        log_db::error("{}: database error: {}", __FUNCTION__, e.what());
+        return ERROR( CAT_SQL_ERR, e.what() );
+    }
+    catch (const std::exception& e) {
+        log_db::error("{}: exception: {}", __FUNCTION__, e.what());
+        return ERROR( SYS_INTERNAL_ERR, e.what() );
+    }
 } // db_purge_server_load_op
 
 irods::error db_reg_server_load_digest_op(
     irods::plugin_context& _ctx,
     const char*            _resc_name,
     const char*            _load_factor ) {
-    // =-=-=-=-=-=-=-
-    // check the context
     irods::error ret = _ctx.valid();
     if ( !ret.ok() ) {
         return PASS( ret );
     }
 
-    // =-=-=-=-=-=-=-
-    // get a postgres object from the context
-    /*irods::postgres_object_ptr pg;
-    ret = make_db_ptr( _ctx.fco(), pg );
-    if ( !ret.ok() ) {
-        return PASS( ret );
-
-    }*/
-
-    // =-=-=-=-=-=-=-
-    // extract the icss property
-//        icatSessionStruct icss;
-//        _ctx.prop_map().get< icatSessionStruct >( ICSS_PROP, icss );
-    char myTime[50];
-    int status;
-    int i;
-
-    if ( logSQL != 0 ) {
-        log_sql::debug("chlRegServerLoadDigest");
-    }
+    log_sql::debug("chlRegServerLoadDigest");
 
     if ( _ctx.comm()->clientUser.authInfo.authFlag < LOCAL_PRIV_USER_AUTH ) {
         return ERROR( CAT_INSUFFICIENT_PRIVILEGE_LEVEL, "insufficient privilege" );
     }
 
-    if ( !icss.status ) {
-        return ERROR( CATALOG_NOT_CONNECTED, "catalog not connected" );
-    }
+    try {
+        auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
+        nanodbc::transaction trans{db_conn};
 
-    getNowStr( myTime );
+        char myTime[50];
+        getNowStr( myTime );
 
-    i = 0;
-    cllBindVars[i++] = _resc_name;
-    cllBindVars[i++] = _load_factor;
-    cllBindVars[i++] = myTime;
-    cllBindVarCount = i;
-
-    if ( logSQL != 0 ) {
         log_sql::debug("chlRegServerLoadDigest SQL 1");
-    }
-    status =  cmlExecuteNoAnswerSql(
-                  "insert into R_SERVER_LOAD_DIGEST (resc_name, load_factor, create_ts) values (?, ?, ?)",
-                  &icss );
-    if ( status != 0 ) {
-        log_db::info("chlRegServerLoadDigest cmlExecuteNoAnswerSql failure {}", status);
-        _rollback( "chlRegServerLoadDigest" );
-        return ERROR( status, "cmlExecuteNoAnswerSql failure" );
-    }
+        namespace gq2 = irods::experimental::genquery2;
+        auto ins = gq2::builder::insert_into("SERVER_LOAD_DIGEST")
+            .set("resc_name", _resc_name ? _resc_name : "")
+            .set("load_factor", _load_factor ? _load_factor : "")
+            .set("create_ts", myTime)
+            .build();
+        irods::experimental::catalog::execute_catalog(executor, db_conn, ins);
 
-    status =  cmlExecuteNoAnswerSql( "commit", &icss );
-    if ( status != 0 ) {
-        log_db::info("chlRegServerLoadDigest cmlExecuteNoAnswerSql commit failure {}", status);
-        return ERROR( status, "commit failure" );
+        trans.commit();
+        return SUCCESS();
     }
-
-    return SUCCESS();
-
+    catch (const nanodbc::database_error& e) {
+        log_db::error("{}: database error: {}", __FUNCTION__, e.what());
+        return ERROR( CAT_SQL_ERR, e.what() );
+    }
+    catch (const std::exception& e) {
+        log_db::error("{}: exception: {}", __FUNCTION__, e.what());
+        return ERROR( SYS_INTERNAL_ERR, e.what() );
+    }
 } // db_reg_server_load_digest_op
 
 irods::error db_purge_server_load_digest_op(
     irods::plugin_context& _ctx,
     const char*            _seconds_ago ) {
-    // =-=-=-=-=-=-=-
-    // check the context
     irods::error ret = _ctx.valid();
     if ( !ret.ok() ) {
         return PASS( ret );
     }
 
-    // =-=-=-=-=-=-=-
-    // get a postgres object from the context
-    /*irods::postgres_object_ptr pg;
-    ret = make_db_ptr( _ctx.fco(), pg );
-    if ( !ret.ok() ) {
-        return PASS( ret );
-
-    }*/
-
-    // =-=-=-=-=-=-=-
-    // extract the icss property
-//        icatSessionStruct icss;
-//        _ctx.prop_map().get< icatSessionStruct >( ICSS_PROP, icss );
-    // =-=-=-=-=-=-=-
-    /* delete from R_SERVER_LOAD_DIGEST where (%i -exe_time) > %i */
-    int status;
-    char nowStr[50];
-    static char thenStr[50];
-    time_t nowTime;
-    time_t thenTime;
-    time_t secondsAgoTime;
-
-    if ( logSQL != 0 ) {
-        log_sql::debug("chlPurgeServerLoadDigest");
-    }
+    log_sql::debug("chlPurgeServerLoadDigest");
 
     if ( _ctx.comm()->clientUser.authInfo.authFlag < LOCAL_PRIV_USER_AUTH ) {
         return ERROR( CAT_INSUFFICIENT_PRIVILEGE_LEVEL, "insufficient privilege" );
     }
 
-    getNowStr( nowStr );
-    nowTime = atoll( nowStr );
-    secondsAgoTime = atoll( _seconds_ago );
-    thenTime = nowTime - secondsAgoTime;
-    snprintf( thenStr, sizeof thenStr, "%011d", ( uint ) thenTime );
+    try {
+        auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
+        nanodbc::transaction trans{db_conn};
 
-    if ( logSQL != 0 ) {
+        char nowStr[50];
+        getNowStr( nowStr );
+        time_t nowTime = atoll( nowStr );
+        time_t secondsAgoTime = atoll( _seconds_ago );
+        time_t thenTime = nowTime - secondsAgoTime;
+        const auto thenStr = fmt::format( "{:011d}", static_cast<unsigned int>( thenTime ) );
+
         log_sql::debug("chlPurgeServerLoadDigest SQL 1");
-    }
+        namespace gq2 = irods::experimental::genquery2;
+        using gq2::builder::col;
+        auto del_digest = gq2::builder::remove_from("R_SERVER_LOAD_DIGEST")
+            .where(col("create_ts") < thenStr)
+            .build();
+        irods::experimental::catalog::execute_catalog(executor, db_conn, del_digest);
 
-    cllBindVars[cllBindVarCount++] = thenStr;
-    status =  cmlExecuteNoAnswerSql(
-                  "delete from R_SERVER_LOAD_DIGEST where create_ts <?",
-                  &icss );
-    if ( status != 0 ) {
-        _rollback( "chlPurgeServerLoadDigest" );
-        return ERROR( status, "delete failed" );
-    }
-
-    status =  cmlExecuteNoAnswerSql( "commit", &icss );
-    if ( status < 0 ) {
-        return ERROR( status, "commit failed" );
-    }
-    else {
+        trans.commit();
         return SUCCESS();
     }
-
+    catch (const nanodbc::database_error& e) {
+        log_db::error("{}: database error: {}", __FUNCTION__, e.what());
+        return ERROR( CAT_SQL_ERR, e.what() );
+    }
+    catch (const std::exception& e) {
+        log_db::error("{}: exception: {}", __FUNCTION__, e.what());
+        return ERROR( SYS_INTERNAL_ERR, e.what() );
+    }
 } // db_purge_server_load_digest_op
 
 irods::error db_get_grid_configuration_value_op(
@@ -11314,32 +9455,44 @@ irods::error db_get_grid_configuration_value_op(
     char*                  _option_value,
     std::size_t            _option_value_buffer_size)
 {
-    // =-=-=-=-=-=-=-
-    // check the context
     if (const irods::error ret = _ctx.valid(); !ret.ok()) {
         return PASS(ret);
     }
 
-    if (logSQL != 0) {
-        log_sql::debug("chlGetGridConfigurationValue");
+    log_sql::debug("chlGetGridConfigurationValue");
+
+    try {
+        auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
+
+        namespace gq2 = irods::experimental::genquery2;
+        using gq2::builder::col;
+
+        auto val_opt = irods::experimental::catalog::query_catalog_string(
+            executor, db_conn,
+            gq2::builder::select({"option_value"})
+                .from("GRID_CONFIGURATION")
+                .where(col("namespace") == (_namespace ? _namespace : "") &&
+                       col("option_name") == (_option_name ? _option_name : ""))
+                .build());
+
+        if (!val_opt.has_value()) {
+            return ERROR(CAT_NO_ROWS_FOUND, "Get Grid Configuration Value select failure");
+        }
+
+        std::strncpy(_option_value, val_opt->c_str(), _option_value_buffer_size);
+        if (_option_value_buffer_size > 0) {
+            _option_value[_option_value_buffer_size - 1] = '\0';
+        }
+        return SUCCESS();
     }
-
-    if (!icss.status) {
-        return ERROR(CATALOG_NOT_CONNECTED, "catalog not connected");
+    catch (const nanodbc::database_error& e) {
+        log_db::error("{}: database error: {}", __FUNCTION__, e.what());
+        return ERROR(CAT_SQL_ERR, e.what());
     }
-
-    std::vector<std::string> bindVars{_namespace, _option_name};
-
-    const int status = cmlGetStringValueFromSql(
-         "select option_value from R_GRID_CONFIGURATION where namespace = ? and option_name = ?",
-         _option_value, _option_value_buffer_size, bindVars, &icss);
-
-    if (status < 0) {
-        log_db::info("chlGetGridConfigurationValue cmlGetStringValueFromSql failure {}", status);
-        return ERROR(status, "Get Grid Configuration Value select failure");
+    catch (const std::exception& e) {
+        log_db::error("{}: exception: {}", __FUNCTION__, e.what());
+        return ERROR(SYS_INTERNAL_ERR, e.what());
     }
-
-    return SUCCESS();
 } // db_get_grid_configuration_value_op
 
 irods::error db_set_grid_configuration_value_op(
@@ -11356,78 +9509,56 @@ irods::error db_set_grid_configuration_value_op(
         return PASS(ret);
     }
 
-    if (logSQL != 0) {
-        log_sql::debug("chlSetGridConfigurationValue");
+    log_sql::debug("chlSetGridConfigurationValue");
+
+    try {
+        auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
+        nanodbc::transaction trans{db_conn};
+
+        namespace gq2 = irods::experimental::genquery2;
+        using gq2::builder::col;
+
+        auto val_opt = irods::experimental::catalog::query_catalog_string(
+            executor, db_conn,
+            gq2::builder::select({"option_value"})
+                .from("GRID_CONFIGURATION")
+                .where(col("namespace") == (_namespace ? _namespace : "") &&
+                       col("option_name") == (_option_name ? _option_name : ""))
+                .build());
+
+        if (!val_opt.has_value()) {
+            return ERROR(CAT_NO_ROWS_FOUND, "Set Grid Configuration Value select failure");
+        }
+
+        log_sql::debug("chlSetGridConfigurationValue SQL 1");
+        namespace gq2 = irods::experimental::genquery2;
+        using gq2::builder::col;
+        auto upd = gq2::builder::update("R_GRID_CONFIGURATION")
+            .set("option_value", _option_value ? _option_value : "")
+            .where(col("namespace") == (_namespace ? _namespace : "") &&
+                   col("option_name") == (_option_name ? _option_name : ""))
+            .build();
+        irods::experimental::catalog::execute_catalog(executor, db_conn, upd);
+
+        trans.commit();
+        return SUCCESS();
     }
-
-    if (!icss.status) {
-        return ERROR(CATALOG_NOT_CONNECTED, "catalog not connected");
+    catch (const nanodbc::database_error& e) {
+        log_db::error("{}: database error: {}", __FUNCTION__, e.what());
+        return ERROR(CAT_SQL_ERR, e.what());
     }
-
-    constexpr std::size_t grid_configuration_size = 2700;
-    std::vector<std::string> bindVars{_namespace, _option_name};
-    std::array<char, grid_configuration_size + 1> config_value{};
-    int status = cmlGetStringValueFromSql(
-        "select option_value from R_GRID_CONFIGURATION where namespace = ? and option_name = ?",
-        config_value.data(),
-        config_value.size(),
-        bindVars,
-        &icss);
-
-    if (status < 0) {
-        log_db::info("chlSetGridConfigurationValue cmlGetStringValueFromSql failure {}", status);
-        return ERROR(status, "Set Grid Configuration Value select failure");
+    catch (const std::exception& e) {
+        log_db::error("{}: exception: {}", __FUNCTION__, e.what());
+        return ERROR(SYS_INTERNAL_ERR, e.what());
     }
-
-    int i = 0;
-    cllBindVars[i++] = _option_value;
-    cllBindVars[i++] = _namespace;
-    cllBindVars[i++] = _option_name;
-    cllBindVarCount = i;
-    if (logSQL != 0) {
-        log_sql::debug("chlSetGridConfigurationValue  SQL 1");
-    }
-
-    status = cmlExecuteNoAnswerSql(
-        "update R_GRID_CONFIGURATION set option_value = ? where namespace = ? and option_name = ?", &icss);
-    if (status != 0 && status != CAT_SUCCESS_BUT_WITH_NO_INFO) {
-        _rollback("chlSetGridConfigurationValue");
-        log_db::info("chlSetGridConfigurationValue cmlExecuteNoAnswerSql failure {}", status);
-        return ERROR(status, "Set Grid Configuration Value SQL update failure");
-    }
-
-    status = cmlExecuteNoAnswerSql("commit", &icss);
-    if (status < 0) {
-        return ERROR(status, "commit failed");
-    }
-
-    return SUCCESS();
 } // db_set_grid_configuration_value_op
 
 irods::error db_calc_usage_and_quota_op(
     irods::plugin_context& _ctx ) {
-    // =-=-=-=-=-=-=-
-    // check the context
     irods::error ret = _ctx.valid();
     if ( !ret.ok() ) {
         return PASS( ret );
     }
-
-    // =-=-=-=-=-=-=-
-    // get a postgres object from the context
-    /*irods::postgres_object_ptr pg;
-    ret = make_db_ptr( _ctx.fco(), pg );
-    if ( !ret.ok() ) {
-        return PASS( ret );
-
-    }*/
-
-    // =-=-=-=-=-=-=-
-    // extract the icss property
-//        icatSessionStruct icss;
-//        _ctx.prop_map().get< icatSessionStruct >( ICSS_PROP, icss );
-    int status;
-    char myTime[50];
 
     if ( _ctx.comm()->clientUser.authInfo.authFlag < LOCAL_PRIV_USER_AUTH ) {
         return ERROR( CAT_INSUFFICIENT_PRIVILEGE_LEVEL, "insufficient privilege" );
@@ -11435,49 +9566,76 @@ irods::error db_calc_usage_and_quota_op(
 
     log_db::info("chlCalcUsageAndQuota called");
 
-    getNowStr( myTime );
+    try {
+        auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
+        nanodbc::transaction trans{db_conn};
 
-    /* Delete the old rows from R_QUOTA_USAGE */
-    if ( logSQL != 0 ) {
+        char myTime[50]{};
+        getNowStr( myTime );
+
+        /* Delete the old rows from R_QUOTA_USAGE */
         log_sql::debug("chlCalcUsageAndQuota SQL 1");
-    }
-    status = cmlExecuteNoAnswerSql("delete from R_QUOTA_USAGE", &icss);
-    if ( status != 0 && status != CAT_SUCCESS_BUT_WITH_NO_INFO ) {
-        _rollback( "chlCalcUsageAndQuota" );
-        return ERROR( status, "delete failed" );
-    }
+        namespace gq2 = irods::experimental::genquery2;
+        auto del_stmt = gq2::builder::remove_from("QUOTA_USAGE").build();
+        irods::experimental::catalog::execute_catalog(executor, db_conn, del_stmt);
 
-    /* Add a row to R_QUOTA_USAGE for each user's usage on each resource */
-    if ( logSQL != 0 ) {
+        /* Add a row to R_QUOTA_USAGE for each user's usage on each resource */
         log_sql::debug("chlCalcUsageAndQuota SQL 2");
+
+        // Map (user_name, zone_name) -> user_id
+        auto users_res = irods::experimental::catalog::execute_catalog(
+            executor, db_conn,
+            gq2::builder::select({"user_id", "user_name", "zone_name"}).from("USER").build());
+        std::map<std::pair<std::string, std::string>, std::string> user_id_map;
+        if (users_res.query_result) {
+            while (users_res.query_result->next()) {
+                auto uid = users_res.query_result->get<std::string>(0, "");
+                auto uname = users_res.query_result->get<std::string>(1, "");
+                auto zname = users_res.query_result->get<std::string>(2, "");
+                user_id_map.emplace(std::make_pair(std::move(uname), std::move(zname)), std::move(uid));
+            }
+        }
+
+        auto usage_sel = gq2::builder::select({"resc_id", "data_owner_name", "data_owner_zone"})
+            .project(gq2::builder::sum("data_size"))
+            .from("DATA_OBJECT")
+            .group_by({"resc_id", "data_owner_name", "data_owner_zone"})
+            .build();
+        auto usage_res = irods::experimental::catalog::execute_catalog(executor, db_conn, usage_sel);
+        if (usage_res.query_result) {
+            while (usage_res.query_result->next()) {
+                auto resc_id = usage_res.query_result->get<std::string>(0, "");
+                auto owner_name = usage_res.query_result->get<std::string>(1, "");
+                auto owner_zone = usage_res.query_result->get<std::string>(2, "");
+                auto sum_size = usage_res.query_result->get<std::string>(3, "0");
+
+                auto it = user_id_map.find({owner_name, owner_zone});
+                if (it != user_id_map.end()) {
+                    auto ins = gq2::builder::insert_into("QUOTA_USAGE")
+                        .set("quota_usage", sum_size)
+                        .set("resc_id", resc_id)
+                        .set("user_id", it->second)
+                        .set("modify_ts", myTime)
+                        .build();
+                    irods::experimental::catalog::execute_catalog(executor, db_conn, ins);
+                }
+            }
+        }
+
+        trans.commit();
     }
-    cllBindVars[cllBindVarCount++] = myTime;
-    status =  cmlExecuteNoAnswerSql(
-                  "insert into R_QUOTA_USAGE (quota_usage, resc_id, user_id, modify_ts) (select sum(R_DATA_MAIN.data_size), R_RESC_MAIN.resc_id, R_USER_MAIN.user_id, ? from R_DATA_MAIN, R_USER_MAIN, R_RESC_MAIN where R_USER_MAIN.user_name = R_DATA_MAIN.data_owner_name and R_USER_MAIN.zone_name = R_DATA_MAIN.data_owner_zone and R_RESC_MAIN.resc_id = R_DATA_MAIN.resc_id group by R_RESC_MAIN.resc_id, user_id)",
-                  &icss );
-    if ( status == CAT_SUCCESS_BUT_WITH_NO_INFO ) {
-        status = 0;    /* no files, OK */
-    }
-    if ( status != 0 ) {
-        _rollback( "chlCalcUsageAndQuota" );
-        return ERROR( status, "insert failed" );
+    catch (const std::exception& e) {
+        log_db::error("{}: exception: {}", __func__, e.what());
+        return ERROR( CAT_SQL_ERR, e.what() );
     }
 
     /* Set the over_quota flags where appropriate */
-    status = setOverQuota( _ctx.comm() );
+    int status = setOverQuota( _ctx.comm() );
     if ( status != 0 ) {
-        _rollback( "chlCalcUsageAndQuota" );
         return ERROR( status, "setOverQuota failed" );
     }
 
-    status =  cmlExecuteNoAnswerSql( "commit", &icss );
-    if ( status < 0 ) {
-        return ERROR( status, "commit failed" );
-    }
-    else {
-        return SUCCESS();
-    }
-
+    return SUCCESS();
 } // db_calc_usage_and_quota_op
 
 irods::error db_set_quota_op(
@@ -11486,33 +9644,16 @@ irods::error db_set_quota_op(
     const char*            _name,
     const char*            _resc_name,
     const char*            _limit ) {
-    // =-=-=-=-=-=-=-
-    // check the context
     irods::error ret = _ctx.valid();
     if ( !ret.ok() ) {
         return PASS( ret );
     }
 
-    // =-=-=-=-=-=-=-
-    // get a postgres object from the context
-    /*irods::postgres_object_ptr pg;
-    ret = make_db_ptr( _ctx.fco(), pg );
-    if ( !ret.ok() ) {
-        return PASS( ret );
-
-    }*/
-
-    // =-=-=-=-=-=-=-
-    // extract the icss property
-//        icatSessionStruct icss;
-//        _ctx.prop_map().get< icatSessionStruct >( ICSS_PROP, icss );
     int status;
-    rodsLong_t rescId;
-    rodsLong_t userId;
+    rodsLong_t rescId = 0;
+    rodsLong_t userId = 0;
     char userZone[NAME_LEN];
     char userName[NAME_LEN];
-    char rescIdStr[60];
-    char userIdStr[60];
     char myTime[50];
     int itype = 0;
 
@@ -11532,26 +9673,26 @@ irods::error db_set_quota_op(
         return PASS( ret );
     }
 
+    auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
+
     /* Get the resource id; use rescId=0 for 'total' */
-    rescId = 0;
     if ( strncmp( _resc_name, "total", 5 ) != 0 ) {
-        if ( logSQL != 0 ) {
-            log_sql::debug("chlSetQuota SQL 1");
-        }
-        {
-            std::vector<std::string> bindVars;
-            bindVars.push_back( _resc_name );
-            bindVars.push_back( zone );
-            status = cmlGetIntegerValueFromSql(
-                         "select resc_id from R_RESC_MAIN where resc_name=? and zone_name=?",
-                         &rescId, bindVars, &icss );
-        }
-        if ( status != 0 ) {
-            if ( status == CAT_NO_ROWS_FOUND ) {
+        log_sql::debug("chlSetQuota SQL 1");
+        try {
+            auto opt_resc = irods::experimental::catalog::query_catalog_integer(
+                executor, db_conn,
+                gq2::builder::select({"resc_id"})
+                    .from("RESOURCE")
+                    .where(col("resc_name") == _resc_name && col("zone_name") == zone)
+                    .build());
+            if (!opt_resc) {
                 return ERROR( CAT_INVALID_RESOURCE, _resc_name );
             }
-            _rollback( "chlSetQuota" );
-            return ERROR( status, "select resc_id failed" );
+            rescId = *opt_resc;
+        }
+        catch (const std::exception& e) {
+            log_db::error("{}: select resc_id failed: {}", __func__, e.what());
+            return ERROR( CAT_SQL_ERR, "select resc_id failed" );
         }
     }
 
@@ -11578,9 +9719,6 @@ irods::error db_set_quota_op(
     }
 
     // Handling user quota.
-    //
-    // Look up the entry that matches the given username and zone which does not have a type
-    // of "rodsgroup".
     if ( itype == 1 ) {
         if (int_limit != 0) {
             const auto msg = fmt::format("Setting user quota limit to anything other than zero is not allowed. "
@@ -11590,98 +9728,89 @@ irods::error db_set_quota_op(
             return ERROR(SYS_NOT_ALLOWED, msg);
         }
 
-        userId = 0;
-        if ( logSQL != 0 ) {
-            log_sql::debug("chlSetQuota SQL 2");
-        }
-        {
-            std::vector<std::string> bindVars;
-            bindVars.push_back( userName );
-            bindVars.push_back( userZone );
-            status = cmlGetIntegerValueFromSql(
-                         "select user_id from R_USER_MAIN where user_name=? and zone_name=? and user_type_name!='rodsgroup'",
-                         &userId, bindVars, &icss );
-        }
-        if ( status != 0 ) {
-            if ( status == CAT_NO_ROWS_FOUND ) {
+        log_sql::debug("chlSetQuota SQL 2");
+        try {
+            auto opt_user = irods::experimental::catalog::query_catalog_integer(
+                executor,
+                db_conn,
+                gq2::builder::select({"user_id"})
+                    .from("USER")
+                    .where(col("user_name") == userName && col("zone_name") == userZone && col("user_type_name") != "rodsgroup")
+                    .build());
+            if (!opt_user) {
                 return ERROR( CAT_INVALID_USER, userName );
             }
-            _rollback( "chlSetQuota" );
-            return ERROR( status, "select user_id failed" );
+            userId = *opt_user;
+        }
+        catch (const std::exception& e) {
+            log_db::error("{}: select user_id failed: {}", __func__, e.what());
+            return ERROR( CAT_SQL_ERR, "select user_id failed" );
         }
     }
     // Handling group quota.
-    //
-    // Because groups are represented as entries in r_user_main, look up the entry that matches
-    // the given username and zone which has a type of "rodsgroup".
     else {
-        userId = 0;
-        if ( logSQL != 0 ) {
-            log_sql::debug("chlSetQuota SQL 3");
-        }
-        {
-            std::vector<std::string> bindVars;
-            bindVars.push_back( userName );
-            bindVars.push_back( userZone );
-            status = cmlGetIntegerValueFromSql(
-                         "select user_id from R_USER_MAIN where user_name=? and zone_name=? and user_type_name='rodsgroup'",
-                         &userId, bindVars, &icss );
-        }
-        if ( status != 0 ) {
-            if ( status == CAT_NO_ROWS_FOUND ) {
+        log_sql::debug("chlSetQuota SQL 3");
+        try {
+            auto opt_group = irods::experimental::catalog::query_catalog_integer(
+                executor,
+                db_conn,
+                gq2::builder::select({"user_id"})
+                    .from("USER")
+                    .where(col("user_name") == userName && col("zone_name") == userZone && col("user_type_name") == "rodsgroup")
+                    .build());
+            if (!opt_group) {
                 return ERROR( CAT_INVALID_GROUP, "invalid group" );
             }
-            _rollback( "chlSetQuota" );
-            return ERROR( status, "select failure" );
+            userId = *opt_group;
+        }
+        catch (const std::exception& e) {
+            log_db::error("{}: select failure: {}", __func__, e.what());
+            return ERROR( CAT_SQL_ERR, "select failure" );
         }
     }
 
-    snprintf( userIdStr, sizeof userIdStr, "%lld", userId );
-    snprintf( rescIdStr, sizeof rescIdStr, "%lld", rescId );
+    const auto userIdStr = std::to_string( userId );
+    const auto rescIdStr = std::to_string( rescId );
 
-    /* first delete previous one, if any */
-    cllBindVars[cllBindVarCount++] = userIdStr;
-    cllBindVars[cllBindVarCount++] = rescIdStr;
-    if ( logSQL != 0 ) {
+    try {
+        nanodbc::transaction trans{db_conn};
+
+        namespace gq2 = irods::experimental::genquery2;
+        using gq2::builder::col;
+
         log_sql::debug("chlSetQuota SQL 4");
-    }
-    status =  cmlExecuteNoAnswerSql(
-                  "delete from R_QUOTA_MAIN where user_id=? and resc_id=?",
-                  &icss );
-    if ( status != 0 ) {
-        log_db::debug("chlSetQuota cmlExecuteNoAnswerSql delete failure {}", status);
-    }
-    if (int_limit > 0) {
-        getNowStr( myTime );
-        cllBindVars[cllBindVarCount++] = userIdStr;
-        cllBindVars[cllBindVarCount++] = rescIdStr;
-        cllBindVars[cllBindVarCount++] = _limit;
-        cllBindVars[cllBindVarCount++] = myTime;
-        if ( logSQL != 0 ) {
+        auto del_stmt = gq2::builder::remove_from("QUOTA")
+            .where(col("user_id") == userIdStr && col("resc_id") == rescIdStr)
+            .build();
+        irods::experimental::catalog::execute_catalog(executor, db_conn, del_stmt);
+
+        if (int_limit > 0) {
+            getNowStr( myTime );
             log_sql::debug("chlSetQuota SQL 5");
+            auto ins_stmt = gq2::builder::insert_into("QUOTA")
+                .set("user_id", userIdStr)
+                .set("resc_id", rescIdStr)
+                .set("quota_limit", _limit)
+                .set("modify_ts", myTime)
+                .build();
+            irods::experimental::catalog::execute_catalog(executor, db_conn, ins_stmt);
         }
-        status =  cmlExecuteNoAnswerSql(
-                      "insert into R_QUOTA_MAIN (user_id, resc_id, quota_limit, modify_ts) values (?, ?, ?, ?)",
-                      &icss );
-        if ( status != 0 ) {
-            log_db::info("chlSetQuota cmlExecuteNoAnswerSql insert failure {}", status);
-            _rollback( "chlSetQuota" );
-            return ERROR( status, "cmlExecuteNoAnswerSql insert failure" );
-        }
+
+        trans.commit();
+    }
+    catch (const nanodbc::database_error& e) {
+        log_db::error("{}: database error: {}", __FUNCTION__, e.what());
+        return ERROR( CAT_SQL_ERR, e.what() );
+    }
+    catch (const std::exception& e) {
+        log_db::error("{}: exception: {}", __FUNCTION__, e.what());
+        return ERROR( SYS_INTERNAL_ERR, e.what() );
     }
 
-    /* Reset the over_quota flags based on previous usage info.  The
-       usage info may take a while to set, but setting the OverQuota
-       should be quick.  */
+    /* Reset the over_quota flags based on previous usage info. */
     status = setOverQuota( _ctx.comm() );
     if ( status != 0 ) {
-        _rollback( "chlSetQuota" );
         return ERROR( status, "setOverQuota failed" );
-    }
-
-    status =  cmlExecuteNoAnswerSql( "commit", &icss );
-    if ( status < 0 ) {
-        return ERROR( status, "commit failure" );
     }
 
     return SUCCESS();
@@ -11693,89 +9822,106 @@ irods::error db_check_quota_op(
     const char*            _resc_name,
     rodsLong_t*            _user_quota,
     int*                   _quota_status ) {
-    // =-=-=-=-=-=-=-
-    // check the context
     irods::error ret = _ctx.valid();
     if ( !ret.ok() ) {
         return PASS( ret );
     }
 
-    // =-=-=-=-=-=-=-
-    // get a postgres object from the context
-    /*irods::postgres_object_ptr pg;
-    ret = make_db_ptr( _ctx.fco(), pg );
-    if ( !ret.ok() ) {
-        return PASS( ret );
-
-    }*/
-
-    // =-=-=-=-=-=-=-
-    // extract the icss property
-//        icatSessionStruct icss;
-//        _ctx.prop_map().get< icatSessionStruct >( ICSS_PROP, icss );
-    /*
-       Check on a user's quota status, returning the most-over or
-       nearest-over value.
-
-       A single query is done which gets the four possible types of quotas
-       for this user on this resource (and ordered so the first row is the
-       result).  The types of quotas are: user per-resource, user global,
-       group per-resource, and group global.
-    */
-    int status;
-    int statementNum = UNINITIALIZED_STATEMENT_NUMBER;
-
-    char mySQL[] = "select distinct QM.user_id, QM.resc_id, QM.quota_limit, QM.quota_over from R_QUOTA_MAIN QM, R_USER_MAIN UM, R_RESC_MAIN RM, R_USER_GROUP UG, R_USER_MAIN UM2 where ( (QM.user_id = UM.user_id and UM.user_name = ?) or (QM.user_id = UG.group_user_id and UM2.user_name = ? and UG.user_id = UM2.user_id) ) and ((QM.resc_id = RM.resc_id and RM.resc_name = ?) or QM.resc_id = '0') order by quota_over desc";
-
     *_user_quota = 0;
-    if ( logSQL != 0 ) {
-        log_sql::debug("chlCheckQuota SQL 1");
-    }
-    cllBindVars[cllBindVarCount++] = _user_name;
-    cllBindVars[cllBindVarCount++] = _user_name;
-    cllBindVars[cllBindVarCount++] = _resc_name;
+    try {
+        auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
+        namespace gq2 = irods::experimental::genquery2;
+        using gq2::builder::col;
 
-    status = cmlGetFirstRowFromSql( mySQL, &statementNum,
-                                    0, &icss );
+        // 1. Get user_id for _user_name
+        auto user_id_opt = irods::experimental::catalog::query_catalog_string(
+            executor, db_conn,
+            gq2::builder::select({"user_id"})
+                .from("USER")
+                .where(col("user_name") == _user_name)
+                .build());
+        if (!user_id_opt) {
+            *_quota_status = QUOTA_UNRESTRICTED;
+            return SUCCESS();
+        }
 
-    if ( status == CAT_SUCCESS_BUT_WITH_NO_INFO ) {
-        log_db::info("chlCheckQuota - CAT_SUCCESS_BUT_WITH_NO_INFO");
-        *_quota_status = QUOTA_UNRESTRICTED;
-        cmlFreeStatement(statementNum, &icss);
+        // 2. Get group_user_ids for groups the user belongs to
+        auto group_ids = irods::experimental::catalog::query_catalog_strings(
+            executor, db_conn,
+            gq2::builder::select({"group_user_id"})
+                .from("USER_GROUP")
+                .where(col("user_id") == *user_id_opt)
+                .build());
+
+        std::vector<std::string> user_and_group_ids;
+        user_and_group_ids.push_back(*user_id_opt);
+        user_and_group_ids.insert(user_and_group_ids.end(), group_ids.begin(), group_ids.end());
+
+        // 3. Get resc_id for _resc_name
+        auto resc_id_opt = irods::experimental::catalog::query_catalog_string(
+            executor, db_conn,
+            gq2::builder::select({"resc_id"})
+                .from("RESOURCE")
+                .where(col("resc_name") == _resc_name)
+                .build());
+
+        // 4. Query R_QUOTA_MAIN for matches and find max quota_over
+        bool found = false;
+        int64_t max_quota_over = std::numeric_limits<int64_t>::min();
+        std::string selected_resc_id;
+
+        for (const auto& uid : user_and_group_ids) {
+            auto cond = (resc_id_opt.has_value())
+                ? (col("user_id") == uid && (col("resc_id") == *resc_id_opt || col("resc_id") == "0"))
+                : (col("user_id") == uid && col("resc_id") == "0");
+
+            auto q_res = irods::experimental::catalog::execute_catalog(
+                executor, db_conn,
+                gq2::builder::select({"resc_id", "quota_limit", "quota_over"})
+                    .from("QUOTA")
+                    .where(std::move(cond))
+                    .build());
+
+            if (q_res.query_result) {
+                while (q_res.query_result->next()) {
+                    found = true;
+                    std::string r_id = q_res.query_result->get<std::string>(0);
+                    int64_t q_over = q_res.query_result->get<int64_t>(2, 0);
+                    if (q_over > max_quota_over) {
+                        max_quota_over = q_over;
+                        selected_resc_id = r_id;
+                    }
+                }
+            }
+        }
+
+        if (!found) {
+            log_db::info("chlCheckQuota - CAT_NO_ROWS_FOUND");
+            *_quota_status = QUOTA_UNRESTRICTED;
+            return SUCCESS();
+        }
+
+        log_db::info(
+            "checkQuota: inUser:{} inResc:{} RescId:{} Quota:{}",
+            _user_name,
+            _resc_name,
+            selected_resc_id,
+            max_quota_over);
+
+        *_user_quota = max_quota_over;
+        if ( selected_resc_id == "0" ) {
+            *_quota_status = QUOTA_GLOBAL;
+        }
+        else {
+            *_quota_status = QUOTA_RESOURCE;
+        }
+
         return SUCCESS();
     }
-
-    if ( status == CAT_NO_ROWS_FOUND ) {
-        log_db::info("chlCheckQuota - CAT_NO_ROWS_FOUND");
-        *_quota_status = QUOTA_UNRESTRICTED;
-        cmlFreeStatement(statementNum, &icss);
-        return SUCCESS();
+    catch (const std::exception& e) {
+        log_db::error("{}: check quota query failed: {}", __func__, e.what());
+        return ERROR( CAT_SQL_ERR, e.what() );
     }
-
-    if ( status != 0 ) {
-        cmlFreeStatement(statementNum, &icss);
-        return ERROR( status, "check quota failed" );
-    }
-
-    /* For now, log it */
-    log_db::info(
-        "checkQuota: inUser:{} inResc:{} RescId:{} Quota:{}",
-        _user_name,
-        _resc_name,
-        icss.stmtPtr[statementNum]->resultValue[1],  /* resc_id column */
-        icss.stmtPtr[statementNum]->resultValue[3]); /* quota_over column */
-
-    *_user_quota = atoll( icss.stmtPtr[statementNum]->resultValue[3] );
-    if ( atoi( icss.stmtPtr[statementNum]->resultValue[1] ) == 0 ) {
-        *_quota_status = QUOTA_GLOBAL;
-    }
-    else {
-        *_quota_status = QUOTA_RESOURCE;
-    }
-    cmlFreeStatement( statementNum, &icss ); /* only need the one row */
-
-    return SUCCESS();
-
 } // db_check_quota_op
 
 irods::error db_del_unused_avus_op(irods::plugin_context& _ctx)
@@ -11791,20 +9937,11 @@ irods::error db_del_unused_avus_op(irods::plugin_context& _ctx)
     // Remove any AVUs that are currently not associated with any object.
     // This is done as a separate operation for efficiency.  See 'iadmin h rum'.
     const int remove_status = removeAVUs();
-    int commit_status = 0;
-
-    if ( remove_status == CAT_SUCCESS_BUT_WITH_NO_INFO || remove_status == 0 ) {
-        commit_status = cmlExecuteNoAnswerSql( "commit", &icss );
-    }
-    else {
+    if ( remove_status != 0 && remove_status != CAT_SUCCESS_BUT_WITH_NO_INFO ) {
         return ERROR( remove_status, "removeAVUs failed" );
     }
 
-    if ( commit_status == CAT_SUCCESS_BUT_WITH_NO_INFO || commit_status == 0 ) {
-        return SUCCESS();
-    }
-
-    return ERROR( commit_status, "commit failed" );
+    return SUCCESS();
 } // db_del_unused_avus_op
 
 irods::error db_ins_rule_table_op(
@@ -11818,122 +9955,86 @@ irods::error db_ins_rule_table_op(
     const char*            _rule_recovery,
     const char*            _rule_id_str,
     const char*            _my_time ) {
-    // =-=-=-=-=-=-=-
-    // check the context
     irods::error ret = _ctx.valid();
     if ( !ret.ok() ) {
         return PASS( ret );
     }
 
-    // =-=-=-=-=-=-=-
-    // get a postgres object from the context
-    /*irods::postgres_object_ptr pg;
-    ret = make_db_ptr( _ctx.fco(), pg );
-    if ( !ret.ok() ) {
-        return PASS( ret );
-
-    }*/
-
-    // =-=-=-=-=-=-=-
-    // extract the icss property
-//        icatSessionStruct icss;
-//        _ctx.prop_map().get< icatSessionStruct >( ICSS_PROP, icss );
-    int status;
-    int i;
-    rodsLong_t seqNum = -1;
-
-    char rule_id_str[ MAX_NAME_LEN+1];
-    if ( logSQL != 0 ) {
-        log_sql::debug("chlInsRuleTable");
-    }
+    log_sql::debug("chlInsRuleTable");
 
     if ( _ctx.comm()->clientUser.authInfo.authFlag < LOCAL_PRIV_USER_AUTH ) {
         return ERROR( CAT_INSUFFICIENT_PRIVILEGE_LEVEL, "insufficient privilege level" );
     }
 
-    if ( !icss.status ) {
-        return ERROR( CATALOG_NOT_CONNECTED, "catalog not connected" );
-    }
+    try {
+        auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
+        nanodbc::transaction trans{db_conn};
 
-    /* first check if the  rule already exists */
-    if ( logSQL != 0 ) {
+        std::string rule_id_str;
         log_sql::debug("chlInsRuleTable SQL 1");
-    }
-    i = 0;
-    cllBindVars[i++] = _base_name;
-    cllBindVars[i++] = _rule_name;
-    cllBindVars[i++] = _rule_head;
-    cllBindVars[i++] = _rule_condition;
-    cllBindVars[i++] = _rule_action;
-    cllBindVars[i++] = _rule_recovery;
-    cllBindVarCount = i;
-    status =  cmlGetIntegerValueFromSqlV3(
-                  "select rule_id from R_RULE_MAIN where  rule_base_name = ? and  rule_name = ? and rule_event = ? and rule_condition = ? and rule_body = ? and  rule_recovery = ?",
-                  &seqNum,
-                  &icss );
-    if ( status != 0 &&  status != CAT_NO_ROWS_FOUND ) {
-        log_db::info("chlInsRuleTable cmlGetIntegerValueFromSqlV3 find rule if any failure {}", status);
-        return ERROR( status, "cmlGetIntegerValueFromSqlV3 find rule if any failure" );
-    }
-    if ( seqNum < 0 ) {
-        seqNum = cmlGetNextSeqVal( &icss );
-        if ( seqNum < 0 ) {
-            log_db::info("chlInsRuleTable cmlGetNextSeqVal failure {}", seqNum);
-            _rollback( "chlInsRuleTable" );
-            return ERROR( seqNum, "cmlGetNextSeqVal failure" );
-        }
-        snprintf( rule_id_str, MAX_NAME_LEN, "%s%lld", _rule_id_str, seqNum );
+        namespace gq2 = irods::experimental::genquery2;
+        using gq2::builder::col;
 
-        i = 0;
-        cllBindVars[i++] = rule_id_str;
-        cllBindVars[i++] = _base_name;
-        cllBindVars[i++] = _rule_name;
-        cllBindVars[i++] = _rule_head;
-        cllBindVars[i++] = _rule_condition;
-        cllBindVars[i++] = _rule_action;
-        cllBindVars[i++] = _rule_recovery;
-        cllBindVars[i++] = _ctx.comm()->clientUser.userName;
-        cllBindVars[i++] = _ctx.comm()->clientUser.rodsZone;
-        cllBindVars[i++] = _my_time;
-        cllBindVars[i++] = _my_time;
-        cllBindVarCount = i;
-        if ( logSQL != 0 ) {
+        const auto rule_id_opt = irods::experimental::catalog::query_catalog_integer(
+            executor,
+            db_conn,
+            gq2::builder::select({"rule_id"})
+                .from("RULE")
+                .where(col("rule_base_name") == (_base_name ? _base_name : "") &&
+                       col("rule_name") == (_rule_name ? _rule_name : "") &&
+                       col("rule_event") == (_rule_head ? _rule_head : "") &&
+                       col("rule_condition") == (_rule_condition ? _rule_condition : "") &&
+                       col("rule_body") == (_rule_action ? _rule_action : "") &&
+                       col("rule_recovery") == (_rule_recovery ? _rule_recovery : ""))
+                .build());
+
+        if (!rule_id_opt.has_value()) {
+            const int64_t seqNum = executor.get_next_sequence_value(db_conn, "R_ObjectID");
+            rule_id_str = fmt::format("{}{}", _rule_id_str ? _rule_id_str : "", seqNum);
+
             log_sql::debug("chlInsRuleTable SQL 2");
+            auto ins = gq2::builder::insert_into("RULE")
+                .set("rule_id", rule_id_str)
+                .set("rule_base_name", _base_name ? _base_name : "")
+                .set("rule_name", _rule_name ? _rule_name : "")
+                .set("rule_event", _rule_head ? _rule_head : "")
+                .set("rule_condition", _rule_condition ? _rule_condition : "")
+                .set("rule_body", _rule_action ? _rule_action : "")
+                .set("rule_recovery", _rule_recovery ? _rule_recovery : "")
+                .set("rule_owner_name", _ctx.comm()->clientUser.userName)
+                .set("rule_owner_zone", _ctx.comm()->clientUser.rodsZone)
+                .set("create_ts", _my_time ? _my_time : "")
+                .set("modify_ts", _my_time ? _my_time : "")
+                .build();
+            irods::experimental::catalog::execute_catalog(executor, db_conn, ins);
         }
-        status =  cmlExecuteNoAnswerSql(
-                      "insert into R_RULE_MAIN(rule_id, rule_base_name, rule_name, rule_event, rule_condition, rule_body, rule_recovery, rule_owner_name, rule_owner_zone, create_ts, modify_ts) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                      &icss );
-        if ( status != 0 ) {
-            log_db::info("chlInsRuleTable cmlExecuteNoAnswerSql Rule Main Insert failure {}", status);
-            return ERROR( status, "cmlExecuteNoAnswerSql Rule Main Insert failure" );
+        else {
+            rule_id_str = fmt::format("{}{}", _rule_id_str ? _rule_id_str : "", *rule_id_opt);
         }
-    }
-    else {
-        snprintf( rule_id_str, MAX_NAME_LEN, "%s%lld", _rule_id_str, seqNum );
-    }
-    if ( logSQL != 0 ) {
+
         log_sql::debug("chlInsRuleTable SQL 3");
+        auto ins_map = gq2::builder::insert_into("RULE_BASE_MAP")
+            .set("map_base_name", _base_name ? _base_name : "")
+            .set("map_priority", _map_priority_str ? _map_priority_str : "")
+            .set("rule_id", rule_id_str)
+            .set("map_owner_name", _ctx.comm()->clientUser.userName)
+            .set("map_owner_zone", _ctx.comm()->clientUser.rodsZone)
+            .set("create_ts", _my_time ? _my_time : "")
+            .set("modify_ts", _my_time ? _my_time : "")
+            .build();
+        irods::experimental::catalog::execute_catalog(executor, db_conn, ins_map);
+
+        trans.commit();
+        return SUCCESS();
     }
-    i = 0;
-    cllBindVars[i++] = _base_name;
-    cllBindVars[i++] = _map_priority_str;
-    cllBindVars[i++] = rule_id_str;
-    cllBindVars[i++] = _ctx.comm()->clientUser.userName;
-    cllBindVars[i++] = _ctx.comm()->clientUser.rodsZone;
-    cllBindVars[i++] = _my_time;
-    cllBindVars[i++] = _my_time;
-    cllBindVarCount = i;
-    status =  cmlExecuteNoAnswerSql(
-                  "insert into R_RULE_BASE_MAP  (map_base_name, map_priority, rule_id, map_owner_name,map_owner_zone, create_ts, modify_ts) values (?, ?, ?, ?, ?, ?, ?)",
-                  &icss );
-    if ( status != 0 ) {
-        log_db::info("chlInsRuleTable cmlExecuteNoAnswerSql Rule Map insert failure {}", status);
-
-        return ERROR( status, "cmlExecuteNoAnswerSql Rule Map insert failure" );
+    catch (const nanodbc::database_error& e) {
+        log_db::error("{}: database error: {}", __FUNCTION__, e.what());
+        return ERROR( CAT_SQL_ERR, e.what() );
     }
-
-    return SUCCESS();
-
+    catch (const std::exception& e) {
+        log_db::error("{}: exception: {}", __FUNCTION__, e.what());
+        return ERROR( SYS_INTERNAL_ERR, e.what() );
+    }
 } // db_ins_rule_table_op
 
 irods::error db_ins_dvm_table_op(
@@ -11943,116 +10044,81 @@ irods::error db_ins_dvm_table_op(
     const char*            _action,
     const char*            _var_2_cmap,
     const char*            _my_time ) {
-    // =-=-=-=-=-=-=-
-    // check the context
     irods::error ret = _ctx.valid();
     if ( !ret.ok() ) {
         return PASS( ret );
     }
 
-    // =-=-=-=-=-=-=-
-    // get a postgres object from the context
-    /*irods::postgres_object_ptr pg;
-    ret = make_db_ptr( _ctx.fco(), pg );
-    if ( !ret.ok() ) {
-        return PASS( ret );
-
-    }*/
-
-    // =-=-=-=-=-=-=-
-    // extract the icss property
-//        icatSessionStruct icss;
-//        _ctx.prop_map().get< icatSessionStruct >( ICSS_PROP, icss );
-    int status;
-    int i;
-    rodsLong_t seqNum = -1;
-    char dvmIdStr[MAX_NAME_LEN];
-    if ( logSQL != 0 ) {
-        log_sql::debug("chlInsDvmTable");
-    }
+    log_sql::debug("chlInsDvmTable");
 
     if ( _ctx.comm()->clientUser.authInfo.authFlag < LOCAL_PRIV_USER_AUTH ) {
         return ERROR( CAT_INSUFFICIENT_PRIVILEGE_LEVEL, "insufficient privilege" );
     }
 
-    if ( !icss.status ) {
-        return ERROR( CATALOG_NOT_CONNECTED, "catalog not connected" );
-    }
+    try {
+        auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
+        nanodbc::transaction trans{db_conn};
 
-    /* first check if the DVM already exists */
-    if ( logSQL != 0 ) {
+        std::string dvmIdStr;
         log_sql::debug("chlInsDvmTable SQL 1");
-    }
-    i = 0;
-    cllBindVars[i++] = _base_name;
-    cllBindVars[i++] = _var_name;
-    cllBindVars[i++] = _action;
-    cllBindVars[i++] = _var_2_cmap;
-    cllBindVarCount = i;
-    status =  cmlGetIntegerValueFromSqlV3(
-                  "select dvm_id from R_RULE_DVM where  dvm_base_name = ? and  dvm_ext_var_name = ? and  dvm_condition = ? and dvm_int_map_path = ? ",
-                  &seqNum,
-                  &icss );
-    if ( status != 0 &&  status != CAT_NO_ROWS_FOUND ) {
-        log_db::info("chlInsDvmTable cmlGetIntegerValueFromSqlV3 find DVM if any failure {}", status);
-        return ERROR( status, "find DVM if any failure" );
-    }
-    if ( seqNum < 0 ) {
-        seqNum = cmlGetNextSeqVal( &icss );
-        if ( seqNum < 0 ) {
-            log_db::info("chlInsDvmTable cmlGetNextSeqVal failure {}", seqNum);
-            _rollback( "chlInsDvmTable" );
-            return ERROR( seqNum, "cmlGetNextSeqVal failure" );
-        }
-        snprintf( dvmIdStr, MAX_NAME_LEN, "%lld", seqNum );
+        namespace gq2 = irods::experimental::genquery2;
+        using gq2::builder::col;
 
-        i = 0;
-        cllBindVars[i++] = dvmIdStr;
-        cllBindVars[i++] = _base_name;
-        cllBindVars[i++] = _var_name;
-        cllBindVars[i++] = _action;
-        cllBindVars[i++] = _var_2_cmap;
-        cllBindVars[i++] = _ctx.comm()->clientUser.userName;
-        cllBindVars[i++] = _ctx.comm()->clientUser.rodsZone;
-        cllBindVars[i++] = _my_time;
-        cllBindVars[i++] = _my_time;
-        cllBindVarCount = i;
-        if ( logSQL != 0 ) {
+        const auto dvm_id_opt = irods::experimental::catalog::query_catalog_integer(
+            executor,
+            db_conn,
+            gq2::builder::select({"dvm_id"})
+                .from("RULE_DVM")
+                .where(col("dvm_base_name") == (_base_name ? _base_name : "") &&
+                       col("dvm_ext_var_name") == (_var_name ? _var_name : "") &&
+                       col("dvm_condition") == (_action ? _action : "") &&
+                       col("dvm_int_map_path") == (_var_2_cmap ? _var_2_cmap : ""))
+                .build());
+
+        if (!dvm_id_opt.has_value()) {
+            const int64_t seqNum = executor.get_next_sequence_value(db_conn, "R_ObjectID");
+            dvmIdStr = std::to_string(seqNum);
+
             log_sql::debug("chlInsDvmTable SQL 2");
+            auto ins = gq2::builder::insert_into("RULE_DVM")
+                .set("dvm_id", dvmIdStr)
+                .set("dvm_base_name", _base_name ? _base_name : "")
+                .set("dvm_ext_var_name", _var_name ? _var_name : "")
+                .set("dvm_condition", _action ? _action : "")
+                .set("dvm_int_map_path", _var_2_cmap ? _var_2_cmap : "")
+                .set("dvm_owner_name", _ctx.comm()->clientUser.userName)
+                .set("dvm_owner_zone", _ctx.comm()->clientUser.rodsZone)
+                .set("create_ts", _my_time ? _my_time : "")
+                .set("modify_ts", _my_time ? _my_time : "")
+                .build();
+            irods::experimental::catalog::execute_catalog(executor, db_conn, ins);
         }
-        status =  cmlExecuteNoAnswerSql(
-                      "insert into R_RULE_DVM(dvm_id, dvm_base_name, dvm_ext_var_name, dvm_condition, dvm_int_map_path, dvm_owner_name, dvm_owner_zone, create_ts, modify_ts) values (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                      &icss );
-        if ( status != 0 ) {
-            log_db::info("chlInsDvmTable cmlExecuteNoAnswerSql DVM Main Insert failure {}", status);
-            return ERROR( status, "cmlExecuteNoAnswerSql DVM Main Insert failure" );
+        else {
+            dvmIdStr = std::to_string(*dvm_id_opt);
         }
-    }
-    else {
-        snprintf( dvmIdStr, MAX_NAME_LEN, "%lld", seqNum );
-    }
-    if ( logSQL != 0 ) {
+
         log_sql::debug("chlInsDvmTable SQL 3");
+        auto ins_map = gq2::builder::insert_into("RULE_DVM_MAP")
+            .set("map_dvm_base_name", _base_name ? _base_name : "")
+            .set("dvm_id", dvmIdStr)
+            .set("map_owner_name", _ctx.comm()->clientUser.userName)
+            .set("map_owner_zone", _ctx.comm()->clientUser.rodsZone)
+            .set("create_ts", _my_time ? _my_time : "")
+            .set("modify_ts", _my_time ? _my_time : "")
+            .build();
+        irods::experimental::catalog::execute_catalog(executor, db_conn, ins_map);
+
+        trans.commit();
+        return SUCCESS();
     }
-    i = 0;
-    cllBindVars[i++] = _base_name;
-    cllBindVars[i++] = dvmIdStr;
-    cllBindVars[i++] = _ctx.comm()->clientUser.userName;
-    cllBindVars[i++] = _ctx.comm()->clientUser.rodsZone;
-    cllBindVars[i++] = _my_time;
-    cllBindVars[i++] = _my_time;
-    cllBindVarCount = i;
-    status =  cmlExecuteNoAnswerSql(
-                  "insert into R_RULE_DVM_MAP  (map_dvm_base_name, dvm_id, map_owner_name,map_owner_zone, create_ts, modify_ts) values (?, ?, ?, ?, ?, ?)",
-                  &icss );
-    if ( status != 0 ) {
-        log_db::info("chlInsDvmTable cmlExecuteNoAnswerSql DVM Map insert failure {}", status);
-
-        return ERROR( status, "DVM Map insert failure" );
+    catch (const nanodbc::database_error& e) {
+        log_db::error("{}: database error: {}", __FUNCTION__, e.what());
+        return ERROR( CAT_SQL_ERR, e.what() );
     }
-
-    return SUCCESS();
-
+    catch (const std::exception& e) {
+        log_db::error("{}: exception: {}", __FUNCTION__, e.what());
+        return ERROR( SYS_INTERNAL_ERR, e.what() );
+    }
 } // db_ins_dvm_table_op
 
 irods::error db_ins_fnm_table_op(
@@ -12061,114 +10127,81 @@ irods::error db_ins_fnm_table_op(
     const char*            _func_name,
     const char*            _func_2_cmap,
     const char*            _my_time ) {
-    // =-=-=-=-=-=-=-
-    // check the context
     irods::error ret = _ctx.valid();
     if ( !ret.ok() ) {
         return PASS( ret );
     }
 
-    // =-=-=-=-=-=-=-
-    // get a postgres object from the context
-    /*irods::postgres_object_ptr pg;
-    ret = make_db_ptr( _ctx.fco(), pg );
-    if ( !ret.ok() ) {
-        return PASS( ret );
-
-    }*/
-
-    // =-=-=-=-=-=-=-
-    // extract the icss property
-//        icatSessionStruct icss;
-//        _ctx.prop_map().get< icatSessionStruct >( ICSS_PROP, icss );
-    int status;
-    int i;
-    rodsLong_t seqNum = -1;
-    char fnmIdStr[MAX_NAME_LEN];
-    if ( logSQL != 0 ) {
-        log_sql::debug("chlInsFnmTable");
-    }
+    log_sql::debug("chlInsFnmTable");
 
     if ( _ctx.comm()->clientUser.authInfo.authFlag < LOCAL_PRIV_USER_AUTH ) {
         return ERROR( CAT_INSUFFICIENT_PRIVILEGE_LEVEL, "insufficient privilege level" );
     }
 
-    if ( !icss.status ) {
-        return ERROR( CATALOG_NOT_CONNECTED, "catalog not connected" );
-    }
+    try {
+        auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
+        nanodbc::transaction trans{db_conn};
 
-    /* first check if the FNM already exists */
-    if ( logSQL != 0 ) {
+        std::string fnmIdStr;
         log_sql::debug("chlInsFnmTable SQL 1");
-    }
-    i = 0;
-    cllBindVars[i++] = _base_name;
-    cllBindVars[i++] = _func_name;
-    cllBindVars[i++] = _func_2_cmap;
-    cllBindVarCount = i;
-    status =  cmlGetIntegerValueFromSqlV3(
-                  "select fnm_id from R_RULE_FNM where  fnm_base_name = ? and  fnm_ext_func_name = ? and  fnm_int_func_name = ? ",
-                  &seqNum,
-                  &icss );
-    if ( status != 0 &&  status != CAT_NO_ROWS_FOUND ) {
-        log_db::info("chlInsFnmTable cmlGetIntegerValueFromSqlV3 find FNM if any failure {}", status);
-        return ERROR( status, "find FNM if any failure" );
-    }
-    if ( seqNum < 0 ) {
-        seqNum = cmlGetNextSeqVal( &icss );
-        if ( seqNum < 0 ) {
-            log_db::info("chlInsFnmTable cmlGetNextSeqVal failure {}", seqNum);
-            _rollback( "chlInsFnmTable" );
-            return ERROR( seqNum, "cmlGetNextSeqVal failure" );
-        }
-        snprintf( fnmIdStr, MAX_NAME_LEN, "%lld", seqNum );
+        namespace gq2 = irods::experimental::genquery2;
+        using gq2::builder::col;
 
-        i = 0;
-        cllBindVars[i++] = fnmIdStr;
-        cllBindVars[i++] = _base_name;
-        cllBindVars[i++] = _func_name;
-        cllBindVars[i++] = _func_2_cmap;
-        cllBindVars[i++] = _ctx.comm()->clientUser.userName;
-        cllBindVars[i++] = _ctx.comm()->clientUser.rodsZone;
-        cllBindVars[i++] = _my_time;
-        cllBindVars[i++] = _my_time;
-        cllBindVarCount = i;
-        if ( logSQL != 0 ) {
+        const auto fnm_id_opt = irods::experimental::catalog::query_catalog_integer(
+            executor,
+            db_conn,
+            gq2::builder::select({"fnm_id"})
+                .from("RULE_FNM")
+                .where(col("fnm_base_name") == (_base_name ? _base_name : "") &&
+                       col("fnm_ext_func_name") == (_func_name ? _func_name : "") &&
+                       col("fnm_int_func_name") == (_func_2_cmap ? _func_2_cmap : ""))
+                .build());
+
+        if (!fnm_id_opt.has_value()) {
+            const int64_t seqNum = executor.get_next_sequence_value(db_conn, "R_ObjectID");
+            fnmIdStr = std::to_string(seqNum);
+
             log_sql::debug("chlInsFnmTable SQL 2");
+            namespace gq2 = irods::experimental::genquery2;
+            auto ins = gq2::builder::insert_into("RULE_FNM")
+                .set("fnm_id", fnmIdStr)
+                .set("fnm_base_name", _base_name ? _base_name : "")
+                .set("fnm_ext_func_name", _func_name ? _func_name : "")
+                .set("fnm_int_func_name", _func_2_cmap ? _func_2_cmap : "")
+                .set("fnm_owner_name", _ctx.comm()->clientUser.userName)
+                .set("fnm_owner_zone", _ctx.comm()->clientUser.rodsZone)
+                .set("create_ts", _my_time ? _my_time : "")
+                .set("modify_ts", _my_time ? _my_time : "")
+                .build();
+            irods::experimental::catalog::execute_catalog(executor, db_conn, ins);
         }
-        status =  cmlExecuteNoAnswerSql(
-                      "insert into R_RULE_FNM(fnm_id, fnm_base_name, fnm_ext_func_name, fnm_int_func_name, fnm_owner_name, fnm_owner_zone, create_ts, modify_ts) values (?, ?, ?, ?, ?, ?, ?, ?)",
-                      &icss );
-        if ( status != 0 ) {
-            log_db::info("chlInsFnmTable cmlExecuteNoAnswerSql FNM Main Insert failure {}", status);
-            return ERROR( status, "FNM Map insert failure" );
+        else {
+            fnmIdStr = std::to_string(*fnm_id_opt);
         }
-    }
-    else {
-        snprintf( fnmIdStr, MAX_NAME_LEN, "%lld", seqNum );
-    }
-    if ( logSQL != 0 ) {
+
         log_sql::debug("chlInsFnmTable SQL 3");
+        namespace gq2 = irods::experimental::genquery2;
+        auto ins_map = gq2::builder::insert_into("RULE_FNM_MAP")
+            .set("map_fnm_base_name", _base_name ? _base_name : "")
+            .set("fnm_id", fnmIdStr)
+            .set("map_owner_name", _ctx.comm()->clientUser.userName)
+            .set("map_owner_zone", _ctx.comm()->clientUser.rodsZone)
+            .set("create_ts", _my_time ? _my_time : "")
+            .set("modify_ts", _my_time ? _my_time : "")
+            .build();
+        irods::experimental::catalog::execute_catalog(executor, db_conn, ins_map);
+
+        trans.commit();
+        return SUCCESS();
     }
-    i = 0;
-    cllBindVars[i++] = _base_name;
-    cllBindVars[i++] = fnmIdStr;
-    cllBindVars[i++] = _ctx.comm()->clientUser.userName;
-    cllBindVars[i++] = _ctx.comm()->clientUser.rodsZone;
-    cllBindVars[i++] = _my_time;
-    cllBindVars[i++] = _my_time;
-    cllBindVarCount = i;
-    status =  cmlExecuteNoAnswerSql(
-                  "insert into R_RULE_FNM_MAP  (map_fnm_base_name, fnm_id, map_owner_name,map_owner_zone, create_ts, modify_ts) values (?, ?, ?, ?, ?, ?)",
-                  &icss );
-    if ( status != 0 ) {
-        log_db::info("chlInsFnmTable cmlExecuteNoAnswerSql FNM Map insert failure {}", status);
-
-        return ERROR( status, "FNM Map insert failure" );
+    catch (const nanodbc::database_error& e) {
+        log_db::error("{}: database error: {}", __FUNCTION__, e.what());
+        return ERROR( CAT_SQL_ERR, e.what() );
     }
-
-    return SUCCESS();
-
+    catch (const std::exception& e) {
+        log_db::error("{}: exception: {}", __FUNCTION__, e.what());
+        return ERROR( SYS_INTERNAL_ERR, e.what() );
+    }
 } // db_ins_fnm_table_op
 
 irods::error db_ins_msrvc_table_op(
@@ -12183,366 +10216,252 @@ irods::error db_ins_msrvc_table_op(
     const char*            _msrvc_type_name,
     const char*            _msrvc_status,
     const char*            _my_time ) {
-    // =-=-=-=-=-=-=-
-    // check the context
     irods::error ret = _ctx.valid();
     if ( !ret.ok() ) {
         return PASS( ret );
     }
 
-    // =-=-=-=-=-=-=-
-    // get a postgres object from the context
-    /*irods::postgres_object_ptr pg;
-    ret = make_db_ptr( _ctx.fco(), pg );
-    if ( !ret.ok() ) {
-        return PASS( ret );
-
-    }*/
-
-    // =-=-=-=-=-=-=-
-    // extract the icss property
-//        icatSessionStruct icss;
-//        _ctx.prop_map().get< icatSessionStruct >( ICSS_PROP, icss );
-    int status;
-    int i;
-    rodsLong_t seqNum = -1;
-    char msrvcIdStr[MAX_NAME_LEN];
-    if ( logSQL != 0 ) {
-        log_sql::debug("chlInsMsrvcTable");
-    }
+    log_sql::debug("chlInsMsrvcTable");
 
     if ( _ctx.comm()->clientUser.authInfo.authFlag < LOCAL_PRIV_USER_AUTH ) {
         return ERROR( CAT_INSUFFICIENT_PRIVILEGE_LEVEL, "insufficient privilege" );
     }
 
-    if ( !icss.status ) {
-        return ERROR( CATALOG_NOT_CONNECTED, "catalog not connected" );
-    }
+    try {
+        auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
+        nanodbc::transaction trans{db_conn};
 
-    /* first check if the MSRVC already exists */
-    if ( logSQL != 0 ) {
+        std::string msrvcIdStr;
         log_sql::debug("chlInsMsrvcTable SQL 1");
-    }
-    i = 0;
-    cllBindVars[i++] = _module_name;
-    cllBindVars[i++] = _msrvc_name;
-    cllBindVarCount = i;
-    status =  cmlGetIntegerValueFromSqlV3(
-                  "select msrvc_id from R_MICROSRVC_MAIN where  msrvc_module_name = ? and  msrvc_name = ? ",
-                  &seqNum,
-                  &icss );
-    if ( status != 0 &&  status != CAT_NO_ROWS_FOUND ) {
-        log_db::info("chlInsMsrvcTable cmlGetIntegerValueFromSqlV3 find MSRVC if any failure {}", status);
-        return ERROR( status, "cmlGetIntegerValueFromSqlV3 find MSRVC if any failure" );
-    }
-    if ( seqNum < 0 ) { /* No micro-service found */
-        seqNum = cmlGetNextSeqVal( &icss );
-        if ( seqNum < 0 ) {
-            log_db::info("chlInsMsrvcTable cmlGetNextSeqVal failure {}", seqNum);
-            _rollback( "chlInsMsrvcTable" );
-            return ERROR( seqNum, "cmlGetNextSeqVal failure" );
-        }
-        snprintf( msrvcIdStr, MAX_NAME_LEN, "%lld", seqNum );
-        /* inserting in R_MICROSRVC_MAIN */
-        i = 0;
-        cllBindVars[i++] = msrvcIdStr;
-        cllBindVars[i++] = _msrvc_name;
-        cllBindVars[i++] = _module_name;
-        cllBindVars[i++] = _msrvc_signature;
-        cllBindVars[i++] = _ctx.comm()->clientUser.userName;
-        cllBindVars[i++] = _ctx.comm()->clientUser.rodsZone;
-        cllBindVars[i++] = _my_time;
-        cllBindVars[i++] = _my_time;
-        cllBindVarCount = i;
-        if ( logSQL != 0 ) {
+        namespace gq2 = irods::experimental::genquery2;
+        using gq2::builder::col;
+
+        const auto msrvc_id_opt = irods::experimental::catalog::query_catalog_integer(
+            executor,
+            db_conn,
+            gq2::builder::select({"msrvc_id"})
+                .from("MICROSERVICE")
+                .where(col("msrvc_module_name") == (_module_name ? _module_name : "") &&
+                       col("msrvc_name") == (_msrvc_name ? _msrvc_name : ""))
+                .build());
+
+        if (!msrvc_id_opt.has_value()) {
+            const int64_t seqNum = executor.get_next_sequence_value(db_conn, "R_ObjectID");
+            msrvcIdStr = std::to_string(seqNum);
+
             log_sql::debug("chlInsMsrvcTable SQL 2");
-        }
-        status =  cmlExecuteNoAnswerSql(
-                      "insert into R_MICROSRVC_MAIN(msrvc_id, msrvc_name, msrvc_module_name, msrvc_signature, msrvc_doxygen, msrvc_variations, msrvc_owner_name, msrvc_owner_zone, create_ts, modify_ts) values (?, ?, ?, ?,   'NONE', 'NONE',  ?, ?, ?, ?)",
-                      &icss );
-        if ( status != 0 ) {
-            log_db::info("chlInsMsrvcTable cmlExecuteNoAnswerSql R_MICROSRVC_MAIN Insert failure {}", status);
-            return ERROR( status, "R_MICROSRVC_MAIN Insert failure" );
-        }
-        /* inserting in R_MICROSRVC_VER */
-        i = 0;
-        cllBindVars[i++] = msrvcIdStr;
-        cllBindVars[i++] = _msrvc_version;
-        cllBindVars[i++] = _msrvc_host;
-        cllBindVars[i++] = _msrvc_location;
-        cllBindVars[i++] = _msrvc_language;
-        cllBindVars[i++] = _msrvc_type_name;
-        cllBindVars[i++] = _msrvc_status;
-        cllBindVars[i++] = _ctx.comm()->clientUser.userName;
-        cllBindVars[i++] = _ctx.comm()->clientUser.rodsZone;
-        cllBindVars[i++] = _my_time;
-        cllBindVars[i++] = _my_time;
-        cllBindVarCount = i;
-        if ( logSQL != 0 ) {
+            auto ins = gq2::builder::insert_into("MICROSERVICE")
+                .set("msrvc_id", msrvcIdStr)
+                .set("msrvc_name", _msrvc_name ? _msrvc_name : "")
+                .set("msrvc_module_name", _module_name ? _module_name : "")
+                .set("msrvc_signature", _msrvc_signature ? _msrvc_signature : "")
+                .set("msrvc_doxygen", "NONE")
+                .set("msrvc_variations", "NONE")
+                .set("msrvc_owner_name", _ctx.comm()->clientUser.userName)
+                .set("msrvc_owner_zone", _ctx.comm()->clientUser.rodsZone)
+                .set("create_ts", _my_time ? _my_time : "")
+                .set("modify_ts", _my_time ? _my_time : "")
+                .build();
+            irods::experimental::catalog::execute_catalog(executor, db_conn, ins);
+
             log_sql::debug("chlInsMsrvcTable SQL 3");
+            auto ins_ver = gq2::builder::insert_into("MICROSERVICE_VER")
+                .set("msrvc_id", msrvcIdStr)
+                .set("msrvc_version", _msrvc_version ? _msrvc_version : "")
+                .set("msrvc_host", _msrvc_host ? _msrvc_host : "")
+                .set("msrvc_location", _msrvc_location ? _msrvc_location : "")
+                .set("msrvc_language", _msrvc_language ? _msrvc_language : "")
+                .set("msrvc_type_name", _msrvc_type_name ? _msrvc_type_name : "")
+                .set("msrvc_status", _msrvc_status ? _msrvc_status : "")
+                .set("msrvc_owner_name", _ctx.comm()->clientUser.userName)
+                .set("msrvc_owner_zone", _ctx.comm()->clientUser.rodsZone)
+                .set("create_ts", _my_time ? _my_time : "")
+                .set("modify_ts", _my_time ? _my_time : "")
+                .build();
+            irods::experimental::catalog::execute_catalog(executor, db_conn, ins_ver);
         }
-        status =  cmlExecuteNoAnswerSql(
-                      "insert into R_MICROSRVC_VER(msrvc_id, msrvc_version, msrvc_host, msrvc_location, msrvc_language, msrvc_type_name, msrvc_status, msrvc_owner_name, msrvc_owner_zone, create_ts, modify_ts) values (?, ?, ?, ?, ?, ?,  ?, ?, ?, ?, ?)",
-                      &icss );
-        if ( status != 0 ) {
-            log_db::info("chlInsMsrvcTable cmlExecuteNoAnswerSql R_MICROSRVC_VER Insert failure {}", status);
-            return ERROR( status, "R_MICROSRVC_VER Insert failure" );
-        }
-    }
-    else { /* micro-service already there */
-        snprintf( msrvcIdStr, MAX_NAME_LEN, "%lld", seqNum );
-        /* Check if same host and location exists - if so no need to insert a new row */
-        if ( logSQL != 0 ) {
+        else {
+            msrvcIdStr = std::to_string(*msrvc_id_opt);
+
             log_sql::debug("chlInsMsrvcTable SQL 4");
+            const auto ver_check = irods::experimental::catalog::query_catalog_integer(
+                executor,
+                db_conn,
+                gq2::builder::select({"msrvc_id"})
+                    .from("MICROSERVICE_VER")
+                    .where(col("msrvc_id") == msrvcIdStr &&
+                           col("msrvc_host") == (_msrvc_host ? _msrvc_host : "") &&
+                           col("msrvc_location") == (_msrvc_location ? _msrvc_location : ""))
+                    .build());
+
+            if (!ver_check.has_value()) {
+                log_sql::debug("chlInsMsrvcTable SQL 5");
+                namespace gq2 = irods::experimental::genquery2;
+                auto ins_ver2 = gq2::builder::insert_into("MICROSERVICE_VER")
+                    .set("msrvc_id", msrvcIdStr)
+                    .set("msrvc_version", _msrvc_version ? _msrvc_version : "")
+                    .set("msrvc_host", _msrvc_host ? _msrvc_host : "")
+                    .set("msrvc_location", _msrvc_location ? _msrvc_location : "")
+                    .set("msrvc_language", _msrvc_language ? _msrvc_language : "")
+                    .set("msrvc_type_name", _msrvc_type_name ? _msrvc_type_name : "")
+                    .set("msrvc_owner_name", _ctx.comm()->clientUser.userName)
+                    .set("msrvc_owner_zone", _ctx.comm()->clientUser.rodsZone)
+                    .set("create_ts", _my_time ? _my_time : "")
+                    .set("modify_ts", _my_time ? _my_time : "")
+                    .build();
+                irods::experimental::catalog::execute_catalog(executor, db_conn, ins_ver2);
+            }
         }
-        i = 0;
-        cllBindVars[i++] = msrvcIdStr;
-        cllBindVars[i++] = _msrvc_host;
-        cllBindVars[i++] = _msrvc_location;
-        cllBindVarCount = i;
-        status =  cmlGetIntegerValueFromSqlV3(
-                      "select msrvc_id from R_MICROSRVC_VER where  msrvc_id = ? and  msrvc_host = ? and  msrvc_location = ? ",
-                      &seqNum, &icss );
-        if ( status != 0 &&  status != CAT_NO_ROWS_FOUND ) {
-            log_db::info("chlInsMsrvcTable cmlGetIntegerValueFromSqlV4 find MSRVC_HOST if any failure {}", status);
-            return ERROR( status, "cmlGetIntegerValueFromSqlV4 find MSRVC_HOST if any failure" );
-        }
-        /* insert a new row into version table */
-        i = 0;
-        cllBindVars[i++] = msrvcIdStr;
-        cllBindVars[i++] = _msrvc_version;
-        cllBindVars[i++] = _msrvc_host;
-        cllBindVars[i++] = _msrvc_location;
-        cllBindVars[i++] = _msrvc_language;
-        cllBindVars[i++] = _msrvc_type_name;
-        cllBindVars[i++] = _ctx.comm()->clientUser.userName;
-        cllBindVars[i++] = _ctx.comm()->clientUser.rodsZone;
-        cllBindVars[i++] = _my_time;
-        cllBindVars[i++] = _my_time;
-        cllBindVarCount = i;
-        if ( logSQL != 0 ) {
-            log_sql::debug("chlInsMsrvcTable SQL 3");
-        }
-        status =  cmlExecuteNoAnswerSql(
-                      "insert into R_MICROSRVC_VER(msrvc_id, msrvc_version, msrvc_host, msrvc_location, msrvc_language, msrvc_type_name, msrvc_owner_name, msrvc_owner_zone, create_ts, modify_ts) values (?, ?, ?, ?, ?, ?,  ?, ?, ?, ?)",
-                      &icss );
-        if ( status != 0 ) {
-            log_db::info("chlInsMsrvcTable cmlExecuteNoAnswerSql R_MICROSRVC_VER Insert failure {}", status);
-            return ERROR( status, "cmlExecuteNoAnswerSql R_MICROSRVC_VER Insert failure" );
-        }
+
+        trans.commit();
+        return SUCCESS();
     }
-
-    return SUCCESS();
-
+    catch (const nanodbc::database_error& e) {
+        log_db::error("{}: database error: {}", __FUNCTION__, e.what());
+        return ERROR( CAT_SQL_ERR, e.what() );
+    }
+    catch (const std::exception& e) {
+        log_db::error("{}: exception: {}", __FUNCTION__, e.what());
+        return ERROR( SYS_INTERNAL_ERR, e.what() );
+    }
 } // db_ins_msrvc_table_op
 
 irods::error db_version_rule_base_op(
     irods::plugin_context& _ctx,
     const char*            _base_name,
     const char*            _my_time ) {
-    // =-=-=-=-=-=-=-
-    // check the context
     irods::error ret = _ctx.valid();
     if ( !ret.ok() ) {
         return PASS( ret );
     }
 
-    // =-=-=-=-=-=-=-
-    // get a postgres object from the context
-    /*irods::postgres_object_ptr pg;
-    ret = make_db_ptr( _ctx.fco(), pg );
-    if ( !ret.ok() ) {
-        return PASS( ret );
-
-    }*/
-
-    // =-=-=-=-=-=-=-
-    // extract the icss property
-//        icatSessionStruct icss;
-//        _ctx.prop_map().get< icatSessionStruct >( ICSS_PROP, icss );
-    int i, status;
-
-    if ( logSQL != 0 ) {
-        log_sql::debug("chlVersionRuleBase");
-    }
+    log_sql::debug("chlVersionRuleBase");
 
     if ( _ctx.comm()->clientUser.authInfo.authFlag < LOCAL_PRIV_USER_AUTH ) {
         return ERROR( CAT_INSUFFICIENT_PRIVILEGE_LEVEL, "insufficient privilege level" );
     }
 
-    if ( !icss.status ) {
-        return ERROR( CATALOG_NOT_CONNECTED, "catalog not connected" );
-    }
+    try {
+        auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
+        nanodbc::transaction trans{db_conn};
 
-    i = 0;
-    cllBindVars[i++] = _my_time;
-    cllBindVars[i++] = _my_time;
-    cllBindVars[i++] = _base_name;
-    cllBindVarCount = i;
-    if ( logSQL != 0 ) {
         log_sql::debug("chlVersionRuleBase SQL 1");
+        namespace gq2 = irods::experimental::genquery2;
+        using gq2::builder::col;
+        auto upd = gq2::builder::update("RULE_BASE_MAP")
+            .set("map_version", _my_time ? _my_time : "")
+            .set("modify_ts", _my_time ? _my_time : "")
+            .where(col("map_base_name") == (_base_name ? _base_name : "") && col("map_version") == "0")
+            .build();
+        irods::experimental::catalog::execute_catalog(executor, db_conn, upd);
+
+        trans.commit();
+        return SUCCESS();
     }
-
-    status =  cmlExecuteNoAnswerSql(
-                  "update R_RULE_BASE_MAP set map_version = ?, modify_ts = ? where map_base_name = ? and map_version = '0'", &icss );
-    if ( status != 0 && status != CAT_SUCCESS_BUT_WITH_NO_INFO ) {
-        log_db::info("chlVersionRuleBase cmlExecuteNoAnswerSql Rule Map version update  failure {}", status);
-        return ERROR( status, "Rule Map version update failure" );
-
+    catch (const nanodbc::database_error& e) {
+        log_db::error("{}: database error: {}", __FUNCTION__, e.what());
+        return ERROR( CAT_SQL_ERR, e.what() );
     }
-
-    return SUCCESS();
-
+    catch (const std::exception& e) {
+        log_db::error("{}: exception: {}", __FUNCTION__, e.what());
+        return ERROR( SYS_INTERNAL_ERR, e.what() );
+    }
 } // db_version_rule_base_op
 
 irods::error db_version_dvm_base_op(
     irods::plugin_context& _ctx,
     const char*            _base_name,
     const char*            _my_time ) {
-    // =-=-=-=-=-=-=-
-    // check the context
     irods::error ret = _ctx.valid();
     if ( !ret.ok() ) {
         return PASS( ret );
     }
 
-    // =-=-=-=-=-=-=-
-    // get a postgres object from the context
-    /*irods::postgres_object_ptr pg;
-    ret = make_db_ptr( _ctx.fco(), pg );
-    if ( !ret.ok() ) {
-        return PASS( ret );
-
-    }*/
-
-    // =-=-=-=-=-=-=-
-    // extract the icss property
-//        icatSessionStruct icss;
-//        _ctx.prop_map().get< icatSessionStruct >( ICSS_PROP, icss );
-    int i, status;
-
-    if ( logSQL != 0 ) {
-        log_sql::debug("chlVersionDvmBase");
-    }
+    log_sql::debug("chlVersionDvmBase");
 
     if ( _ctx.comm()->clientUser.authInfo.authFlag < LOCAL_PRIV_USER_AUTH ) {
         return ERROR( CAT_INSUFFICIENT_PRIVILEGE_LEVEL, "insufficient privilege level" );
     }
 
-    if ( !icss.status ) {
-        return ERROR( CATALOG_NOT_CONNECTED, "catalog not connected" );
-    }
+    try {
+        auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
+        nanodbc::transaction trans{db_conn};
 
-    i = 0;
-    cllBindVars[i++] = _my_time;
-    cllBindVars[i++] = _my_time;
-    cllBindVars[i++] = _base_name;
-    cllBindVarCount = i;
-    if ( logSQL != 0 ) {
         log_sql::debug("chlVersionDvmBase SQL 1");
+        namespace gq2 = irods::experimental::genquery2;
+        using gq2::builder::col;
+        auto upd = gq2::builder::update("RULE_DVM_MAP")
+            .set("map_dvm_version", _my_time ? _my_time : "")
+            .set("modify_ts", _my_time ? _my_time : "")
+            .where(col("map_dvm_base_name") == (_base_name ? _base_name : "") && col("map_dvm_version") == "0")
+            .build();
+        irods::experimental::catalog::execute_catalog(executor, db_conn, upd);
+
+        trans.commit();
+        return SUCCESS();
     }
-
-    status =  cmlExecuteNoAnswerSql(
-                  "update R_RULE_DVM_MAP set map_dvm_version = ?, modify_ts = ? where map_dvm_base_name = ? and map_dvm_version = '0'", &icss );
-    if ( status != 0 && status != CAT_SUCCESS_BUT_WITH_NO_INFO ) {
-        log_db::info("chlVersionDvmBase cmlExecuteNoAnswerSql DVM Map version update  failure {}", status);
-        return ERROR( status, "DVM Map version update  failure" );
-
+    catch (const nanodbc::database_error& e) {
+        log_db::error("{}: database error: {}", __FUNCTION__, e.what());
+        return ERROR( CAT_SQL_ERR, e.what() );
     }
-
-    return SUCCESS();
-
+    catch (const std::exception& e) {
+        log_db::error("{}: exception: {}", __FUNCTION__, e.what());
+        return ERROR( SYS_INTERNAL_ERR, e.what() );
+    }
 } // db_version_dvm_base_op
 
 irods::error db_version_fnm_base_op(
     irods::plugin_context& _ctx,
     const char*            _base_name,
     const char*            _my_time ) {
-    // =-=-=-=-=-=-=-
-    // check the context
     irods::error ret = _ctx.valid();
     if ( !ret.ok() ) {
         return PASS( ret );
     }
 
-    // =-=-=-=-=-=-=-
-    // get a postgres object from the context
-    /*irods::postgres_object_ptr pg;
-    ret = make_db_ptr( _ctx.fco(), pg );
-    if ( !ret.ok() ) {
-        return PASS( ret );
-
-    }*/
-
-    // =-=-=-=-=-=-=-
-    // extract the icss property
-//        icatSessionStruct icss;
-//        _ctx.prop_map().get< icatSessionStruct >( ICSS_PROP, icss );
-    int i, status;
-
-    if ( logSQL != 0 ) {
-        log_sql::debug("chlVersionFnmBase");
-    }
+    log_sql::debug("chlVersionFnmBase");
 
     if ( _ctx.comm()->clientUser.authInfo.authFlag < LOCAL_PRIV_USER_AUTH ) {
         return ERROR( CAT_INSUFFICIENT_PRIVILEGE_LEVEL, "insufficient privilege level" );
     }
 
-    if ( !icss.status ) {
-        return ERROR( CATALOG_NOT_CONNECTED, "catalog not connected" );
-    }
+    try {
+        auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
+        nanodbc::transaction trans{db_conn};
 
-    i = 0;
-    cllBindVars[i++] = _my_time;
-    cllBindVars[i++] = _my_time;
-    cllBindVars[i++] = _base_name;
-    cllBindVarCount = i;
-    if ( logSQL != 0 ) {
         log_sql::debug("chlVersionFnmBase SQL 1");
+        namespace gq2 = irods::experimental::genquery2;
+        using gq2::builder::col;
+        auto upd = gq2::builder::update("RULE_FNM_MAP")
+            .set("map_fnm_version", _my_time ? _my_time : "")
+            .set("modify_ts", _my_time ? _my_time : "")
+            .where(col("map_fnm_base_name") == (_base_name ? _base_name : "") && col("map_fnm_version") == "0")
+            .build();
+        irods::experimental::catalog::execute_catalog(executor, db_conn, upd);
+
+        trans.commit();
+        return SUCCESS();
     }
-
-    status =  cmlExecuteNoAnswerSql(
-                  "update R_RULE_FNM_MAP set map_fnm_version = ?, modify_ts = ? where map_fnm_base_name = ? and map_fnm_version = '0'", &icss );
-    if ( status != 0 && status != CAT_SUCCESS_BUT_WITH_NO_INFO ) {
-        log_db::info("chlVersionFnmBase cmlExecuteNoAnswerSql FNM Map version update  failure {}", status);
-        return ERROR( status, "FNM Map version update  failure" );
-
+    catch (const nanodbc::database_error& e) {
+        log_db::error("{}: database error: {}", __FUNCTION__, e.what());
+        return ERROR( CAT_SQL_ERR, e.what() );
     }
-
-    return SUCCESS();
-
+    catch (const std::exception& e) {
+        log_db::error("{}: exception: {}", __FUNCTION__, e.what());
+        return ERROR( SYS_INTERNAL_ERR, e.what() );
+    }
 } // db_version_fnm_base_op
 
 irods::error db_add_specific_query_op(
     irods::plugin_context& _ctx,
     const char*            _sql,
     const char*            _alias ) {
-    // =-=-=-=-=-=-=-
-    // check the context
     irods::error ret = _ctx.valid();
     if ( !ret.ok() ) {
         return PASS( ret );
     }
 
-    // =-=-=-=-=-=-=-
-    // get a postgres object from the context
-    /*irods::postgres_object_ptr pg;
-    ret = make_db_ptr( _ctx.fco(), pg );
-    if ( !ret.ok() ) {
-        return PASS( ret );
-
-    }*/
-
-    // =-=-=-=-=-=-=-
-    // extract the icss property
-//        icatSessionStruct icss;
-//        _ctx.prop_map().get< icatSessionStruct >( ICSS_PROP, icss );
-    int status, i;
-    char myTime[50];
-    char tsCreateTime[50];
-    if ( logSQL != 0 ) {
-        log_sql::debug("chlAddSpecificQuery");
-    }
+    log_sql::debug("chlAddSpecificQuery");
 
     if ( _ctx.comm()->clientUser.authInfo.authFlag < LOCAL_PRIV_USER_AUTH ) {
         return ERROR( CAT_INSUFFICIENT_PRIVILEGE_LEVEL, "insufficient privilege level" );
@@ -12552,65 +10471,61 @@ irods::error db_add_specific_query_op(
         return ERROR( CAT_INVALID_ARGUMENT, "sql string is invalid" );
     }
 
-    if ( !icss.status ) {
-        return ERROR( CATALOG_NOT_CONNECTED, "catalog not connected" );
-    }
-
+    char myTime[50];
     getNowStr( myTime );
 
-    if ( _alias != NULL && strlen( _alias ) > 0 ) {
-        if ( logSQL != 0 ) {
+    try {
+        auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
+        nanodbc::transaction trans{db_conn};
+
+        if ( _alias != NULL && strlen( _alias ) > 0 ) {
             log_sql::debug("chlAddSpecificQuery SQL 1");
-        }
-        {
-            std::vector<std::string> bindVars;
-            bindVars.push_back( _alias );
-            status = cmlGetStringValueFromSql(
-                         "select create_ts from R_SPECIFIC_QUERY where alias=?",
-                         tsCreateTime, 50, bindVars, &icss );
-        }
-        if ( status == 0 ) {
-            addRErrorMsg( &_ctx.comm()->rError, 0, "Alias is not unique" );
-            return ERROR( CAT_INVALID_ARGUMENT, "alias is not unique" );
-        }
-        i = 0;
-        cllBindVars[i++] = _sql;
-        cllBindVars[i++] = _alias;
-        cllBindVars[i++] = myTime;
-        cllBindVarCount = i;
-        if ( logSQL != 0 ) {
+            namespace gq2 = irods::experimental::genquery2;
+            using gq2::builder::col;
+
+            const auto ts_opt = irods::experimental::catalog::query_catalog_string(
+                executor,
+                db_conn,
+                gq2::builder::select({"create_ts"})
+                    .from("SPECIFIC_QUERY")
+                    .where(col("alias") == _alias)
+                    .build());
+
+            if ( ts_opt.has_value() ) {
+                addRErrorMsg( &_ctx.comm()->rError, 0, "Alias is not unique" );
+                return ERROR( CAT_INVALID_ARGUMENT, "alias is not unique" );
+            }
+
             log_sql::debug("chlAddSpecificQuery SQL 2");
+            namespace gq2 = irods::experimental::genquery2;
+            auto ins = gq2::builder::insert_into("SPECIFIC_QUERY")
+                .set("sqlStr", _sql)
+                .set("alias", _alias)
+                .set("create_ts", myTime)
+                .build();
+            irods::experimental::catalog::execute_catalog(executor, db_conn, ins);
         }
-        status =  cmlExecuteNoAnswerSql(
-                      "insert into R_SPECIFIC_QUERY  (sqlStr, alias, create_ts) values (?, ?, ?)",
-                      &icss );
-    }
-    else {
-        i = 0;
-        cllBindVars[i++] = _sql;
-        cllBindVars[i++] = myTime;
-        cllBindVarCount = i;
-        if ( logSQL != 0 ) {
+        else {
             log_sql::debug("chlAddSpecificQuery SQL 3");
+            namespace gq2 = irods::experimental::genquery2;
+            auto ins = gq2::builder::insert_into("SPECIFIC_QUERY")
+                .set("sqlStr", _sql)
+                .set("create_ts", myTime)
+                .build();
+            irods::experimental::catalog::execute_catalog(executor, db_conn, ins);
         }
-        status =  cmlExecuteNoAnswerSql(
-                      "insert into R_SPECIFIC_QUERY  (sqlStr, create_ts) values (?, ?)",
-                      &icss );
-    }
 
-    if ( status != 0 ) {
-        log_db::info("chlAddSpecificQuery cmlExecuteNoAnswerSql insert failure {}", status);
-        return ERROR( status, "insert failure" );
-    }
-
-    status = cmlExecuteNoAnswerSql( "commit", &icss );
-    if ( status < 0 ) {
-        return ERROR( status, "commit failed" );
-    }
-    else {
+        trans.commit();
         return SUCCESS();
     }
-
+    catch (const nanodbc::database_error& e) {
+        log_db::error("{}: database error: {}", __FUNCTION__, e.what());
+        return ERROR( CAT_SQL_ERR, e.what() );
+    }
+    catch (const std::exception& e) {
+        log_db::error("{}: exception: {}", __FUNCTION__, e.what());
+        return ERROR( SYS_INTERNAL_ERR, e.what() );
+    }
 } // db_add_specific_query_op
 
 irods::error db_del_specific_query_op(
@@ -12623,23 +10538,7 @@ irods::error db_del_specific_query_op(
         return PASS( ret );
     }
 
-    // =-=-=-=-=-=-=-
-    // get a postgres object from the context
-    /*irods::postgres_object_ptr pg;
-    ret = make_db_ptr( _ctx.fco(), pg );
-    if ( !ret.ok() ) {
-        return PASS( ret );
-
-    }*/
-
-    // =-=-=-=-=-=-=-
-    // extract the icss property
-//        icatSessionStruct icss;
-//        _ctx.prop_map().get< icatSessionStruct >( ICSS_PROP, icss );
-    int status, i;
-    if ( logSQL != 0 ) {
-        log_sql::debug("chlDelSpecificQuery");
-    }
+    log_sql::debug("chlDelSpecificQuery");
 
     if ( _ctx.comm()->clientUser.authInfo.authFlag < LOCAL_PRIV_USER_AUTH ) {
         return ERROR( CAT_INSUFFICIENT_PRIVILEGE_LEVEL, "insufficient privilege level" );
@@ -12649,39 +10548,36 @@ irods::error db_del_specific_query_op(
         return ERROR( CATALOG_NOT_CONNECTED, "catalog not connected" );
     }
 
-    i = 0;
-    cllBindVars[i++] = _sql_or_alias;
-    cllBindVarCount = i;
-    if ( logSQL != 0 ) {
+    try {
+        auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
+        nanodbc::transaction trans{db_conn};
+
         log_sql::debug("chlDelSpecificQuery SQL 1");
-    }
-    status =  cmlExecuteNoAnswerSql(
-                  "delete from R_SPECIFIC_QUERY where sqlStr = ?",
-                  &icss );
+        namespace gq2 = irods::experimental::genquery2;
+        using gq2::builder::col;
+        auto del_sql = gq2::builder::remove_from("SPECIFIC_QUERY")
+            .where(col("sqlStr") == _sql_or_alias)
+            .build();
+        const auto res = irods::experimental::catalog::execute_catalog(executor, db_conn, del_sql);
 
-    if ( status == CAT_SUCCESS_BUT_WITH_NO_INFO ) {
-        if ( logSQL != 0 ) {
+        if ( res.affected_rows == 0 ) {
             log_sql::debug("chlDelSpecificQuery SQL 2");
+            auto del_alias = gq2::builder::remove_from("SPECIFIC_QUERY")
+                .where(col("alias") == _sql_or_alias)
+                .build();
+            irods::experimental::catalog::execute_catalog(executor, db_conn, del_alias);
         }
-        i = 0;
-        cllBindVars[i++] = _sql_or_alias;
-        cllBindVarCount = i;
-        status =  cmlExecuteNoAnswerSql(
-                      "delete from R_SPECIFIC_QUERY where alias = ?",
-                      &icss );
-    }
 
-    if ( status != 0 ) {
-        log_db::info("chlDelSpecificQuery cmlExecuteNoAnswerSql delete failure {}", status);
-        return ERROR( status, "delete failure" );
-    }
-
-    status =  cmlExecuteNoAnswerSql( "commit", &icss );
-    if ( status < 0 ) {
-        return ERROR( status, "commit failed" );
-    }
-    else {
+        trans.commit();
         return SUCCESS();
+    }
+    catch (const nanodbc::database_error& e) {
+        log_db::error("{}: database error: {}", __FUNCTION__, e.what());
+        return ERROR( CAT_SQL_ERR, e.what() );
+    }
+    catch (const std::exception& e) {
+        log_db::error("{}: exception: {}", __FUNCTION__, e.what());
+        return ERROR( SYS_INTERNAL_ERR, e.what() );
     }
 
 } // db_del_specific_query_op
@@ -12706,19 +10602,6 @@ irods::error db_specific_query_op(
 
     }
 
-    // =-=-=-=-=-=-=-
-    // get a postgres object from the context
-    /*irods::postgres_object_ptr pg;
-    ret = make_db_ptr( _ctx.fco(), pg );
-    if ( !ret.ok() ) {
-        return PASS( ret );
-
-    }*/
-
-    // =-=-=-=-=-=-=-
-    // extract the icss property
-//        icatSessionStruct icss;
-//        _ctx.prop_map().get< icatSessionStruct >( ICSS_PROP, icss );
     int i, j, k;
     int needToGetNextRow;
 
@@ -12731,11 +10614,8 @@ irods::error db_specific_query_op(
     int maxColSize;
     int currentMaxColSize;
     char *tResult, *tResult2;
-    char tsCreateTime[50];
 
-    if ( logSQL != 0 ) {
-        log_sql::debug("chlSpecificQuery");
-    }
+    log_sql::debug("chlSpecificQuery");
 
     _result->attriCnt = 0;
     _result->rowCnt = 0;
@@ -12750,58 +10630,56 @@ irods::error db_specific_query_op(
         /*
           First check that this SQL is one of the allowed forms.
         */
-        if ( logSQL != 0 ) {
-            log_sql::debug("chlSpecificQuery SQL 1");
-        }
-        {
-            std::vector<std::string> bindVars;
-            bindVars.push_back( _spec_query_inp->sql );
-            status = cmlGetStringValueFromSql(
-                         "select create_ts from R_SPECIFIC_QUERY where sqlStr=?",
-                         tsCreateTime, 50, bindVars, &icss );
-        }
-        if ( status == CAT_NO_ROWS_FOUND ) {
-            int status2;
-            if ( logSQL != 0 ) {
+        log_sql::debug("chlSpecificQuery SQL 1");
+        try {
+            auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
+            auto opt_ts = query_catalog_string(
+                executor, db_conn,
+                gq2::builder::select({"create_ts"})
+                    .from("SPECIFIC_QUERY")
+                    .where(col("sqlStr") == _spec_query_inp->sql)
+                    .build());
+            if ( !opt_ts ) {
                 log_sql::debug("chlSpecificQuery SQL 2");
+                auto opt_sql = query_catalog_string(
+                    executor, db_conn,
+                    gq2::builder::select({"sqlStr"})
+                        .from("SPECIFIC_QUERY")
+                        .where(col("alias") == _spec_query_inp->sql)
+                        .build());
+                if ( !opt_sql ) {
+                    return ERROR( CAT_UNKNOWN_SPECIFIC_QUERY, "unknown query" );
+                }
+                snprintf( combinedSQL, sizeof( combinedSQL ), "%s", opt_sql->c_str() );
             }
-            {
-                std::vector<std::string> bindVars;
-                bindVars.push_back( _spec_query_inp->sql );
-                status2 = cmlGetStringValueFromSql(
-                              "select sqlStr from R_SPECIFIC_QUERY where alias=?",
-                              combinedSQL, sizeof( combinedSQL ), bindVars, &icss );
-            }
-            if ( status2 == CAT_NO_ROWS_FOUND ) {
-                return ERROR( CAT_UNKNOWN_SPECIFIC_QUERY, "unknown query" );
-            }
-            if ( status2 != 0 ) {
-                return ERROR( status2, "failed to get first query" );
+            else {
+                snprintf( combinedSQL, sizeof( combinedSQL ), "%s", _spec_query_inp->sql );
             }
         }
-        else {
-            if ( status != 0 ) {
-                return ERROR( status, "failed to get query strings" );
-            }
-            snprintf( combinedSQL, sizeof( combinedSQL ), "%s", _spec_query_inp->sql );
+        catch (const nanodbc::database_error& e) {
+            log_db::error("{}: database error: {}", __func__, e.what());
+            return ERROR(CAT_SQL_ERR, e.what());
         }
-
-        i = 0;
-        while ( _spec_query_inp->args[i] != NULL && strlen( _spec_query_inp->args[i] ) > 0 ) {
-            cllBindVars[cllBindVarCount++] = _spec_query_inp->args[i++];
+        catch (const std::exception& e) {
+            log_db::error("{}: exception: {}", __func__, e.what());
+            return ERROR(SYS_INTERNAL_ERR, e.what());
         }
 
-        if ( logSQL != 0 ) {
-            log_sql::debug("chlSpecificQuery SQL 3");
+        std::vector<std::string> bind_vars;
+        int arg_idx = 0;
+        while ( _spec_query_inp->args[arg_idx] != NULL && strlen( _spec_query_inp->args[arg_idx] ) > 0 ) {
+            bind_vars.push_back( _spec_query_inp->args[arg_idx++] );
         }
-        status = cmlGetFirstRowFromSql( combinedSQL, &statementNum,
-                                        _spec_query_inp->rowOffset, &icss );
+
+        log_sql::debug("chlSpecificQuery SQL 3");
+        status = db_get_first_row_from_sql( combinedSQL, &statementNum,
+                                            _spec_query_inp->rowOffset, bind_vars, &icss );
         if ( status < 0 ) {
             if ( status != CAT_NO_ROWS_FOUND ) {
-                log_db::info("chlSpecificQuery cmlGetFirstRowFromSql failure {}", status);
+                log_db::info("chlSpecificQuery db_get_first_row_from_sql failure {}", status);
             }
-            cmlFreeStatement(statementNum, &icss);
-            return ERROR( status, "cmlGetFirstRowFromSql failure" );
+            db_free_statement(statementNum, &icss);
+            return ERROR( status, "db_get_first_row_from_sql failure" );
         }
 
         _result->continueInx = statementNum + 1;
@@ -12811,7 +10689,7 @@ irods::error db_specific_query_op(
         statementNum = _spec_query_inp->continueInx - 1;
         needToGetNextRow = 1;
         if ( _spec_query_inp->maxRows <= 0 ) { /* caller is closing out the query */
-            status = cmlFreeStatement( statementNum, &icss );
+            status = db_free_statement( statementNum, &icss );
             if ( status < 0 ) {
                 return ERROR( status, "failed in free statement" );
             }
@@ -12822,9 +10700,9 @@ irods::error db_specific_query_op(
     }
     for ( i = 0; i < _spec_query_inp->maxRows; i++ ) {
         if ( needToGetNextRow ) {
-            status = cmlGetNextRowFromStatement( statementNum, &icss );
+            status = db_get_next_row_from_statement( statementNum, &icss );
             if ( status == CAT_NO_ROWS_FOUND ) {
-                cmlFreeStatement( statementNum, &icss );
+                db_free_statement( statementNum, &icss );
                 _result->continueInx = 0;
                 if ( _result->rowCnt == 0 ) {
                     return ERROR( status, "no rows found" );
@@ -12833,7 +10711,7 @@ irods::error db_specific_query_op(
                 return SUCCESS();
             }
             if ( status < 0 ) {
-                cmlFreeStatement(statementNum, &icss);
+                db_free_statement(statementNum, &icss);
                 return ERROR( status, "failed to get next row" );
             }
         }
@@ -12863,7 +10741,7 @@ irods::error db_specific_query_op(
             for ( j = 0; j < numOfCols; j++ ) {
                 tResult = ( char * ) malloc( totalLen );
                 if ( tResult == NULL ) {
-                    cmlFreeStatement(statementNum, &icss);
+                    db_free_statement(statementNum, &icss);
                     return ERROR( SYS_MALLOC_ERR, "malloc error" );
                 }
                 memset( tResult, 0, totalLen );
@@ -12891,7 +10769,7 @@ irods::error db_specific_query_op(
                 int k;
                 tResult = ( char * ) malloc( totalLen );
                 if ( tResult == NULL ) {
-                    cmlFreeStatement(statementNum, &icss);
+                    db_free_statement(statementNum, &icss);
                     return ERROR( SYS_MALLOC_ERR, "failed to allocate result" );
                 }
                 memset( tResult, 0, totalLen );
@@ -12948,45 +10826,37 @@ irods::error db_get_distinct_data_obj_count_on_resource_op(
     }
 
     // =-=-=-=-=-=-=-
-    // get a postgres object from the context
-    /*irods::postgres_object_ptr pg;
-    ret = make_db_ptr( _ctx.fco(), pg );
-    if ( !ret.ok() ) {
-        return PASS( ret );
+    try {
+        auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
 
-    }*/
+        const std::string pattern1 = std::string(_resc_name) + ";%";
+        const std::string pattern2 = std::string("%;") + _resc_name + ";%";
+        const std::string pattern3 = std::string("%;") + _resc_name;
 
-    // =-=-=-=-=-=-=-
-    // extract the icss property
-//        icatSessionStruct icss;
-//        _ctx.prop_map().get< icatSessionStruct >( ICSS_PROP, icss );
-    // =-=-=-=-=-=-=-
-    // the basic query string
-    char query[ MAX_NAME_LEN ];
-    std::string base_query = "select count(distinct data_id) from R_DATA_MAIN where resc_hier like '%s;%s' or resc_hier like '%s;%s;%s' or resc_hier like '%s;%s'";
-    sprintf(
-        query,
-        base_query.c_str(),
-        _resc_name, "%",      // root node
-        "%", _resc_name, "%", // mid node
-        "%", _resc_name );    // leaf node
+        namespace gq2 = irods::experimental::genquery2;
+        using gq2::builder::col;
 
-    // =-=-=-=-=-=-=-
-    // invoke the query
-    int statement_num = 0;
-    int status = cmlGetFirstRowFromSql(
-                     query,
-                     &statement_num,
-                     0, &icss );
-    if ( status != 0 ) {
-        cmlFreeStatement(statement_num, &icss);
-        return ERROR( status, "cmlGetFirstRowFromSql failed" );
+        auto stmt = gq2::builder::select({gq2::builder::count("distinct data_id")})
+            .from("DATA_OBJECT")
+            .where(col("resc_hier").like(pattern1) || col("resc_hier").like(pattern2) || col("resc_hier").like(pattern3))
+            .build();
+
+        auto opt_cnt = irods::experimental::catalog::query_catalog_integer(executor, db_conn, stmt);
+        if ( !opt_cnt ) {
+            return ERROR( CAT_NO_ROWS_FOUND, "query failed" );
+        }
+
+        ( *_count ) = *opt_cnt;
+        return SUCCESS();
     }
-
-    ( *_count ) = atol( icss.stmtPtr[ statement_num ]->resultValue[0] );
-
-    cmlFreeStatement(statement_num, &icss);
-    return SUCCESS();
+    catch (const nanodbc::database_error& e) {
+        log_db::error("{}: database error: {}", __FUNCTION__, e.what());
+        return ERROR( CAT_SQL_ERR, e.what() );
+    }
+    catch (const std::exception& e) {
+        log_db::error("{}: exception: {}", __FUNCTION__, e.what());
+        return ERROR( SYS_INTERNAL_ERR, e.what() );
+    }
 
 } // db_get_distinct_data_obj_count_on_resource_op
 
@@ -13015,73 +10885,36 @@ irods::error db_get_distinct_data_objs_missing_from_child_given_parent_op(
     }
 
     // =-=-=-=-=-=-=-
-    // get a postgres object from the context
-    /*irods::postgres_object_ptr pg;
-    ret = make_db_ptr( _ctx.fco(), pg );
-    if ( !ret.ok() ) {
-        return PASS( ret );
-
-    }*/
-
-    // =-=-=-=-=-=-=-
-    // extract the icss property
-//        icatSessionStruct icss;
-//        _ctx.prop_map().get< icatSessionStruct >( ICSS_PROP, icss );
-
-    // =-=-=-=-=-=-=-
     // the basic query string
-    char query[ MAX_NAME_LEN ];
-#ifdef ORA_ICAT
-    std::string base_query = "select distinct data_id from R_DATA_MAIN where ( resc_hier like '%s;%s' or resc_hier like '%s;%s;%s' or resc_hier like '%s;%s' ) and data_id not in ( select data_id from R_DATA_MAIN where resc_hier like '%s;%s' or resc_hier like '%s;%s;%s' or resc_hier like '%s;%s' ) and rownum < %d";
+    const auto& flavor = irods::experimental::catalog::get_db_flavor(icss.databaseType);
+    const std::string query = fmt::format(
+        fmt::runtime(flavor.get_hier_resc_vault_template),
+        fmt::format("{};%", *_parent),
+        fmt::format("%;{};%", *_parent),
+        fmt::format("%;{}", *_parent),
+        fmt::format("{};%", *_child),
+        fmt::format("%;{};%", *_child),
+        fmt::format("%;{}", *_child),
+        _limit);
 
-#elif MY_ICAT
-    std::string base_query = "select distinct data_id from R_DATA_MAIN where ( resc_hier like '%s;%s' or resc_hier like '%s;%s;%s' or resc_hier like '%s;%s' ) and data_id not in ( select data_id from R_DATA_MAIN where resc_hier like '%s;%s' or resc_hier like '%s;%s;%s' or resc_hier like '%s;%s' ) limit %d;";
+    try {
+        auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
 
-#else
-    std::string base_query = "select distinct data_id from R_DATA_MAIN where resc_hier like '%s;%s' or resc_hier like '%s;%s;%s' or resc_hier like '%s;%s' except ( select data_id from R_DATA_MAIN where resc_hier like '%s;%s' or resc_hier like '%s;%s;%s' or resc_hier like '%s;%s' ) limit %d";
-
-#endif
-    sprintf(
-        query,
-        base_query.c_str(),
-        _parent->c_str(), "%",      // root
-        "%", _parent->c_str(), "%", // mid tier
-        "%", _parent->c_str(),      // leaf
-        _child->c_str(), "%",       // root
-        "%", _child->c_str(), "%",  // mid tier
-        "%", _child->c_str(),       // leaf
-        _limit );
-
-    // =-=-=-=-=-=-=-
-    // snag the first row from the resulting query
-    int statement_num = 0;
-
-    // =-=-=-=-=-=-=-
-    // iterate over resulting rows
-    for ( int i = 0; ; i++ ) {
-        // =-=-=-=-=-=-=-
-        // extract either the first or next row
-        int status = 0;
-        if ( 0 == i ) {
-            status = cmlGetFirstRowFromSql(
-                         query,
-                         &statement_num,
-                         0, &icss );
-        }
-        else {
-            status = cmlGetNextRowFromStatement( statement_num, &icss );
+        auto rows = executor.execute_query(db_conn, query);
+        while (rows.next()) {
+            _results->push_back(rows.get<int>(0));
         }
 
-        if ( status != 0 ) {
-            cmlFreeStatement(statement_num, &icss);
-            return ERROR( status, "failed to get a row" );
-        }
-
-        _results->push_back( atoi( icss.stmtPtr[ statement_num ]->resultValue[0] ) );
-
-    } // for i
-
-    cmlFreeStatement( statement_num, &icss );
+        return SUCCESS();
+    }
+    catch (const nanodbc::database_error& e) {
+        log_db::error("{}: database error: {}", __FUNCTION__, e.what());
+        return ERROR( CAT_SQL_ERR, e.what() );
+    }
+    catch (const std::exception& e) {
+        log_db::error("{}: exception: {}", __FUNCTION__, e.what());
+        return ERROR( SYS_INTERNAL_ERR, e.what() );
+    }
 
     return SUCCESS();
 
@@ -13142,54 +10975,34 @@ irods::error db_get_repl_list_for_leaf_bundles_op(
     }
     not_child_array.pop_back(); // trim last ','
 
-#ifdef ORA_ICAT
-    const std::string query = (boost::format("select data_id from (select distinct data_id from R_DATA_MAIN where data_id in (select data_id from R_DATA_MAIN where resc_id in (%s)) and data_id not in (select data_id from R_DATA_MAIN where resc_id in (%s)) and modify_ts <= '%s') where rownum <= %d") % not_child_array % child_array % _invocation_timestamp->c_str() % _count).str();
-#elif MY_ICAT
-    /* MySQL (MariaDB doesn't get 'except' until v10.3)*/
-    const std::string query = (boost::format(
-        "select distinct data_id from R_DATA_MAIN "
-        "  where resc_id in (%s) and data_id not in ( "
-        "    select data_id from R_DATA_MAIN "
-        "      where resc_id in (%s) "
-        "  ) and modify_ts <= '%s' limit %d") % not_child_array % child_array % _invocation_timestamp->c_str() % _count).str();
-#else
-    /* Postgres */
-    const std::string query = (boost::format(
-        "select distinct data_id from R_DATA_MAIN "
-        "  where resc_id in (%s) and modify_ts <= '%s' "
-        "except "
-        "  select data_id from R_DATA_MAIN "
-        "    where resc_id in (%s) "
-        "limit %d") % not_child_array % _invocation_timestamp->c_str() % child_array % _count).str();
-#endif
+    const auto& flavor = irods::experimental::catalog::get_db_flavor(icss.databaseType);
+    const std::string query = fmt::format(
+        fmt::runtime(flavor.get_repl_list_leaf_bundles_template),
+        not_child_array,
+        *_invocation_timestamp,
+        child_array,
+        _count);
 
     _results->reserve(_count);
 
-    int statement_num = 0;
-    const int status_cmlGetFirstRowFromSql = cmlGetFirstRowFromSql(query.c_str(), &statement_num, 0, &icss);
-    if (status_cmlGetFirstRowFromSql == CAT_NO_ROWS_FOUND) {
-        cmlFreeStatement(statement_num, &icss);
+    try {
+        auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
+
+        auto rows = executor.execute_query(db_conn, query);
+        while (rows.next()) {
+            _results->push_back(rows.get<rodsLong_t>(0));
+        }
+
         return SUCCESS();
     }
-    if (status_cmlGetFirstRowFromSql != 0) {
-        cmlFreeStatement(statement_num, &icss);
-        return ERROR(status_cmlGetFirstRowFromSql, boost::format("failed to get first row from query [%s]") % query);
+    catch (const nanodbc::database_error& e) {
+        log_db::error("{}: database error: {}", __FUNCTION__, e.what());
+        return ERROR( CAT_SQL_ERR, e.what() );
     }
-    _results->push_back(atoll(icss.stmtPtr[statement_num]->resultValue[0]));
-
-    for (rodsLong_t i=1; i<_count; ++i) {
-        const int status_cmlGetNextRowFromStatement = cmlGetNextRowFromStatement(statement_num, &icss);
-        if (status_cmlGetNextRowFromStatement == CAT_NO_ROWS_FOUND) {
-            break;
-        }
-        if (status_cmlGetNextRowFromStatement != 0) {
-            cmlFreeStatement(statement_num, &icss);
-            return ERROR(status_cmlGetNextRowFromStatement, boost::format("failed to get row [%d] from query [%s]") % i % query);
-        }
-        _results->push_back(atoll(icss.stmtPtr[statement_num]->resultValue[0]));
+    catch (const std::exception& e) {
+        log_db::error("{}: exception: {}", __FUNCTION__, e.what());
+        return ERROR( SYS_INTERNAL_ERR, e.what() );
     }
-    cmlFreeStatement(statement_num, &icss);
-    return SUCCESS();
 
 } // db_get_repl_list_for_leaf_bundles_op
 
@@ -13208,110 +11021,74 @@ irods::error db_get_hierarchy_for_resc_op(
     // =-=-=-=-=-=-=-
     // check incoming pointers
     if ( !_resc_name    ||
-            !_zone_name    ||
-            !_hierarchy ) {
+         !_zone_name    ||
+         !_hierarchy ) {
         return ERROR(
                    SYS_INVALID_INPUT_PARAM,
                    "null or invalid input param" );
     }
 
-    // =-=-=-=-=-=-=-
-    // get a postgres object from the context
-    /*irods::postgres_object_ptr pg;
-    ret = make_db_ptr( _ctx.fco(), pg );
-    if ( !ret.ok() ) {
-        return PASS( ret );
-
-    }*/
-
-    // =-=-=-=-=-=-=-
-    // extract the icss property
-//        icatSessionStruct icss;
-//        _ctx.prop_map().get< icatSessionStruct >( ICSS_PROP, icss );
-
-    char *current_node;
-    char parent[MAX_NAME_LEN];
-    int status;
-
-
-    if ( !icss.status ) {
-        return ERROR( CATALOG_NOT_CONNECTED, "catalog not connected" );
-    }
-
     ( *_hierarchy ) = ( *_resc_name ); // Initialize hierarchy string with resource
 
-    current_node = ( char * )_resc_name->c_str();
-    while ( current_node ) {
-        {
-            std::vector<std::string> bindVars;
-            bindVars.push_back( current_node );
-            bindVars.push_back( *_zone_name );
-            // Ask for parent of current node
-            status = cmlGetStringValueFromSql( "select resc_parent from R_RESC_MAIN where resc_name=? and zone_name=?",
-                                               parent, MAX_NAME_LEN, bindVars, &icss );
-        }
-        if ( status == CAT_NO_ROWS_FOUND ) { // Resource doesn't exist
-            // =-=-=-=-=-=-=-
-            // quick check to see if the resource actually exists
-            char type_name[ 250 ] = "";
-            {
-                std::vector<std::string> bindVars;
-                bindVars.push_back( current_node );
-                bindVars.push_back( *_zone_name );
-                status = cmlGetStringValueFromSql(
-                             "select resc_type_name from R_RESC_MAIN where resc_name=? and zone_name=?",
-                             type_name, 250, bindVars, &icss );
-            }
-            if ( status < 0 ) {
-                return ERROR( CAT_UNKNOWN_RESOURCE, "resource does not exist" );
-            }
-            else {
-                ( *_hierarchy ) = "";
+    try {
+        auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
+
+        namespace gq2 = irods::experimental::genquery2;
+        using gq2::builder::col;
+
+        std::string current_node = *_resc_name;
+        while ( !current_node.empty() ) {
+            auto q_res = irods::experimental::catalog::execute_catalog(
+                executor, db_conn,
+                gq2::builder::select({"resc_parent"})
+                    .from("RESOURCE")
+                    .where(col("resc_name") == current_node && col("zone_name") == *_zone_name)
+                    .build());
+
+            if ( !q_res.query_result || !q_res.query_result->next() ) {
+                // Check if the resource actually exists
+                auto type_res = irods::experimental::catalog::execute_catalog(
+                    executor, db_conn,
+                    gq2::builder::select({"resc_type_name"})
+                        .from("RESOURCE")
+                        .where(col("resc_name") == current_node && col("zone_name") == *_zone_name)
+                        .build());
+                if ( !type_res.query_result || !type_res.query_result->next() ) {
+                    return ERROR( CAT_UNKNOWN_RESOURCE, "resource does not exist" );
+                }
+                *_hierarchy = "";
                 return SUCCESS();
             }
+
+            if ( q_res.query_result->is_null(0) ) {
+                current_node.clear();
+            }
+            else {
+                const auto parent = q_res.query_result->get<std::string>(0);
+                if ( !parent.empty() ) {
+                    ( *_hierarchy ) = parent + irods::hierarchy_parser::delimiter() + ( *_hierarchy );
+                    current_node = parent;
+                }
+                else {
+                    current_node.clear();
+                }
+            }
         }
 
-        if ( status < 0 ) { // Other error
-            return ERROR( status, "failed to get string" );
-        }
-
-        if ( strlen( parent ) ) {
-            ( *_hierarchy ) = parent + irods::hierarchy_parser::delimiter() + ( *_hierarchy );    // Add parent to hierarchy string
-            current_node = parent;
-        }
-        else {
-            current_node = NULL;
-        }
+        return SUCCESS();
     }
-
-    return SUCCESS();
-
+    catch (const nanodbc::database_error& e) {
+        log_db::error("{}: database error: {}", __FUNCTION__, e.what());
+        return ERROR( CAT_SQL_ERR, e.what() );
+    }
+    catch (const std::exception& e) {
+        log_db::error("{}: exception: {}", __FUNCTION__, e.what());
+        return ERROR( SYS_INTERNAL_ERR, e.what() );
+    }
 } // db_get_hierarchy_for_resc_op
 
 namespace
 {
-    // A support function for executing SQL operations.
-    irods::error execute_sql(const char* _sql, const char* _function_name)
-    {
-        auto ec = cmlExecuteNoAnswerSql(_sql, &icss);
-        if (CAT_SUCCESS_BUT_WITH_NO_INFO == ec) {
-            return CODE(ec);
-        }
-
-        if (0 != ec) {
-            log_db::error("SQL execution error [{}].", ec);
-            _rollback(_function_name);
-            return ERROR(ec, "SQL execution error.");
-        }
-
-        ec = cmlExecuteNoAnswerSql("commit", &icss);
-        if (ec < 0) {
-            return ERROR(ec, "Failed to commit SQL updates.");
-        }
-
-        return SUCCESS();
-    } // execute_sql
-
     // NOLINTNEXTLINE(readability-function-cognitive-complexity)
     irods::error execute_ticket_operation_as_admin(irods::plugin_context& _ctx,
                                                    const char* _op_name,
@@ -13321,23 +11098,43 @@ namespace
                                                    const char* _arg5,
                                                    const KeyValPair* _cond_input)
     {
+        auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
+
         //
         // Get the ticket's id.
         //
 
-        rodsLong_t ticket_id = 0;
-        std::vector<std::string> bindVars{_ticket_string};
+        int64_t ticket_id = 0;
+        try {
+            namespace gq2 = irods::experimental::genquery2;
+            using gq2::builder::col;
 
-        auto ec = cmlGetIntegerValueFromSql("select ticket_id from R_TICKET_MAIN where ticket_string = ?",
-                                            &ticket_id, bindVars, &icss);
-
-        if (0 != ec) {
-            ec = cmlGetIntegerValueFromSql("select ticket_id from R_TICKET_MAIN where ticket_id = ?",
-                                           &ticket_id, bindVars, &icss);
-
-            if (0 != ec) {
-                return ERROR(CAT_TICKET_INVALID, _ticket_string);
+            auto opt_id = irods::experimental::catalog::query_catalog_integer(
+                executor, db_conn,
+                gq2::builder::select({"ticket_id"})
+                    .from("TICKET")
+                    .where(col("ticket_string") == _ticket_string)
+                    .build());
+            if (opt_id) {
+                ticket_id = *opt_id;
             }
+            else {
+                opt_id = irods::experimental::catalog::query_catalog_integer(
+                    executor, db_conn,
+                    gq2::builder::select({"ticket_id"})
+                        .from("TICKET")
+                        .where(col("ticket_id") == _ticket_string)
+                        .build());
+                if (opt_id) {
+                    ticket_id = *opt_id;
+                }
+                else {
+                    return ERROR(CAT_TICKET_INVALID, _ticket_string);
+                }
+            }
+        }
+        catch (const std::exception&) {
+            return ERROR(CAT_TICKET_INVALID, _ticket_string);
         }
 
         const auto ticket_id_string = std::to_string(ticket_id);
@@ -13346,109 +11143,134 @@ namespace
         // Handle the operation.
         //
 
+        namespace gq2 = irods::experimental::genquery2;
+        using gq2::builder::col;
+
         // Delete ticket operation.
         if (std::strcmp(_op_name, "delete") == 0) {
-            cllBindVars[0] = ticket_id_string.c_str();
-            cllBindVarCount = 1;
+            try {
+                nanodbc::transaction trans{db_conn};
+                auto del_ticket = gq2::builder::remove_from("R_TICKET_MAIN")
+                    .where(col("ticket_id") == ticket_id_string)
+                    .build();
+                auto res = irods::experimental::catalog::execute_catalog(executor, db_conn, del_ticket);
+                if (res.affected_rows == 0) {
+                    return CODE(CAT_SUCCESS_BUT_WITH_NO_INFO);
+                }
 
-            //
-            // Delete ticket from primary ticket table.
-            //
-            
-            ec = cmlExecuteNoAnswerSql("delete from R_TICKET_MAIN where ticket_id = ?", &icss);
-            if (CAT_SUCCESS_BUT_WITH_NO_INFO == ec) {
-                return CODE(ec);
+                // Delete all relationships stored in the secondary ticket tables.
+                try {
+                    auto del_hosts = gq2::builder::remove_from("R_TICKET_ALLOWED_HOSTS")
+                        .where(col("ticket_id") == ticket_id_string)
+                        .build();
+                    irods::experimental::catalog::execute_catalog(executor, db_conn, del_hosts);
+                }
+                catch (const std::exception& e) {
+                    log_db::warn("Failed to delete ticket information [error={}, ticket={}, table=R_TICKET_ALLOWED_HOSTS]",
+                        e.what(), ticket_id_string);
+                }
+
+                try {
+                    auto del_users = gq2::builder::remove_from("R_TICKET_ALLOWED_USERS")
+                        .where(col("ticket_id") == ticket_id_string)
+                        .build();
+                    irods::experimental::catalog::execute_catalog(executor, db_conn, del_users);
+                }
+                catch (const std::exception& e) {
+                    log_db::warn("Failed to delete ticket information [error={}, ticket={}, table=R_TICKET_ALLOWED_USERS]",
+                        e.what(), ticket_id_string);
+                }
+
+                try {
+                    auto del_groups = gq2::builder::remove_from("R_TICKET_ALLOWED_GROUPS")
+                        .where(col("ticket_id") == ticket_id_string)
+                        .build();
+                    irods::experimental::catalog::execute_catalog(executor, db_conn, del_groups);
+                }
+                catch (const std::exception& e) {
+                    log_db::warn("Failed to delete ticket information [error={}, ticket={}, table=R_TICKET_ALLOWED_GROUPS]",
+                        e.what(), ticket_id_string);
+                }
+
+                trans.commit();
+                return SUCCESS();
             }
-
-            if (0 != ec) {
-                return ERROR(ec, fmt::format("Failed to delete ticket with id [{}] as user [{}].",
-                                             ticket_id_string, _ctx.comm()->clientUser.userName));
+            catch (const std::exception& e) {
+                log_db::error("{}: Failed to delete ticket: {}", __func__, e.what());
+                return ERROR(CAT_SQL_ERR, fmt::format("Failed to delete ticket with id [{}] as user [{}].",
+                    ticket_id_string, _ctx.comm()->clientUser.userName));
             }
-
-            //
-            // Delete all relationships stored in the secondary ticket tables.
-            //
-
-            cllBindVars[0] = ticket_id_string.c_str();
-            cllBindVarCount = 1;
-            ec = cmlExecuteNoAnswerSql("delete from R_TICKET_ALLOWED_HOSTS where ticket_id = ?", &icss);
-            if (0 != ec && CAT_SUCCESS_BUT_WITH_NO_INFO != ec) {
-                log_db::warn(
-                    "Failed to delete ticket information [error_code={}, ticket={}, table=R_TICKET_ALLOWED_HOSTS]",
-                    ec,
-                    ticket_id_string);
-            }
-
-            cllBindVars[0] = ticket_id_string.c_str();
-            cllBindVarCount = 1;
-            ec = cmlExecuteNoAnswerSql("delete from R_TICKET_ALLOWED_USERS where ticket_id = ?", &icss);
-            if (0 != ec && CAT_SUCCESS_BUT_WITH_NO_INFO != ec) {
-                log_db::warn(
-                    "Failed to delete ticket information [error_code={}, ticket={}, table=R_TICKET_ALLOWED_USERS]",
-                    ec,
-                    ticket_id_string);
-            }
-
-            cllBindVars[0] = ticket_id_string.c_str();
-            cllBindVarCount = 1;
-            ec = cmlExecuteNoAnswerSql("delete from R_TICKET_ALLOWED_GROUPS where ticket_id = ?", &icss);
-            if (0 != ec && CAT_SUCCESS_BUT_WITH_NO_INFO != ec) {
-                log_db::warn(
-                    "Failed to delete ticket information [error_code={}, ticket={}, table=R_TICKET_ALLOWED_GROUPS]",
-                    ec,
-                    ticket_id_string);
-            }
-
-            ec = cmlExecuteNoAnswerSql("commit", &icss);
-            if (ec < 0) {
-                return ERROR(ec, "Failed to commit ticket updates.");
-            }
-
-            return SUCCESS();
         } // delete ticket operation
 
         // Modify ticket operation.
         if (std::strcmp(_op_name, "mod") == 0) {
             if (std::strcmp(_arg3, "uses") == 0) {
-                int i{0};
-                char myTime[TIME_LEN]{}; // NOLINT(cppcoreguidelines-avoid-c-arrays, modernize-avoid-c-arrays)
+                char myTime[TIME_LEN]{};
                 getNowStr(myTime);
-                cllBindVars[i++] = _arg4; // NOLINT(cppcoreguidelines-pro-bounds-constant-array-index)
-                cllBindVars[i++] = myTime; // NOLINT(cppcoreguidelines-pro-bounds-constant-array-index)
-                // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-constant-array-index)
-                cllBindVars[i++] = ticket_id_string.c_str();
-                cllBindVarCount = i;
-
-                return execute_sql(
-                    "update R_TICKET_MAIN set uses_limit = ?, modify_ts = ? where ticket_id = ?", __func__);
+                try {
+                    nanodbc::transaction trans{db_conn};
+                    auto upd_stmt = gq2::builder::update("TICKET")
+                        .set("uses_limit", _arg4)
+                        .set("modify_ts", myTime)
+                        .where(col("ticket_id") == ticket_id_string)
+                        .build();
+                    auto res = irods::experimental::catalog::execute_catalog(executor, db_conn, upd_stmt);
+                    if (res.affected_rows == 0) {
+                        return CODE(CAT_SUCCESS_BUT_WITH_NO_INFO);
+                    }
+                    trans.commit();
+                    return SUCCESS();
+                }
+                catch (const std::exception& e) {
+                    log_db::error("{}: Failed to update uses: {}", __func__, e.what());
+                    return ERROR(CAT_SQL_ERR, "SQL execution error.");
+                }
             } // uses
 
             if (std::strcmp(_arg3, "write-file") == 0) {
-                int i{};
-                char myTime[TIME_LEN]{}; // NOLINT(cppcoreguidelines-avoid-c-arrays, modernize-avoid-c-arrays)
+                char myTime[TIME_LEN]{};
                 getNowStr(myTime);
-                cllBindVars[i++] = _arg4; // NOLINT(cppcoreguidelines-pro-bounds-constant-array-index)
-                cllBindVars[i++] = myTime; // NOLINT(cppcoreguidelines-pro-bounds-constant-array-index)
-                // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-constant-array-index)
-                cllBindVars[i++] = ticket_id_string.c_str();
-                cllBindVarCount = i;
-
-                return execute_sql(
-                    "update R_TICKET_MAIN set write_file_limit = ?, modify_ts = ? where ticket_id = ?", __func__);
+                try {
+                    nanodbc::transaction trans{db_conn};
+                    auto upd_stmt = gq2::builder::update("TICKET")
+                        .set("write_file_limit", _arg4)
+                        .set("modify_ts", myTime)
+                        .where(col("ticket_id") == ticket_id_string)
+                        .build();
+                    auto res = irods::experimental::catalog::execute_catalog(executor, db_conn, upd_stmt);
+                    if (res.affected_rows == 0) {
+                        return CODE(CAT_SUCCESS_BUT_WITH_NO_INFO);
+                    }
+                    trans.commit();
+                    return SUCCESS();
+                }
+                catch (const std::exception& e) {
+                    log_db::error("{}: Failed to update write-file: {}", __func__, e.what());
+                    return ERROR(CAT_SQL_ERR, "SQL execution error.");
+                }
             } // write-file
 
             if (std::strcmp(_arg3, "write-bytes") == 0) {
-                int i{};
-                char myTime[TIME_LEN]{}; // NOLINT(cppcoreguidelines-avoid-c-arrays, modernize-avoid-c-arrays)
+                char myTime[TIME_LEN]{};
                 getNowStr(myTime);
-                cllBindVars[i++] = _arg4; // NOLINT(cppcoreguidelines-pro-bounds-constant-array-index)
-                cllBindVars[i++] = myTime; // NOLINT(cppcoreguidelines-pro-bounds-constant-array-index)
-                // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-constant-array-index)
-                cllBindVars[i++] = ticket_id_string.c_str();
-                cllBindVarCount = i;
-
-                return execute_sql(
-                    "update R_TICKET_MAIN set write_byte_limit = ?, modify_ts = ? where ticket_id = ?", __func__);
+                try {
+                    nanodbc::transaction trans{db_conn};
+                    auto upd_stmt = gq2::builder::update("TICKET")
+                        .set("write_byte_limit", _arg4)
+                        .set("modify_ts", myTime)
+                        .where(col("ticket_id") == ticket_id_string)
+                        .build();
+                    auto res = irods::experimental::catalog::execute_catalog(executor, db_conn, upd_stmt);
+                    if (res.affected_rows == 0) {
+                        return CODE(CAT_SUCCESS_BUT_WITH_NO_INFO);
+                    }
+                    trans.commit();
+                    return SUCCESS();
+                }
+                catch (const std::exception& e) {
+                    log_db::error("{}: Failed to update write-bytes: {}", __func__, e.what());
+                    return ERROR(CAT_SQL_ERR, "SQL execution error.");
+                }
             } // write-bytes
 
             if (std::strcmp(_arg3, "expire") == 0) {
@@ -13492,318 +11314,227 @@ namespace
                     }
                 }
 
-                int i{};
-                char myTime[TIME_LEN]{}; // NOLINT(cppcoreguidelines-avoid-c-arrays, modernize-avoid-c-arrays)
+                char myTime[TIME_LEN]{};
                 getNowStr(myTime);
-                // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-constant-array-index)
-                cllBindVars[i++] = ticket_expiration_string.c_str();
-                cllBindVars[i++] = myTime; // NOLINT(cppcoreguidelines-pro-bounds-constant-array-index)
-                // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-constant-array-index)
-                cllBindVars[i++] = ticket_id_string.c_str();
-                cllBindVarCount = i;
-
-                return execute_sql(
-                    "update R_TICKET_MAIN set ticket_expiry_ts = ?, modify_ts = ? where ticket_id = ?", __func__);
+                try {
+                    nanodbc::transaction trans{db_conn};
+                    auto upd_stmt = gq2::builder::update("TICKET")
+                        .set("ticket_expiry_ts", ticket_expiration_string)
+                        .set("modify_ts", myTime)
+                        .where(col("ticket_id") == ticket_id_string)
+                        .build();
+                    auto res = irods::experimental::catalog::execute_catalog(executor, db_conn, upd_stmt);
+                    if (res.affected_rows == 0) {
+                        return CODE(CAT_SUCCESS_BUT_WITH_NO_INFO);
+                    }
+                    trans.commit();
+                    return SUCCESS();
+                }
+                catch (const std::exception& e) {
+                    log_db::error("{}: Failed to update expire: {}", __func__, e.what());
+                    return ERROR(CAT_SQL_ERR, "SQL execution error.");
+                }
             } // expire
 
             if (std::strcmp(_arg3, "add") == 0) {
                 if (std::strcmp(_arg4, "host") == 0) {
-                    // Return an error if the hostname cannot be converted to an IP address.
                     char* hostIp = convertHostToIp(_arg5);
                     if (!hostIp) {
                         return ERROR(CAT_HOSTNAME_INVALID, _arg5);
                     }
 
-                    cllBindVars[0] = ticket_id_string.c_str();
-                    cllBindVars[1] = hostIp;
-                    cllBindVarCount = 2;
+                    try {
+                        nanodbc::transaction trans{db_conn};
+                        auto ins_stmt = gq2::builder::insert_into("TICKET_ALLOWED_HOSTS")
+                            .set("ticket_id", ticket_id_string)
+                            .set("host", hostIp)
+                            .build();
+                        irods::experimental::catalog::execute_catalog(executor, db_conn, ins_stmt);
 
-                    ec = cmlExecuteNoAnswerSql(
-                        "insert into R_TICKET_ALLOWED_HOSTS (ticket_id, host) values (?, ?)", &icss);
-                    if (ec != 0) {
+                        char myTime[TIME_LEN]{};
+                        getNowStr(myTime);
+                        auto upd_stmt = gq2::builder::update("TICKET")
+                            .set("modify_ts", myTime)
+                            .where(col("ticket_id") == ticket_id_string)
+                            .build();
+                        irods::experimental::catalog::execute_catalog(executor, db_conn, upd_stmt);
+
+                        trans.commit();
+                        return SUCCESS();
+                    }
+                    catch (const std::exception& e) {
                         auto err_msg = fmt::format(
-                            "Failed to add host [{}] to ticket [{}], status [{}]", hostIp, ticket_id_string, ec);
+                            "Failed to add host [{}] to ticket [{}]: {}", hostIp, ticket_id_string, e.what());
                         log_sql::error(err_msg);
-                        _rollback(__func__);
-                        return ERROR(ec, std::move(err_msg));
+                        return ERROR(CAT_SQL_ERR, std::move(err_msg));
                     }
-
-                    int i{};
-                    char myTime[TIME_LEN]{}; // NOLINT(cppcoreguidelines-avoid-c-arrays, modernize-avoid-c-arrays)
-                    getNowStr(myTime);
-                    cllBindVars[i++] = myTime; // NOLINT(cppcoreguidelines-pro-bounds-constant-array-index)
-                    // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-constant-array-index)
-                    cllBindVars[i++] = ticket_id_string.c_str();
-                    cllBindVarCount = i;
-
-                    ec = cmlExecuteNoAnswerSql("update R_TICKET_MAIN set modify_ts = ? where ticket_id = ?", &icss);
-                    if (ec != 0) {
-                        auto err_msg = fmt::format(
-                            "Failed to update modify_ts for ticket [{}] while adding host [{}], status [{}]",
-                            ticket_id_string,
-                            hostIp,
-                            ec);
-                        log_sql::error(err_msg);
-                        _rollback(__func__);
-                        return ERROR(ec, std::move(err_msg));
-                    }
-
-                    ec = cmlExecuteNoAnswerSql("commit", &icss);
-                    if (ec < 0) {
-                        return ERROR(ec, "Failed to commit SQL updates.");
-                    }
-
-                    return SUCCESS();
                 } // host
 
                 if (std::strcmp(_arg4, "user") == 0) {
-                    // Return an error if the user does not exist.
                     char user_id_string[MAX_NAME_LEN];
                     auto ec = icatGetTicketUserId(_ctx.prop_map(), _arg5, user_id_string);
                     if (0 != ec) {
                         return ERROR(ec, "icatGetTicketUserId failed");
                     }
 
-                    cllBindVars[0] = ticket_id_string.c_str();
-                    cllBindVars[1] = _arg5;
-                    cllBindVarCount = 2;
+                    try {
+                        nanodbc::transaction trans{db_conn};
+                        auto ins_stmt = gq2::builder::insert_into("TICKET_ALLOWED_USERS")
+                            .set("ticket_id", ticket_id_string)
+                            .set("user_name", _arg5)
+                            .build();
+                        irods::experimental::catalog::execute_catalog(executor, db_conn, ins_stmt);
 
-                    ec = cmlExecuteNoAnswerSql(
-                        "insert into R_TICKET_ALLOWED_USERS (ticket_id, user_name) values (?, ?)", &icss);
-                    if (ec != 0) {
+                        char myTime[TIME_LEN]{};
+                        getNowStr(myTime);
+                        auto upd_stmt = gq2::builder::update("TICKET")
+                            .set("modify_ts", myTime)
+                            .where(col("ticket_id") == ticket_id_string)
+                            .build();
+                        irods::experimental::catalog::execute_catalog(executor, db_conn, upd_stmt);
+
+                        trans.commit();
+                        return SUCCESS();
+                    }
+                    catch (const std::exception& e) {
                         auto err_msg = fmt::format(
-                            "Failed to add user [{}] to ticket [{}], status [{}]", _arg5, ticket_id_string, ec);
+                            "Failed to add user [{}] to ticket [{}]: {}", _arg5, ticket_id_string, e.what());
                         log_sql::error(err_msg);
-                        _rollback(__func__);
-                        return ERROR(ec, std::move(err_msg));
+                        return ERROR(CAT_SQL_ERR, std::move(err_msg));
                     }
-
-                    int i{};
-                    char myTime[TIME_LEN]{}; // NOLINT(cppcoreguidelines-avoid-c-arrays, modernize-avoid-c-arrays)
-                    getNowStr(myTime);
-                    cllBindVars[i++] = myTime; // NOLINT(cppcoreguidelines-pro-bounds-constant-array-index)
-                    // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-constant-array-index)
-                    cllBindVars[i++] = ticket_id_string.c_str();
-                    cllBindVarCount = i;
-
-                    ec = cmlExecuteNoAnswerSql("update R_TICKET_MAIN set modify_ts = ? where ticket_id = ?", &icss);
-                    if (ec != 0) {
-                        auto err_msg = fmt::format(
-                            "Failed to update modify_ts for ticket [{}] while adding user [{}], status [{}]",
-                            ticket_id_string,
-                            _arg5,
-                            ec);
-                        log_sql::error(err_msg);
-                        _rollback(__func__);
-                        return ERROR(ec, std::move(err_msg));
-                    }
-
-                    ec = cmlExecuteNoAnswerSql("commit", &icss);
-                    if (ec < 0) {
-                        return ERROR(ec, "Failed to commit SQL updates.");
-                    }
-
-                    return SUCCESS();
                 } // user
 
                 if (std::strcmp(_arg4, "group") == 0) {
-                    // Return an error if the group does not exist.
                     char user_id_string[MAX_NAME_LEN];
                     auto ec = icatGetTicketGroupId(_ctx.prop_map(), _arg5, user_id_string);
                     if (0 != ec) {
                         return ERROR(ec, "icatGetTicketGroupId failed");
                     }
 
-                    cllBindVars[0] = ticket_id_string.c_str();
-                    cllBindVars[1] = _arg5;
-                    cllBindVarCount = 2;
+                    try {
+                        nanodbc::transaction trans{db_conn};
+                        auto ins_stmt = gq2::builder::insert_into("TICKET_ALLOWED_GROUPS")
+                            .set("ticket_id", ticket_id_string)
+                            .set("group_name", _arg5)
+                            .build();
+                        irods::experimental::catalog::execute_catalog(executor, db_conn, ins_stmt);
 
-                    ec = cmlExecuteNoAnswerSql(
-                        "insert into R_TICKET_ALLOWED_GROUPS (ticket_id, group_name) values (?, ?)", &icss);
-                    if (ec != 0) {
+                        char myTime[TIME_LEN]{};
+                        getNowStr(myTime);
+                        auto upd_stmt = gq2::builder::update("TICKET")
+                            .set("modify_ts", myTime)
+                            .where(col("ticket_id") == ticket_id_string)
+                            .build();
+                        irods::experimental::catalog::execute_catalog(executor, db_conn, upd_stmt);
+
+                        trans.commit();
+                        return SUCCESS();
+                    }
+                    catch (const std::exception& e) {
                         auto err_msg = fmt::format(
-                            "Failed to add group [{}] to ticket [{}], status [{}]", _arg5, ticket_id_string, ec);
+                            "Failed to add group [{}] to ticket [{}]: {}", _arg5, ticket_id_string, e.what());
                         log_sql::error(err_msg);
-                        _rollback(__func__);
-                        return ERROR(ec, std::move(err_msg));
+                        return ERROR(CAT_SQL_ERR, std::move(err_msg));
                     }
-
-                    int i{};
-                    char myTime[TIME_LEN]{}; // NOLINT(cppcoreguidelines-avoid-c-arrays, modernize-avoid-c-arrays)
-                    getNowStr(myTime);
-                    cllBindVars[i++] = myTime; // NOLINT(cppcoreguidelines-pro-bounds-constant-array-index)
-                    // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-constant-array-index)
-                    cllBindVars[i++] = ticket_id_string.c_str();
-                    cllBindVarCount = i;
-
-                    ec = cmlExecuteNoAnswerSql("update R_TICKET_MAIN set modify_ts = ? where ticket_id = ?", &icss);
-                    if (ec != 0) {
-                        auto err_msg = fmt::format(
-                            "Failed to update modify_ts for ticket [{}] while adding group [{}], status [{}]",
-                            ticket_id_string,
-                            _arg5,
-                            ec);
-                        log_sql::error(err_msg);
-                        _rollback(__func__);
-                        return ERROR(ec, std::move(err_msg));
-                    }
-
-                    ec = cmlExecuteNoAnswerSql("commit", &icss);
-                    if (ec < 0) {
-                        return ERROR(ec, "Failed to commit SQL updates.");
-                    }
-
-                    return SUCCESS();
                 } // group
             } // add
             else if (std::strcmp(_arg3, "remove") == 0) {
                 if (std::strcmp(_arg4, "host") == 0) {
-                    // Return an error if the hostname cannot be converted to an IP address.
                     char* hostIp = convertHostToIp(_arg5);
                     if (!hostIp) {
                         return ERROR(CAT_HOSTNAME_INVALID, "host name null");
                     }
 
-                    cllBindVars[0] = ticket_id_string.c_str();
-                    cllBindVars[1] = hostIp;
-                    cllBindVarCount = 2;
+                    try {
+                        nanodbc::transaction trans{db_conn};
+                        auto del_stmt = gq2::builder::remove_from("TICKET_ALLOWED_HOSTS")
+                            .where(col("ticket_id") == ticket_id_string && col("host") == hostIp)
+                            .build();
+                        irods::experimental::catalog::execute_catalog(executor, db_conn, del_stmt);
 
-                    ec = cmlExecuteNoAnswerSql(
-                        "delete from R_TICKET_ALLOWED_HOSTS where ticket_id = ? and host = ?", &icss);
-                    if (ec != 0) {
+                        char myTime[TIME_LEN]{};
+                        getNowStr(myTime);
+                        auto upd_stmt = gq2::builder::update("TICKET")
+                            .set("modify_ts", myTime)
+                            .where(col("ticket_id") == ticket_id_string)
+                            .build();
+                        irods::experimental::catalog::execute_catalog(executor, db_conn, upd_stmt);
+
+                        trans.commit();
+                        return SUCCESS();
+                    }
+                    catch (const std::exception& e) {
                         auto err_msg = fmt::format(
-                            "Failed to remove host [{}] from ticket [{}], status [{}]", hostIp, ticket_id_string, ec);
+                            "Failed to remove host [{}] from ticket [{}]: {}", hostIp, ticket_id_string, e.what());
                         log_sql::error(err_msg);
-                        _rollback(__func__);
-                        return ERROR(ec, std::move(err_msg));
+                        return ERROR(CAT_SQL_ERR, std::move(err_msg));
                     }
-
-                    int i{};
-                    char myTime[TIME_LEN]{}; // NOLINT(cppcoreguidelines-avoid-c-arrays, modernize-avoid-c-arrays)
-                    getNowStr(myTime);
-                    cllBindVars[i++] = myTime; // NOLINT(cppcoreguidelines-pro-bounds-constant-array-index)
-                    // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-constant-array-index)
-                    cllBindVars[i++] = ticket_id_string.c_str();
-                    cllBindVarCount = i;
-
-                    ec = cmlExecuteNoAnswerSql("update R_TICKET_MAIN set modify_ts = ? where ticket_id = ?", &icss);
-                    if (ec != 0) {
-                        auto err_msg = fmt::format(
-                            "Failed to update modify_ts for ticket [{}] while removing host [{}], status [{}]",
-                            ticket_id_string,
-                            hostIp,
-                            ec);
-                        log_sql::error(err_msg);
-                        _rollback(__func__);
-                        return ERROR(ec, std::move(err_msg));
-                    }
-
-                    ec = cmlExecuteNoAnswerSql("commit", &icss);
-                    if (ec < 0) {
-                        return ERROR(ec, "Failed to commit SQL updates.");
-                    }
-
-                    return SUCCESS();
                 } // host
 
                 if (std::strcmp(_arg4, "user") == 0) {
-                    // Return an error if the user does not exist.
                     char user_id_string[MAX_NAME_LEN];
                     auto ec = icatGetTicketUserId(_ctx.prop_map(), _arg5, user_id_string);
                     if (0 != ec) {
                         return ERROR(ec, "icatGetTicketUserId failed");
                     }
 
-                    cllBindVars[0] = ticket_id_string.c_str();
-                    cllBindVars[1] = _arg5;
-                    cllBindVarCount = 2;
+                    try {
+                        nanodbc::transaction trans{db_conn};
+                        auto del_stmt = gq2::builder::remove_from("TICKET_ALLOWED_USERS")
+                            .where(col("ticket_id") == ticket_id_string && col("user_name") == _arg5)
+                            .build();
+                        irods::experimental::catalog::execute_catalog(executor, db_conn, del_stmt);
 
-                    ec = cmlExecuteNoAnswerSql(
-                        "delete from R_TICKET_ALLOWED_USERS where ticket_id = ? and user_name = ?", &icss);
-                    if (ec != 0) {
+                        char myTime[TIME_LEN]{};
+                        getNowStr(myTime);
+                        auto upd_stmt = gq2::builder::update("TICKET")
+                            .set("modify_ts", myTime)
+                            .where(col("ticket_id") == ticket_id_string)
+                            .build();
+                        irods::experimental::catalog::execute_catalog(executor, db_conn, upd_stmt);
+
+                        trans.commit();
+                        return SUCCESS();
+                    }
+                    catch (const std::exception& e) {
                         auto err_msg = fmt::format(
-                            "Failed to remove user [{}] from ticket [{}], status [{}]", _arg5, ticket_id_string, ec);
+                            "Failed to remove user [{}] from ticket [{}]: {}", _arg5, ticket_id_string, e.what());
                         log_sql::error(err_msg);
-                        _rollback(__func__);
-                        return ERROR(ec, std::move(err_msg));
+                        return ERROR(CAT_SQL_ERR, std::move(err_msg));
                     }
-
-                    int i{};
-                    char myTime[TIME_LEN]{}; // NOLINT(cppcoreguidelines-avoid-c-arrays, modernize-avoid-c-arrays)
-                    getNowStr(myTime);
-                    cllBindVars[i++] = myTime; // NOLINT(cppcoreguidelines-pro-bounds-constant-array-index)
-                    // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-constant-array-index)
-                    cllBindVars[i++] = ticket_id_string.c_str();
-                    cllBindVarCount = i;
-
-                    ec = cmlExecuteNoAnswerSql("update R_TICKET_MAIN set modify_ts = ? where ticket_id = ?", &icss);
-                    if (ec != 0) {
-                        auto err_msg = fmt::format(
-                            "Failed to update modify_ts for ticket [{}] while removing user [{}], status [{}]",
-                            ticket_id_string,
-                            _arg5,
-                            ec);
-                        log_sql::error(err_msg);
-                        _rollback(__func__);
-                        return ERROR(ec, std::move(err_msg));
-                    }
-
-                    ec = cmlExecuteNoAnswerSql("commit", &icss);
-                    if (ec < 0) {
-                        return ERROR(ec, "Failed to commit SQL updates.");
-                    }
-
-                    return SUCCESS();
                 } // user
 
                 if (std::strcmp(_arg4, "group") == 0) {
-                    // Return an error if the group does not exist.
                     char group_id_string[MAX_NAME_LEN];
                     auto ec = icatGetTicketGroupId(_ctx.prop_map(), _arg5, group_id_string);
                     if (0 != ec) {
                         return ERROR(ec, "icatGetTicketGroupId failed");
                     }
 
-                    cllBindVars[0] = ticket_id_string.c_str();
-                    cllBindVars[1] = _arg5;
-                    cllBindVarCount = 2;
+                    try {
+                        nanodbc::transaction trans{db_conn};
+                        auto del_stmt = gq2::builder::remove_from("TICKET_ALLOWED_GROUPS")
+                            .where(col("ticket_id") == ticket_id_string && col("group_name") == _arg5)
+                            .build();
+                        irods::experimental::catalog::execute_catalog(executor, db_conn, del_stmt);
 
-                    ec = cmlExecuteNoAnswerSql(
-                        "delete from R_TICKET_ALLOWED_GROUPS where ticket_id = ? and group_name = ?", &icss);
-                    if (ec != 0) {
+                        char myTime[TIME_LEN]{};
+                        getNowStr(myTime);
+                        auto upd_stmt = gq2::builder::update("TICKET")
+                            .set("modify_ts", myTime)
+                            .where(col("ticket_id") == ticket_id_string)
+                            .build();
+                        irods::experimental::catalog::execute_catalog(executor, db_conn, upd_stmt);
+
+                        trans.commit();
+                        return SUCCESS();
+                    }
+                    catch (const std::exception& e) {
                         auto err_msg = fmt::format(
-                            "Failed to remove group [{}] from ticket [{}], status [{}]", _arg5, ticket_id_string, ec);
+                            "Failed to remove group [{}] from ticket [{}]: {}", _arg5, ticket_id_string, e.what());
                         log_sql::error(err_msg);
-                        _rollback(__func__);
-                        return ERROR(ec, std::move(err_msg));
+                        return ERROR(CAT_SQL_ERR, std::move(err_msg));
                     }
-
-                    int i{};
-                    char myTime[TIME_LEN]{}; // NOLINT(cppcoreguidelines-avoid-c-arrays, modernize-avoid-c-arrays)
-                    getNowStr(myTime);
-                    cllBindVars[i++] = myTime; // NOLINT(cppcoreguidelines-pro-bounds-constant-array-index)
-                    // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-constant-array-index)
-                    cllBindVars[i++] = ticket_id_string.c_str();
-                    cllBindVarCount = i;
-
-                    ec = cmlExecuteNoAnswerSql("update R_TICKET_MAIN set modify_ts = ? where ticket_id = ?", &icss);
-                    if (ec != 0) {
-                        auto err_msg = fmt::format(
-                            "Failed to update modify_ts for ticket [{}] while removing group [{}], status [{}]",
-                            ticket_id_string,
-                            _arg5,
-                            ec);
-                        log_sql::error(err_msg);
-                        _rollback(__func__);
-                        return ERROR(ec, std::move(err_msg));
-                    }
-
-                    ec = cmlExecuteNoAnswerSql("commit", &icss);
-                    if (ec < 0) {
-                        return ERROR(ec, "Failed to commit SQL updates.");
-                    }
-
-                    return SUCCESS();
                 } // group
             } // remove
         } // modify ticket operation
@@ -13829,19 +11560,9 @@ irods::error db_mod_ticket_op(
         return PASS( ret );
     }
 
-    // =-=-=-=-=-=-=-
-    // get a postgres object from the context
-    /*irods::postgres_object_ptr pg;
-    ret = make_db_ptr( _ctx.fco(), pg );
-    if ( !ret.ok() ) {
-        return PASS( ret );
+    namespace gq2 = irods::experimental::genquery2;
+    using gq2::builder::col;
 
-    }*/
-
-    // =-=-=-=-=-=-=-
-    // extract the icss property
-//        icatSessionStruct icss;
-//        _ctx.prop_map().get< icatSessionStruct >( ICSS_PROP, icss );
     rodsLong_t status, status2, status3;
     char logicalEndName[MAX_NAME_LEN];
     char logicalParentDirName[MAX_NAME_LEN];
@@ -13849,14 +11570,10 @@ irods::error db_mod_ticket_op(
     rodsLong_t userId;
     rodsLong_t ticketId;
     rodsLong_t seqNum;
-    char seqNumStr[NAME_LEN];
-    char objIdStr[NAME_LEN];
     char objTypeStr[NAME_LEN];
-    char userIdStr[NAME_LEN];
+    std::string userIdStr;
     char user2IdStr[MAX_NAME_LEN];
-    char group2IdStr[NAME_LEN];
-    char ticketIdStr[NAME_LEN];
-    char ticketType[NAME_LEN];
+    std::string ticketIdStr;
 
     /* session ticket */
     if ( strcmp( _op_name, "session" ) == 0 ) {
@@ -13897,6 +11614,8 @@ irods::error db_mod_ticket_op(
         // The admin keyword is ignored for other operations.
     }
 
+    auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
+
     // create
     if ( strcmp( _op_name, "create" ) == 0 ) {
         if (isInteger(const_cast<char*>(_ticket_string))) {
@@ -13914,147 +11633,138 @@ irods::error db_mod_ticket_op(
             snprintf( logicalParentDirName, sizeof( logicalParentDirName ), "%s", PATH_SEPARATOR );
             snprintf( logicalEndName, sizeof( logicalEndName ), "%s", _arg4 + 1 );
         }
-        status2 = cmlCheckDataObjOnly( logicalParentDirName, logicalEndName,
-                                       _ctx.comm()->clientUser.userName,
-                                       _ctx.comm()->clientUser.rodsZone,
-                                       ACCESS_OWN, &icss );
+
+        status2 = irods::experimental::catalog::access_control::check_data_object_only(
+            executor, db_conn,
+            logicalParentDirName, logicalEndName,
+            _ctx.comm()->clientUser.userName,
+            _ctx.comm()->clientUser.rodsZone,
+            ACCESS_OWN );
         if ( status2 > 0 ) {
             snprintf( objTypeStr, sizeof( objTypeStr ), "%s", TICKET_TYPE_DATA );
             objId = status2;
         }
         else {
-            status3 = cmlCheckDir( _arg4,   _ctx.comm()->clientUser.userName,
-                                   _ctx.comm()->clientUser.rodsZone,
-                                   ACCESS_OWN, &icss );
+            status3 = irods::experimental::catalog::access_control::check_collection_access(
+                executor, db_conn,
+                _arg4,
+                _ctx.comm()->clientUser.userName,
+                _ctx.comm()->clientUser.rodsZone,
+                ACCESS_OWN );
             if ( status3 == CAT_NO_ROWS_FOUND && status2 == CAT_NO_ROWS_FOUND ) {
                 return ERROR( CAT_UNKNOWN_COLLECTION, _arg4 );
             }
             if ( status3 < 0 ) {
-                return ERROR( status3, "cmlCheckDir failed" );
+                return ERROR( status3, "check_collection_access failed" );
             }
             snprintf( objTypeStr, sizeof( objTypeStr ), "%s", TICKET_TYPE_COLL );
             objId = status3;
         }
 
-        if ( logSQL != 0 ) {
-            log_sql::debug("chlModTicket SQL 1");
-        }
-        {
-            std::vector<std::string> bindVars;
-            bindVars.push_back( _ctx.comm()->clientUser.userName );
-            bindVars.push_back( _ctx.comm()->clientUser.rodsZone );
-            status = cmlGetIntegerValueFromSql(
-                         "select user_id from R_USER_MAIN where user_name=? and zone_name=?",
-                         &userId, bindVars, &icss );
-        }
-        if ( status != 0 ) {
-            return ERROR( CAT_INVALID_USER, "select user_id failed" );
-        }
+        log_sql::debug("chlModTicket SQL 1");
+        try {
+            auto opt_user_id = irods::experimental::catalog::query_catalog_integer(
+                executor,
+                db_conn,
+                gq2::builder::select({"user_id"})
+                    .from("USER")
+                    .where(col("user_name") == _ctx.comm()->clientUser.userName && col("zone_name") == _ctx.comm()->clientUser.rodsZone)
+                    .build());
+            if (!opt_user_id) {
+                return ERROR( CAT_INVALID_USER, "select user_id failed" );
+            }
+            userId = *opt_user_id;
 
-        seqNum = cmlGetNextSeqVal( &icss );
-        if ( seqNum < 0 ) {
-            log_db::info("chlModTicket failure {}d", seqNum);
-            return ERROR( seqNum, "cmlGetNextSeqVal failed" );
-        }
-        snprintf( seqNumStr, NAME_LEN, "%lld", seqNum );
-        snprintf( objIdStr, NAME_LEN, "%lld", objId );
-        snprintf( userIdStr, NAME_LEN, "%lld", userId );
-        if ( strncmp( _arg3, "write", 5 ) == 0 ) {
-            snprintf( ticketType, sizeof( ticketType ), "%s", "write" );
-        }
-        else {
-            snprintf( ticketType, sizeof( ticketType ), "%s", "read" );
-        }
+            seqNum = executor.get_next_sequence_value(db_conn, "R_ObjectID");
+            if ( seqNum < 0 ) {
+                log_db::info("chlModTicket failure {}d", seqNum);
+                return ERROR( seqNum, "get_next_sequence_value failed" );
+            }
+            const char* ticketType = ( strncmp( _arg3, "write", 5 ) == 0 ) ? "write" : "read";
 
-        int i{};
-        char myTime[TIME_LEN]{}; // NOLINT(cppcoreguidelines-avoid-c-arrays, modernize-avoid-c-arrays)
-        getNowStr( myTime );
-        cllBindVars[i++] = seqNumStr;
-        cllBindVars[i++] = _ticket_string;
-        cllBindVars[i++] = ticketType;
-        cllBindVars[i++] = userIdStr;
-        cllBindVars[i++] = objIdStr;
-        cllBindVars[i++] = objTypeStr;
-        cllBindVars[i++] = myTime;
-        cllBindVars[i++] = myTime;
-        cllBindVarCount = i;
-        if ( logSQL != 0 ) {
+            char myTime[TIME_LEN]{};
+            getNowStr( myTime );
             log_sql::debug("chlModTicket SQL 2");
-        }
-        status =  cmlExecuteNoAnswerSql(
-                      "insert into R_TICKET_MAIN (ticket_id, ticket_string, ticket_type, user_id, object_id, object_type, modify_ts, create_ts) values (?, ?, ?, ?, ?, ?, ?, ?)",
-                      &icss );
-
-        if ( status != 0 ) {
-            log_db::info("chlModTicket cmlExecuteNoAnswerSql insert failure {}", status);
-            return ERROR( status, "insert failure" );
-        }
-        status =  cmlExecuteNoAnswerSql( "commit", &icss );
-        if ( status < 0 ) {
-            return ERROR( status, "commit failed" );
-        }
-        else {
+            nanodbc::transaction trans{db_conn};
+            auto ins_stmt = gq2::builder::insert_into("TICKET")
+                .set("ticket_id", std::to_string(seqNum))
+                .set("ticket_string", _ticket_string)
+                .set("ticket_type", ticketType)
+                .set("user_id", std::to_string(userId))
+                .set("object_id", std::to_string(objId))
+                .set("object_type", objTypeStr)
+                .set("modify_ts", myTime)
+                .set("create_ts", myTime)
+                .build();
+            irods::experimental::catalog::execute_catalog(executor, db_conn, ins_stmt);
+            trans.commit();
             return SUCCESS();
+        }
+        catch (const std::exception& e) {
+            log_db::error("{}: chlModTicket insert failure: {}", __func__, e.what());
+            return ERROR( CAT_SQL_ERR, "insert failure" );
         }
     } // create operation
 
-    if ( logSQL != 0 ) {
-        log_sql::debug("chlModTicket SQL 3");
-    }
+    log_sql::debug("chlModTicket SQL 3");
 
     // Get user id of user matching (user name, zone name).
-    {
-        std::vector<std::string> bindVars;
-        bindVars.push_back( _ctx.comm()->clientUser.userName );
-        bindVars.push_back( _ctx.comm()->clientUser.rodsZone );
-        status = cmlGetIntegerValueFromSql(
-                     "select user_id from R_USER_MAIN where user_name=? and zone_name=?",
-                     &userId, bindVars, &icss );
-    }
-    if ( status == CAT_SUCCESS_BUT_WITH_NO_INFO || status == CAT_NO_ROWS_FOUND ) {
-        if ( !addRErrorMsg( &_ctx.comm()->rError, 0, "Invalid user" ) ) {
+    try {
+        auto opt_user_id = irods::experimental::catalog::query_catalog_integer(
+            executor,
+            db_conn,
+            gq2::builder::select({"user_id"})
+                .from("USER")
+                .where(col("user_name") == _ctx.comm()->clientUser.userName && col("zone_name") == _ctx.comm()->clientUser.rodsZone)
+                .build());
+        if (!opt_user_id) {
+            addRErrorMsg( &_ctx.comm()->rError, 0, "Invalid user" );
+            return ERROR( CAT_INVALID_USER, _ctx.comm()->clientUser.userName );
         }
-        return ERROR( CAT_INVALID_USER, _ctx.comm()->clientUser.userName );
+        userId = *opt_user_id;
     }
-    if ( status < 0 ) {
-        return ERROR( status, "failed to select user_id" );
+    catch (const std::exception& e) {
+        log_db::error("{}: select user_id failed: {}", __func__, e.what());
+        return ERROR( CAT_SQL_ERR, "failed to select user_id" );
     }
-    snprintf( userIdStr, sizeof userIdStr, "%lld", userId );
+    userIdStr = std::to_string( userId );
 
-    if ( logSQL != 0 ) {
-        log_sql::debug("chlModTicket SQL 4");
-    }
+    log_sql::debug("chlModTicket SQL 4");
 
     // Get ticket id of ticket matching (user id, ticket string).
-    //
-    // If the user who invoked this database operation did not create the ticket,
-    // the following query will fail because their user id is not associated with
-    // the ticket of interest.
-    {
-        std::vector<std::string> bindVars;
-        bindVars.push_back( userIdStr );
-        bindVars.push_back( _ticket_string );
-        status = cmlGetIntegerValueFromSql(
-                     "select ticket_id from R_TICKET_MAIN where user_id=? and ticket_string=?",
-                     &ticketId, bindVars, &icss );
-    }
-    if ( status != 0 ) {
-        if ( logSQL != 0 ) {
+    try {
+        namespace gq2 = irods::experimental::genquery2;
+        using gq2::builder::col;
+
+        auto opt_ticket_id = irods::experimental::catalog::query_catalog_integer(
+            executor, db_conn,
+            gq2::builder::select({"ticket_id"})
+                .from("TICKET")
+                .where(col("user_id") == userIdStr && col("ticket_string") == _ticket_string)
+                .build());
+        if (opt_ticket_id) {
+            ticketId = *opt_ticket_id;
+        }
+        else {
             log_sql::debug("chlModTicket SQL 5");
-        }
-        {
-            std::vector<std::string> bindVars;
-            bindVars.push_back( userIdStr );
-            bindVars.push_back( _ticket_string );
-            status = cmlGetIntegerValueFromSql(
-                         "select ticket_id from R_TICKET_MAIN where user_id=? and ticket_id=?",
-                         &ticketId, bindVars, &icss );
-        }
-        if ( status != 0 ) {
-            return ERROR( CAT_TICKET_INVALID, _ticket_string );
+            opt_ticket_id = irods::experimental::catalog::query_catalog_integer(
+                executor, db_conn,
+                gq2::builder::select({"ticket_id"})
+                    .from("TICKET")
+                    .where(col("user_id") == userIdStr && col("ticket_id") == _ticket_string)
+                    .build());
+            if (opt_ticket_id) {
+                ticketId = *opt_ticket_id;
+            }
+            else {
+                return ERROR( CAT_TICKET_INVALID, _ticket_string );
+            }
         }
     }
-    snprintf( ticketIdStr, NAME_LEN, "%lld", ticketId );
+    catch (const std::exception&) {
+        return ERROR( CAT_TICKET_INVALID, _ticket_string );
+    }
+    ticketIdStr = std::to_string( ticketId );
 
     //
     // At this point, we have the user id and ticket id for the non-admin user.
@@ -14062,118 +11772,128 @@ irods::error db_mod_ticket_op(
 
     // delete
     if ( strcmp( _op_name, "delete" ) == 0 ) {
-        int i{};
-        cllBindVars[i++] = ticketIdStr;
-        cllBindVars[i++] = userIdStr;
-        cllBindVarCount = i;
-        if ( logSQL != 0 ) {
-            log_sql::debug("chlModTicket SQL 6");
-        }
-        status = cmlExecuteNoAnswerSql(
-                      "delete from R_TICKET_MAIN where ticket_id = ? and user_id = ?",
-                      &icss );
-        if ( status == CAT_SUCCESS_BUT_WITH_NO_INFO ) {
-            return CODE( status );
-        }
-        if ( status != 0 ) {
-            log_db::info("chlModTicket cmlExecuteNoAnswerSql delete failure {}", status);
-            return ERROR( status, "delete failure" );
-        }
+        log_sql::debug("chlModTicket SQL 6");
+        try {
+            nanodbc::transaction trans{db_conn};
+            auto del_ticket = gq2::builder::remove_from("R_TICKET_MAIN")
+                .where(col("ticket_id") == ticketIdStr && col("user_id") == userIdStr)
+                .build();
+            auto res = irods::experimental::catalog::execute_catalog(executor, db_conn, del_ticket);
+            if ( res.affected_rows == 0 ) {
+                return CODE( CAT_SUCCESS_BUT_WITH_NO_INFO );
+            }
 
-        i = 0;
-        cllBindVars[i++] = ticketIdStr;
-        cllBindVarCount = i;
-        status = cmlExecuteNoAnswerSql(
-                      "delete from R_TICKET_ALLOWED_HOSTS where ticket_id = ?",
-                      &icss );
-        if ( status != 0 && status != CAT_SUCCESS_BUT_WITH_NO_INFO ) {
-            log_db::info("chlModTicket cmlExecuteNoAnswerSql delete 2 failure {}", status);
-        }
+            try {
+                auto del_hosts = gq2::builder::remove_from("R_TICKET_ALLOWED_HOSTS")
+                    .where(col("ticket_id") == ticketIdStr)
+                    .build();
+                irods::experimental::catalog::execute_catalog(executor, db_conn, del_hosts);
+            } catch (const std::exception& e) {
+                log_db::info("delete allowed hosts failed: {}", e.what());
+            }
 
-        i = 0;
-        cllBindVars[i++] = ticketIdStr;
-        cllBindVarCount = i;
-        status = cmlExecuteNoAnswerSql(
-                      "delete from R_TICKET_ALLOWED_USERS where ticket_id = ?",
-                      &icss );
-        if ( status != 0 && status != CAT_SUCCESS_BUT_WITH_NO_INFO ) {
-            log_db::info("chlModTicket cmlExecuteNoAnswerSql delete 3 failure {}", status);
-        }
+            try {
+                auto del_users = gq2::builder::remove_from("R_TICKET_ALLOWED_USERS")
+                    .where(col("ticket_id") == ticketIdStr)
+                    .build();
+                irods::experimental::catalog::execute_catalog(executor, db_conn, del_users);
+            } catch (const std::exception& e) {
+                log_db::info("delete allowed users failed: {}", e.what());
+            }
 
-        i = 0;
-        cllBindVars[i++] = ticketIdStr;
-        cllBindVarCount = i;
-        status = cmlExecuteNoAnswerSql(
-                      "delete from R_TICKET_ALLOWED_GROUPS where ticket_id = ?",
-                      &icss );
-        if ( status != 0 && status != CAT_SUCCESS_BUT_WITH_NO_INFO ) {
-            log_db::info("chlModTicket cmlExecuteNoAnswerSql delete 4 failure {}", status);
-        }
+            try {
+                auto del_groups = gq2::builder::remove_from("R_TICKET_ALLOWED_GROUPS")
+                    .where(col("ticket_id") == ticketIdStr)
+                    .build();
+                irods::experimental::catalog::execute_catalog(executor, db_conn, del_groups);
+            } catch (const std::exception& e) {
+                log_db::info("delete allowed groups failed: {}", e.what());
+            }
 
-        status = cmlExecuteNoAnswerSql( "commit", &icss );
-        if ( status < 0 ) {
-            return ERROR( status, "commit failed" );
+            trans.commit();
+            return SUCCESS();
         }
-
-        return SUCCESS();
+        catch (const std::exception& e) {
+            log_db::error("{}: delete failure: {}", __func__, e.what());
+            return ERROR( CAT_SQL_ERR, "delete failure" );
+        }
     } // delete operation
 
     // modify
     if ( strcmp( _op_name, "mod" ) == 0 ) {
         if (strcmp(_arg3, "uses") == 0) {
-            int i{};
-            char myTime[TIME_LEN]{}; // NOLINT(cppcoreguidelines-avoid-c-arrays, modernize-avoid-c-arrays)
+            char myTime[TIME_LEN]{};
             getNowStr(myTime);
-            cllBindVars[i++] = _arg4; // NOLINT(cppcoreguidelines-pro-bounds-constant-array-index)
-            cllBindVars[i++] = myTime; // NOLINT(cppcoreguidelines-pro-bounds-constant-array-index)
-            cllBindVars[i++] = ticketIdStr; // NOLINT(cppcoreguidelines-pro-bounds-constant-array-index)
-            cllBindVars[i++] = userIdStr; // NOLINT(cppcoreguidelines-pro-bounds-constant-array-index)
-            cllBindVarCount = i;
+            log_sql::debug("chlModTicket SQL 7");
 
-            if ( logSQL != 0 ) {
-                log_sql::debug("chlModTicket SQL 7");
+            try {
+                nanodbc::transaction trans{db_conn};
+                auto upd_stmt = gq2::builder::update("TICKET")
+                    .set("uses_limit", _arg4)
+                    .set("modify_ts", myTime)
+                    .where(col("ticket_id") == ticketIdStr && col("user_id") == userIdStr)
+                    .build();
+                auto res = irods::experimental::catalog::execute_catalog(executor, db_conn, upd_stmt);
+                if (res.affected_rows == 0) {
+                    return CODE(CAT_SUCCESS_BUT_WITH_NO_INFO);
+                }
+                trans.commit();
+                return SUCCESS();
             }
-
-            return execute_sql(
-                "update R_TICKET_MAIN set uses_limit = ?, modify_ts = ? where ticket_id = ? and user_id = ?", __func__);
+            catch (const std::exception& e) {
+                log_db::error("{}: update uses failed: {}", __func__, e.what());
+                return ERROR(CAT_SQL_ERR, "SQL execution error.");
+            }
         } // uses
 
         if ( strcmp(_arg3, "write-file") == 0 ) {
-            int i{};
-            char myTime[TIME_LEN]{}; // NOLINT(cppcoreguidelines-avoid-c-arrays, modernize-avoid-c-arrays)
+            char myTime[TIME_LEN]{};
             getNowStr(myTime);
-            cllBindVars[i++] = _arg4; // NOLINT(cppcoreguidelines-pro-bounds-constant-array-index)
-            cllBindVars[i++] = myTime; // NOLINT(cppcoreguidelines-pro-bounds-constant-array-index)
-            cllBindVars[i++] = ticketIdStr; // NOLINT(cppcoreguidelines-pro-bounds-constant-array-index)
-            cllBindVars[i++] = userIdStr; // NOLINT(cppcoreguidelines-pro-bounds-constant-array-index)
-            cllBindVarCount = i;
+            log_sql::debug("chlModTicket SQL 8");
 
-            if ( logSQL != 0 ) {
-                log_sql::debug("chlModTicket SQL 8");
+            try {
+                nanodbc::transaction trans{db_conn};
+                auto upd_stmt = gq2::builder::update("TICKET")
+                    .set("write_file_limit", _arg4)
+                    .set("modify_ts", myTime)
+                    .where(col("ticket_id") == ticketIdStr && col("user_id") == userIdStr)
+                    .build();
+                auto res = irods::experimental::catalog::execute_catalog(executor, db_conn, upd_stmt);
+                if (res.affected_rows == 0) {
+                    return CODE(CAT_SUCCESS_BUT_WITH_NO_INFO);
+                }
+                trans.commit();
+                return SUCCESS();
             }
-
-            return execute_sql(
-                "update R_TICKET_MAIN set write_file_limit = ?, modify_ts = ? where ticket_id = ? and user_id = ?",
-                __func__);
+            catch (const std::exception& e) {
+                log_db::error("{}: update write-file failed: {}", __func__, e.what());
+                return ERROR(CAT_SQL_ERR, "SQL execution error.");
+            }
         } // write-file
 
         if (strcmp(_arg3, "write-bytes") == 0) {
-            int i{};
-            char myTime[TIME_LEN]{}; // NOLINT(cppcoreguidelines-avoid-c-arrays, modernize-avoid-c-arrays)
+            char myTime[TIME_LEN]{};
             getNowStr(myTime);
-            cllBindVars[i++] = _arg4; // NOLINT(cppcoreguidelines-pro-bounds-constant-array-index)
-            cllBindVars[i++] = myTime; // NOLINT(cppcoreguidelines-pro-bounds-constant-array-index)
-            cllBindVars[i++] = ticketIdStr; // NOLINT(cppcoreguidelines-pro-bounds-constant-array-index)
-            cllBindVars[i++] = userIdStr; // NOLINT(cppcoreguidelines-pro-bounds-constant-array-index)
-            cllBindVarCount = i;
+            log_sql::debug("chlModTicket SQL 9");
 
-            if ( logSQL != 0 ) {
-                log_sql::debug("chlModTicket SQL 9");
+            try {
+                nanodbc::transaction trans{db_conn};
+                auto upd_stmt = gq2::builder::update("TICKET")
+                    .set("write_byte_limit", _arg4)
+                    .set("modify_ts", myTime)
+                    .where(col("ticket_id") == ticketIdStr && col("user_id") == userIdStr)
+                    .build();
+                auto res = irods::experimental::catalog::execute_catalog(executor, db_conn, upd_stmt);
+                if (res.affected_rows == 0) {
+                    return CODE(CAT_SUCCESS_BUT_WITH_NO_INFO);
+                }
+                trans.commit();
+                return SUCCESS();
             }
-
-            return execute_sql(
-                "update R_TICKET_MAIN set write_byte_limit = ?, modify_ts = ? where ticket_id = ? and user_id = ?",
-                __func__);
+            catch (const std::exception& e) {
+                log_db::error("{}: update write-bytes failed: {}", __func__, e.what());
+                return ERROR(CAT_SQL_ERR, "SQL execution error.");
+            }
         } // write-bytes
 
         if (strcmp(_arg3, "expire") == 0 ) {
@@ -14217,23 +11937,28 @@ irods::error db_mod_ticket_op(
                 }
             }
 
-            int i{};
             char myTime[TIME_LEN]{}; // NOLINT(cppcoreguidelines-avoid-c-arrays, modernize-avoid-c-arrays)
             getNowStr(myTime);
-            // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-constant-array-index)
-            cllBindVars[i++] = ticket_expiration_string.c_str();
-            cllBindVars[i++] = myTime; // NOLINT(cppcoreguidelines-pro-bounds-constant-array-index)
-            cllBindVars[i++] = ticketIdStr; // NOLINT(cppcoreguidelines-pro-bounds-constant-array-index)
-            cllBindVars[i++] = userIdStr; // NOLINT(cppcoreguidelines-pro-bounds-constant-array-index)
-            cllBindVarCount = i;
+            log_sql::debug("chlModTicket SQL 10");
 
-            if (logSQL != 0) {
-                log_sql::debug("chlModTicket SQL 10");
+            try {
+                nanodbc::transaction trans{db_conn};
+                auto upd_stmt = gq2::builder::update("TICKET")
+                    .set("ticket_expiry_ts", ticket_expiration_string)
+                    .set("modify_ts", myTime)
+                    .where(col("ticket_id") == ticketIdStr && col("user_id") == userIdStr)
+                    .build();
+                auto res = irods::experimental::catalog::execute_catalog(executor, db_conn, upd_stmt);
+                if (res.affected_rows == 0) {
+                    return CODE(CAT_SUCCESS_BUT_WITH_NO_INFO);
+                }
+                trans.commit();
+                return SUCCESS();
             }
-
-            return execute_sql(
-                "update R_TICKET_MAIN set ticket_expiry_ts = ?, modify_ts = ? where ticket_id = ? and user_id = ?",
-                __func__);
+            catch (const std::exception& e) {
+                log_db::error("{}: update expire failed: {}", __func__, e.what());
+                return ERROR(CAT_SQL_ERR, "SQL execution error.");
+            }
         } // expire
 
         if ( strcmp( _arg3, "add" ) == 0 ) {
@@ -14243,50 +11968,31 @@ irods::error db_mod_ticket_op(
                     return ERROR( CAT_HOSTNAME_INVALID, _arg5 );
                 }
 
-                int i{};
-                cllBindVars[i++] = ticketIdStr;
-                cllBindVars[i++] = hostIp;
-                cllBindVarCount = i;
+                try {
+                    nanodbc::transaction trans{db_conn};
+                    auto ins_stmt = gq2::builder::insert_into("TICKET_ALLOWED_HOSTS")
+                        .set("ticket_id", ticketIdStr)
+                        .set("host", hostIp)
+                        .build();
+                    irods::experimental::catalog::execute_catalog(executor, db_conn, ins_stmt);
 
-                if ( logSQL != 0 ) {
-                    log_sql::debug("chlModTicket SQL 11");
+                    char myTime[TIME_LEN]{}; // NOLINT(cppcoreguidelines-avoid-c-arrays, modernize-avoid-c-arrays)
+                    getNowStr(myTime);
+                    auto upd_stmt = gq2::builder::update("TICKET")
+                        .set("modify_ts", myTime)
+                        .where(col("ticket_id") == ticketIdStr)
+                        .build();
+                    irods::experimental::catalog::execute_catalog(executor, db_conn, upd_stmt);
+
+                    trans.commit();
+                    return SUCCESS();
                 }
-
-                int ec{};
-                ec = cmlExecuteNoAnswerSql("insert into R_TICKET_ALLOWED_HOSTS (ticket_id, host) values (?, ?)", &icss);
-                if (ec != 0) {
-                    auto err_msg =
-                        fmt::format("Failed to add host [{}] to ticket [{}], status [{}]", hostIp, ticketIdStr, ec);
+                catch (const std::exception& e) {
+                    auto err_msg = fmt::format(
+                        "Failed to add host [{}] to ticket [{}]: {}", hostIp, ticketIdStr, e.what());
                     log_sql::error(err_msg);
-                    _rollback(__func__);
-                    return ERROR(ec, std::move(err_msg));
+                    return ERROR(CAT_SQL_ERR, std::move(err_msg));
                 }
-
-                char myTime[TIME_LEN]{}; // NOLINT(cppcoreguidelines-avoid-c-arrays, modernize-avoid-c-arrays)
-                getNowStr(myTime);
-                i = 0;
-                cllBindVars[i++] = myTime; // NOLINT(cppcoreguidelines-pro-bounds-constant-array-index)
-                cllBindVars[i++] = ticketIdStr; // NOLINT(cppcoreguidelines-pro-bounds-constant-array-index)
-                cllBindVarCount = i;
-
-                ec = cmlExecuteNoAnswerSql("update R_TICKET_MAIN set modify_ts = ? where ticket_id = ?", &icss);
-                if (ec != 0) {
-                    auto err_msg =
-                        fmt::format("Failed to update modify_ts for ticket [{}] while adding host [{}], status [{}]",
-                                    ticketIdStr,
-                                    hostIp,
-                                    ec);
-                    log_sql::error(err_msg);
-                    _rollback(__func__);
-                    return ERROR(ec, std::move(err_msg));
-                }
-
-                ec = cmlExecuteNoAnswerSql("commit", &icss);
-                if (ec < 0) {
-                    return ERROR(ec, "Failed to commit SQL updates.");
-                }
-
-                return SUCCESS();
             } // host
 
             if ( strcmp( _arg4, "user" ) == 0 ) {
@@ -14295,51 +12001,31 @@ irods::error db_mod_ticket_op(
                     return ERROR( status, "icatGetTicketUserId failed" );
                 }
 
-                int i{};
-                cllBindVars[i++] = ticketIdStr;
-                cllBindVars[i++] = _arg5;
-                cllBindVarCount = i;
+                try {
+                    nanodbc::transaction trans{db_conn};
+                    auto ins_stmt = gq2::builder::insert_into("TICKET_ALLOWED_USERS")
+                        .set("ticket_id", ticketIdStr)
+                        .set("user_name", _arg5)
+                        .build();
+                    irods::experimental::catalog::execute_catalog(executor, db_conn, ins_stmt);
 
-                if ( logSQL != 0 ) {
-                    log_sql::debug("chlModTicket SQL 12");
+                    char myTime[TIME_LEN]{}; // NOLINT(cppcoreguidelines-avoid-c-arrays, modernize-avoid-c-arrays)
+                    getNowStr(myTime);
+                    auto upd_stmt = gq2::builder::update("TICKET")
+                        .set("modify_ts", myTime)
+                        .where(col("ticket_id") == ticketIdStr)
+                        .build();
+                    irods::experimental::catalog::execute_catalog(executor, db_conn, upd_stmt);
+
+                    trans.commit();
+                    return SUCCESS();
                 }
-
-                int ec{};
-                ec = cmlExecuteNoAnswerSql(
-                    "insert into R_TICKET_ALLOWED_USERS (ticket_id, user_name) values (?, ?)", &icss);
-                if (ec != 0) {
-                    auto err_msg =
-                        fmt::format("Failed to add user [{}] to ticket [{}], status [{}]", _arg5, ticketIdStr, ec);
+                catch (const std::exception& e) {
+                    auto err_msg = fmt::format(
+                        "Failed to add user [{}] to ticket [{}]: {}", _arg5, ticketIdStr, e.what());
                     log_sql::error(err_msg);
-                    _rollback(__func__);
-                    return ERROR(ec, std::move(err_msg));
+                    return ERROR(CAT_SQL_ERR, std::move(err_msg));
                 }
-
-                char myTime[TIME_LEN]{}; // NOLINT(cppcoreguidelines-avoid-c-arrays, modernize-avoid-c-arrays)
-                getNowStr(myTime);
-                i = 0;
-                cllBindVars[i++] = myTime; // NOLINT(cppcoreguidelines-pro-bounds-constant-array-index)
-                cllBindVars[i++] = ticketIdStr; // NOLINT(cppcoreguidelines-pro-bounds-constant-array-index)
-                cllBindVarCount = i;
-
-                ec = cmlExecuteNoAnswerSql("update R_TICKET_MAIN set modify_ts = ? where ticket_id = ?", &icss);
-                if (ec != 0) {
-                    auto err_msg =
-                        fmt::format("Failed to update modify_ts for ticket [{}] while adding user [{}], status [{}]",
-                                    ticketIdStr,
-                                    _arg5,
-                                    ec);
-                    log_sql::error(err_msg);
-                    _rollback(__func__);
-                    return ERROR(ec, std::move(err_msg));
-                }
-
-                ec = cmlExecuteNoAnswerSql("commit", &icss);
-                if (ec < 0) {
-                    return ERROR(ec, "Failed to commit SQL updates.");
-                }
-
-                return SUCCESS();
             } // user
 
             if ( strcmp( _arg4, "group" ) == 0 ) {
@@ -14348,51 +12034,31 @@ irods::error db_mod_ticket_op(
                     return ERROR( status, "icatGetTicketGroupId failed" );
                 }
 
-                int i{};
-                cllBindVars[i++] = ticketIdStr;
-                cllBindVars[i++] = _arg5;
-                cllBindVarCount = i;
+                try {
+                    nanodbc::transaction trans{db_conn};
+                    auto ins_stmt = gq2::builder::insert_into("TICKET_ALLOWED_GROUPS")
+                        .set("ticket_id", ticketIdStr)
+                        .set("group_name", _arg5)
+                        .build();
+                    irods::experimental::catalog::execute_catalog(executor, db_conn, ins_stmt);
 
-                if ( logSQL != 0 ) {
-                    log_sql::debug("chlModTicket SQL 13");
+                    char myTime[TIME_LEN]{}; // NOLINT(cppcoreguidelines-avoid-c-arrays, modernize-avoid-c-arrays)
+                    getNowStr(myTime);
+                    auto upd_stmt = gq2::builder::update("TICKET")
+                        .set("modify_ts", myTime)
+                        .where(col("ticket_id") == ticketIdStr)
+                        .build();
+                    irods::experimental::catalog::execute_catalog(executor, db_conn, upd_stmt);
+
+                    trans.commit();
+                    return SUCCESS();
                 }
-
-                int ec{};
-                ec = cmlExecuteNoAnswerSql(
-                    "insert into R_TICKET_ALLOWED_GROUPS (ticket_id, group_name) values (?, ?)", &icss);
-                if (ec != 0) {
-                    auto err_msg =
-                        fmt::format("Failed to add group [{}] to ticket [{}], status [{}]", _arg5, ticketIdStr, ec);
+                catch (const std::exception& e) {
+                    auto err_msg = fmt::format(
+                        "Failed to add group [{}] to ticket [{}]: {}", _arg5, ticketIdStr, e.what());
                     log_sql::error(err_msg);
-                    _rollback(__func__);
-                    return ERROR(ec, std::move(err_msg));
+                    return ERROR(CAT_SQL_ERR, std::move(err_msg));
                 }
-
-                char myTime[TIME_LEN]{}; // NOLINT(cppcoreguidelines-avoid-c-arrays, modernize-avoid-c-arrays)
-                getNowStr(myTime);
-                i = 0;
-                cllBindVars[i++] = myTime; // NOLINT(cppcoreguidelines-pro-bounds-constant-array-index)
-                cllBindVars[i++] = ticketIdStr; // NOLINT(cppcoreguidelines-pro-bounds-constant-array-index)
-                cllBindVarCount = i;
-
-                ec = cmlExecuteNoAnswerSql("update R_TICKET_MAIN set modify_ts = ? where ticket_id = ?", &icss);
-                if (ec != 0) {
-                    auto err_msg =
-                        fmt::format("Failed to update modify_ts for ticket [{}] while adding group [{}], status [{}]",
-                                    ticketIdStr,
-                                    _arg5,
-                                    ec);
-                    log_sql::error(err_msg);
-                    _rollback(__func__);
-                    return ERROR(ec, std::move(err_msg));
-                }
-
-                ec = cmlExecuteNoAnswerSql("commit", &icss);
-                if (ec < 0) {
-                    return ERROR(ec, "Failed to commit SQL updates.");
-                }
-
-                return SUCCESS();
             } // group
         } // add
         else if ( strcmp( _arg3, "remove" ) == 0 ) {
@@ -14402,50 +12068,30 @@ irods::error db_mod_ticket_op(
                     return ERROR( CAT_HOSTNAME_INVALID, "host name null" );
                 }
 
-                int i{};
-                cllBindVars[i++] = ticketIdStr;
-                cllBindVars[i++] = hostIp;
-                cllBindVarCount = i;
+                try {
+                    nanodbc::transaction trans{db_conn};
+                    auto del_stmt = gq2::builder::remove_from("TICKET_ALLOWED_HOSTS")
+                        .where(col("ticket_id") == ticketIdStr && col("host") == hostIp)
+                        .build();
+                    irods::experimental::catalog::execute_catalog(executor, db_conn, del_stmt);
 
-                if ( logSQL != 0 ) {
-                    log_sql::debug("chlModTicket SQL 14");
+                    char myTime[TIME_LEN]{}; // NOLINT(cppcoreguidelines-avoid-c-arrays, modernize-avoid-c-arrays)
+                    getNowStr(myTime);
+                    auto upd_stmt = gq2::builder::update("TICKET")
+                        .set("modify_ts", myTime)
+                        .where(col("ticket_id") == ticketIdStr)
+                        .build();
+                    irods::experimental::catalog::execute_catalog(executor, db_conn, upd_stmt);
+
+                    trans.commit();
+                    return SUCCESS();
                 }
-
-                int ec{};
-                ec = cmlExecuteNoAnswerSql("delete from R_TICKET_ALLOWED_HOSTS where ticket_id=? and host=?", &icss);
-                if (ec != 0) {
+                catch (const std::exception& e) {
                     auto err_msg = fmt::format(
-                        "Failed to remove host [{}] from ticket [{}], status [{}]", hostIp, ticketIdStr, ec);
+                        "Failed to remove host [{}] from ticket [{}]: {}", hostIp, ticketIdStr, e.what());
                     log_sql::error(err_msg);
-                    _rollback(__func__);
-                    return ERROR(ec, std::move(err_msg));
+                    return ERROR(CAT_SQL_ERR, std::move(err_msg));
                 }
-
-                char myTime[TIME_LEN]{}; // NOLINT(cppcoreguidelines-avoid-c-arrays, modernize-avoid-c-arrays)
-                getNowStr(myTime);
-                i = 0;
-                cllBindVars[i++] = myTime; // NOLINT(cppcoreguidelines-pro-bounds-constant-array-index)
-                cllBindVars[i++] = ticketIdStr; // NOLINT(cppcoreguidelines-pro-bounds-constant-array-index)
-                cllBindVarCount = i;
-
-                ec = cmlExecuteNoAnswerSql("update R_TICKET_MAIN set modify_ts = ? where ticket_id = ?", &icss);
-                if (ec != 0) {
-                    auto err_msg =
-                        fmt::format("Failed to update modify_ts for ticket [{}] while removing host [{}], status [{}]",
-                                    ticketIdStr,
-                                    hostIp,
-                                    ec);
-                    log_sql::error(err_msg);
-                    _rollback(__func__);
-                    return ERROR(ec, std::move(err_msg));
-                }
-
-                ec = cmlExecuteNoAnswerSql("commit", &icss);
-                if (ec < 0) {
-                    return ERROR(ec, "Failed to commit SQL updates.");
-                }
-
-                return SUCCESS();
             } // host
 
             if ( strcmp( _arg4, "user" ) == 0 ) {
@@ -14454,104 +12100,62 @@ irods::error db_mod_ticket_op(
                     return ERROR( status, "icatGetTicketUserId failed" );
                 }
 
-                int i{};
-                cllBindVars[i++] = ticketIdStr;
-                cllBindVars[i++] = _arg5;
-                cllBindVarCount = i;
+                try {
+                    nanodbc::transaction trans{db_conn};
+                    auto del_stmt = gq2::builder::remove_from("TICKET_ALLOWED_USERS")
+                        .where(col("ticket_id") == ticketIdStr && col("user_name") == _arg5)
+                        .build();
+                    irods::experimental::catalog::execute_catalog(executor, db_conn, del_stmt);
 
-                if ( logSQL != 0 ) {
-                    log_sql::debug("chlModTicket SQL 15");
+                    char myTime[TIME_LEN]{}; // NOLINT(cppcoreguidelines-avoid-c-arrays, modernize-avoid-c-arrays)
+                    getNowStr(myTime);
+                    auto upd_stmt = gq2::builder::update("TICKET")
+                        .set("modify_ts", myTime)
+                        .where(col("ticket_id") == ticketIdStr)
+                        .build();
+                    irods::experimental::catalog::execute_catalog(executor, db_conn, upd_stmt);
+
+                    trans.commit();
+                    return SUCCESS();
                 }
-
-                int ec{};
-                ec = cmlExecuteNoAnswerSql(
-                    "delete from R_TICKET_ALLOWED_USERS where ticket_id=? and user_name=?", &icss);
-                if (ec != 0) {
-                    auto err_msg =
-                        fmt::format("Failed to remove user [{}] from ticket [{}], status [{}]", _arg5, ticketIdStr, ec);
+                catch (const std::exception& e) {
+                    auto err_msg = fmt::format(
+                        "Failed to remove user [{}] from ticket [{}]: {}", _arg5, ticketIdStr, e.what());
                     log_sql::error(err_msg);
-                    _rollback(__func__);
-                    return ERROR(ec, std::move(err_msg));
+                    return ERROR(CAT_SQL_ERR, std::move(err_msg));
                 }
-
-                char myTime[TIME_LEN]{}; // NOLINT(cppcoreguidelines-avoid-c-arrays, modernize-avoid-c-arrays)
-                getNowStr(myTime);
-                i = 0;
-                cllBindVars[i++] = myTime; // NOLINT(cppcoreguidelines-pro-bounds-constant-array-index)
-                cllBindVars[i++] = ticketIdStr; // NOLINT(cppcoreguidelines-pro-bounds-constant-array-index)
-                cllBindVarCount = i;
-
-                ec = cmlExecuteNoAnswerSql("update R_TICKET_MAIN set modify_ts = ? where ticket_id = ?", &icss);
-                if (ec != 0) {
-                    auto err_msg =
-                        fmt::format("Failed to update modify_ts for ticket [{}] while removing user [{}], status [{}]",
-                                    ticketIdStr,
-                                    _arg5,
-                                    ec);
-                    log_sql::error(err_msg);
-                    _rollback(__func__);
-                    return ERROR(ec, std::move(err_msg));
-                }
-
-                ec = cmlExecuteNoAnswerSql("commit", &icss);
-                if (ec < 0) {
-                    return ERROR(ec, "Failed to commit SQL updates.");
-                }
-
-                return SUCCESS();
             } // user
 
             if ( strcmp( _arg4, "group" ) == 0 ) {
-                status = icatGetTicketGroupId( _ctx.prop_map(), _arg5, group2IdStr );
+                status = icatGetTicketGroupId( _ctx.prop_map(), _arg5, user2IdStr );
                 if ( status != 0 ) {
                     return ERROR( status, "icatGetTicketGroupId failed" );
                 }
 
-                int i{};
-                cllBindVars[i++] = ticketIdStr;
-                cllBindVars[i++] = _arg5;
-                cllBindVarCount = i;
+                try {
+                    nanodbc::transaction trans{db_conn};
+                    auto del_stmt = gq2::builder::remove_from("TICKET_ALLOWED_GROUPS")
+                        .where(col("ticket_id") == ticketIdStr && col("group_name") == _arg5)
+                        .build();
+                    irods::experimental::catalog::execute_catalog(executor, db_conn, del_stmt);
 
-                if ( logSQL != 0 ) {
-                    log_sql::debug("chlModTicket SQL 16");
+                    char myTime[TIME_LEN]{}; // NOLINT(cppcoreguidelines-avoid-c-arrays, modernize-avoid-c-arrays)
+                    getNowStr(myTime);
+                    auto upd_stmt = gq2::builder::update("TICKET")
+                        .set("modify_ts", myTime)
+                        .where(col("ticket_id") == ticketIdStr)
+                        .build();
+                    irods::experimental::catalog::execute_catalog(executor, db_conn, upd_stmt);
+
+                    trans.commit();
+                    return SUCCESS();
                 }
-
-                int ec{};
-                ec = cmlExecuteNoAnswerSql(
-                    "delete from R_TICKET_ALLOWED_GROUPS where ticket_id=? and group_name=?", &icss);
-                if (ec != 0) {
+                catch (const std::exception& e) {
                     auto err_msg = fmt::format(
-                        "Failed to remove group [{}] from ticket [{}], status [{}]", _arg5, ticketIdStr, ec);
+                        "Failed to remove group [{}] from ticket [{}]: {}", _arg5, ticketIdStr, e.what());
                     log_sql::error(err_msg);
-                    _rollback(__func__);
-                    return ERROR(ec, std::move(err_msg));
+                    return ERROR(CAT_SQL_ERR, std::move(err_msg));
                 }
-
-                char myTime[TIME_LEN]{}; // NOLINT(cppcoreguidelines-avoid-c-arrays, modernize-avoid-c-arrays)
-                getNowStr(myTime);
-                i = 0;
-                cllBindVars[i++] = myTime; // NOLINT(cppcoreguidelines-pro-bounds-constant-array-index)
-                cllBindVars[i++] = ticketIdStr; // NOLINT(cppcoreguidelines-pro-bounds-constant-array-index)
-                cllBindVarCount = i;
-
-                ec = cmlExecuteNoAnswerSql("update R_TICKET_MAIN set modify_ts = ? where ticket_id = ?", &icss);
-                if (ec != 0) {
-                    auto err_msg =
-                        fmt::format("Failed to update modify_ts for ticket [{}] while removing group [{}], status [{}]",
-                                    ticketIdStr,
-                                    _arg5,
-                                    ec);
-                    log_sql::error(err_msg);
-                    _rollback(__func__);
-                    return ERROR(ec, std::move(err_msg));
-                }
-
-                ec = cmlExecuteNoAnswerSql("commit", &icss);
-                if (ec < 0) {
-                    return ERROR(ec, "Failed to commit SQL updates.");
-                }
-
-                return SUCCESS();
             } // group
         } // remove
     } // modify operation
@@ -14577,22 +12181,7 @@ irods::error db_get_icss_op(
                    "null or invalid input param" );
     }
 
-    // =-=-=-=-=-=-=-
-    // get a postgres object from the context
-    /*irods::postgres_object_ptr pg;
-    ret = make_db_ptr( _ctx.fco(), pg );
-    if ( !ret.ok() ) {
-        return PASS( ret );
-
-    }*/
-
-    // =-=-=-=-=-=-=-
-    // extract the icss property
-//        icatSessionStruct icss;
-//        _ctx.prop_map().get< icatSessionStruct >( ICSS_PROP, icss );
-    if ( logSQL != 0 ) {
-        log_sql::debug("chlGetRcs");
-    }
+    log_sql::debug("chlGetRcs");
     if ( icss.status != 1 ) {
         ( *_icss ) = 0;
         return ERROR( icss.status, "catalog not connected" );
@@ -14626,19 +12215,6 @@ irods::error db_gen_query_op(
 
     }
 
-    // =-=-=-=-=-=-=-
-    // get a postgres object from the context
-    /*irods::postgres_object_ptr pg;
-    ret = make_db_ptr( _ctx.fco(), pg );
-    if ( !ret.ok() ) {
-        return PASS( ret );
-
-    }*/
-
-    // =-=-=-=-=-=-=-
-    // extract the icss property
-//        icatSessionStruct icss;
-//        _ctx.prop_map().get< icatSessionStruct >( ICSS_PROP, icss );
     int status = chl_gen_query_impl(
                      *_gen_query_inp,
                      _result );
@@ -14676,19 +12252,6 @@ irods::error db_gen_query_access_control_setup_op(
     //
     //}
 
-    // =-=-=-=-=-=-=-
-    // get a postgres object from the context
-    /*irods::postgres_object_ptr pg;
-    ret = make_db_ptr( _ctx.fco(), pg );
-    if ( !ret.ok() ) {
-        return PASS( ret );
-
-    }*/
-
-    // =-=-=-=-=-=-=-
-    // extract the icss property
-//        icatSessionStruct icss;
-//        _ctx.prop_map().get< icatSessionStruct >( ICSS_PROP, icss );
     int status = chl_gen_query_access_control_setup_impl(
                      _user,
                      _zone,
@@ -14727,19 +12290,6 @@ irods::error db_gen_query_ticket_setup_op(
 
     }
 
-    // =-=-=-=-=-=-=-
-    // get a postgres object from the context
-    /*irods::postgres_object_ptr pg;
-    ret = make_db_ptr( _ctx.fco(), pg );
-    if ( !ret.ok() ) {
-        return PASS( ret );
-
-    }*/
-
-    // =-=-=-=-=-=-=-
-    // extract the icss property
-//        icatSessionStruct icss;
-//        _ctx.prop_map().get< icatSessionStruct >( ICSS_PROP, icss );
     int status = chl_gen_query_ticket_setup_impl(
                      _ticket,
                      _client_addr );
@@ -14760,46 +12310,20 @@ auto db_check_permission_to_modify_data_object_op(
         return PASS(ret);
     }
 
-    const auto ec = cmlCheckDataObjId(std::to_string(_data_id).data(),
-                                      _ctx.comm()->clientUser.userName,
-                                      _ctx.comm()->clientUser.rodsZone,
-                                      ACCESS_MODIFY_METADATA,
-                                      mySessionTicket,
-                                      mySessionClientAddr,
-                                      &icss);
+    auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
+    const auto ec = irods::experimental::catalog::access_control::check_data_object_id(
+        executor, db_conn,
+        std::to_string(_data_id),
+        _ctx.comm()->clientUser.userName,
+        _ctx.comm()->clientUser.rodsZone,
+        ACCESS_MODIFY_METADATA,
+        mySessionTicket,
+        mySessionClientAddr);
 
     if (ec != 0) {
-        // Although the presence of a ticket is not a guarantee of a database update, it is
-        // the only case where a database update occurs as a result of calling cmlCheckDataObjId.
-        // Therefore, only rollback if there is ticket information present.
-        if (!std::string_view{mySessionTicket}.empty()) {
-            _rollback("check_permission_to_modify_data_object");
-        }
-
         const auto msg = fmt::format("user does not have permission to modify object with data id [{}]", _data_id);
-
         log_db::info("[{}:{}] - [{}]", __func__, __LINE__, msg);
-
         return ERROR(ec, msg);
-    }
-
-    // Although the presence of a ticket is not a guarantee of a database update, it is
-    // the only case where a database update occurs as a result of calling cmlCheckDataObjId.
-    // Therefore, return success if the ticket information is empty. Else, a commit may need
-    // to occur.
-    if (std::string_view{mySessionTicket}.empty()) {
-        return SUCCESS();
-    }
-
-    if (const auto commit_ec = cmlExecuteNoAnswerSql("commit", &icss); 0 != commit_ec) {
-        log_db::info("[{}:{}] - failure to commit changes "
-                     "[error code=[{}], data_id=[{}]]",
-                     __func__,
-                     __LINE__,
-                     commit_ec,
-                     _data_id);
-
-        return ERROR(commit_ec, "commit failure");
     }
 
     return SUCCESS();
@@ -14819,34 +12343,30 @@ auto db_update_ticket_write_byte_count_op(
         return SUCCESS();
     }
 
-    const auto ec = cmlTicketUpdateWriteBytes(mySessionTicket, std::to_string(_bytes_written).data(), std::to_string(_data_id).data(), &icss);
+    try {
+        auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
+        nanodbc::transaction trans{db_conn};
+        const auto ec = irods::experimental::catalog::access_control::ticket_update_write_bytes(
+            executor, db_conn, mySessionTicket, std::to_string(_bytes_written), std::to_string(_data_id));
 
-    if (ec != 0) {
-        _rollback("update_ticket_write_byte_count");
+        if (ec != 0) {
+            const auto msg = fmt::format(
+                "failed to update write_byte_count for ticket "
+                "[data_id=[{}], ticket=[{}], bytes_written=[{}]]",
+                _data_id, mySessionTicket, _bytes_written);
 
-        const auto msg = fmt::format(
-            "failed to update write_byte_count for ticket "
-            "[data_id=[{}], ticket=[{}], bytes_written=[{}]]",
-            _data_id, mySessionTicket, _bytes_written);
+            log_db::info("[{}:{}] - [{}]", __func__, __LINE__, msg);
 
-        log_db::info("[{}:{}] - [{}]", __func__, __LINE__, msg);
+            return ERROR(ec, msg);
+        }
 
-        return ERROR(ec, msg);
+        trans.commit();
+        return SUCCESS();
     }
-
-    if (const auto commit_ec = cmlExecuteNoAnswerSql("commit", &icss); 0 != commit_ec) {
-        log_db::info("[{}:{}] - failure to commit changes "
-                     "[error code=[{}], data_id=[{}], bytes written=[{}]]",
-                     __func__,
-                     __LINE__,
-                     commit_ec,
-                     _data_id,
-                     _bytes_written);
-
-        return ERROR(commit_ec, "commit failure");
+    catch (const std::exception& e) {
+        log_db::error("{}: Exception caught: {}", __func__, e.what());
+        return ERROR(CAT_SQL_ERR, e.what());
     }
-
-    return SUCCESS();
 } // db_update_ticket_write_byte_count_op
 
 auto db_get_delay_rule_info_op(irods::plugin_context& _ctx, const char* _rule_id, std::vector<std::string>* _info)
@@ -14863,20 +12383,21 @@ auto db_get_delay_rule_info_op(irods::plugin_context& _ctx, const char* _rule_id
     log_db::debug("{}: _rule_id => [{}]", __func__, _rule_id);
 
     try {
-        auto [db_instance, db_conn] = irods::experimental::catalog::new_database_connection();
+        auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
 
-        nanodbc::statement stmt{db_conn};
-        nanodbc::prepare(stmt,
-                         "select rule_name, rei_file_path, user_name, exe_address, exe_time,"
-                         " exe_frequency, priority, last_exe_time, exe_status, estimated_exe_time,"
-                         " notification_addr, exe_context "
-                         "from R_RULE_EXEC where rule_exec_id = ?");
+        namespace gq2 = irods::experimental::genquery2;
+        using gq2::builder::col;
 
-        stmt.bind(0, _rule_id);
+        auto stmt = gq2::builder::select({
+                "rule_name", "rei_file_path", "user_name", "exe_address", "exe_time",
+                "exe_frequency", "priority", "last_exe_time", "exe_status", "estimated_exe_time",
+                "notification_addr", "exe_context"})
+            .from("RULE_EXEC")
+            .where(col("rule_exec_id") == _rule_id)
+            .build();
 
-        auto row = nanodbc::execute(stmt);
-
-        if (!row.next()) {
+        auto res = irods::experimental::catalog::execute_catalog(executor, db_conn, stmt);
+        if (!res.query_result || !res.query_result->next()) {
             const auto msg = fmt::format("Could not find a delay rule with id [{}].", _rule_id);
             log_db::error(msg);
             return ERROR(CAT_NO_ROWS_FOUND, msg);
@@ -14885,7 +12406,7 @@ auto db_get_delay_rule_info_op(irods::plugin_context& _ctx, const char* _rule_id
         constexpr auto number_of_columns = 12;
 
         for (int i = 0; i < number_of_columns; ++i) {
-            _info->push_back(row.get<std::string>(i, ""));
+            _info->push_back(res.query_result->get<std::string>(i, ""));
         }
 
         return SUCCESS();
@@ -14903,24 +12424,6 @@ auto db_data_object_finalize_op(irods::plugin_context& _ctx, const char* _json_i
         return PASS(ret);
     }
 
-    constexpr std::array<const char*, 17> column_names = {"data_repl_num",
-                                                          "data_version",
-                                                          "data_type_name",
-                                                          "data_size",
-                                                          "data_path",
-                                                          "data_owner_name",
-                                                          "data_owner_zone",
-                                                          "data_is_dirty",
-                                                          "data_status",
-                                                          "data_checksum",
-                                                          "data_expiry_ts",
-                                                          "data_map_id",
-                                                          "data_mode",
-                                                          "r_comment",
-                                                          "create_ts",
-                                                          "modify_ts",
-                                                          "resc_id"};
-
     try {
         auto input = json::parse(_json_input);
 
@@ -14929,9 +12432,15 @@ auto db_data_object_finalize_op(irods::plugin_context& _ctx, const char* _json_i
             return ERROR(JSON_VALIDATION_ERROR, "JSON does not conform to the expected format");
         }
 
-        const auto get_json_string_value = [](const json& _json, const char* _key) -> const char* {
-            return _json.at(_key).get_ref<const std::string&>().c_str();
+        const auto get_json_string_value = [](const json& _json, const char* _key) -> const std::string& {
+            return _json.at(_key).get_ref<const std::string&>();
         };
+
+        auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
+        nanodbc::transaction trans{db_conn};
+
+        namespace gq2 = irods::experimental::genquery2;
+        using gq2::builder::col;
 
         // Loops over all the replicas and executes an update on that row in R_DATA_MAIN using the replica information
         // found in the "after" entry for each replica.
@@ -14954,90 +12463,45 @@ auto db_data_object_finalize_op(irods::plugin_context& _ctx, const char* _json_i
                 }
             }
 
-            std::string sql = "update R_DATA_MAIN set";
-
-            for (const auto& c : column_names) {
-                sql += fmt::format(" {} = ?,", c);
-            }
-            sql.pop_back();
-
-            sql += " where data_id = ? and resc_id = ?";
-
-            irods::log(LOG_DEBUG8, fmt::format("statement:[{}]", sql));
             irods::log(LOG_DEBUG9, fmt::format("before:[{}]", before.dump()));
             irods::log(LOG_DEBUG9, fmt::format("after:[{}]", after.dump()));
 
-            // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-constant-array-index)
-            cllBindVars[cllBindVarCount++] = get_json_string_value(after, "data_repl_num");
-            // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-constant-array-index)
-            cllBindVars[cllBindVarCount++] = get_json_string_value(after, "data_version");
-            // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-constant-array-index)
-            cllBindVars[cllBindVarCount++] = get_json_string_value(after, "data_type_name");
-            // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-constant-array-index)
-            cllBindVars[cllBindVarCount++] = get_json_string_value(after, "data_size");
-            // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-constant-array-index)
-            cllBindVars[cllBindVarCount++] = get_json_string_value(after, "data_path");
-            // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-constant-array-index)
-            cllBindVars[cllBindVarCount++] = get_json_string_value(after, "data_owner_name");
-            // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-constant-array-index)
-            cllBindVars[cllBindVarCount++] = get_json_string_value(after, "data_owner_zone");
-            // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-constant-array-index)
-            cllBindVars[cllBindVarCount++] = get_json_string_value(after, "data_is_dirty");
-            // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-constant-array-index)
-            cllBindVars[cllBindVarCount++] = get_json_string_value(after, "data_status");
-            // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-constant-array-index)
-            cllBindVars[cllBindVarCount++] = get_json_string_value(after, "data_checksum");
-            // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-constant-array-index)
-            cllBindVars[cllBindVarCount++] = get_json_string_value(after, "data_expiry_ts");
-            // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-constant-array-index)
-            cllBindVars[cllBindVarCount++] = get_json_string_value(after, "data_map_id");
-            // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-constant-array-index)
-            cllBindVars[cllBindVarCount++] = get_json_string_value(after, "data_mode");
-            // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-constant-array-index)
-            cllBindVars[cllBindVarCount++] = get_json_string_value(after, "r_comment");
-            // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-constant-array-index)
-            cllBindVars[cllBindVarCount++] = get_json_string_value(after, "create_ts");
-            // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-constant-array-index)
-            cllBindVars[cllBindVarCount++] = get_json_string_value(after, "modify_ts");
-            // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-constant-array-index)
-            cllBindVars[cllBindVarCount++] = get_json_string_value(after, "resc_id");
+            auto upd_stmt = gq2::builder::update("DATA_OBJECT")
+                .set("data_repl_num", get_json_string_value(after, "data_repl_num"))
+                .set("data_version", get_json_string_value(after, "data_version"))
+                .set("data_type_name", get_json_string_value(after, "data_type_name"))
+                .set("data_size", get_json_string_value(after, "data_size"))
+                .set("data_path", get_json_string_value(after, "data_path"))
+                .set("data_owner_name", get_json_string_value(after, "data_owner_name"))
+                .set("data_owner_zone", get_json_string_value(after, "data_owner_zone"))
+                .set("data_is_dirty", get_json_string_value(after, "data_is_dirty"))
+                .set("data_status", get_json_string_value(after, "data_status"))
+                .set("data_checksum", get_json_string_value(after, "data_checksum"))
+                .set("data_expiry_ts", get_json_string_value(after, "data_expiry_ts"))
+                .set("data_map_id", get_json_string_value(after, "data_map_id"))
+                .set("data_mode", get_json_string_value(after, "data_mode"))
+                .set("r_comment", get_json_string_value(after, "r_comment"))
+                .set("create_ts", get_json_string_value(after, "create_ts"))
+                .set("modify_ts", get_json_string_value(after, "modify_ts"))
+                .set("resc_id", get_json_string_value(after, "resc_id"))
+                .where(col("data_id") == get_json_string_value(before, "data_id") &&
+                       col("resc_id") == get_json_string_value(before, "resc_id"))
+                .build();
 
-            // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-constant-array-index)
-            cllBindVars[cllBindVarCount++] = get_json_string_value(before, "data_id");
-            // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-constant-array-index)
-            cllBindVars[cllBindVarCount++] = get_json_string_value(before, "resc_id");
-
-            // Execute update for this replica. If the update fails, we need to stop immediately because the data object
-            // will not reflect what the caller wanted. In that case, rollback and return an error.
-            if (const auto ec = cmlExecuteNoAnswerSql(sql.c_str(), &icss);
-                0 != ec && CAT_SUCCESS_BUT_WITH_NO_INFO != ec) {
-                _rollback("data_object_finalize");
-
-                std::string msg = fmt::format("cmlExecuteNoAnswerSql failed [ec=[{}]]", ec);
-
-                log_db::info("[{}:{}] - [{}]", __func__, __LINE__, msg);
-
-                return ERROR(ec, std::move(msg));
-            }
+            irods::experimental::catalog::execute_catalog(executor, db_conn, upd_stmt);
         }
 
-        // If everything executed successfully above, we commit all of the changes here, which fulfills the atomicity of
-        // data_object_finalize.
-        if (const auto commit_ec = cmlExecuteNoAnswerSql("commit", &icss); 0 != commit_ec) {
-            const auto& data_id = replicas.front().at("before").at("data_id").get_ref<std::string&>();
-            log_db::info("[{}:{}] - failure to commit changes [error code=[{}], data_id=[{}]]",
-                         __func__,
-                         __LINE__,
-                         commit_ec,
-                         data_id);
-
-            return ERROR(commit_ec, "commit failure");
-        }
+        trans.commit();
     }
     catch (const json::exception& e) {
         std::string msg = fmt::format("[{}:{}] - JSON error occurred [{}]", __func__, __LINE__, e.what());
         log_db::error(msg);
         return ERROR(SYS_LIBRARY_ERROR, std::move(msg));
+    }
+    catch (const nanodbc::database_error& e) {
+        std::string msg = fmt::format("[{}:{}] - Database error occurred [{}]", __func__, __LINE__, e.what());
+        log_db::error(msg);
+        return ERROR(CAT_SQL_ERR, std::move(msg));
     }
     catch (const std::exception& e) {
         std::string msg = fmt::format("[{}:{}] - Exception occurred [{}]", __func__, __LINE__, e.what());
@@ -15081,19 +12545,32 @@ auto db_check_auth_credentials_op(irods::plugin_context& _ctx,
     icatScramble(decoded_password.data());
 
     try {
-        auto [db_instance, db_conn] = irods::experimental::catalog::new_database_connection();
+        auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
 
-        nanodbc::statement stmt{db_conn};
-        nanodbc::prepare(stmt,
-                         "select u.user_id from R_USER_MAIN u "
-                         "inner join R_USER_PASSWORD p on u.user_id = p.user_id "
-                         "where u.user_name = ? and u.zone_name = ? and p.rcat_password = ?");
+        namespace gq2 = irods::experimental::genquery2;
+        using gq2::builder::col;
 
-        stmt.bind(0, _username);
-        stmt.bind(1, _zone);
-        stmt.bind(2, decoded_password.data());
+        auto opt_uid = irods::experimental::catalog::query_catalog_integer(
+            executor, db_conn,
+            gq2::builder::select({"user_id"})
+                .from("USER")
+                .where(col("user_name") == _username && col("zone_name") == _zone)
+                .build());
 
-        if (auto row = nanodbc::execute(stmt); !row.next()) {
+        std::optional<int64_t> opt_user_id;
+        if (opt_uid) {
+            auto opt_pw = irods::experimental::catalog::query_catalog_string(
+                executor, db_conn,
+                gq2::builder::select({"rcat_password"})
+                    .from("USER_PASSWORD")
+                    .where(col("user_id") == std::to_string(*opt_uid) && col("rcat_password") == decoded_password.data())
+                    .build());
+            if (opt_pw) {
+                opt_user_id = *opt_uid;
+            }
+        }
+
+        if (!opt_user_id) {
             log_db::warn("{}: Incorrect credentials for user [{}#{}].", __func__, _username, _zone);
             *_correct = 0;
         }
@@ -15134,21 +12611,14 @@ auto db_execute_genquery2_sql(irods::plugin_context& _ctx,
     *_output = nullptr;
 
     try {
-        auto [db_instance, db_conn] = irods::experimental::catalog::new_database_connection();
-
-        nanodbc::statement stmt{db_conn};
-        nanodbc::prepare(stmt, _sql);
-
-        for (std::vector<std::string>::size_type i = 0; i < _values->size(); ++i) {
-            stmt.bind(static_cast<short>(i), _values->at(i).c_str());
-        }
+        auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
+        auto row = executor.execute_query(db_conn, _sql, *_values);
 
         using json = nlohmann::json;
 
         auto json_array = json::array();
         auto json_row = json::array();
 
-        auto row = nanodbc::execute(stmt);
         const auto n_cols = row.columns();
 
         while (row.next()) {
@@ -15191,22 +12661,24 @@ auto db_delay_rule_lock(irods::plugin_context& _ctx, const char* _rule_id, const
     }
 
     try {
-        auto [db_instance, db_conn] = irods::experimental::catalog::new_database_connection();
-
-        nanodbc::statement stmt{db_conn};
-        nanodbc::prepare(stmt,
-                         "update R_RULE_EXEC set lock_host = ?, lock_host_pid = ?, lock_ts = ? "
-                         "where rule_exec_id = ? and lock_host = '' and lock_host_pid = '' and lock_ts = ''");
-
-        stmt.bind(0, _lock_host);
-        stmt.bind(1, &_lock_host_pid);
+        auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
+        nanodbc::transaction trans{db_conn};
 
         const auto [secs, millis] = get_current_time();
-        stmt.bind(2, secs.c_str());
+        namespace gq2 = irods::experimental::genquery2;
+        using gq2::builder::col;
 
-        stmt.bind(3, _rule_id);
+        auto stmt = gq2::builder::update("RULE_EXEC")
+            .set("lock_host", _lock_host)
+            .set("lock_host_pid", std::to_string(_lock_host_pid))
+            .set("lock_ts", secs)
+            .where(col("rule_exec_id") == _rule_id && col("lock_host") == "" && col("lock_host_pid") == "" && col("lock_ts") == "")
+            .build();
 
-        if (const auto result = nanodbc::execute(stmt); result.affected_rows() != 1) {
+        const auto res = irods::experimental::catalog::execute_catalog(executor, db_conn, stmt);
+        const auto affected = res.affected_rows;
+
+        if (affected != 1) {
             auto msg = fmt::format("{}: Failed to lock delay rule [rule_id={}, lock_host={}, lock_host_pid={}].",
                                    __func__,
                                    _rule_id,
@@ -15216,6 +12688,7 @@ auto db_delay_rule_lock(irods::plugin_context& _ctx, const char* _rule_id, const
             return ERROR(CAT_NO_ROWS_UPDATED, std::move(msg));
         }
 
+        trans.commit();
         return SUCCESS();
     }
     catch (const irods::exception& e) {
@@ -15242,25 +12715,14 @@ auto db_delay_rule_unlock(irods::plugin_context& _ctx, const char* _rule_ids) ->
     try {
         const auto rule_ids = nlohmann::json::parse(_rule_ids);
 
-        auto [db_instance, db_conn] = irods::experimental::catalog::new_database_connection();
-
+        auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
         nanodbc::transaction trans{db_conn};
-        nanodbc::statement stmt{db_conn};
-        nanodbc::prepare(stmt,
-                         "update R_RULE_EXEC set lock_host = '', lock_host_pid = '', lock_ts = '', modify_ts = ? where "
-                         "rule_exec_id = ?");
 
-        // Putting this in the loop would enable finer granularity in the update sequence, but
-        // there's likely no major benefit to it. At the very least, computing the time once
-        // allows admins to figure out which delay rules were updated within the same transaction.
         const auto [secs, millis] = get_current_time();
+        namespace gq2 = irods::experimental::genquery2;
+        using gq2::builder::col;
 
-        // Nanodbc supports batch operations, but those require copying the data. We use a loop
-        // to perform the updates. While not the greatest option, it keeps us from potentially
-        // triggering OOM errors.
         for (auto&& rule_id : rule_ids) {
-            stmt.bind(0, secs.c_str());
-
             const auto& rule_id_string = rule_id.get_ref<const std::string&>();
             try {
                 log_db::debug("{}: Successfully converted rule_id string [{}] to integer [{}].",
@@ -15274,16 +12736,19 @@ auto db_delay_rule_unlock(irods::plugin_context& _ctx, const char* _rule_ids) ->
                 return ERROR(SYS_INVALID_INPUT_PARAM,
                              fmt::format("Could not convert rule_id string [{}] to integer", rule_id_string));
             }
-            stmt.bind(1, rule_id_string.c_str());
 
-            nanodbc::execute(stmt);
+            auto stmt = gq2::builder::update("RULE_EXEC")
+                .set("lock_host", "")
+                .set("lock_host_pid", "")
+                .set("lock_ts", "")
+                .set("modify_ts", secs)
+                .where(col("rule_exec_id") == rule_id_string)
+                .build();
+            irods::experimental::catalog::execute_catalog(executor, db_conn, stmt);
         }
 
         trans.commit();
 
-        // It would be amazing to return CODE(result.affected_rows()), but we cannot because
-        // the ODBC drivers can produce different results. For this reason, the only thing we can
-        // do is return success or an error.
         return SUCCESS();
     }
     catch (const irods::exception& e) {
@@ -15333,9 +12798,17 @@ auto db_update_replica_access_time(irods::plugin_context& _ctx,
                           access_times.emplace_back(_j.at("atime").get<std::string>());
                       });
 
-        auto [db_instance, db_conn] = irods::experimental::catalog::new_database_connection();
+        auto [db_instance, db_conn] = irods::experimental::catalog::get_session_connection();
 
-        constexpr const char* sql = "update R_DATA_MAIN set access_ts = ? where data_id = ? and data_repl_num = ?";
+        namespace gq2 = irods::experimental::genquery2;
+        using gq2::builder::col;
+
+        static const auto [sql, unused_params] = gq2::to_sql(
+            gq2::builder::update("DATA_OBJECT")
+                .set("DATA_ACCESS_TIME", "?")
+                .where(col("DATA_ID") == "?" && col("DATA_REPL_NUM") == "?")
+                .build(),
+            gq2::options{.admin_mode = true});
         log_sql::debug("{}: SQL = [{}]", __func__, sql);
 
         nanodbc::statement stmt{db_conn};

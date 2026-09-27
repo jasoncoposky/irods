@@ -2392,6 +2392,7 @@ static int resolveRodsTargetImpl(rcComm_t* conn, rodsPathInp_t* rodsPathInp, int
                 return USER_INPUT_PATH_ERR;
             }
             *targPath = *destPath;
+            targPath->rodsObjStat = nullptr;
             targPath->objType = LOCAL_FILE_T;
         }
         else if ( srcPath->objType == DATA_OBJ_T ||
@@ -2425,6 +2426,7 @@ static int resolveRodsTargetImpl(rcComm_t* conn, rodsPathInp_t* rodsPathInp, int
             else if ( destPath->objType == DATA_OBJ_T ||
                       destPath->objType == LOCAL_FILE_T || rodsPathInp->numSrc == 1 ) {
                 *targPath = *destPath;
+                targPath->rodsObjStat = nullptr;
                 if ( destPath->objType <= COLL_OBJ_T ) {
                     targPath->objType = DATA_OBJ_T;
                 }

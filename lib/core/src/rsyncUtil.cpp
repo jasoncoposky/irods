@@ -83,6 +83,7 @@ namespace
                     return USER_INPUT_PATH_ERR;
                 }
                 *targPath = *destPath;
+                targPath->rodsObjStat = nullptr;
                 targPath->objType = LOCAL_FILE_T;
             }
             else if (srcPath->objType == DATA_OBJ_T || srcPath->objType == LOCAL_FILE_T) {
@@ -114,6 +115,7 @@ namespace
                          rodsPathInp->numSrc == 1)
                 {
                     *targPath = *destPath;
+                    targPath->rodsObjStat = nullptr;
                     if (destPath->objType <= COLL_OBJ_T) {
                         targPath->objType = DATA_OBJ_T;
                     }

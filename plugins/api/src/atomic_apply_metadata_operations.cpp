@@ -44,6 +44,7 @@
 #include <nlohmann/json.hpp>
 #include <fmt/format.h>
 #include <nanodbc/nanodbc.h>
+#include "irods/db_flavor.hpp"
 
 #include <cstdlib>
 #include <string>
@@ -239,24 +240,14 @@ namespace
 
         prepare(stmt, "select count(*) from R_OBJT_METAMAP where object_id = ? and meta_id = ?");
 
-        if ("oracle" == _db_instance_name) {
-            const auto object_id_string = std::to_string(_object_id);
-            const auto meta_id_string = std::to_string(_meta_id);
+        const auto object_id_string = std::to_string(_object_id);
+        const auto meta_id_string = std::to_string(_meta_id);
 
-            stmt.bind(0, object_id_string.data());
-            stmt.bind(1, meta_id_string.data());
+        stmt.bind(0, object_id_string.data());
+        stmt.bind(1, meta_id_string.data());
 
-            if (auto row = execute(stmt); row.next()) {
-                return row.get<std::int64_t>(0) > 0;
-            }
-        }
-        else {
-            stmt.bind(0, &_object_id);
-            stmt.bind(1, &_meta_id);
-
-            if (auto row = execute(stmt); row.next()) {
-                return row.get<std::int64_t>(0) > 0;
-            }
+        if (auto row = execute(stmt); row.next()) {
+            return row.get<std::int64_t>(0) > 0;
         }
 
         return false;
@@ -266,23 +257,18 @@ namespace
                          const std::string_view _db_instance_name,
                          const fs::metadata& _metadata) -> id_type
     {
-        nanodbc::statement stmt{_db_conn};
-
-        if (_db_instance_name == "oracle") {
-            prepare(stmt, "insert into R_META_MAIN (meta_id, meta_attr_name, meta_attr_value, meta_attr_unit, create_ts, modify_ts) "
-                          "values (R_OBJECTID.nextval, ?, ?, ?, ?, ?)");
-        }
-        else if (_db_instance_name == "mysql") {
-            prepare(stmt, "insert into R_META_MAIN (meta_id, meta_attr_name, meta_attr_value, meta_attr_unit, create_ts, modify_ts) "
-                          "values (R_OBJECTID_nextval(), ?, ?, ?, ?, ?)");
-        }
-        else if (_db_instance_name == "postgres") {
-            prepare(stmt, "insert into R_META_MAIN (meta_id, meta_attr_name, meta_attr_value, meta_attr_unit, create_ts, modify_ts) "
-                          "values (nextval('R_OBJECTID'), ?, ?, ?, ?, ?)");
-        }
-        else {
+        if (_db_instance_name != "postgres" && _db_instance_name != "oracle" && _db_instance_name != "mysql") {
             throw std::runtime_error{"Invalid database plugin configuration"};
         }
+
+        const auto& flavor = ic::get_db_flavor(ic::get_db_type_from_name(_db_instance_name));
+        const auto seq = fmt::format(fmt::runtime(flavor.next_sequence_expr), "R_OBJECTID");
+        const auto sql = fmt::format(
+            "insert into R_META_MAIN (meta_id, meta_attr_name, meta_attr_value, meta_attr_unit, create_ts, modify_ts) "
+            "values ({}, ?, ?, ?, ?, ?)", seq);
+
+        nanodbc::statement stmt{_db_conn};
+        prepare(stmt, sql);
 
         using std::chrono::system_clock;
         using std::chrono::duration_cast;

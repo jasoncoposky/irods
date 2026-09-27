@@ -6,7 +6,9 @@
 #include "irods/private/genquery2_table_column_mappings.hpp"
 
 #include "irods/irods_at_scope_exit.hpp"
+#include "irods/irods_exception.hpp"
 #include "irods/irods_logger.hpp"
+#include "irods/rodsErrorTable.h"
 
 #include <boost/graph/graph_traits.hpp>
 #include <boost/graph/adjacency_list.hpp>
@@ -61,6 +63,7 @@ namespace
         bool add_joins_for_meta_user = false;
 
         bool add_sql_for_data_resc_hier = false;
+        bool in_dml = false;
     }; // struct gq_state
 
     // clang-format off
@@ -965,6 +968,15 @@ namespace irods::experimental::genquery2
 
     auto to_sql(gq_state& _state, const column& _column) -> std::string
     {
+        if (_state.in_dml) {
+            const auto iter = column_name_mappings.find(_column.name);
+            const auto col_name = (iter != std::end(column_name_mappings)) ? iter->second.name : _column.name;
+            if (_column.type_name.empty()) {
+                return std::string{col_name};
+            }
+            return fmt::format("cast({} as {})", col_name, _column.type_name);
+        }
+
         const auto iter = column_name_mappings.find(_column.name);
 
         if (iter == std::end(column_name_mappings)) {
@@ -1194,9 +1206,121 @@ namespace irods::experimental::genquery2
         return fmt::format("({})", to_sql(_state, _condition.conditions));
     } // to_sql
 
+    auto resolve_table_name(std::string_view _entity) -> std::string_view
+    {
+        if (_entity == "DATA_OBJECT") return "R_DATA_MAIN";
+        if (_entity == "COLLECTION") return "R_COLL_MAIN";
+        if (_entity == "RESOURCE") return "R_RESC_MAIN";
+        if (_entity == "RESOURCE_PARENT") return "R_RESC_PARENTS";
+        if (_entity == "RESOURCE_GROUP") return "R_RESC_GROUP";
+        if (_entity == "USER") return "R_USER_MAIN";
+        if (_entity == "USER_GROUP") return "R_USER_GROUP";
+        if (_entity == "USER_AUTH") return "R_USER_AUTH";
+        if (_entity == "USER_PASSWORD") return "R_USER_PASSWORD";
+        if (_entity == "METADATA") return "R_META_MAIN";
+        if (_entity == "METADATA_MAP") return "R_OBJT_METAMAP";
+        if (_entity == "ACCESS") return "R_OBJT_ACCESS";
+        if (_entity == "RULE_EXEC") return "R_RULE_EXEC";
+        if (_entity == "ZONE") return "R_ZONE_MAIN";
+        if (_entity == "SPECIFIC_QUERY") return "R_SPECIFIC_QUERY";
+        if (_entity == "QUOTA") return "R_QUOTA_MAIN";
+        if (_entity == "QUOTA_USAGE") return "R_QUOTA_USAGE";
+        if (_entity == "TOKEN") return "R_TOKN_MAIN";
+        if (_entity == "TICKET") return "R_TICKET_MAIN";
+        if (_entity == "TICKET_ALLOWED_HOSTS") return "R_TICKET_ALLOWED_HOSTS";
+        if (_entity == "TICKET_ALLOWED_USERS") return "R_TICKET_ALLOWED_USERS";
+        if (_entity == "TICKET_ALLOWED_GROUPS") return "R_TICKET_ALLOWED_GROUPS";
+        if (_entity == "RULE") return "R_RULE_MAIN";
+        if (_entity == "RULE_BASE_MAP") return "R_RULE_BASE_MAP";
+        if (_entity == "RULE_DVM") return "R_RULE_DVM";
+        if (_entity == "RULE_DVM_MAP") return "R_RULE_DVM_MAP";
+        if (_entity == "RULE_FNM") return "R_RULE_FNM";
+        if (_entity == "RULE_FNM_MAP") return "R_RULE_FNM_MAP";
+        if (_entity == "MICROSERVICE") return "R_MICROSRVC_MAIN";
+        if (_entity == "MICROSERVICE_VER") return "R_MICROSRVC_VER";
+        if (_entity == "SERVER_LOAD") return "R_SERVER_LOAD";
+        if (_entity == "SERVER_LOAD_DIGEST") return "R_SERVER_LOAD_DIGEST";
+        if (_entity == "GRID_CONFIGURATION") return "R_GRID_CONFIGURATION";
+        return _entity;
+    }
+
+    auto resolve_column_name(std::string_view _col) -> std::string_view
+    {
+        const auto iter = column_name_mappings.find(_col);
+        if (iter != std::end(column_name_mappings)) {
+            return iter->second.name;
+        }
+        return _col;
+    }
+
     auto to_sql(const select& _select, const options& _opts) -> std::tuple<std::string, std::vector<std::string>>
     {
         try {
+            if (!_select.from_entity.empty()) {
+                const auto table = resolve_table_name(_select.from_entity);
+                gq_state state;
+                state.in_dml = true; // Use direct column name resolution
+
+                std::vector<std::string> proj_cols;
+                for (const auto& p : _select.projections) {
+                    if (const auto* col_ptr = boost::get<column>(&p)) {
+                        proj_cols.push_back(std::string{resolve_column_name(col_ptr->name)});
+                    }
+                    else if (const auto* func_ptr = boost::get<function>(&p)) {
+                        std::vector<std::string> args;
+                        for (const auto& arg : func_ptr->arguments) {
+                            if (const auto* c = std::get_if<column>(&arg)) {
+                                args.push_back(std::string{resolve_column_name(c->name)});
+                            }
+                            else if (const auto* s = std::get_if<std::string>(&arg)) {
+                                args.push_back(fmt::format("'{}'", *s));
+                            }
+                        }
+                        proj_cols.push_back(fmt::format("{}({})", func_ptr->name, fmt::join(args, ", ")));
+                    }
+                }
+
+                if (proj_cols.empty()) {
+                    proj_cols.push_back("*");
+                }
+
+                auto sql = fmt::format("select {}{} from {}",
+                                       _select.distinct ? "distinct " : "",
+                                       fmt::join(proj_cols, ", "),
+                                       table);
+
+                if (!_select.conditions.empty()) {
+                    sql += fmt::format(" where {}", to_sql(state, _select.conditions));
+                }
+
+                if (!_select.group_by.columns.empty()) {
+                    std::vector<std::string> group_cols;
+                    for (const auto& c : _select.group_by.columns) {
+                        group_cols.push_back(std::string{resolve_column_name(c)});
+                    }
+                    sql += fmt::format(" group by {}", fmt::join(group_cols, ", "));
+                }
+
+                if (!_select.order_by.sort_expressions.empty()) {
+                    std::vector<std::string> order_terms;
+                    for (const auto& expr : _select.order_by.sort_expressions) {
+                        if (const auto* c = std::get_if<column>(&expr.expr)) {
+                            order_terms.push_back(fmt::format("{} {}", resolve_column_name(c->name), expr.ascending_order ? "asc" : "desc"));
+                        }
+                    }
+                    sql += fmt::format(" order by {}", fmt::join(order_terms, ", "));
+                }
+
+                if (!_select.range.number_of_rows.empty()) {
+                    sql += fmt::format(" limit {}", _select.range.number_of_rows);
+                }
+                if (!_select.range.offset.empty() && _select.range.offset != "0") {
+                    sql += fmt::format(" offset {}", _select.range.offset);
+                }
+
+                return {sql, std::move(state.values)};
+            }
+
             gq_state state;
 
             log_gq::trace("### PHASE 1: Gather");
@@ -1316,4 +1440,112 @@ namespace irods::experimental::genquery2
 
         return {{}, {}};
     } // to_sql
+
+    auto to_sql(const insert& _ins, const options& _opts)
+        -> std::tuple<std::string, std::vector<std::string>>
+    {
+        if (!_opts.admin_mode) {
+            THROW(
+                CAT_INSUFFICIENT_PRIVILEGE_LEVEL,
+                "GenQuery2 insert operation requires rodsadmin privileges");
+        }
+
+        if (_ins.assignments.empty()) {
+            throw std::invalid_argument{"insert statement must specify at least one column assignment"};
+        }
+
+        const auto table = resolve_table_name(_ins.target_entity);
+        std::vector<std::string> col_names;
+        std::vector<std::string> placeholders;
+        std::vector<std::string> params;
+
+        col_names.reserve(_ins.assignments.size());
+        placeholders.reserve(_ins.assignments.size());
+        params.reserve(_ins.assignments.size());
+
+        for (const auto& [col, val] : _ins.assignments) {
+            col_names.push_back(std::string{resolve_column_name(col)});
+            placeholders.push_back("?");
+            params.push_back(val);
+        }
+
+        std::string sql = fmt::format(
+            "INSERT INTO {} ({}) VALUES ({})",
+            table,
+            fmt::join(col_names, ", "),
+            fmt::join(placeholders, ", "));
+
+        log_gq::debug("GENERATED INSERT SQL => [{}]", sql);
+        return {std::move(sql), std::move(params)};
+    } // to_sql(insert)
+
+    auto to_sql(const update& _upd, const options& _opts)
+        -> std::tuple<std::string, std::vector<std::string>>
+    {
+        if (!_opts.admin_mode) {
+            THROW(
+                CAT_INSUFFICIENT_PRIVILEGE_LEVEL,
+                "GenQuery2 update operation requires rodsadmin privileges");
+        }
+
+        if (_upd.assignments.empty()) {
+            throw std::invalid_argument{"update statement must specify at least one column assignment"};
+        }
+
+        const auto table = resolve_table_name(_upd.target_entity);
+        std::vector<std::string> set_clauses;
+        std::vector<std::string> params;
+
+        set_clauses.reserve(_upd.assignments.size());
+        params.reserve(_upd.assignments.size());
+
+        for (const auto& [col, val] : _upd.assignments) {
+            set_clauses.push_back(fmt::format("{} = ?", resolve_column_name(col)));
+            params.push_back(val);
+        }
+
+        std::string sql = fmt::format("UPDATE {} SET {}", table, fmt::join(set_clauses, ", "));
+
+        if (!_upd.where_conditions.empty()) {
+            gq_state state;
+            state.in_dml = true;
+            std::string where_sql = to_sql(state, _upd.where_conditions);
+            sql += fmt::format(" WHERE {}", where_sql);
+            params.insert(params.end(), state.values.begin(), state.values.end());
+        }
+
+        log_gq::debug("GENERATED UPDATE SQL => [{}]", sql);
+        return {std::move(sql), std::move(params)};
+    } // to_sql(update)
+
+    auto to_sql(const remove& _rem, const options& _opts)
+        -> std::tuple<std::string, std::vector<std::string>>
+    {
+        if (!_opts.admin_mode) {
+            THROW(
+                CAT_INSUFFICIENT_PRIVILEGE_LEVEL,
+                "GenQuery2 remove operation requires rodsadmin privileges");
+        }
+
+        const auto table = resolve_table_name(_rem.target_entity);
+        std::string sql = fmt::format("DELETE FROM {}", table);
+        std::vector<std::string> params;
+
+        if (!_rem.where_conditions.empty()) {
+            gq_state state;
+            state.in_dml = true;
+            std::string where_sql = to_sql(state, _rem.where_conditions);
+            sql += fmt::format(" WHERE {}", where_sql);
+            params = std::move(state.values);
+        }
+
+        log_gq::debug("GENERATED REMOVE SQL => [{}]", sql);
+        return {std::move(sql), std::move(params)};
+    } // to_sql(remove)
+
+    auto to_sql(const statement& _stmt, const options& _opts)
+        -> std::tuple<std::string, std::vector<std::string>>
+    {
+        return std::visit([&](const auto& s) { return to_sql(s, _opts); }, _stmt);
+    } // to_sql(statement)
 } // namespace irods::experimental::genquery2

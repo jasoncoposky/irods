@@ -11,6 +11,7 @@ set(
   IRODS_SERVER_GQ2_HEADERS_PRIVATE
   "${CMAKE_CURRENT_SOURCE_DIR}/include/irods/private/edge_property.hpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/include/irods/private/genquery2_ast_types.hpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/include/irods/private/genquery2_builder.hpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/include/irods/private/genquery2_driver.hpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/include/irods/private/genquery2_scanner.hpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/include/irods/private/genquery2_sql.hpp"

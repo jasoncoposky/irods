@@ -54,6 +54,14 @@ set(
   atomic_apply_metadata_operations
   authenticate_client
   capped_memory_resource
+  catalog_access_control
+  chl_coll_modern
+  chl_data_obj_modern
+  chl_delay_rule_modern
+  chl_metadata_access_modern
+  chl_misc_modern
+  chl_resc_modern
+  chl_user_group_modern
   client_connection
   client_server_negotiation
   connection_pool
@@ -71,6 +79,9 @@ set(
   fully_qualified_username
   generate_random_alphanumeric_string
   genquery1_flex_bison_parser
+  genquery2_dml_ast
+  genquery2_builder
+  genquery2_sql_dml
   getRodsEnv
   get_delay_rule_info
   get_file_descriptor_info
@@ -86,6 +97,7 @@ set(
   logical_locking
   logical_paths_and_special_characters
   metadata
+  nanodbc_executor
   packstruct
   parallel_transfer_engine
   process_stash

@@ -68,6 +68,7 @@ set(
   "${CMAKE_CURRENT_SOURCE_DIR}/include/irods/atomic_apply_database_operations.hpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/include/irods/catalog.hpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/include/irods/catalog_utilities.hpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/include/irods/db_flavor.hpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/include/irods/client_api_allowlist.hpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/include/irods/collection.hpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/include/irods/dataObjOpr.hpp"

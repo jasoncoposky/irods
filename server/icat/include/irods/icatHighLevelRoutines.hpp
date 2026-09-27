@@ -228,7 +228,7 @@ int chlGetReplListForLeafBundles(
     const std::string*          _invocation_timestamp,
     dist_child_result_t*        _results );
 
-/// \brief High-level wrapper for database operation which calls cmlCheckDataObjId
+/// \brief High-level wrapper for database operation which calls db_check_data_obj_id
 ///
 /// \parblock
 /// Checks to see whether the specified data_id shows up when searching for the
@@ -254,7 +254,7 @@ int chlGetReplListForLeafBundles(
 /// \since 4.2.9
 auto chl_check_permission_to_modify_data_object(RsComm& _comm, const rodsLong_t _data_id) -> int;
 
-/// \brief High-level wrapper for database operation which calls cmlTicketUpdateWriteBytes
+/// \brief High-level wrapper for database operation which calls db_ticket_update_write_bytes
 ///
 /// \parblock
 /// Updates the write byte count for the ticket by the amount specified for

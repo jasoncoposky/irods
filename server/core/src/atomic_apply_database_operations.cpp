@@ -3,6 +3,7 @@
 #include "irods/rodsErrorTable.h"
 #include "irods/irods_exception.hpp"
 #include "irods/catalog.hpp"
+#include "irods/db_flavor.hpp"
 #include "irods/irods_logger.hpp"
 
 #include <boost/iterator/function_input_iterator.hpp>
@@ -290,32 +291,18 @@ namespace
          */
 
         try {
-            std::string_view sql;
-
-            if (_db_instance_name == "postgres") {
-                sql = "insert into R_COLL_MAIN ("
-                      " coll_id, parent_coll_name, coll_name, coll_owner_name, coll_owner_zone, coll_map_id,"
-                      " coll_inheritance, coll_type, coll_info1, coll_info2, coll_expiry_ts, r_comment,"
-                      " create_ts, modify_ts) "
-                      "values (nextval('R_OBJECTID'), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
-            }
-            else if (_db_instance_name == "oracle") {
-                sql = "insert into R_COLL_MAIN ("
-                      " coll_id, parent_coll_name, coll_name, coll_owner_name, coll_owner_zone, coll_map_id,"
-                      " coll_inheritance, coll_type, coll_info1, coll_info2, coll_expiry_ts, r_comment,"
-                      " create_ts, modify_ts) "
-                      "values (select R_OBJECTID.nextval from DUAL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
-            }
-            else if (_db_instance_name == "mysql") {
-                sql = "insert into R_COLL_MAIN ("
-                      " coll_id, parent_coll_name, coll_name, coll_owner_name, coll_owner_zone, coll_map_id,"
-                      " coll_inheritance, coll_type, coll_info1, coll_info2, coll_expiry_ts, r_comment,"
-                      " create_ts, modify_ts) "
-                      "values (R_OBJECTID_nextval(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
-            }
-            else {
+            if (_db_instance_name != "postgres" && _db_instance_name != "oracle" && _db_instance_name != "mysql") {
                 return database_type_not_supported(_db_instance_name, __func__);
             }
+
+            const auto& flavor = ix::catalog::get_db_flavor(ix::catalog::get_db_type_from_name(_db_instance_name));
+            const auto seq = fmt::format(fmt::runtime(flavor.next_sequence_expr), "R_OBJECTID");
+            const auto sql = fmt::format(
+                "insert into R_COLL_MAIN ("
+                " coll_id, parent_coll_name, coll_name, coll_owner_name, coll_owner_zone, coll_map_id,"
+                " coll_inheritance, coll_type, coll_info1, coll_info2, coll_expiry_ts, r_comment,"
+                " create_ts, modify_ts) "
+                "values ({}, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", seq);
 
             const auto timestamp = current_timestamp();
 
@@ -396,35 +383,19 @@ namespace
          */
 
         try {
-            std::string_view sql;
-
-            if (_db_instance_name == "postgres") {
-                sql = "insert into R_DATA_MAIN ("
-                      " data_id, coll_id, data_name, data_repl_num, data_version, data_type_name," 
-                      " data_size, resc_group_name, resc_name, data_path, data_owner_name,"
-                      " data_owner_zone, data_is_dirty, data_status, data_checksum, data_expiry_ts,"
-                      " data_map_id, data_mode, r_comment, create_ts, modify_ts, resc_hier, resc_id) "
-                      "values (nextval('R_OBJECTID'), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
-            }
-            else if (_db_instance_name == "oracle") {
-                sql = "insert into R_DATA_MAIN ("
-                      " data_id, coll_id, data_name, data_repl_num, data_version, data_type_name," 
-                      " data_size, resc_group_name, resc_name, data_path, data_owner_name,"
-                      " data_owner_zone, data_is_dirty, data_status, data_checksum, data_expiry_ts,"
-                      " data_map_id, data_mode, r_comment, create_ts, modify_ts, resc_hier, resc_id) "
-                      "values (select R_OBJECTID.nextval from DUAL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
-            }
-            else if (_db_instance_name == "mysql") {
-                sql = "insert into R_DATA_MAIN ("
-                      " data_id, coll_id, data_name, data_repl_num, data_version, data_type_name," 
-                      " data_size, resc_group_name, resc_name, data_path, data_owner_name,"
-                      " data_owner_zone, data_is_dirty, data_status, data_checksum, data_expiry_ts,"
-                      " data_map_id, data_mode, r_comment, create_ts, modify_ts, resc_hier, resc_id) "
-                      "values (R_OBJECTID_nextval(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
-            }
-            else {
+            if (_db_instance_name != "postgres" && _db_instance_name != "oracle" && _db_instance_name != "mysql") {
                 return database_type_not_supported(_db_instance_name, __func__);
             }
+
+            const auto& flavor = ix::catalog::get_db_flavor(ix::catalog::get_db_type_from_name(_db_instance_name));
+            const auto seq = fmt::format(fmt::runtime(flavor.next_sequence_expr), "R_OBJECTID");
+            const auto sql = fmt::format(
+                "insert into R_DATA_MAIN ("
+                " data_id, coll_id, data_name, data_repl_num, data_version, data_type_name," 
+                " data_size, resc_group_name, resc_name, data_path, data_owner_name,"
+                " data_owner_zone, data_is_dirty, data_status, data_checksum, data_expiry_ts,"
+                " data_map_id, data_mode, r_comment, create_ts, modify_ts, resc_hier, resc_id) "
+                "values ({}, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", seq);
 
             const auto timestamp = current_timestamp();
 
@@ -508,29 +479,17 @@ namespace
          */
 
         try {
-            std::string_view sql;
-
-            if (_db_instance_name == "postgres") {
-                sql = "insert into R_META_MAIN ("
-                      " meta_id, meta_namespace, meta_attr_name, meta_attr_value,"
-                      " meta_attr_unit, r_comment, create_ts, modify_ts) "
-                      "values (nextval('R_OBJECTID'), ?, ?, ?, ?, ?, ?, ?)";
-            }
-            else if (_db_instance_name == "oracle") {
-                sql = "insert into R_META_MAIN ("
-                      " meta_id, meta_namespace, meta_attr_name, meta_attr_value,"
-                      " meta_attr_unit, r_comment, create_ts, modify_ts) "
-                      "values (select R_OBJECTID.nextval from DUAL, ?, ?, ?, ?, ?, ?, ?)";
-            }
-            else if (_db_instance_name == "mysql") {
-                sql = "insert into R_META_MAIN ("
-                      " meta_id, meta_namespace, meta_attr_name, meta_attr_value,"
-                      " meta_attr_unit, r_comment, create_ts, modify_ts) "
-                      "values (R_OBJECTID_nextval(), ?, ?, ?, ?, ?, ?, ?)";
-            }
-            else {
+            if (_db_instance_name != "postgres" && _db_instance_name != "oracle" && _db_instance_name != "mysql") {
                 return database_type_not_supported(_db_instance_name, __func__);
             }
+
+            const auto& flavor = ix::catalog::get_db_flavor(ix::catalog::get_db_type_from_name(_db_instance_name));
+            const auto seq = fmt::format(fmt::runtime(flavor.next_sequence_expr), "R_OBJECTID");
+            const auto sql = fmt::format(
+                "insert into R_META_MAIN ("
+                " meta_id, meta_namespace, meta_attr_name, meta_attr_value,"
+                " meta_attr_unit, r_comment, create_ts, modify_ts) "
+                "values ({}, ?, ?, ?, ?, ?, ?, ?)", seq);
 
             const auto timestamp = current_timestamp();
 
@@ -640,35 +599,19 @@ namespace
          */
 
         try {
-            std::string_view sql;
-
-            if (_db_instance_name == "postgres") {
-                sql = "insert into R_RESC_MAIN ("
-                      " resc_id, resc_name, zone_name, resc_type_name, resc_class_name,"
-                      " resc_net, resc_def_path, free_space, free_space_ts, resc_info,"
-                      " r_comment, resc_status, create_ts, modify_ts, resc_children,"
-                      " resc_context, resc_parent, resc_objcount, resc_parent_context) "
-                      "values (nextval('R_OBJECTID'), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
-            }
-            else if (_db_instance_name == "oracle") {
-                sql = "insert into R_RESC_MAIN ("
-                      " resc_id, resc_name, zone_name, resc_type_name, resc_class_name,"
-                      " resc_net, resc_def_path, free_space, free_space_ts, resc_info,"
-                      " r_comment, resc_status, create_ts, modify_ts, resc_children,"
-                      " resc_context, resc_parent, resc_objcount, resc_parent_context) "
-                      "values (select R_OBJECTID.nextval from DUAL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
-            }
-            else if (_db_instance_name == "mysql") {
-                sql = "insert into R_RESC_MAIN ("
-                      " resc_id, resc_name, zone_name, resc_type_name, resc_class_name,"
-                      " resc_net, resc_def_path, free_space, free_space_ts, resc_info,"
-                      " r_comment, resc_status, create_ts, modify_ts, resc_children,"
-                      " resc_context, resc_parent, resc_objcount, resc_parent_context) "
-                      "values (R_OBJECTID_nextval(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
-            }
-            else {
+            if (_db_instance_name != "postgres" && _db_instance_name != "oracle" && _db_instance_name != "mysql") {
                 return database_type_not_supported(_db_instance_name, __func__);
             }
+
+            const auto& flavor = ix::catalog::get_db_flavor(ix::catalog::get_db_type_from_name(_db_instance_name));
+            const auto seq = fmt::format(fmt::runtime(flavor.next_sequence_expr), "R_OBJECTID");
+            const auto sql = fmt::format(
+                "insert into R_RESC_MAIN ("
+                " resc_id, resc_name, zone_name, resc_type_name, resc_class_name,"
+                " resc_net, resc_def_path, free_space, free_space_ts, resc_info,"
+                " r_comment, resc_status, create_ts, modify_ts, resc_children,"
+                " resc_context, resc_parent, resc_objcount, resc_parent_context) "
+                "values ({}, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", seq);
 
             const auto timestamp = current_timestamp();
 
@@ -754,35 +697,19 @@ namespace
         */
 
         try {
-            std::string_view sql;
-
-            if (_db_instance_name == "postgres") {
-                sql = "insert into R_TICKET_MAIN ("
-                      " ticket_id, ticket_string, ticket_type, user_id, object_id, object_type,"
-                      " uses_limit, uses_count, write_file_limit, write_file_count,"
-                      " write_byte_limit, write_byte_count, ticket_expiry_ts, restrictions,"
-                      " create_ts, modify_ts) "
-                      "values (nextval('R_OBJECTID'), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
-            }
-            else if (_db_instance_name == "oracle") {
-                sql = "insert into R_TICKET_MAIN ("
-                      " ticket_id, ticket_string, ticket_type, user_id, object_id, object_type,"
-                      " uses_limit, uses_count, write_file_limit, write_file_count,"
-                      " write_byte_limit, write_byte_count, ticket_expiry_ts, restrictions,"
-                      " create_ts, modify_ts) "
-                      "values (select R_OBJECTID.nextval from DUAL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
-            }
-            else if (_db_instance_name == "mysql") {
-                sql = "insert into R_TICKET_MAIN ("
-                      " ticket_id, ticket_string, ticket_type, user_id, object_id, object_type,"
-                      " uses_limit, uses_count, write_file_limit, write_file_count,"
-                      " write_byte_limit, write_byte_count, ticket_expiry_ts, restrictions,"
-                      " create_ts, modify_ts) "
-                      "values (R_OBJECTID_nextval(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
-            }
-            else {
+            if (_db_instance_name != "postgres" && _db_instance_name != "oracle" && _db_instance_name != "mysql") {
                 return database_type_not_supported(_db_instance_name, __func__);
             }
+
+            const auto& flavor = ix::catalog::get_db_flavor(ix::catalog::get_db_type_from_name(_db_instance_name));
+            const auto seq = fmt::format(fmt::runtime(flavor.next_sequence_expr), "R_OBJECTID");
+            const auto sql = fmt::format(
+                "insert into R_TICKET_MAIN ("
+                " ticket_id, ticket_string, ticket_type, user_id, object_id, object_type,"
+                " uses_limit, uses_count, write_file_limit, write_file_count,"
+                " write_byte_limit, write_byte_count, ticket_expiry_ts, restrictions,"
+                " create_ts, modify_ts) "
+                "values ({}, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", seq);
 
             const auto timestamp = current_timestamp();
 

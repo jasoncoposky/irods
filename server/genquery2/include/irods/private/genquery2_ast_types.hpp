@@ -4,6 +4,7 @@
 #include <boost/variant.hpp>
 
 #include <string>
+#include <string_view>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -276,6 +277,7 @@ namespace irods::experimental::genquery2
         {
         }
 
+        std::string from_entity;
         projections projections;
         conditions conditions;
         group_by group_by;
@@ -283,6 +285,27 @@ namespace irods::experimental::genquery2
         range range;
         bool distinct = false;
     }; // struct select
+
+    struct insert
+    {
+        std::string_view target_entity;
+        std::vector<std::pair<std::string, std::string>> assignments;
+    }; // struct insert
+
+    struct update
+    {
+        std::string_view target_entity;
+        std::vector<std::pair<std::string, std::string>> assignments;
+        conditions where_conditions;
+    }; // struct update
+
+    struct remove
+    {
+        std::string_view target_entity;
+        conditions where_conditions;
+    }; // struct remove
+
+    using statement = std::variant<select, insert, update, remove>;
 } // namespace irods::experimental::genquery2
 
 #endif // IRODS_GENQUERY2_ABSTRACT_SYNTAX_TREE_DATA_TYPES_HPP
