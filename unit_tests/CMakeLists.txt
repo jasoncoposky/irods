@@ -230,3 +230,61 @@ install(
   DESTINATION "${IRODS_HOME_DIRECTORY}/unit_tests"
   COMPONENT ${IRODS_PACKAGE_COMPONENT_SERVER_NAME}
 )
+
+set(GENQUERY2_AST_DISPATCH_TEST_TARGET irods_genquery2_ast_dispatch)
+add_executable(
+  ${GENQUERY2_AST_DISPATCH_TEST_TARGET}
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/test_genquery2_ast_dispatch.cpp"
+  $<TARGET_OBJECTS:irods_genquery2_parser>
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/irods_error_enum_matcher.hpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/unit_test_utils.hpp"
+)
+
+target_include_directories(
+  ${GENQUERY2_AST_DISPATCH_TEST_TARGET}
+  PRIVATE
+  "${CMAKE_SOURCE_DIR}/server/genquery2/include"
+  "${CMAKE_BINARY_DIR}/server/genquery2/dsl"
+  "${CMAKE_SOURCE_DIR}/server/icat/include"
+  "${CMAKE_SOURCE_DIR}/server/core/include"
+  "${CMAKE_SOURCE_DIR}/server/api/include"
+  "${IRODS_EXTERNALS_FULLPATH_BOOST}/include"
+  "${IRODS_EXTERNALS_FULLPATH_NANODBC}/include"
+)
+
+if (Catch2_VERSION VERSION_LESS "3.0.0")
+  target_sources(
+    ${GENQUERY2_AST_DISPATCH_TEST_TARGET}
+    PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/catch2_compat_include/catch2/catch_all.hpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/main.cpp"
+  )
+  target_link_libraries(
+    ${GENQUERY2_AST_DISPATCH_TEST_TARGET}
+    PRIVATE
+    Catch2::Catch2
+  )
+  target_include_directories(
+    ${GENQUERY2_AST_DISPATCH_TEST_TARGET}
+    PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/catch2_compat_include"
+  )
+else()
+  target_link_libraries(
+    ${GENQUERY2_AST_DISPATCH_TEST_TARGET}
+    PRIVATE
+    Catch2::Catch2WithMain
+  )
+endif()
+
+target_compile_definitions(${GENQUERY2_AST_DISPATCH_TEST_TARGET} PRIVATE ${IRODS_COMPILE_DEFINITIONS_PRIVATE} RODS_CLERVER)
+target_link_libraries(
+  ${GENQUERY2_AST_DISPATCH_TEST_TARGET}
+  PRIVATE
+  irods_common
+  irods_server
+  fmt::fmt
+)
+set_property(TARGET ${GENQUERY2_AST_DISPATCH_TEST_TARGET} PROPERTY BUILD_WITH_INSTALL_RPATH ${IRODS_UNIT_TESTS_BUILD_WITH_INSTALL_RPATH})
+add_dependencies(all-unit_tests ${GENQUERY2_AST_DISPATCH_TEST_TARGET})
+

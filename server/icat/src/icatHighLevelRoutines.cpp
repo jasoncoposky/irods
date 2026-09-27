@@ -24,6 +24,8 @@
 #include "irods/irods_database_constants.hpp"
 #include "irods/irods_server_properties.hpp"
 #include "irods/logical_quota_utilities.hpp"
+#include "irods/private/genquery2_ast_types.hpp"
+#include "irods/private/genquery2_sql.hpp"
 
 // =-=-=-=-=-=-=-
 // stl includes
@@ -4727,6 +4729,44 @@ auto chl_execute_genquery2_sql(RsComm& _comm, const char* _sql, const std::vecto
     // NOLINTNEXTLINE(bugprone-narrowing-conversions,cppcoreguidelines-narrowing-conversions)
     return ret.code();
 } // chl_execute_genquery2_sql
+
+auto chl_execute_genquery2(RsComm& _comm,
+                           const irods::experimental::genquery2::statement& _stmt,
+                           const irods::experimental::genquery2::options& _opts,
+                           char** _output)
+    -> int
+{
+    irods::database_object_ptr db_obj_ptr;
+    if (const auto ret = irods::database_factory(database_plugin_type, db_obj_ptr); !ret.ok()) {
+        irods::log(PASS(ret));
+        // NOLINTNEXTLINE(bugprone-narrowing-conversions,cppcoreguidelines-narrowing-conversions)
+        return ret.code();
+    }
+
+    irods::plugin_ptr db_plug_ptr;
+    if (const auto ret = db_obj_ptr->resolve(irods::DATABASE_INTERFACE, db_plug_ptr); !ret.ok()) {
+        irods::log(PASSMSG("failed to resolve database interface", ret));
+        // NOLINTNEXTLINE(bugprone-narrowing-conversions,cppcoreguidelines-narrowing-conversions)
+        return ret.code();
+    }
+
+    irods::first_class_object_ptr ptr = boost::dynamic_pointer_cast<irods::first_class_object>(db_obj_ptr);
+    irods::database_ptr db = boost::dynamic_pointer_cast<irods::database>(db_plug_ptr);
+
+    if (db->has_operation(irods::DATABASE_OP_EXECUTE_GENQUERY2)) {
+        const auto ret = db->call(&_comm, irods::DATABASE_OP_EXECUTE_GENQUERY2, ptr, &_stmt, &_opts, _output);
+        // NOLINTNEXTLINE(bugprone-narrowing-conversions,cppcoreguidelines-narrowing-conversions)
+        return ret.code();
+    }
+
+    // Fallback: if _stmt holds select, compile to SQL and execute via chl_execute_genquery2_sql.
+    if (const auto* select_stmt = std::get_if<irods::experimental::genquery2::select>(&_stmt)) {
+        const auto [sql, values] = irods::experimental::genquery2::to_sql(*select_stmt, _opts);
+        return chl_execute_genquery2_sql(_comm, sql.c_str(), &values, _output);
+    }
+
+    return SYS_NOT_SUPPORTED;
+} // chl_execute_genquery2
 
 auto chl_delay_rule_lock(RsComm& _comm, const char* _rule_id, const char* _lock_host, int _lock_host_pid) -> int
 {

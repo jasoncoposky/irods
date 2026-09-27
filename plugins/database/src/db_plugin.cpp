@@ -34,6 +34,7 @@
 #include "irods/private/irods_catalog_properties.hpp"
 #include "irods/private/low_level.hpp"
 #include "irods/private/genquery2_builder.hpp"
+#include "irods/private/genquery2_sql.hpp"
 #include "irods/private/nanodbc_executor.hpp"
 #include "irods/private/database_session.hpp"
 #include "irods/private/db_flavor_table.hpp"
@@ -13114,6 +13115,40 @@ auto db_execute_genquery2_sql(irods::plugin_context& _ctx,
     }
 } // db_execute_genquery2_sql
 
+auto db_execute_genquery2_op(irods::plugin_context& _ctx,
+                             const irods::experimental::genquery2::statement* _stmt,
+                             const irods::experimental::genquery2::options* _opts,
+                             char** _output) -> irods::error
+{
+    if (const auto ret = _ctx.valid(); !ret.ok()) {
+        return PASS(ret);
+    }
+
+    if (!_stmt || !_opts || !_output) {
+        log_db::error("{}: Received one or more null pointers.", __func__);
+        return ERROR(SYS_INTERNAL_NULL_INPUT_ERR, "Received one or more null pointers.");
+    }
+
+    *_output = nullptr;
+
+    try {
+        const auto [sql, values] = irods::experimental::genquery2::to_sql(*_stmt, *_opts);
+        return db_execute_genquery2_sql(_ctx, sql.c_str(), &values, _output);
+    }
+    catch (const irods::exception& e) {
+        log_db::error("{}: {}", __func__, e.client_display_what());
+        return ERROR(e.code(), e.what());
+    }
+    catch (const std::exception& e) {
+        log_db::error("{}: {}", __func__, e.what());
+        return ERROR(SYS_LIBRARY_ERROR, e.what());
+    }
+    catch (...) {
+        log_db::error("{}: An unknown error was caught.", __func__);
+        return ERROR(SYS_UNKNOWN_ERROR, "An unknown error was caught.");
+    }
+} // db_execute_genquery2_op
+
 auto db_delay_rule_lock(irods::plugin_context& _ctx, const char* _rule_id, const char* _lock_host, int _lock_host_pid)
     -> irods::error
 {
@@ -14481,6 +14516,14 @@ irods::database* plugin_factory(
         DATABASE_OP_EXECUTE_GENQUERY2_SQL,
         function<error(plugin_context&, const char*, const std::vector<std::string>*, char**)>(
             db_execute_genquery2_sql));
+    pg->add_operation<const irods::experimental::genquery2::statement*,
+                      const irods::experimental::genquery2::options*,
+                      char**>(
+        DATABASE_OP_EXECUTE_GENQUERY2,
+        function<error(plugin_context&,
+                       const irods::experimental::genquery2::statement*,
+                       const irods::experimental::genquery2::options*,
+                       char**)>(db_execute_genquery2_op));
     pg->add_operation<const char*, const char*, int>(
         DATABASE_OP_DELAY_RULE_LOCK,
         function<error(plugin_context&, const char*, const char*, int)>(db_delay_rule_lock));

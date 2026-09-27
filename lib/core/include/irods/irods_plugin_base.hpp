@@ -117,6 +117,10 @@ namespace irods
             return interface_version_;
         }
 
+        bool has_operation(const std::string& _op) const noexcept {
+            return operations_.has_entry(_op);
+        }
+
         /// =-=-=-=-=-=-=-
         /// @brief interface to add operations - key, function object
         error add_operation(const std::string& _op, std::function<error(plugin_context&)> _f) {

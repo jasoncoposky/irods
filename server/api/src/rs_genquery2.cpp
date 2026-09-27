@@ -149,22 +149,22 @@ auto rs_genquery2(RsComm* _comm, Genquery2Input* _input, char** _output) -> int
             return CAT_INSUFFICIENT_PRIVILEGE_LEVEL;
         }
 
-        const auto [sql, values] = gq::to_sql(driver.select, opts);
-
-        log_api::trace("{}: GenQuery2 SQL: [{}]", __func__, sql);
-
         if (1 == _input->sql_only) {
+            const auto [sql, values] = gq::to_sql(driver.select, opts);
+            log_api::trace("{}: GenQuery2 SQL: [{}]", __func__, sql);
+
+            if (sql.empty()) {
+                log_api::error("{}: Could not generate SQL from GenQuery.", __func__);
+                addRErrorMsg(&_comm->rError, SYS_INVALID_INPUT_PARAM, "Could not generate SQL from GenQuery2 string.");
+                return SYS_INVALID_INPUT_PARAM;
+            }
+
             *_output = strdup(sql.c_str());
             return 0;
         }
 
-        if (sql.empty()) {
-            log_api::error("{}: Could not generate SQL from GenQuery.", __func__);
-            addRErrorMsg(&_comm->rError, SYS_INVALID_INPUT_PARAM, "Could not generate SQL from GenQuery2 string.");
-            return SYS_INVALID_INPUT_PARAM;
-        }
-
-        return chl_execute_genquery2_sql(*_comm, sql.c_str(), &values, _output);
+        const gq::statement statement = driver.select;
+        return chl_execute_genquery2(*_comm, statement, opts, _output);
     }
     catch (const irods::exception& e) {
         log_api::error("{}: GenQuery2 error: {}", __func__, e.client_display_what());

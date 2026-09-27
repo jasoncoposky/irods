@@ -22,6 +22,18 @@
 #include <boost/tuple/tuple.hpp>
 
 #include "irods/irods_error.hpp"
+#include <variant>
+
+namespace irods::experimental::genquery2
+{
+    struct options;
+    struct select;
+    struct insert;
+    struct update;
+    struct remove;
+
+    using statement = std::variant<select, insert, update, remove>;
+} // namespace irods::experimental::genquery2
 
 using leaf_bundle_t = irods::resource_manager::leaf_bundle_t;
 
@@ -425,6 +437,27 @@ auto chl_check_auth_credentials(RsComm& _comm,
 ///
 /// \since 4.3.2
 auto chl_execute_genquery2_sql(RsComm& _comm, const char* _sql, const std::vector<std::string>* _values, char** _output)
+    -> int;
+
+/// \brief High-level wrapper for executing GenQuery2 statements natively via AST.
+///
+/// Dispatches the GenQuery2 statement AST directly to the database plugin if supported,
+/// or falls back to SQL compilation and chl_execute_genquery2_sql.
+///
+/// \param[in]  _comm   The communication object.
+/// \param[in]  _stmt   The GenQuery2 statement AST.
+/// \param[in]  _opts   The query execution options.
+/// \param[out] _output The pointer that will hold the results of the query.
+///
+/// \return An integer.
+/// \retval  0 On success.
+/// \retval <0 On failure.
+///
+/// \since 5.1.0
+auto chl_execute_genquery2(RsComm& _comm,
+                           const irods::experimental::genquery2::statement& _stmt,
+                           const irods::experimental::genquery2::options& _opts,
+                           char** _output)
     -> int;
 
 /// \brief High-level wrapper for locking delay rules.
