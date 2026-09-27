@@ -598,27 +598,8 @@ static int removeAVUs() {
         auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
         nanodbc::transaction trans{db_conn};
 
-        namespace gq2 = irods::experimental::genquery2;
-        using gq2::builder::col;
-
-        auto all_meta_ids = irods::experimental::catalog::query_catalog_strings(
-            executor, db_conn,
-            gq2::builder::select({"meta_id"}).from("METADATA").build());
-        auto used_meta_ids = irods::experimental::catalog::query_catalog_strings(
-            executor, db_conn,
-            gq2::builder::select({"meta_id"}).from("METADATA_MAP").build());
-
-        std::unordered_set<std::string> used(used_meta_ids.begin(), used_meta_ids.end());
-        for (const auto& mid : all_meta_ids) {
-            if (used.find(mid) == used.end()) {
-                irods::experimental::catalog::execute_catalog(
-                    executor,
-                    db_conn,
-                    gq2::builder::remove_from("METADATA")
-                        .where(col("meta_id") == mid)
-                        .build());
-            }
-        }
+        const auto& flavor = irods::experimental::catalog::get_db_flavor(icss.databaseType);
+        executor.execute_dml(db_conn, flavor.remove_unused_avus_sql);
 
         trans.commit();
         return 0;
@@ -2649,6 +2630,9 @@ irods::error db_reg_data_obj_op(
                     .from("USER")
                     .where(col("user_name") == _ctx.comm()->clientUser.userName && col("zone_name") == _ctx.comm()->clientUser.rodsZone)
                     .build());
+            if (!opt_user_id) {
+                return ERROR(CAT_INVALID_USER, "user not found");
+            }
             const auto opt_token_id = irods::experimental::catalog::query_catalog_integer(
                 executor,
                 db_conn,
@@ -2656,16 +2640,17 @@ irods::error db_reg_data_obj_op(
                     .from("TOKEN")
                     .where(col("token_namespace") == "access_type" && col("token_name") == ACCESS_OWN)
                     .build());
-            if (opt_user_id && opt_token_id) {
-                auto ins_acc = gq2::builder::insert_into("ACCESS")
-                    .set("object_id", dataIdNum)
-                    .set("user_id", std::to_string(*opt_user_id))
-                    .set("access_type_id", std::to_string(*opt_token_id))
-                    .set("create_ts", myTime)
-                    .set("modify_ts", myTime)
-                    .build();
-                irods::experimental::catalog::execute_catalog(executor, db_conn, ins_acc);
+            if (!opt_token_id) {
+                return ERROR(CAT_INVALID_ARGUMENT, "access token not found");
             }
+            auto ins_acc = gq2::builder::insert_into("ACCESS")
+                .set("object_id", dataIdNum)
+                .set("user_id", std::to_string(*opt_user_id))
+                .set("access_type_id", std::to_string(*opt_token_id))
+                .set("create_ts", myTime)
+                .set("modify_ts", myTime)
+                .build();
+            irods::experimental::catalog::execute_catalog(executor, db_conn, ins_acc);
         }
 
         if (trans) {
@@ -4184,6 +4169,9 @@ irods::error db_reg_coll_by_admin_op(
                 .from("USER")
                 .where(col("user_name") == userName && col("zone_name") == zoneName)
                 .build());
+        if (!opt_user_id) {
+            return ERROR(CAT_INVALID_USER, "user not found");
+        }
         const auto opt_token_id = irods::experimental::catalog::query_catalog_integer(
             executor,
             db_conn,
@@ -4191,16 +4179,17 @@ irods::error db_reg_coll_by_admin_op(
                 .from("TOKEN")
                 .where(col("token_namespace") == "access_type" && col("token_name") == ACCESS_OWN)
                 .build());
-        if (opt_user_id && opt_token_id) {
-            auto ins_acc = gq2::builder::insert_into("ACCESS")
-                .set("object_id", new_coll_id_str)
-                .set("user_id", std::to_string(*opt_user_id))
-                .set("access_type_id", std::to_string(*opt_token_id))
-                .set("create_ts", myTime)
-                .set("modify_ts", myTime)
-                .build();
-            irods::experimental::catalog::execute_catalog(executor, db_conn, ins_acc);
+        if (!opt_token_id) {
+            return ERROR(CAT_INVALID_ARGUMENT, "access token not found");
         }
+        auto ins_acc = gq2::builder::insert_into("ACCESS")
+            .set("object_id", new_coll_id_str)
+            .set("user_id", std::to_string(*opt_user_id))
+            .set("access_type_id", std::to_string(*opt_token_id))
+            .set("create_ts", myTime)
+            .set("modify_ts", myTime)
+            .build();
+        irods::experimental::catalog::execute_catalog(executor, db_conn, ins_acc);
 
         trans.commit();
         return SUCCESS();
@@ -4374,6 +4363,9 @@ irods::error db_reg_coll_op(
                     .from("USER")
                     .where(col("user_name") == _ctx.comm()->clientUser.userName && col("zone_name") == _ctx.comm()->clientUser.rodsZone)
                     .build());
+            if (!opt_user_id) {
+                return ERROR(CAT_INVALID_USER, "user not found");
+            }
             const auto opt_token_id = irods::experimental::catalog::query_catalog_integer(
                 executor,
                 db_conn,
@@ -4381,16 +4373,17 @@ irods::error db_reg_coll_op(
                     .from("TOKEN")
                     .where(col("token_namespace") == "access_type" && col("token_name") == ACCESS_OWN)
                     .build());
-            if (opt_user_id && opt_token_id) {
-                auto ins_acc = gq2::builder::insert_into("ACCESS")
-                    .set("object_id", new_coll_id_str)
-                    .set("user_id", std::to_string(*opt_user_id))
-                    .set("access_type_id", std::to_string(*opt_token_id))
-                    .set("create_ts", myTime)
-                    .set("modify_ts", myTime)
-                    .build();
-                irods::experimental::catalog::execute_catalog(executor, db_conn, ins_acc);
+            if (!opt_token_id) {
+                return ERROR(CAT_INVALID_ARGUMENT, "access token not found");
             }
+            auto ins_acc = gq2::builder::insert_into("ACCESS")
+                .set("object_id", new_coll_id_str)
+                .set("user_id", std::to_string(*opt_user_id))
+                .set("access_type_id", std::to_string(*opt_token_id))
+                .set("create_ts", myTime)
+                .set("modify_ts", myTime)
+                .build();
+            irods::experimental::catalog::execute_catalog(executor, db_conn, ins_acc);
         }
 
         trans.commit();
@@ -5417,13 +5410,6 @@ irods::error db_check_auth_op(
                 if (modTime + expireTime < nowTime) {
                     // Expired PAM password
                     nanodbc::transaction trans{db_conn};
-                    const auto opt_user_id = irods::experimental::catalog::query_catalog_integer(
-                        executor,
-                        db_conn,
-                        gq2::builder::select({"user_id"})
-                            .from("USER")
-                            .where(col("user_name") == userName2 && col("zone_name") == myUserZone)
-                            .build());
                     if (opt_user_id) {
                         auto del_pw = gq2::builder::remove_from("USER_PASSWORD")
                             .where(col("rcat_password") == lastPw && col("create_ts") == goodPwTs && col("user_id") == std::to_string(*opt_user_id))
@@ -7940,16 +7926,30 @@ irods::error db_del_avu_metadata_op(
             }
         }
 
-        auto meta_ids = irods::experimental::catalog::query_catalog_strings(
+        const auto obj_meta_ids = irods::experimental::catalog::query_catalog_strings(
+            executor, db_conn,
+            gq2::builder::select({"meta_id"})
+                .from("METADATA_MAP")
+                .where(col("object_id") == objIdStr)
+                .build());
+
+        if (obj_meta_ids.empty()) {
+            if (trans) {
+                trans->commit();
+            }
+            return SUCCESS();
+        }
+
+        auto matching_meta_ids = irods::experimental::catalog::query_catalog_strings(
             executor, db_conn,
             gq2::builder::select({"meta_id"})
                 .from("METADATA")
-                .where(std::move(cond))
+                .where(std::move(cond) && col("meta_id").in(obj_meta_ids))
                 .build());
 
-        for (const auto& mid : meta_ids) {
+        if (!matching_meta_ids.empty()) {
             auto del = gq2::builder::remove_from("METADATA_MAP")
-                .where(col("object_id") == objIdStr && col("meta_id") == mid)
+                .where(col("object_id") == objIdStr && col("meta_id").in(std::move(matching_meta_ids)))
                 .build();
             irods::experimental::catalog::execute_catalog(executor, db_conn, del);
         }
@@ -8166,16 +8166,17 @@ irods::error db_mod_access_control_resc_op(
                     .from("TOKEN")
                     .where(col("token_namespace") == "access_type" && col("token_name") == myAccessLev)
                     .build());
-            if (opt_token_id) {
-                auto ins_stmt = gq2::builder::insert_into("ACCESS")
-                    .set("object_id", resc_id_str)
-                    .set("user_id", user_id_str)
-                    .set("access_type_id", std::to_string(*opt_token_id))
-                    .set("create_ts", myTime)
-                    .set("modify_ts", myTime)
-                    .build();
-                irods::experimental::catalog::execute_catalog(executor, db_conn, ins_stmt);
+            if (!opt_token_id) {
+                return ERROR(CAT_INVALID_ARGUMENT, "access token not found");
             }
+            auto ins_stmt = gq2::builder::insert_into("ACCESS")
+                .set("object_id", resc_id_str)
+                .set("user_id", user_id_str)
+                .set("access_type_id", std::to_string(*opt_token_id))
+                .set("create_ts", myTime)
+                .set("modify_ts", myTime)
+                .build();
+            irods::experimental::catalog::execute_catalog(executor, db_conn, ins_stmt);
         }
 
         trans.commit();
@@ -8481,16 +8482,17 @@ irods::error db_mod_access_control_op(
                             .from("TOKEN")
                             .where(col("token_namespace") == "access_type" && col("token_name") == myAccessLev)
                             .build());
-                    if (opt_token_id) {
-                        auto ins_stmt = gq2::builder::insert_into("ACCESS")
-                            .set("object_id", objIdStr)
-                            .set("user_id", userIdStr)
-                            .set("access_type_id", std::to_string(*opt_token_id))
-                            .set("create_ts", myTime)
-                            .set("modify_ts", myTime)
-                            .build();
-                        irods::experimental::catalog::execute_catalog(executor, db_conn, ins_stmt);
+                    if (!opt_token_id) {
+                        return ERROR(CAT_INVALID_ARGUMENT, "access token not found");
                     }
+                    auto ins_stmt = gq2::builder::insert_into("ACCESS")
+                        .set("object_id", objIdStr)
+                        .set("user_id", userIdStr)
+                        .set("access_type_id", std::to_string(*opt_token_id))
+                        .set("create_ts", myTime)
+                        .set("modify_ts", myTime)
+                        .build();
+                    irods::experimental::catalog::execute_catalog(executor, db_conn, ins_stmt);
                 }
 
                 trans.commit();
@@ -8514,16 +8516,17 @@ irods::error db_mod_access_control_op(
                         .from("TOKEN")
                         .where(col("token_namespace") == "access_type" && col("token_name") == myAccessLev)
                         .build());
-                if (opt_token_id) {
-                    auto ins_stmt = gq2::builder::insert_into("ACCESS")
-                        .set("object_id", collIdStr)
-                        .set("user_id", userIdStr)
-                        .set("access_type_id", std::to_string(*opt_token_id))
-                        .set("create_ts", myTime)
-                        .set("modify_ts", myTime)
-                        .build();
-                    irods::experimental::catalog::execute_catalog(executor, db_conn, ins_stmt);
+                if (!opt_token_id) {
+                    return ERROR(CAT_INVALID_ARGUMENT, "access token not found");
                 }
+                auto ins_stmt = gq2::builder::insert_into("ACCESS")
+                    .set("object_id", collIdStr)
+                    .set("user_id", userIdStr)
+                    .set("access_type_id", std::to_string(*opt_token_id))
+                    .set("create_ts", myTime)
+                    .set("modify_ts", myTime)
+                    .build();
+                irods::experimental::catalog::execute_catalog(executor, db_conn, ins_stmt);
             }
 
             trans.commit();
@@ -8576,52 +8579,70 @@ irods::error db_mod_access_control_op(
                     .from("TOKEN")
                     .where(col("token_namespace") == "access_type" && col("token_name") == myAccessLev)
                     .build());
-            if ( opt_token_id ) {
-                access_token_str = std::to_string(*opt_token_id);
+            if ( !opt_token_id ) {
+                return ERROR(CAT_INVALID_ARGUMENT, "access token not found");
             }
+            access_token_str = std::to_string(*opt_token_id);
         }
 
-        for ( const auto& cid : matching_colls ) {
-            // Collection access
+        constexpr std::size_t batch_size = 500;
+
+        for ( std::size_t c_idx = 0; c_idx < matching_colls.size(); c_idx += batch_size ) {
+            const auto chunk_end = std::min( c_idx + batch_size, matching_colls.size() );
+            std::vector<std::string> coll_chunk(
+                matching_colls.begin() + c_idx,
+                matching_colls.begin() + chunk_end );
+
+            // Batch delete collection access
             auto del_coll_access = gq2::builder::remove_from("ACCESS")
-                .where(col("user_id") == userIdStr && col("object_id") == cid)
+                .where(col("user_id") == userIdStr && col("object_id").in(coll_chunk))
                 .build();
             irods::experimental::catalog::execute_catalog(executor, db_conn, del_coll_access);
 
             if ( !rmFlag && !access_token_str.empty() ) {
-                auto ins_coll_access = gq2::builder::insert_into("ACCESS")
-                    .set("object_id", cid)
-                    .set("user_id", userIdStr)
-                    .set("access_type_id", access_token_str)
-                    .set("create_ts", myTime)
-                    .set("modify_ts", myTime)
-                    .build();
-                irods::experimental::catalog::execute_catalog(executor, db_conn, ins_coll_access);
-            }
-
-            // Data objects in this collection
-            auto coll_data_ids = irods::experimental::catalog::query_catalog_strings(
-                executor, db_conn,
-                gq2::builder::select({"data_id"})
-                    .from("DATA_OBJECT")
-                    .where(col("coll_id") == cid)
-                    .build());
-
-            for ( const auto& did : coll_data_ids ) {
-                auto del_data_access = gq2::builder::remove_from("ACCESS")
-                    .where(col("user_id") == userIdStr && col("object_id") == did)
-                    .build();
-                irods::experimental::catalog::execute_catalog(executor, db_conn, del_data_access);
-
-                if ( !rmFlag && !access_token_str.empty() ) {
-                    auto ins_data_access = gq2::builder::insert_into("ACCESS")
-                        .set("object_id", did)
+                for ( const auto& cid : coll_chunk ) {
+                    auto ins_coll_access = gq2::builder::insert_into("ACCESS")
+                        .set("object_id", cid)
                         .set("user_id", userIdStr)
                         .set("access_type_id", access_token_str)
                         .set("create_ts", myTime)
                         .set("modify_ts", myTime)
                         .build();
-                    irods::experimental::catalog::execute_catalog(executor, db_conn, ins_data_access);
+                    irods::experimental::catalog::execute_catalog(executor, db_conn, ins_coll_access);
+                }
+            }
+
+            // Batch query data objects belonging to this batch of collections
+            auto coll_data_ids = irods::experimental::catalog::query_catalog_strings(
+                executor, db_conn,
+                gq2::builder::select({"data_id"})
+                    .from("DATA_OBJECT")
+                    .where(col("coll_id").in(coll_chunk))
+                    .build());
+
+            // Process data objects in batches
+            for ( std::size_t d_idx = 0; d_idx < coll_data_ids.size(); d_idx += batch_size ) {
+                const auto d_chunk_end = std::min( d_idx + batch_size, coll_data_ids.size() );
+                std::vector<std::string> data_chunk(
+                    coll_data_ids.begin() + d_idx,
+                    coll_data_ids.begin() + d_chunk_end );
+
+                auto del_data_access = gq2::builder::remove_from("ACCESS")
+                    .where(col("user_id") == userIdStr && col("object_id").in(data_chunk))
+                    .build();
+                irods::experimental::catalog::execute_catalog(executor, db_conn, del_data_access);
+
+                if ( !rmFlag && !access_token_str.empty() ) {
+                    for ( const auto& did : data_chunk ) {
+                        auto ins_data_access = gq2::builder::insert_into("ACCESS")
+                            .set("object_id", did)
+                            .set("user_id", userIdStr)
+                            .set("access_type_id", access_token_str)
+                            .set("create_ts", myTime)
+                            .set("modify_ts", myTime)
+                            .build();
+                        irods::experimental::catalog::execute_catalog(executor, db_conn, ins_data_access);
+                    }
                 }
             }
         }
