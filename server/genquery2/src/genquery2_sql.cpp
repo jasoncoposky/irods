@@ -1407,10 +1407,12 @@ namespace irods::experimental::genquery2
                     sql += fmt::format(" where {}", to_sql(state, _select.conditions));
                 }
 
-                if (!_select.group_by.columns.empty()) {
+                if (!_select.group_by.expressions.empty()) {
                     std::vector<std::string> group_cols;
-                    for (const auto& c : _select.group_by.columns) {
-                        group_cols.push_back(std::string{resolve_column_name(c)});
+                    for (const auto& expr : _select.group_by.expressions) {
+                        if (const auto* c = std::get_if<column>(&expr)) {
+                            group_cols.push_back(std::string{resolve_column_name(c->name)});
+                        }
                     }
                     sql += fmt::format(" group by {}", fmt::join(group_cols, ", "));
                 }

@@ -6211,11 +6211,11 @@ irods::error db_mod_user_op(
         return ERROR( CAT_INVALID_ARGUMENT, "null parameter" );
     }
 
-    if ( *_user_name == ' ' || *_option == ' ' ) {
+    if ( *_user_name == '\0' || *_option == '\0' ) {
         return ERROR( CAT_INVALID_ARGUMENT, "parameter is empty" );
     }
 
-    if( *_new_value == ' ' && (
+    if( *_new_value == '\0' && (
         strcmp( _option, "type"   ) == 0 ||
         strcmp( _option, "zone"   ) == 0 ||
         strcmp( _option, "addAuth") == 0 ||
@@ -6260,7 +6260,7 @@ irods::error db_mod_user_op(
         if ( status ) {
             return ERROR( status, "Invalid username format" );
         }
-        if ( zoneName[0] == ' ' ) {
+        if ( zoneName[0] == '\0' ) {
             rstrcpy( zoneName, zone.c_str(), NAME_LEN );
         }
 
@@ -6391,7 +6391,7 @@ irods::error db_mod_user_op(
         else if ( strcmp( _option, "password" ) == 0 || strcmp( _option, "password-unobfuscated" ) == 0 ) {
             std::array<char, MAX_PASSWORD_LEN + 20> decoded_password{};
             const auto clear_decoded_password_buffer =
-                irods::at_scope_exit{[&decoded_password] { decoded_password.fill(' '); }};
+                irods::at_scope_exit{[&decoded_password] { decoded_password.fill('\0'); }};
             int i = 0;
             if ( 0 == strcmp( _option, "password-unobfuscated" ) ) {
                 std::strncpy( decoded_password.data(), _new_value, decoded_password.size() - 1 );
@@ -6445,7 +6445,7 @@ irods::error db_mod_user_op(
                         auto msg = fmt::format(
                             "{}: Failed to get configuration for hashing parameters. Cannot set password.", __func__ );
                         log_db::error( msg );
-                        return ERROR( CAT_CONFIG_NOT_FOUND, std::move( msg ) );
+                        return ERROR( CAT_NO_ROWS_FOUND, std::move( msg ) );
                     }
 
                     const auto params = nlohmann::json::parse( *params_str_opt );
@@ -6635,7 +6635,6 @@ irods::error db_mod_group_op(
                 .build());
         if (!userIdOpt) {
             return ERROR( CAT_INVALID_USER, "user not found" );
-        }
         }
         const std::string userId = *userIdOpt;
 
@@ -6965,6 +6964,14 @@ irods::error db_mod_resc_op(
         }
 
         return SUCCESS();
+    }
+    catch (const nanodbc::database_error& e) {
+        log_db::error("{}: database error: {}", __FUNCTION__, e.what());
+        return ERROR( CAT_SQL_ERR, e.what() );
+    }
+    catch (const std::exception& e) {
+        log_db::error("{}: exception: {}", __FUNCTION__, e.what());
+        return ERROR( SYS_INTERNAL_ERR, e.what() );
     }
 } // db_mod_resc_op
 
@@ -11447,69 +11454,22 @@ irods::error db_get_repl_list_for_leaf_bundles_offset_op(irods::plugin_context& 
 
     _results->reserve(_count);
 
-    int statement_num = 0;
-    const int status_cmlGetFirstRowFromSql = cmlGetFirstRowFromSql(query.c_str(), &statement_num, _offset, &icss);
-    if (status_cmlGetFirstRowFromSql == CAT_NO_ROWS_FOUND) {
-        cmlFreeStatement(statement_num, &icss);
+    try {
+        auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
+        auto res = executor.execute_query(db_conn, query);
+        while (res.next()) {
+            _results->push_back(res.get<long long>(0));
+        }
         return SUCCESS();
     }
-    if (status_cmlGetFirstRowFromSql != 0) {
-        cmlFreeStatement(statement_num, &icss);
-        return ERROR(status_cmlGetFirstRowFromSql, fmt::format("failed to get first row from query [{}]", query));
+    catch (const nanodbc::database_error& e) {
+        log_db::error("{}: database error: {}", __func__, e.what());
+        return ERROR(CAT_SQL_ERR, e.what());
     }
-
-    auto checked_strtoll{[](std::string_view _input_string) -> std::variant<long long, irods::error> {
-        char* endpointer{};
-
-        // Handle emtpy string case
-        if (_input_string.empty()) {
-            return ERROR(SYS_INVALID_INPUT_PARAM, "no input provided");
-        }
-
-        // Clear errno so we can do error checking afterwards
-        errno = 0;
-        constexpr auto base{10};
-        auto res{std::strtoll(_input_string.data(), &endpointer, base)};
-
-        // We want the entire string to be parsed, consider it an error if it's not
-        if ('\0' != *endpointer) {
-            return ERROR(SYS_INVALID_INPUT_PARAM, "string not fully parsed");
-        }
-
-        // Handle overflow/underflow case
-        if ((LLONG_MAX == res || LLONG_MIN == res) && ERANGE == errno) {
-            return ERROR(SYS_INVALID_INPUT_PARAM, "number cannot be represented in long long");
-        }
-
-        return res;
-    }};
-
-    // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-constant-array-index)
-    auto res{checked_strtoll(icss.stmtPtr[statement_num]->resultValue[0])};
-    if (std::holds_alternative<irods::error>(res)) {
-        return std::get<irods::error>(res);
+    catch (const std::exception& e) {
+        log_db::error("{}: exception: {}", __func__, e.what());
+        return ERROR(SYS_INTERNAL_ERR, e.what());
     }
-    _results->push_back(std::get<long long>(res));
-
-    for (rodsLong_t i = 1; i < _count; ++i) {
-        const int status_cmlGetNextRowFromStatement = cmlGetNextRowFromStatement(statement_num, &icss);
-        if (status_cmlGetNextRowFromStatement == CAT_NO_ROWS_FOUND) {
-            break;
-        }
-        if (status_cmlGetNextRowFromStatement != 0) {
-            cmlFreeStatement(statement_num, &icss);
-            return ERROR(
-                status_cmlGetNextRowFromStatement, fmt::format("failed to get row [{}] from query [{}]", i, query));
-        }
-        // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-constant-array-index)
-        res = checked_strtoll(icss.stmtPtr[statement_num]->resultValue[0]);
-        if (std::holds_alternative<irods::error>(res)) {
-            return std::get<irods::error>(res);
-        }
-        _results->push_back(std::get<long long>(res));
-    }
-    cmlFreeStatement(statement_num, &icss);
-    return SUCCESS();
 } // db_get_repl_list_for_leaf_bundles_offset_op
 
 irods::error db_get_hierarchy_for_resc_op(
@@ -13503,36 +13463,39 @@ auto db_make_session_token_op(irods::plugin_context& _ctx, const char* _json_inp
         // SHA256 hash the token with a salt because it is supposed to be a secret.
         const auto hash = hash_session_token(token, salt);
 
-        // Set up the SQL...
-        constexpr const char* make_session_token_sql =
-            "insert into R_USER_SESSION_KEY (user_id, session_key, auth_scheme, session_expiry_ts, create_ts, "
-            "modify_ts, salt) values ((select user_id from R_USER_MAIN where user_name = ? and zone_name = ?), ?, ?, "
-            "?, ?, ?, ?)";
-        // NOLINTBEGIN(cppcoreguidelines-pro-bounds-constant-array-index)
-        cllBindVars[cllBindVarCount++] = user_name.c_str();
-        cllBindVars[cllBindVarCount++] = zone_name.c_str();
-        cllBindVars[cllBindVarCount++] = hash.c_str();
-        cllBindVars[cllBindVarCount++] = auth_scheme.c_str();
-        cllBindVars[cllBindVarCount++] = expiration_time_str.c_str();
-        cllBindVars[cllBindVarCount++] = current_time_str.c_str();
-        cllBindVars[cllBindVarCount++] = current_time_str.c_str();
-        cllBindVars[cllBindVarCount++] = salt.c_str();
-        // NOLINTEND(cppcoreguidelines-pro-bounds-constant-array-index)
+        auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
+        nanodbc::transaction trans{db_conn};
 
-        // Execute the SQL...
-        if (const auto insert_err = cmlExecuteNoAnswerSql(make_session_token_sql, &icss); 0 != insert_err) {
-            _rollback("make_session_token");
-            return ERROR(insert_err, "Failed to create session token in database.");
+        namespace gq2 = irods::experimental::genquery2;
+        using gq2::builder::col;
+
+        const auto user_id_opt = irods::experimental::catalog::query_catalog_string(
+            executor,
+            db_conn,
+            gq2::builder::select({"user_id"})
+                .from("USER")
+                .where(col("user_name") == user_name && col("zone_name") == zone_name)
+                .build());
+
+        if (!user_id_opt) {
+            return ERROR(CAT_INVALID_USER, fmt::format("User [{}#{}] not found", user_name, zone_name));
         }
 
-        // Aaaaand commit.
-        if (const auto commit_err = cmlExecuteNoAnswerSql("commit", &icss); 0 != commit_err) {
-            _rollback("make_session_token");
-            return ERROR(commit_err, "Commit to create session token failed.");
-        }
+        auto ins_stmt = gq2::builder::insert_into("R_USER_SESSION_KEY")
+            .set("user_id", *user_id_opt)
+            .set("session_key", hash)
+            .set("auth_scheme", auth_scheme)
+            .set("session_expiry_ts", expiration_time_str)
+            .set("create_ts", current_time_str)
+            .set("modify_ts", current_time_str)
+            .set("salt", salt)
+            .build();
+        irods::experimental::catalog::execute_catalog(executor, db_conn, ins_stmt);
 
-        // Return the generated token value in the out variable.
+        trans.commit();
+
         *_token = strdup(token.c_str());
+        return SUCCESS();
     }
     catch (const nlohmann::json::exception& e) {
         auto msg = fmt::format("{} - JSON error occurred: [{}]", __func__, e.what());
@@ -13549,8 +13512,6 @@ auto db_make_session_token_op(irods::plugin_context& _ctx, const char* _json_inp
         log_db::error(msg);
         return ERROR(SYS_INTERNAL_ERR, std::move(msg));
     }
-
-    return SUCCESS();
 } // db_make_session_token_op
 
 auto db_check_session_token_op(irods::plugin_context& _ctx, const char* _json_input, int* _valid) -> irods::error
@@ -13653,69 +13614,54 @@ auto db_remove_session_tokens_op(irods::plugin_context& _ctx, const char* _json_
     try {
         const auto json_input = nlohmann::json::parse(_json_input);
 
-        int bind_var_index{};
+        auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
+        nanodbc::transaction trans{db_conn};
 
-        // Construct the appropriate SQL statement based on whether the caller requested deleting all session tokens
-        // or just expired ones, and whether or not a user was specified.
-        std::stringstream delete_sql;
-        delete_sql << "delete from R_USER_SESSION_KEY";
+        namespace gq2 = irods::experimental::genquery2;
+        using gq2::builder::col;
 
-        // Construct the expiration string even if it's not going to be used because the string must stay alive until
-        // the SQL is executed since it is being added to the bind variables.
-        const auto now = std::chrono::system_clock::now();
-        const auto now_duration = duration_cast<std::chrono::seconds>(now.time_since_epoch());
-        const auto now_str = fmt::format("{:011}", now_duration.count());
-        const auto expired_only = json_input.at("expired_only").get<bool>();
-        if (expired_only) {
-            delete_sql << " where ";
-#if MY_ICAT
-            delete_sql << "cast(session_expiry_ts as signed integer)<?";
-#else
-            delete_sql << "cast(session_expiry_ts as integer)<?";
-#endif
-            // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-constant-array-index)
-            cllBindVars[bind_var_index++] = now_str.c_str();
+        std::optional<gq2::builder::condition_builder> cond;
+
+        if (json_input.contains("expired_only") && json_input.at("expired_only").get<bool>()) {
+            const auto now = std::chrono::system_clock::now();
+            const auto now_seconds = std::chrono::duration_cast<std::chrono::seconds>(now.time_since_epoch());
+            const auto now_str = fmt::format("{:011}", now_seconds.count());
+            cond = (col("session_expiry_ts") <= now_str);
         }
 
-        // User name and zone name must both be specified in order to clear session tokens for a specific user.
         const auto user_name_iter = json_input.find("user_name");
         const auto zone_name_iter = json_input.find("zone_name");
         if (json_input.end() != user_name_iter && json_input.end() != zone_name_iter) {
-            if (expired_only) {
-                delete_sql << " and ";
+            const auto& user_name = user_name_iter->get_ref<const std::string&>();
+            const auto& zone_name = zone_name_iter->get_ref<const std::string&>();
+            const auto uid_opt = irods::experimental::catalog::query_catalog_string(
+                executor,
+                db_conn,
+                gq2::builder::select({"user_id"})
+                    .from("USER")
+                    .where(col("user_name") == user_name && col("zone_name") == zone_name)
+                    .build());
+            if (uid_opt) {
+                if (cond) {
+                    cond = (*cond && col("user_id") == *uid_opt);
+                }
+                else {
+                    cond = (col("user_id") == *uid_opt);
+                }
             }
             else {
-                delete_sql << " where ";
-            }
-            delete_sql << "user_id=(select user_id from R_USER_MAIN where user_name=? and zone_name=?)";
-            // NOLINTBEGIN(cppcoreguidelines-pro-bounds-constant-array-index)
-            cllBindVars[bind_var_index++] = user_name_iter->get_ref<const std::string&>().c_str();
-            cllBindVars[bind_var_index++] = zone_name_iter->get_ref<const std::string&>().c_str();
-            // NOLINTEND(cppcoreguidelines-pro-bounds-constant-array-index)
-        }
-
-        cllBindVarCount = bind_var_index;
-
-        // Execute the appropriate delete statement.
-        if (int delete_err = cmlExecuteNoAnswerSql(delete_sql.str().c_str(), &icss); 0 != delete_err) {
-            if (CAT_SUCCESS_BUT_WITH_NO_INFO == delete_err) {
-                log_db::debug("{}: No session tokens were valid for removal.", __func__);
-            }
-            else {
-                _rollback("remove_session_tokens");
-                auto msg = fmt::format("Failed to remove session tokens. ec=[{}]", delete_err);
-                log_db::error(msg);
-                return ERROR(delete_err, std::move(msg));
+                return SUCCESS();
             }
         }
 
-        // Commit the changes.
-        if (const auto commit_err = cmlExecuteNoAnswerSql("commit", &icss); 0 != commit_err) {
-            _rollback("remove_session_tokens");
-            auto msg = fmt::format("Failed to remove session tokens. ec=[{}]", commit_err);
-            log_db::error(msg);
-            return ERROR(commit_err, std::move(msg));
+        auto del_builder = gq2::builder::remove_from("R_USER_SESSION_KEY");
+        if (cond) {
+            del_builder.where(std::move(*cond));
         }
+        irods::experimental::catalog::execute_catalog(executor, db_conn, del_builder.build());
+
+        trans.commit();
+        return SUCCESS();
     }
     catch (const nlohmann::json::exception& e) {
         auto msg = fmt::format("{} - JSON error occurred: [{}]", __func__, e.what());
@@ -13727,8 +13673,6 @@ auto db_remove_session_tokens_op(irods::plugin_context& _ctx, const char* _json_
         log_db::error(msg);
         return ERROR(SYS_INTERNAL_ERR, std::move(msg));
     }
-
-    return SUCCESS();
 } // db_remove_session_tokens_op
 
 auto db_remove_password_op(irods::plugin_context& _ctx, const char* _json_input) -> irods::error
@@ -13742,60 +13686,34 @@ auto db_remove_password_op(irods::plugin_context& _ctx, const char* _json_input)
 
     try {
         const auto json_input = nlohmann::json::parse(_json_input);
-
-        // User name and zone name must both be specified in order to delete the password for a specific user.
         const auto& user_name = json_input.at("user_name").get_ref<const std::string&>();
         const auto& zone_name = json_input.at("zone_name").get_ref<const std::string&>();
 
-        // Get the user ID first, not as a subselect. The reason for this is to see whether the provided user
-        // information refers to an actual user. It is possible that the user exists and does not have a password set.
-        std::array<char, NAME_LEN + 1> user_id{};
-        {
-            std::vector<std::string> bindVars;
-            bindVars.emplace_back(user_name);
-            bindVars.emplace_back(zone_name);
-            auto select_err = cmlGetStringValueFromSql("select user_id from R_USER_MAIN where user_name=? and "
-                                                       "R_USER_MAIN.zone_name=? and user_type_name!='rodsgroup'",
-                                                       user_id.data(),
-                                                       user_id.size(),
-                                                       bindVars,
-                                                       &icss);
-            if (0 != select_err) {
-                if (CAT_NO_ROWS_FOUND == select_err) {
-                    select_err = CAT_INVALID_USER; // Admin function, okay to return CAT_INVALID_USER.
-                }
-                return ERROR(
-                    select_err, fmt::format("Failed to get user_id with user input: [{}#{}]", user_name, zone_name));
-            }
+        auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
+        nanodbc::transaction trans{db_conn};
+
+        namespace gq2 = irods::experimental::genquery2;
+        using gq2::builder::col;
+
+        const auto uid_opt = irods::experimental::catalog::query_catalog_string(
+            executor,
+            db_conn,
+            gq2::builder::select({"user_id"})
+                .from("USER")
+                .where(col("user_name") == user_name && col("zone_name") == zone_name && col("user_type_name") != "rodsgroup")
+                .build());
+
+        if (!uid_opt) {
+            return ERROR(CAT_INVALID_USER, fmt::format("Failed to get user_id with user input: [{}#{}]", user_name, zone_name));
         }
 
-        // Get together the parameters for the query to delete the password.
-        constexpr const char* delete_sql = "delete from R_USER_CREDENTIALS where user_id=?";
-        int bind_var_index{};
-        // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-constant-array-index)
-        cllBindVars[bind_var_index++] = user_id.data();
-        cllBindVarCount = bind_var_index;
+        auto del_stmt = gq2::builder::remove_from("R_USER_CREDENTIALS")
+            .where(col("user_id") == *uid_opt)
+            .build();
+        irods::experimental::catalog::execute_catalog(executor, db_conn, del_stmt);
 
-        // Execute the appropriate delete statement.
-        if (int delete_err = cmlExecuteNoAnswerSql(delete_sql, &icss); 0 != delete_err) {
-            if (CAT_SUCCESS_BUT_WITH_NO_INFO == delete_err) {
-                log_db::info("No user passwords valid for removal.");
-            }
-            else {
-                _rollback("remove_password");
-                auto msg = fmt::format("Failed to remove user password. ec=[{}]", delete_err);
-                log_db::error(msg);
-                return ERROR(delete_err, std::move(msg));
-            }
-        }
-
-        // Commit the changes.
-        if (const auto commit_err = cmlExecuteNoAnswerSql("commit", &icss); 0 != commit_err) {
-            _rollback("delete_session_tokens");
-            auto msg = fmt::format("Failed to remove user password. ec=[{}]", commit_err);
-            log_db::error(msg);
-            return ERROR(commit_err, std::move(msg));
-        }
+        trans.commit();
+        return SUCCESS();
     }
     catch (const nlohmann::json::exception& e) {
         auto msg = fmt::format("{} - JSON error occurred: [{}]", __func__, e.what());
@@ -13807,133 +13725,110 @@ auto db_remove_password_op(irods::plugin_context& _ctx, const char* _json_input)
         log_db::error(msg);
         return ERROR(SYS_INTERNAL_ERR, std::move(msg));
     }
-
-    return SUCCESS();
 } // db_remove_password_op
 
 irods::error db_calc_logical_usage_and_quota_op(irods::plugin_context& _ctx, [[maybe_unused]] const char* _coll_name)
 {
-    // =-=-=-=-=-=-=-
-    // check the context
     irods::error ret = _ctx.valid();
     if (!ret.ok()) {
         return PASS(ret);
     }
 
-    int status;
-    char myTime[50];
-
     if (_ctx.comm()->clientUser.authInfo.authFlag < LOCAL_PRIV_USER_AUTH) {
         return ERROR(CAT_INSUFFICIENT_PRIVILEGE_LEVEL, "insufficient privilege");
     }
 
+    char myTime[50]{};
     getNowStr(myTime);
 
-    // clang-format off
+    try {
+        auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
+        nanodbc::transaction trans{db_conn};
+        nanodbc::statement stmt{db_conn};
+
 #ifdef MY_ICAT
-    cllBindVars[cllBindVarCount++] = PATH_SEPARATOR;
-    cllBindVars[cllBindVarCount++] = myTime;
-    status = cmlExecuteNoAnswerSql(
-        // Update logical quota table
-        "UPDATE R_LOGICAL_QUOTA_MAIN "
-        // using values from:
-        "LEFT JOIN "
-          // Subquery: SELECT collection id, byte total, object count total from
-          "(SELECT bcoll AS basecoll, "
-                  "SUM(d_size) AS byte_total, "
-                  "COUNT(d_id) AS obj_total "
-           "FROM "
-             // Subquery: Rank each data object row by its replica status.
-             // Additionally, zero out the sizes for any replica status not in
-             // the set {0, 1, 4}.
-             "(SELECT RCM1.coll_id AS bcoll, "
-                     "CASE "
-                         "WHEN R_DATA_MAIN.data_is_dirty = 0 THEN R_DATA_MAIN.data_size "
-                         "WHEN R_DATA_MAIN.data_is_dirty = 1 THEN R_DATA_MAIN.data_size "
-                         "WHEN R_DATA_MAIN.data_is_dirty = 4 THEN R_DATA_MAIN.data_size "
-                         "ELSE 0 "
-                     "END AS d_size, "
-                     "data_id AS d_id, "
-                     // Prioritize good replicas, then write-locked,
-                     // then stale. Remaining replicas are lowest priority.
-                     // Order by data size as secondary key (to select largest
-                     // stale replica).
-                     "ROW_NUMBER() OVER(PARTITION BY R_DATA_MAIN.data_id, RCM1.coll_id "
-                                 "ORDER BY (CASE "
-                                               "WHEN R_DATA_MAIN.data_is_dirty = 1 THEN 4 "
-                                               "WHEN R_DATA_MAIN.data_is_dirty = 4 THEN 3 "
-                                               "WHEN R_DATA_MAIN.data_is_dirty = 0 THEN 2 "
-                                               "ELSE 1 "
-                                           "END) DESC, R_DATA_MAIN.data_size DESC) AS replica_rank "
-              "FROM R_DATA_MAIN, "
-                   "R_COLL_MAIN RCM1, "
-                   "R_COLL_MAIN RCM2 "
-              "WHERE R_DATA_MAIN.coll_id = RCM2.coll_id "
-                // Escape all LIKE wildcards from the coll name by replacing them out.
-                // MySQL only: backslashes are escape characters by default, so they need to be doubled.
-                "AND (RCM2.coll_name LIKE CONCAT(REPLACE(REPLACE(REPLACE(RCM1.coll_name, '\\\\', '\\\\\\\\'), '%', '\\\\%'), '_', '\\\\_'), ?, '%') ESCAPE '\\\\' "
-                     "OR RCM2.coll_name = RCM1.coll_name)) ranked_objs "
-           // Only count one data object that is top-ranked.
-           "WHERE ranked_objs.replica_rank = 1 "
-           "GROUP BY basecoll) AS totals ON totals.basecoll = R_LOGICAL_QUOTA_MAIN.coll_id "
-        // Use SIGN to set the values to 0 if max_bytes/max_objects is also zero.
-        // Square the SIGN in case of a negative max_bytes/max_objects value
-        // (should never happen, but guard against it anyways).
-        "SET over_bytes = SIGN(max_bytes)*SIGN(max_bytes)*(COALESCE(byte_total, 0) - max_bytes), "
-            "over_objects = SIGN(max_objects)*SIGN(max_objects)*(COALESCE(obj_total, 0) - max_objects), "
-            "modify_ts = ?",
+        nanodbc::prepare(stmt,
+            "UPDATE R_LOGICAL_QUOTA_MAIN "
+            "LEFT JOIN "
+              "(SELECT bcoll AS basecoll, "
+                      "SUM(d_size) AS byte_total, "
+                      "COUNT(d_id) AS obj_total "
+               "FROM "
+                 "(SELECT RCM1.coll_id AS bcoll, "
+                         "CASE "
+                             "WHEN R_DATA_MAIN.data_is_dirty = 0 THEN R_DATA_MAIN.data_size "
+                             "WHEN R_DATA_MAIN.data_is_dirty = 1 THEN R_DATA_MAIN.data_size "
+                             "WHEN R_DATA_MAIN.data_is_dirty = 4 THEN R_DATA_MAIN.data_size "
+                             "ELSE 0 "
+                         "END AS d_size, "
+                         "data_id AS d_id, "
+                         "ROW_NUMBER() OVER(PARTITION BY R_DATA_MAIN.data_id, RCM1.coll_id "
+                                     "ORDER BY (CASE "
+                                                   "WHEN R_DATA_MAIN.data_is_dirty = 1 THEN 4 "
+                                                   "WHEN R_DATA_MAIN.data_is_dirty = 4 THEN 3 "
+                                                   "WHEN R_DATA_MAIN.data_is_dirty = 0 THEN 2 "
+                                                   "ELSE 1 "
+                                               "END) DESC, R_DATA_MAIN.data_size DESC) AS replica_rank "
+                  "FROM R_DATA_MAIN, "
+                       "R_COLL_MAIN RCM1, "
+                       "R_COLL_MAIN RCM2 "
+                  "WHERE R_DATA_MAIN.coll_id = RCM2.coll_id "
+                    "AND (RCM2.coll_name LIKE CONCAT(REPLACE(REPLACE(REPLACE(RCM1.coll_name, '\\', '\\\\'), '%', '\\%'), '_', '\\_'), ?, '%') ESCAPE '\\' "
+                         "OR RCM2.coll_name = RCM1.coll_name)) ranked_objs "
+               "WHERE ranked_objs.replica_rank = 1 "
+               "GROUP BY basecoll) AS totals ON totals.basecoll = R_LOGICAL_QUOTA_MAIN.coll_id "
+            "SET over_bytes = SIGN(max_bytes)*SIGN(max_bytes)*(COALESCE(byte_total, 0) - max_bytes), "
+                "over_objects = SIGN(max_objects)*SIGN(max_objects)*(COALESCE(obj_total, 0) - max_objects), "
+                "modify_ts = ?");
+        stmt.bind(0, PATH_SEPARATOR);
+        stmt.bind(1, myTime);
 #else
-    cllBindVars[cllBindVarCount++] = myTime;
-    cllBindVars[cllBindVarCount++] = PATH_SEPARATOR;
-    status = cmlExecuteNoAnswerSql(
-        "UPDATE R_LOGICAL_QUOTA_MAIN "
-        "SET (over_bytes, "
-             "over_objects, "
-             "modify_ts) = "
-          "(SELECT SIGN(max_bytes)*SIGN(max_bytes)*(COALESCE(SUM(d_size), 0) - max_bytes), "
-                  "SIGN(max_objects)*SIGN(max_objects)*(COALESCE(COUNT(d_id), 0) - max_objects), "
-                  "? "
-           "FROM "
-             "(SELECT CASE "
-                         "WHEN R_DATA_MAIN.data_is_dirty = 0 THEN R_DATA_MAIN.data_size "
-                         "WHEN R_DATA_MAIN.data_is_dirty = 1 THEN R_DATA_MAIN.data_size "
-                         "WHEN R_DATA_MAIN.data_is_dirty = 4 THEN R_DATA_MAIN.data_size "
-                         "ELSE 0 "
-                     "END AS d_size, "
-                     "data_id AS d_id, "
-                     "ROW_NUMBER() OVER(PARTITION BY R_DATA_MAIN.data_id "
-                                 "ORDER BY (CASE "
-                                               "WHEN R_DATA_MAIN.data_is_dirty = 1 THEN 4 "
-                                               "WHEN R_DATA_MAIN.data_is_dirty = 4 THEN 3 "
-                                               "WHEN R_DATA_MAIN.data_is_dirty = 0 THEN 2 "
-                                               "ELSE 1 "
-                                           "END) DESC, R_DATA_MAIN.data_size DESC) AS replica_rank "
-              "FROM R_DATA_MAIN, "
-                   "R_COLL_MAIN RCM1, "
-                   "R_COLL_MAIN RCM2 "
-              "WHERE R_DATA_MAIN.coll_id = RCM2.coll_id "
-                "AND RCM1.coll_id = R_LOGICAL_QUOTA_MAIN.coll_id "
-                "AND (RCM2.coll_name LIKE (REPLACE(REPLACE(REPLACE(RCM1.coll_name, '\\', '\\\\'), '%', '\\%'), '_', '\\_') || ? || '%') ESCAPE '\\' "
-                     "OR RCM2.coll_name = RCM1.coll_name)) AS ranked_objs "
-           "WHERE ranked_objs.replica_rank = 1)",
+        nanodbc::prepare(stmt,
+            "UPDATE R_LOGICAL_QUOTA_MAIN "
+            "SET (over_bytes, "
+                 "over_objects, "
+                 "modify_ts) = "
+              "(SELECT SIGN(max_bytes)*SIGN(max_bytes)*(COALESCE(SUM(d_size), 0) - max_bytes), "
+                      "SIGN(max_objects)*SIGN(max_objects)*(COALESCE(COUNT(d_id), 0) - max_objects), "
+                      "? "
+               "FROM "
+                 "(SELECT CASE "
+                             "WHEN R_DATA_MAIN.data_is_dirty = 0 THEN R_DATA_MAIN.data_size "
+                             "WHEN R_DATA_MAIN.data_is_dirty = 1 THEN R_DATA_MAIN.data_size "
+                             "WHEN R_DATA_MAIN.data_is_dirty = 4 THEN R_DATA_MAIN.data_size "
+                             "ELSE 0 "
+                         "END AS d_size, "
+                         "data_id AS d_id, "
+                         "ROW_NUMBER() OVER(PARTITION BY R_DATA_MAIN.data_id "
+                                     "ORDER BY (CASE "
+                                                   "WHEN R_DATA_MAIN.data_is_dirty = 1 THEN 4 "
+                                                   "WHEN R_DATA_MAIN.data_is_dirty = 4 THEN 3 "
+                                                   "WHEN R_DATA_MAIN.data_is_dirty = 0 THEN 2 "
+                                                   "ELSE 1 "
+                                               "END) DESC, R_DATA_MAIN.data_size DESC) AS replica_rank "
+                  "FROM R_DATA_MAIN, "
+                       "R_COLL_MAIN RCM1, "
+                       "R_COLL_MAIN RCM2 "
+                  "WHERE R_DATA_MAIN.coll_id = RCM2.coll_id "
+                    "AND RCM1.coll_id = R_LOGICAL_QUOTA_MAIN.coll_id "
+                    "AND (RCM2.coll_name LIKE (REPLACE(REPLACE(REPLACE(RCM1.coll_name, \'\\\\\', \'\\\\\\\\\\\\\'), \'%\', \'\\\\%\'), \'_\', \'\\\\_\') || ? || \'%\') ESCAPE \'\\\\\\\\\') "
+                         "OR RCM2.coll_name = RCM1.coll_name)) AS ranked_objs "
+               "WHERE ranked_objs.replica_rank = 1)");
+        stmt.bind(0, myTime);
+        stmt.bind(1, PATH_SEPARATOR);
 #endif
-     &icss);
-    // clang-format on
-
-    if (status == CAT_SUCCESS_BUT_WITH_NO_INFO) {
-        status = 0;
+        nanodbc::execute(stmt);
+        trans.commit();
+        return SUCCESS();
     }
-    if (status != 0) {
-        _rollback(__func__);
-        return ERROR(status, "Failed to update logical quota totals");
+    catch (const nanodbc::database_error& e) {
+        log_db::error("{}: database error: {}", __func__, e.what());
+        return ERROR(CAT_SQL_ERR, e.what());
     }
-
-    status = cmlExecuteNoAnswerSql("commit", &icss);
-    if (status < 0) {
-        return ERROR(status, "Failed to commit");
+    catch (const std::exception& e) {
+        log_db::error("{}: exception: {}", __func__, e.what());
+        return ERROR(SYS_INTERNAL_ERR, e.what());
     }
-
-    return SUCCESS();
 } // db_calc_logical_usage_and_quota_op
 
 irods::error db_set_logical_quota_op(irods::plugin_context& _ctx,
@@ -13941,8 +13836,6 @@ irods::error db_set_logical_quota_op(irods::plugin_context& _ctx,
                                      const char* _byte_limit,
                                      const char* _object_limit)
 {
-    // =-=-=-=-=-=-=-
-    // check the context
     irods::error ret = _ctx.valid();
     if (!ret.ok()) {
         return PASS(ret);
@@ -13952,17 +13845,14 @@ irods::error db_set_logical_quota_op(irods::plugin_context& _ctx,
         return ERROR(CAT_INSUFFICIENT_PRIVILEGE_LEVEL, "insufficient privilege");
     }
 
-    int status;
-    std::int64_t byte_limit, object_limit;
-    char myTime[50];
-    std::array<char, 21> coll_id{};
-    int statementNum = UNINITIALIZED_STATEMENT_NUMBER;
-
     if (!_coll_name) {
         auto msg = std::string("Invalid argument for logical quota collection name. Received null input argument.");
         log_db::error("{}: {}", __func__, msg);
         return ERROR(SYS_INVALID_INPUT_PARAM, std::move(msg));
     }
+
+    std::int64_t byte_limit = 0;
+    std::int64_t object_limit = 0;
 
     if (const auto [ptr, ec] = std::from_chars(_byte_limit, _byte_limit + std::strlen(_byte_limit), byte_limit);
         ec != std::errc{})
@@ -13982,182 +13872,138 @@ irods::error db_set_logical_quota_op(irods::plugin_context& _ctx,
         return ERROR(SYS_INVALID_INPUT_PARAM, std::move(msg));
     }
 
-    cllBindVars[cllBindVarCount++] = _coll_name;
-    status = cmlGetFirstRowFromSql(
-        // FOR UPDATE prevents deletion of this collection until this transaction completes.
-        // Code below is dependent on the collection existing.
-        // If a collection is deleted between this SELECT and the INSERT below, there could be an active quota row for a
-        // nonexistent collection. This would result in a database row that can't be interacted with, and would require
-        // a manual intervention to delete.
-        "SELECT coll_id "
-        "FROM R_COLL_MAIN "
-        "WHERE coll_name = ? "
-        "FOR UPDATE",
-        &statementNum,
-        0,
-        &icss);
-    if (status != 0) {
-        _rollback(__func__);
-        if (status == CAT_NO_ROWS_FOUND) {
+    try {
+        auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
+        nanodbc::transaction trans{db_conn};
+
+        namespace gq2 = irods::experimental::genquery2;
+        using gq2::builder::col;
+
+        const auto coll_id_opt = irods::experimental::catalog::query_catalog_string(
+            executor,
+            db_conn,
+            gq2::builder::select({"coll_id"})
+                .from("COLLECTION")
+                .where(col("coll_name") == _coll_name)
+                .build());
+
+        if (!coll_id_opt) {
             return ERROR(CAT_INVALID_ARGUMENT, "Nonexistent collection specified.");
         }
-        auto msg = fmt::format("Failed to select collection with name [{}]", _coll_name);
-        return ERROR(status, std::move(msg));
-    }
+        const std::string coll_id = *coll_id_opt;
 
-    std::memcpy(coll_id.data(), icss.stmtPtr[statementNum]->resultValue[0], 20);
-
-    // Negative input parameters represent a no-op: if the value is
-    // set, keep the existing value. If it is unset (i.e. it is a new quota)
-    // it will be set to 0.
-
-    // The following parameter calculates the sign of the inputs
-    // and will affect the delete/update sequence below.
-    // 0 means both byte_limit and object_limit are non-negative.
-    // 1 means only byte_limit is negative.
-    // 2 means only object_limit is negative.
-    // 3 means both are negative, which is a true no-op.
-    const int query_selection = static_cast<int>(byte_limit < 0) + 2 * static_cast<int>(object_limit < 0);
-
-    getNowStr(myTime);
-
-    // clang-format off
-    std::array<const char*, 3> update_strings = {"UPDATE R_LOGICAL_QUOTA_MAIN "
-                                                  "SET max_bytes = ?, "
-                                                      "max_objects = ?, "
-                                                      "modify_ts = ? "
-                                                  "WHERE coll_id = ?",
-                                                 "UPDATE R_LOGICAL_QUOTA_MAIN "
-                                                  "SET max_objects = ?, "
-                                                      "modify_ts = ? "
-                                                  "WHERE coll_id = ?",
-                                                 "UPDATE R_LOGICAL_QUOTA_MAIN "
-                                                  "SET max_bytes = ?, "
-                                                      "modify_ts = ? "
-                                                  "WHERE coll_id = ?"};
-    // clang-format on
-
-    auto byte_limit_string = std::to_string(byte_limit);
-    auto object_limit_string = std::to_string(object_limit);
-
-    switch (query_selection) {
-        case 0:
-            cllBindVars[cllBindVarCount++] = byte_limit_string.c_str();
-            [[fallthrough]];
-        case 1:
-            cllBindVars[cllBindVarCount++] = object_limit_string.c_str();
-            break;
-        case 2:
-            cllBindVars[cllBindVarCount++] = byte_limit_string.c_str();
-            break;
-        default:
+        const int query_selection = static_cast<int>(byte_limit < 0) + 2 * static_cast<int>(object_limit < 0);
+        if (query_selection == 3) {
             log_db::info("{}: Logical quota set with byte_limit = [{}] and object_limit = [{}] implies no-op.",
-                         __func__,
-                         byte_limit,
-                         object_limit);
-            _rollback(__func__);
+                         __func__, byte_limit, object_limit);
             return SUCCESS();
-    }
-
-    cllBindVars[cllBindVarCount++] = myTime;
-    cllBindVars[cllBindVarCount++] = coll_id.data();
-    status = cmlExecuteNoAnswerSql(update_strings[query_selection], &icss);
-
-    if (status != 0 && status != CAT_SUCCESS_BUT_WITH_NO_INFO) {
-        log_db::error("{}: Logical quota update failure status=[{}]", __func__, status);
-        _rollback(__func__);
-        return ERROR(status, "Logical quota update failure");
-    }
-
-    if (byte_limit <= 0 && object_limit <= 0) {
-        // If both byte_limit and object_limit are nonpositive, a delete is all that is possible
-        cllBindVars[cllBindVarCount++] = coll_id.data();
-        status = cmlExecuteNoAnswerSql("DELETE "
-                                       "FROM R_LOGICAL_QUOTA_MAIN "
-                                       "WHERE coll_id = ? "
-                                       "AND max_bytes = 0 AND max_objects = 0",
-                                       &icss);
-
-        if (status != 0 && status != CAT_SUCCESS_BUT_WITH_NO_INFO) {
-            log_db::error("{}: Logical quota deletion failure status=[{}]", __func__, status);
-            _rollback(__func__);
-            return ERROR(status, "Logical quota deletion failure");
         }
-    }
-    else if (status == CAT_SUCCESS_BUT_WITH_NO_INFO) {
-        // If the UPDATE did not update any rows and at least one value is positive, this is a new quota row
 
-        // At this point, any negative values are 0
-        if (byte_limit < 0) {
-            byte_limit_string = "0";
+        char myTime[50]{};
+        getNowStr(myTime);
+
+        auto byte_limit_string = std::to_string(byte_limit);
+        auto object_limit_string = std::to_string(object_limit);
+
+        auto upd_builder = gq2::builder::update("R_LOGICAL_QUOTA_MAIN")
+            .set("modify_ts", myTime)
+            .where(col("coll_id") == coll_id);
+
+        if (query_selection == 0) {
+            upd_builder.set("max_bytes", byte_limit_string).set("max_objects", object_limit_string);
         }
-        if (object_limit < 0) {
-            object_limit_string = "0";
+        else if (query_selection == 1) {
+            upd_builder.set("max_objects", object_limit_string);
         }
-        const auto negated_byte_limit_string = (byte_limit < 0) ? std::string("0") : std::to_string(-byte_limit);
-        const auto negated_object_limit_string = (object_limit < 0) ? std::string("0") : std::to_string(-object_limit);
-        cllBindVars[cllBindVarCount++] = coll_id.data();
-        cllBindVars[cllBindVarCount++] = byte_limit_string.c_str();
-        cllBindVars[cllBindVarCount++] = object_limit_string.c_str();
-        cllBindVars[cllBindVarCount++] = negated_byte_limit_string.c_str();
-        cllBindVars[cllBindVarCount++] = negated_object_limit_string.c_str();
-        cllBindVars[cllBindVarCount++] = myTime;
-
-        status = cmlExecuteNoAnswerSql(
-            "INSERT INTO R_LOGICAL_QUOTA_MAIN(coll_id, max_bytes, max_objects, over_bytes, over_objects, modify_ts) "
-            "VALUES(?, ?, ?, ?, ?, ?)",
-            &icss);
-        if (status != 0) {
-            log_db::error("{}: Logical quota insert failure {}", __func__, status);
-            _rollback(__func__);
-            return ERROR(status, "Logical quota insert failure");
+        else if (query_selection == 2) {
+            upd_builder.set("max_bytes", byte_limit_string);
         }
-    }
 
-    status = cmlExecuteNoAnswerSql("commit", &icss);
-    if (status < 0) {
-        return ERROR(status, "commit failure");
-    }
+        auto res = irods::experimental::catalog::execute_catalog(executor, db_conn, upd_builder.build());
 
-    return SUCCESS();
+        if (byte_limit <= 0 && object_limit <= 0) {
+            auto del_stmt = gq2::builder::remove_from("R_LOGICAL_QUOTA_MAIN")
+                .where(col("coll_id") == coll_id && col("max_bytes") == "0" && col("max_objects") == "0")
+                .build();
+            irods::experimental::catalog::execute_catalog(executor, db_conn, del_stmt);
+        }
+        else if (res.affected_rows == 0) {
+            if (byte_limit < 0) {
+                byte_limit_string = "0";
+            }
+            if (object_limit < 0) {
+                object_limit_string = "0";
+            }
+            const auto negated_byte_limit_string = (byte_limit < 0) ? std::string("0") : std::to_string(-byte_limit);
+            const auto negated_object_limit_string = (object_limit < 0) ? std::string("0") : std::to_string(-object_limit);
+
+            auto ins_stmt = gq2::builder::insert_into("R_LOGICAL_QUOTA_MAIN")
+                .set("coll_id", coll_id)
+                .set("max_bytes", byte_limit_string)
+                .set("max_objects", object_limit_string)
+                .set("over_bytes", negated_byte_limit_string)
+                .set("over_objects", negated_object_limit_string)
+                .set("modify_ts", myTime)
+                .build();
+            irods::experimental::catalog::execute_catalog(executor, db_conn, ins_stmt);
+        }
+
+        trans.commit();
+        return SUCCESS();
+    }
+    catch (const nanodbc::database_error& e) {
+        log_db::error("{}: database error: {}", __func__, e.what());
+        return ERROR(CAT_SQL_ERR, e.what());
+    }
+    catch (const std::exception& e) {
+        log_db::error("{}: exception: {}", __func__, e.what());
+        return ERROR(SYS_INTERNAL_ERR, e.what());
+    }
 } // db_set_logical_quota_op
 
 irods::error db_check_logical_quota_op(irods::plugin_context& _ctx,
                                        const char* _coll_name,
                                        irods::logical_quotas::quota_vector* _quota_values)
 {
-    // =-=-=-=-=-=-=-
-    // check the context
     irods::error ret = _ctx.valid();
     if (!ret.ok()) {
         return PASS(ret);
     }
 
-    int status;
-    int statementNum = UNINITIALIZED_STATEMENT_NUMBER;
+    try {
+        auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
 
-    // If _coll_name is not null, get all applicable quotas
-    // for the coll
-    if (_coll_name && *_coll_name != '\0') {
-        // Check permissions before showing quotas
-        // If user is admin, just short-circuit and check for existence
-        status = cmlCheckDir(_coll_name,
-                             _ctx.comm()->clientUser.userName,
-                             _ctx.comm()->clientUser.rodsZone,
-                             ACCESS_READ_OBJECT,
-                             &icss,
-                             (_ctx.comm()->clientUser.authInfo.authFlag >= LOCAL_PRIV_USER_AUTH));
+        if (_coll_name && *_coll_name != '\0') {
+            if (_ctx.comm()->clientUser.authInfo.authFlag < LOCAL_PRIV_USER_AUTH) {
+                const auto access_status = irods::experimental::catalog::access_control::check_collection_access(
+                    executor,
+                    db_conn,
+                    _coll_name,
+                    _ctx.comm()->clientUser.userName,
+                    _ctx.comm()->clientUser.rodsZone,
+                    ACCESS_READ_OBJECT);
+                if (access_status < 0) {
+                    log_db::info("{}: check_collection_access failed for [{}] status=[{}]", __func__, _coll_name, access_status);
+                    return ERROR(access_status, "Insufficient privileges to collection or nonexistent collection specified.");
+                }
+            }
+            else {
+                namespace gq2 = irods::experimental::genquery2;
+                using gq2::builder::col;
+                const auto cid_opt = irods::experimental::catalog::query_catalog_string(
+                    executor,
+                    db_conn,
+                    gq2::builder::select({"coll_id"})
+                        .from("COLLECTION")
+                        .where(col("coll_name") == _coll_name)
+                        .build());
+                if (!cid_opt) {
+                    return ERROR(CAT_UNKNOWN_COLLECTION, "Nonexistent collection specified.");
+                }
+            }
 
-        if (status < 0) {
-            log_db::info(
-                "{}: cmlCheckDir failed for collection name [{}] with status=[{}]", __func__, _coll_name, status);
-            return ERROR(status, "Insufficient privileges to collection or nonexistent collection specified.");
-        }
-
-        cllBindVars[cllBindVarCount++] = _coll_name;
-
-        // clang-format off
-    status = cmlGetFirstRowFromSql(
+            nanodbc::statement stmt{db_conn};
+            nanodbc::prepare(stmt,
                 "SELECT R_COLL_MAIN.coll_name, "
                        "R_LOGICAL_QUOTA_MAIN.max_bytes, "
                        "R_LOGICAL_QUOTA_MAIN.max_objects, "
@@ -14168,35 +14014,30 @@ irods::error db_check_logical_quota_op(irods::plugin_context& _ctx,
                      "R_LOGICAL_QUOTA_MAIN "
                 "WHERE R_COLL_MAIN.coll_id = R_LOGICAL_QUOTA_MAIN.coll_id "
                   "AND ? LIKE CONCAT(R_COLL_MAIN.coll_name, '%') "
-                   // Orders the returned quotas by applying the polynomial function f(x) = (x+1)(-x)(x-2)
-                   // to the signum of the returned over values.
-                   // This function has the property that if any input is 1
-                   // i.e. one of the returned quotas is positive and violating the limit
-                   // then the returned value is 2, which turns the final expression positive, regardless of the other value.
-                   // This means returned quotas will be ordered like so:
-                   // 1. Quotas with both limits violated (expression value: 4)
-                   // 2. Quotas with either limit violated (expression value: 2)
-                   // 3. Other quotas (expression value: 0)
-                  "ORDER BY ( "
-                    "(SIGN(R_LOGICAL_QUOTA_MAIN.over_bytes) + 1)*(-1)*(SIGN(R_LOGICAL_QUOTA_MAIN.over_bytes))*(SIGN(R_LOGICAL_QUOTA_MAIN.over_bytes) - 2) + "
-                    "(SIGN(R_LOGICAL_QUOTA_MAIN.over_objects) + 1)*(-1)*(SIGN(R_LOGICAL_QUOTA_MAIN.over_objects))*(SIGN(R_LOGICAL_QUOTA_MAIN.over_objects) - 2) "
-                  ") DESC",
-            // clang-format on
-            &statementNum,
-            0,
-            &icss);
-    }
-    else {
-        // If coll_name is null, get all applicable quotas.
-        // Useful if an admin wants to see all quotas.
-
-        // Only allow admins to check all quotas
-        if (_ctx.comm()->clientUser.authInfo.authFlag < LOCAL_PRIV_USER_AUTH) {
-            return ERROR(CAT_INSUFFICIENT_PRIVILEGE_LEVEL, "Only admins may list all logical quotas.");
+                "ORDER BY ( "
+                  "(SIGN(R_LOGICAL_QUOTA_MAIN.over_bytes) + 1)*(-1)*(SIGN(R_LOGICAL_QUOTA_MAIN.over_bytes))*(SIGN(R_LOGICAL_QUOTA_MAIN.over_bytes) - 2) + "
+                  "(SIGN(R_LOGICAL_QUOTA_MAIN.over_objects) + 1)*(-1)*(SIGN(R_LOGICAL_QUOTA_MAIN.over_objects))*(SIGN(R_LOGICAL_QUOTA_MAIN.over_objects) - 2) "
+                ") DESC");
+            stmt.bind(0, _coll_name);
+            auto res = nanodbc::execute(stmt);
+            while (res.next()) {
+                _quota_values->push_back(std::make_tuple(
+                    res.get<std::string>(0),
+                    res.get<std::int64_t>(1, 0),
+                    res.get<std::int64_t>(2, 0),
+                    res.get<std::int64_t>(3, 0),
+                    res.get<std::int64_t>(4, 0),
+                    res.get<std::string>(5, "")
+                ));
+            }
         }
+        else {
+            if (_ctx.comm()->clientUser.authInfo.authFlag < LOCAL_PRIV_USER_AUTH) {
+                return ERROR(CAT_INSUFFICIENT_PRIVILEGE_LEVEL, "Only admins may list all logical quotas.");
+            }
 
-        status = cmlGetFirstRowFromSql(
-            // clang-format off
+            nanodbc::statement stmt{db_conn};
+            nanodbc::prepare(stmt,
                 "SELECT R_COLL_MAIN.coll_name, "
                        "R_LOGICAL_QUOTA_MAIN.max_bytes, "
                        "R_LOGICAL_QUOTA_MAIN.max_objects, "
@@ -14206,62 +14047,33 @@ irods::error db_check_logical_quota_op(irods::plugin_context& _ctx,
                 "FROM R_COLL_MAIN, "
                      "R_LOGICAL_QUOTA_MAIN "
                 "WHERE R_COLL_MAIN.coll_id = R_LOGICAL_QUOTA_MAIN.coll_id "
-                   // Orders the returned quotas by applying the polynomial function f(x) = (x+1)(x)(x-2)
-                   // to the signum of the returned over values.
-                   // This function has the property that if any input is 1
-                   // i.e. one of the returned quotas is positive and violating the limit
-                   // then the returned value is 2, which turns the final expression positive, regardless of the other value.
-                   // This means returned quotas will be ordered like so:
-                   // 1. Quotas with both limits violated
-                   // 2. Quotas with either limit violated
-                   // 3. Other quotas
-                  "ORDER BY ( "
-                    "(SIGN(R_LOGICAL_QUOTA_MAIN.over_bytes) + 1)*(-1)*(SIGN(R_LOGICAL_QUOTA_MAIN.over_bytes))*(SIGN(R_LOGICAL_QUOTA_MAIN.over_bytes) - 2) + "
-                    "(SIGN(R_LOGICAL_QUOTA_MAIN.over_objects) + 1)*(-1)*(SIGN(R_LOGICAL_QUOTA_MAIN.over_objects))*(SIGN(R_LOGICAL_QUOTA_MAIN.over_objects) - 2) "
-                  ") DESC",
-            // clang-format on
-            &statementNum,
-            0,
-            &icss);
-    }
+                "ORDER BY ( "
+                  "(SIGN(R_LOGICAL_QUOTA_MAIN.over_bytes) + 1)*(-1)*(SIGN(R_LOGICAL_QUOTA_MAIN.over_bytes))*(SIGN(R_LOGICAL_QUOTA_MAIN.over_bytes) - 2) + "
+                  "(SIGN(R_LOGICAL_QUOTA_MAIN.over_objects) + 1)*(-1)*(SIGN(R_LOGICAL_QUOTA_MAIN.over_objects))*(SIGN(R_LOGICAL_QUOTA_MAIN.over_objects) - 2) "
+                ") DESC");
+            auto res = nanodbc::execute(stmt);
+            while (res.next()) {
+                _quota_values->push_back(std::make_tuple(
+                    res.get<std::string>(0),
+                    res.get<std::int64_t>(1, 0),
+                    res.get<std::int64_t>(2, 0),
+                    res.get<std::int64_t>(3, 0),
+                    res.get<std::int64_t>(4, 0),
+                    res.get<std::string>(5, "")
+                ));
+            }
+        }
 
-    if (CAT_NO_ROWS_FOUND == status) {
-        log_db::info("{}: Logical quota check - no quotas applied to [{}]", __func__, _coll_name);
-        cmlFreeStatement(statementNum, &icss);
         return SUCCESS();
     }
-
-    if (status != 0) {
-        cmlFreeStatement(statementNum, &icss);
-        log_db::error("{}: Logical quota check failed with ec=[{}]", __func__, status);
-        return ERROR(status, "Logical quota check failed.");
+    catch (const nanodbc::database_error& e) {
+        log_db::error("{}: database error: {}", __func__, e.what());
+        return ERROR(CAT_SQL_ERR, e.what());
     }
-
-    auto values_ary = icss.stmtPtr[statementNum]->resultValue;
-    _quota_values->push_back(std::make_tuple(icss.stmtPtr[statementNum]->resultValue[0],
-                                             std::strtoll(values_ary[1], nullptr, 0),
-                                             std::strtoll(values_ary[2], nullptr, 0),
-                                             std::strtoll(values_ary[3], nullptr, 0),
-                                             std::strtoll(values_ary[4], nullptr, 0),
-                                             values_ary[5]));
-    while ((status = cmlGetNextRowFromStatement(statementNum, &icss)) != CAT_NO_ROWS_FOUND) {
-        if (status != 0) {
-            cmlFreeStatement(statementNum, &icss);
-            log_db::error("{}: Logical quota check next-row fetch failed with ec=[{}]", __func__, status);
-            return ERROR(status, "Logical quota next-row fetch failed.");
-        }
-        values_ary = icss.stmtPtr[statementNum]->resultValue;
-        _quota_values->push_back(std::make_tuple(icss.stmtPtr[statementNum]->resultValue[0],
-                                                 std::strtoll(values_ary[1], NULL, 0),
-                                                 std::strtoll(values_ary[2], NULL, 0),
-                                                 std::strtoll(values_ary[3], NULL, 0),
-                                                 std::strtoll(values_ary[4], NULL, 0),
-                                                 values_ary[5]));
+    catch (const std::exception& e) {
+        log_db::error("{}: exception: {}", __func__, e.what());
+        return ERROR(SYS_INTERNAL_ERR, e.what());
     }
-
-    cmlFreeStatement(statementNum, &icss);
-
-    return SUCCESS();
 } // db_check_logical_quota_op
 
 // =-=-=-=-=-=-=-

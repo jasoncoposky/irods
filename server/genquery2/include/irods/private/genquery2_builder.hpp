@@ -265,7 +265,9 @@ namespace irods::experimental::genquery2::builder
 
         auto group_by(std::vector<std::string> _cols) -> select_builder&
         {
-            sel_.group_by.columns = std::move(_cols);
+            for (auto&& c : _cols) {
+                sel_.group_by.expressions.push_back(column{std::move(c)});
+            }
             return *this;
         }
 
