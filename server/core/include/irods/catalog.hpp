@@ -8,6 +8,13 @@
 
 namespace irods::experimental::catalog
 {
+    /// \brief Check whether the database hosting the catalog uses ODBC
+    ///
+    /// \returns True if the configured database plugin uses ODBC, false otherwise
+    ///
+    /// \since 5.1.0
+    auto uses_odbc() -> bool;
+
     /// \brief Establish connection to database hosting the catalog
     ///
     /// \returns Tuple of the database type (string) and the database connection

@@ -733,6 +733,10 @@ Signals:
             const auto role = irods::get_server_property<std::string>(irods::KW_CFG_CATALOG_SERVICE_ROLE);
 
             if (role == irods::KW_CFG_SERVICE_ROLE_PROVIDER) {
+                if (!irods::experimental::catalog::uses_odbc()) {
+                    return {true, IRODS_CATALOG_SCHEMA_VERSION};
+                }
+
                 auto [db_instance, db_conn] = irods::experimental::catalog::new_database_connection();
 
                 auto row = nanodbc::execute(db_conn,
@@ -845,6 +849,10 @@ Signals:
         }
 
         if (irods::KW_CFG_SERVICE_ROLE_PROVIDER == role) {
+            if (!irods::experimental::catalog::uses_odbc()) {
+                return 0;
+            }
+
             // Wait for the catalog to accept connections.
             while (true) {
                 if (g_terminate) {
@@ -1575,26 +1583,34 @@ Signals:
                 // to get around the lack of an agent factory is use nanodbc to interact with the database
                 // directly.
 
-                auto [db_instance, db_conn] = irods::experimental::catalog::new_database_connection();
-                auto row = execute(
-                    db_conn,
-                    "select option_name, option_value from R_GRID_CONFIGURATION where namespace = 'access_time'");
+                if (irods::experimental::catalog::uses_odbc()) {
+                    auto [db_instance, db_conn] = irods::experimental::catalog::new_database_connection();
+                    auto row = execute(
+                        db_conn,
+                        "select option_name, option_value from R_GRID_CONFIGURATION where namespace = 'access_time'");
 
-                while (row.next()) {
-                    const auto opt_name = row.get<std::string>(0);
+                    while (row.next()) {
+                        const auto opt_name = row.get<std::string>(0);
 
-                    if (opt_name == irods::KW_CFG_ACCESS_TIME_QUEUE_NAME_PREFIX) {
-                        queue_name_prefix = row.get<std::string>(1);
+                        if (opt_name == irods::KW_CFG_ACCESS_TIME_QUEUE_NAME_PREFIX) {
+                            queue_name_prefix = row.get<std::string>(1);
+                        }
+                        else if (opt_name == irods::KW_CFG_ACCESS_TIME_QUEUE_SIZE) {
+                            queue_size = row.get<std::string>(1);
+                        }
+                        else if (opt_name == irods::KW_CFG_ACCESS_TIME_BATCH_SIZE) {
+                            batch_size = row.get<std::string>(1);
+                        }
+                        else if (opt_name == irods::KW_CFG_ACCESS_TIME_RESOLUTION_IN_SECONDS) {
+                            resolution_in_seconds = row.get<std::string>(1);
+                        }
                     }
-                    else if (opt_name == irods::KW_CFG_ACCESS_TIME_QUEUE_SIZE) {
-                        queue_size = row.get<std::string>(1);
-                    }
-                    else if (opt_name == irods::KW_CFG_ACCESS_TIME_BATCH_SIZE) {
-                        batch_size = row.get<std::string>(1);
-                    }
-                    else if (opt_name == irods::KW_CFG_ACCESS_TIME_RESOLUTION_IN_SECONDS) {
-                        resolution_in_seconds = row.get<std::string>(1);
-                    }
+                }
+                else {
+                    queue_name_prefix = "irods_access_time_queue_";
+                    queue_size = "20000";
+                    batch_size = "20000";
+                    resolution_in_seconds = "86400";
                 }
             }
             else if (role == irods::KW_CFG_SERVICE_ROLE_CONSUMER) {

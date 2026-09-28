@@ -35,6 +35,28 @@ namespace
 
 namespace irods::experimental::catalog {
 
+    auto uses_odbc() -> bool
+    {
+        try {
+            const auto config_handle{server_properties::instance().map()};
+            const auto& config{config_handle.get_json()};
+            const auto db_config_ptr = nlohmann::json::json_pointer{"/plugin_configuration/database"};
+            if (config.contains(db_config_ptr)) {
+                const auto& db_config = config.at(db_config_ptr);
+                if (db_config.contains("uses_odbc") && !db_config.at("uses_odbc").get<bool>()) {
+                    return false;
+                }
+                if (db_config.contains(irods::KW_CFG_DB_TECHNOLOGY) &&
+                    db_config.at(irods::KW_CFG_DB_TECHNOLOGY).get<std::string>() == "l3kvg") {
+                    return false;
+                }
+            }
+        }
+        catch (...) {
+        }
+        return true;
+    }
+
     auto new_database_connection() -> std::tuple<std::string, nanodbc::connection>
     {
         namespace log = irods::experimental::log;
