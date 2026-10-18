@@ -886,6 +886,40 @@ TEST_CASE("filesystem")
         REQUIRE_FALSE(ec);
         REQUIRE(fs::client::exists(conn, dir_b / "keep_me.txt", ec));
     }
+
+    SECTION("collection_iterator and recursive_collection_iterator non-throwing, post-increment, and connection()")
+    {
+        std::error_code ec;
+        const auto iter_root = sandbox / "iter_test";
+        REQUIRE(fs::client::create_collections(conn, iter_root / "sub", ec));
+        REQUIRE_FALSE(ec);
+
+        {
+            default_transport tp{conn};
+            odstream{tp, iter_root / "a.txt"} << "a";
+            odstream{tp, iter_root / "sub/b.txt"} << "b";
+        }
+
+        fs::client::recursive_collection_iterator rec_it{conn, iter_root, ec};
+        REQUIRE_FALSE(ec);
+        REQUIRE(rec_it != fs::client::recursive_collection_iterator{});
+        REQUIRE(rec_it != std::default_sentinel);
+        // Verify connection() does not infinitely recurse
+        REQUIRE(rec_it.connection() == static_cast<rcComm_t*>(conn));
+
+        int count = 0;
+        while (rec_it != std::default_sentinel) {
+            auto prev = rec_it++;
+            REQUIRE_FALSE(prev->path().empty());
+            ++count;
+        }
+        REQUIRE(count == 3);
+
+        // Non-throwing open on non-existent collection sets ec and returns end iterator
+        fs::client::collection_iterator bad_it{conn, iter_root / "missing", ec};
+        REQUIRE(ec);
+        REQUIRE(bad_it == std::default_sentinel);
+    }
 }
 
 TEST_CASE("#8912: filesystem does not expand group membership when listing permissions on data objects")

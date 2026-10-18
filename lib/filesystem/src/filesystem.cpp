@@ -367,21 +367,7 @@ namespace irods::experimental::filesystem::NAMESPACE_IMPL
         auto is_collection_empty(rxComm& _comm, const path& _p, std::error_code& _ec) -> bool
         {
             _ec.clear();
-            try {
-                return collection_iterator{} == collection_iterator{_comm, _p};
-            }
-            catch (const filesystem_error& e) {
-                _ec = e.code();
-                return false;
-            }
-            catch (const irods::exception& e) {
-                _ec = extract_irods_error(e);
-                return false;
-            }
-            catch (...) {
-                _ec = make_error_code(SYS_INTERNAL_ERR);
-                return false;
-            }
+            return collection_iterator{_comm, _p, _ec} == std::default_sentinel;
         }
 
         auto remove_by_type_impl(rxComm& _comm,
@@ -908,16 +894,13 @@ namespace irods::experimental::filesystem::NAMESPACE_IMPL
                     }
                 }
 
-                try {
-                    for (const auto& e : collection_iterator{_comm, _from}) {
-                        copy(_comm, e.path(), _to / e.path().object_name_view(), _options | copy_options::in_recursive_copy, _ec);
-                        if (_ec) {
-                            return;
-                        }
+                path child_to;
+                for (collection_iterator it{_comm, _from, _ec}; !_ec && it != std::default_sentinel; it.increment(_ec)) {
+                    child_to.assign_concat(_to.string_view(), it->path().object_name_view());
+                    copy(_comm, it->path(), child_to, _options | copy_options::in_recursive_copy, _ec);
+                    if (_ec) {
+                        return;
                     }
-                }
-                catch (const filesystem_error& e) {
-                    _ec = e.code();
                 }
             }
         }

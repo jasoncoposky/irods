@@ -23,14 +23,24 @@
 
 #include <iterator>
 #include <memory>
+#include <system_error>
+#include <utility>
 
-namespace irods::experimental::filesystem::NAMESPACE_IMPL
+#ifndef IRODS_FILESYSTEM_COLLECTION_OPTIONS_DEFINED
+#define IRODS_FILESYSTEM_COLLECTION_OPTIONS_DEFINED
+namespace irods::experimental::filesystem
 {
     enum class collection_options
     {
         none,
         skip_permission_denied
     };
+} // namespace irods::experimental::filesystem
+#endif // IRODS_FILESYSTEM_COLLECTION_OPTIONS_DEFINED
+
+namespace irods::experimental::filesystem::NAMESPACE_IMPL
+{
+    using ::irods::experimental::filesystem::collection_options;
 
     class collection_iterator
     {
@@ -43,6 +53,21 @@ namespace irods::experimental::filesystem::NAMESPACE_IMPL
         using iterator_category = std::input_iterator_tag;
         // clang-format on
 
+        class post_increment_proxy
+        {
+        public:
+            explicit post_increment_proxy(value_type _val) noexcept
+                : val_{std::move(_val)}
+            {
+            }
+
+            auto operator*() const noexcept -> const value_type& { return val_; }
+            auto operator->() const noexcept -> const value_type* { return &val_; }
+
+        private:
+            value_type val_;
+        };
+
         // Constructors and destructor
 
         collection_iterator() = default;
@@ -50,6 +75,15 @@ namespace irods::experimental::filesystem::NAMESPACE_IMPL
         collection_iterator(rxComm& _comm,
                             const path& _p,
                             collection_options _opts = collection_options::none);
+
+        collection_iterator(rxComm& _comm,
+                            const path& _p,
+                            std::error_code& _ec);
+
+        collection_iterator(rxComm& _comm,
+                            const path& _p,
+                            collection_options _opts,
+                            std::error_code& _ec);
 
         collection_iterator(const collection_iterator& _other) = default;
         auto operator=(const collection_iterator& _other) -> collection_iterator& = default;
@@ -61,22 +95,31 @@ namespace irods::experimental::filesystem::NAMESPACE_IMPL
 
         // Observers
 
-        auto connection() -> rxComm* { return ctx_->comm; }
+        auto connection() const noexcept -> rxComm* { return ctx_ ? ctx_->comm : nullptr; }
 
         // clang-format off
-        auto operator*() const -> reference { return ctx_->entry; }
-        auto operator->() const -> pointer  { return &ctx_->entry; }
+        auto operator*() const noexcept -> reference { return ctx_->entry; }
+        auto operator->() const noexcept -> pointer  { return &ctx_->entry; }
         // clang-format on
 
         // Modifiers
 
         auto operator++() -> collection_iterator&;
+        auto increment(std::error_code& _ec) -> collection_iterator&;
+
+        auto operator++(int) -> post_increment_proxy
+        {
+            post_increment_proxy proxy{**this};
+            ++(*this);
+            return proxy;
+        }
 
         // Compare
 
         // clang-format off
         auto operator==(const collection_iterator& _rhs) const noexcept -> bool { return _rhs.ctx_ == ctx_; }
         auto operator!=(const collection_iterator& _rhs) const noexcept -> bool { return !(*this == _rhs); }
+        auto operator==(std::default_sentinel_t) const noexcept -> bool { return !ctx_; }
         // clang-format on
 
     private:
@@ -84,15 +127,20 @@ namespace irods::experimental::filesystem::NAMESPACE_IMPL
         {
             rxComm* comm{};
             path path{};
+            collection_options opts{collection_options::none};
+            bool handle_open{false};
 #ifdef IRODS_FILESYSTEM_ENABLE_SERVER_SIDE_API
-            int handle{};
+            int handle{-1};
 #else
             collHandle_t handle{};
 #endif // IRODS_FILESYSTEM_ENABLE_SERVER_SIDE_API
             value_type entry{};
+
+            ~context() noexcept;
+            auto close() noexcept -> void;
         };
 
-        auto close() -> void;
+        auto close() noexcept -> void;
 
         std::shared_ptr<context> ctx_;
     };

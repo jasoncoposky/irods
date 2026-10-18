@@ -700,5 +700,40 @@ TEST_CASE("filesystem client non-throwing error_code overloads on invalid paths"
     REQUIRE(ec == irods::experimental::make_error_code(SYS_INVALID_INPUT_PARAM));
 }
 
+#include "irods/filesystem/collection_iterator.hpp"
+#include "irods/filesystem/recursive_collection_iterator.hpp"
 
+TEST_CASE("collection_iterator and recursive_collection_iterator error_code, sentinel, and connection()", "[filesystem][iterator]")
+{
+    STATIC_REQUIRE(std::input_iterator<fs::client::collection_iterator>);
+    STATIC_REQUIRE(std::sentinel_for<std::default_sentinel_t, fs::client::collection_iterator>);
+    STATIC_REQUIRE(std::input_iterator<fs::client::recursive_collection_iterator>);
+    STATIC_REQUIRE(std::sentinel_for<std::default_sentinel_t, fs::client::recursive_collection_iterator>);
+
+    RcComm* dummy_comm_ptr = nullptr;
+    auto& dummy_comm = *dummy_comm_ptr;
+    std::error_code ec;
+
+    fs::client::collection_iterator default_it{};
+    REQUIRE(default_it == std::default_sentinel);
+    REQUIRE(default_it.connection() == nullptr);
+
+    fs::client::recursive_collection_iterator default_rec_it{};
+    REQUIRE(default_rec_it == std::default_sentinel);
+    // Previously caused infinite recursion / segfault
+    REQUIRE(default_rec_it.connection() == nullptr);
+    REQUIRE(default_rec_it.depth() == -1);
+    REQUIRE_FALSE(default_rec_it.recursion_pending());
+
+    const fs::path empty_path{};
+    const fs::path overlong_path{std::string(MAX_NAME_LEN, 'x')};
+
+    fs::client::collection_iterator bad_it{dummy_comm, empty_path, ec};
+    REQUIRE(ec == irods::experimental::make_error_code(SYS_INVALID_INPUT_PARAM));
+    REQUIRE(bad_it == std::default_sentinel);
+
+    fs::client::recursive_collection_iterator bad_rec_it{dummy_comm, overlong_path, fs::collection_options::skip_permission_denied, ec};
+    REQUIRE(ec == irods::experimental::make_error_code(USER_PATH_EXCEEDS_MAX));
+    REQUIRE(bad_rec_it == std::default_sentinel);
+}
 

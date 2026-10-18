@@ -17,8 +17,9 @@
 #include "irods/filesystem/collection_entry.hpp"
 
 #include <iterator>
-#include <stack>
 #include <memory>
+#include <stack>
+#include <system_error>
 
 namespace irods::experimental::filesystem::NAMESPACE_IMPL
 {
@@ -33,6 +34,8 @@ namespace irods::experimental::filesystem::NAMESPACE_IMPL
         using iterator_category = std::input_iterator_tag;
         // clang-format on
 
+        using post_increment_proxy = collection_iterator::post_increment_proxy;
+
         // Constructors and destructor
 
         recursive_collection_iterator() = default;
@@ -40,6 +43,15 @@ namespace irods::experimental::filesystem::NAMESPACE_IMPL
         recursive_collection_iterator(rxComm& _comm,
                                       const path& _p,
                                       collection_options _opts = collection_options::none);
+
+        recursive_collection_iterator(rxComm& _comm,
+                                      const path& _p,
+                                      std::error_code& _ec);
+
+        recursive_collection_iterator(rxComm& _comm,
+                                      const path& _p,
+                                      collection_options _opts,
+                                      std::error_code& _ec);
 
         recursive_collection_iterator(const recursive_collection_iterator& _other) = default;
         auto operator=(const recursive_collection_iterator& _other) -> recursive_collection_iterator& = default;
@@ -51,29 +63,48 @@ namespace irods::experimental::filesystem::NAMESPACE_IMPL
 
         // Observers
 
-        auto connection() -> rxComm* { return ctx_->stack.empty() ? nullptr : (*this).connection(); }
+        auto connection() const noexcept -> rxComm*
+        {
+            return (ctx_ && !ctx_->stack.empty()) ? ctx_->stack.top().connection() : nullptr;
+        }
 
         // clang-format off
-        auto operator*() const -> reference { return *ctx_->stack.top(); }
-        auto operator->() const -> pointer  { return &*ctx_->stack.top(); }
+        auto operator*() const noexcept -> reference { return *ctx_->stack.top(); }
+        auto operator->() const noexcept -> pointer  { return &*ctx_->stack.top(); }
 
-        auto options() const noexcept -> collection_options { return ctx_->opts; }
-        auto depth() const noexcept -> int                  { return static_cast<int>(ctx_->stack.size()) - 1; }
-        auto recursion_pending() const noexcept -> bool     { return ctx_->recurse; }
+        auto options() const noexcept -> collection_options { return ctx_ ? ctx_->opts : collection_options::none; }
+        auto depth() const noexcept -> int                  { return ctx_ ? static_cast<int>(ctx_->stack.size()) - 1 : -1; }
+        auto recursion_pending() const noexcept -> bool     { return ctx_ ? ctx_->recurse : false; }
         // clang-format on
 
         // Modifiers
 
         auto operator++() -> recursive_collection_iterator&;
-        
+        auto increment(std::error_code& _ec) -> recursive_collection_iterator&;
+
+        auto operator++(int) -> post_increment_proxy
+        {
+            post_increment_proxy proxy{**this};
+            ++(*this);
+            return proxy;
+        }
+
         auto pop() -> void;
-        auto disable_recursion_pending() noexcept -> void { ctx_->recurse = false; }
+        auto pop(std::error_code& _ec) -> void;
+
+        auto disable_recursion_pending() noexcept -> void
+        {
+            if (ctx_) {
+                ctx_->recurse = false;
+            }
+        }
 
         // Compare
 
         // clang-format off
         auto operator==(const recursive_collection_iterator& _rhs) const noexcept -> bool { return _rhs.ctx_ == ctx_; }
         auto operator!=(const recursive_collection_iterator& _rhs) const noexcept -> bool { return !(*this == _rhs); }
+        auto operator==(std::default_sentinel_t) const noexcept -> bool { return !ctx_; }
         // clang-format on
 
     private:
