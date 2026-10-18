@@ -4,6 +4,7 @@
 #include "irods/filesystem/path_traits.hpp"
 
 #include <string>
+#include <string_view>
 #include <utility>
 #include <type_traits>
 #include <istream>
@@ -60,7 +61,7 @@ namespace irods::experimental::filesystem
         template <typename Source,
                   typename = std::enable_if_t<path_traits::is_pathable<Source>>>
         path(const Source& _source)
-            : path{std::begin(_source), std::end(_source)}
+            : value_{std::begin(_source), std::end(_source)}
         {
         }
 
@@ -101,8 +102,7 @@ namespace irods::experimental::filesystem
                   typename = std::enable_if_t<path_traits::is_pathable<Source>>>
         auto operator=(const Source& _source) -> path&
         {
-            string_type new_path{std::begin(_source), std::end(_source)};
-            value_ = std::move(new_path);
+            value_.assign(std::begin(_source), std::end(_source));
             return *this;
         }
 
@@ -123,25 +123,33 @@ namespace irods::experimental::filesystem
                   typename = std::enable_if_t<std::is_same_v<ValueType, value_type>>>
         auto assign(InputIterator _begin, InputIterator _end) -> path&
         {
-            return *this = string_type{_begin, _end};
+            value_.assign(_begin, _end);
+            return *this;
         }
+
+        auto assign_concat(std::string_view _parent, std::string_view _child) -> path&;
 
         // Appends
 
         auto operator/=(const path& _p) -> path&;
 
         template <typename Source,
-                  typename = std::enable_if_t<path_traits::is_pathable<Source>>>
+                  typename = std::enable_if_t<path_traits::is_pathable<std::decay_t<Source>>>>
         auto operator/=(const Source& _source) -> path&
         {
-            return *this /= path{_source};
+            if constexpr (std::is_convertible_v<const Source&, std::string_view>) {
+                return append_view(std::string_view{_source});
+            }
+            else {
+                return *this /= path{_source};
+            }
         }
 
         template <typename Source,
-                  typename = std::enable_if_t<path_traits::is_pathable<Source>>>
+                  typename = std::enable_if_t<path_traits::is_pathable<std::decay_t<Source>>>>
         auto append(const Source& _source) -> path&
         {
-            return *this /= path{_source};
+            return *this /= _source;
         }
 
         template <typename InputIterator,
@@ -166,7 +174,8 @@ namespace irods::experimental::filesystem
                   typename = std::enable_if_t<path_traits::is_pathable<Source>>>
         auto operator+=(const Source& _p) -> path&
         {
-            return *this += path{_p};
+            value_.append(std::begin(_p), std::end(_p));
+            return *this;
         }
 
         // template <typename CharT>
@@ -177,18 +186,19 @@ namespace irods::experimental::filesystem
                   typename = std::enable_if_t<std::is_same_v<ValueType, value_type>>>
         auto concat(InputIterator _begin, InputIterator _end) -> path&
         {
-            return *this += path{_begin, _end};
+            value_.append(_begin, _end);
+            return *this;
         }
 
         // Modifiers
 
-        auto clear() -> void { value_.clear(); }
+        auto clear() noexcept -> void { value_.clear(); }
 
         auto remove_object_name() -> path&;
         auto replace_object_name(const path& _replacement = {}) -> path&;
         auto replace_extension(const path& _replacement = {}) -> path&;
 
-        auto swap(path& _rhs) -> void { value_.swap(_rhs.value_); }
+        auto swap(path& _rhs) noexcept -> void { value_.swap(_rhs.value_); }
 
         // Lexical operations
 
@@ -199,16 +209,28 @@ namespace irods::experimental::filesystem
         // Format observers
 
         // clang-format off
-        auto c_str() const noexcept -> const value_type* { return value_.c_str(); }
-        auto string() const -> string_type               { return value_; }
-        operator string_type() const                     { return value_; }
+        auto c_str() const noexcept -> const value_type*      { return value_.c_str(); }
+        auto native() const noexcept -> const string_type&    { return value_; }
+        auto string() const noexcept -> const string_type&    { return value_; }
+        auto string_view() const noexcept -> std::string_view { return value_; }
+        auto size() const noexcept -> string_type::size_type  { return value_.size(); }
+        operator string_type() const                          { return value_; }
         // clang-format on
 
         // Compare
 
         auto compare(const path& _p) const noexcept -> int;
+        auto compare(std::string_view _p) const noexcept -> int;
+        auto compare(const value_type* _p) const noexcept -> int { return compare(std::string_view{_p}); }
 
         // Decomposition
+
+        auto root_collection_view() const noexcept -> std::string_view;
+        auto relative_path_view() const noexcept -> std::string_view;
+        auto parent_path_view() const noexcept -> std::string_view;
+        auto object_name_view() const noexcept -> std::string_view;
+        auto stem_view() const noexcept -> std::string_view;
+        auto extension_view() const noexcept -> std::string_view;
 
         auto root_collection() const -> path;
         auto relative_path() const -> path;
@@ -220,15 +242,15 @@ namespace irods::experimental::filesystem
         // Query
 
         // clang-format off
-        auto empty() const -> bool               { return value_.empty(); }
-        auto has_root_collection() const -> bool { return !root_collection().empty(); }
-        auto has_relative_path() const -> bool   { return !relative_path().empty(); }
-        auto has_parent_path() const -> bool     { return !parent_path().empty(); }
-        auto has_object_name() const -> bool     { return !object_name().empty(); }
-        auto has_stem() const -> bool            { return !stem().empty(); }
-        auto has_extension() const -> bool       { return !extension().empty(); }
-        auto is_absolute() const -> bool         { return !empty() && preferred_separator == value_.front(); }
-        auto is_relative() const -> bool         { return !is_absolute(); }
+        auto empty() const noexcept -> bool               { return value_.empty(); }
+        auto has_root_collection() const noexcept -> bool { return !root_collection_view().empty(); }
+        auto has_relative_path() const noexcept -> bool   { return !relative_path_view().empty(); }
+        auto has_parent_path() const noexcept -> bool     { return !parent_path_view().empty(); }
+        auto has_object_name() const noexcept -> bool     { return !object_name_view().empty(); }
+        auto has_stem() const noexcept -> bool            { return !stem_view().empty(); }
+        auto has_extension() const noexcept -> bool       { return !extension_view().empty(); }
+        auto is_absolute() const noexcept -> bool         { return !empty() && preferred_separator == value_.front(); }
+        auto is_relative() const noexcept -> bool         { return !is_absolute(); }
         // clang-format on
 
         // Iterators
@@ -240,7 +262,8 @@ namespace irods::experimental::filesystem
         auto rend() const -> reverse_iterator;
 
     private:
-        void append_separator_if_needed(const path& _p);
+        auto append_view(std::string_view _p) -> path&;
+        void append_separator_if_needed(std::string_view _p);
 
         string_type value_;
     }; // path
@@ -385,6 +408,7 @@ namespace irods::experimental::filesystem
 
     auto hash_value(const path& _p) noexcept -> std::size_t;
 
+    auto zone_name_view(const path& _p) noexcept -> std::optional<std::string_view>;
     auto zone_name(const path& _p) -> std::optional<std::string>;
 } // namespace irods::experimental::filesystem
 

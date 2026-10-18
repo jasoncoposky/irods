@@ -5,6 +5,7 @@
 #include <iostream>
 #include <iomanip>
 #include <string>
+#include <string_view>
 #include <algorithm>
 
 #include <boost/algorithm/string.hpp>
@@ -24,6 +25,70 @@ namespace irods::experimental::filesystem
 
             return p;
         }
+
+        // Zero-allocation forward component scanner matching path::iterator semantics.
+        struct component_scanner
+        {
+            std::string_view full;
+            std::size_t pos{0};
+            std::string_view current{};
+            bool at_end{false};
+
+            explicit constexpr component_scanner(std::string_view _s) noexcept
+                : full{_s}
+            {
+                if (full.empty()) {
+                    at_end = true;
+                    return;
+                }
+
+                if (is_separator(full.front())) {
+                    current = full.substr(0, 1);
+                }
+                else {
+                    const auto end = full.find_first_of(path::preferred_separator);
+                    current = (end != std::string_view::npos) ? full.substr(0, end) : full;
+                }
+            }
+
+            constexpr void advance() noexcept
+            {
+                if (at_end) {
+                    return;
+                }
+
+                if (full.size() - 1 == pos && current.empty()) {
+                    ++pos;
+                    at_end = true;
+                    return;
+                }
+
+                pos += current.size();
+
+                if (full.size() == pos) {
+                    current = {};
+                    at_end = true;
+                    return;
+                }
+
+                while (pos < full.size() && is_separator(full[pos])) {
+                    ++pos;
+                }
+
+                if (full.size() == pos && is_separator(full.back())) {
+                    current = {};
+                    pos = full.size() - 1;
+                }
+                else if (const auto end = full.find_first_of(path::preferred_separator, pos);
+                         end != std::string_view::npos)
+                {
+                    current = full.substr(pos, end - pos);
+                }
+                else {
+                    current = full.substr(pos, full.size() - pos);
+                }
+            }
+        };
     } // anonymous namespace
 
     //
@@ -32,20 +97,44 @@ namespace irods::experimental::filesystem
 
     auto path::operator/=(const path& _p) -> path&
     {
+        return append_view(_p.string_view());
+    }
+
+    auto path::append_view(std::string_view _p) -> path&
+    {
         if (_p.empty()) {
             if (!value_.empty() && preferred_separator != value_.back()) {
                 value_ += preferred_separator;
             }
         }
         else {
-            if (_p.is_absolute()) {
-                return *this = _p;
+            if (is_separator(_p.front())) {
+                value_.assign(_p);
+                return *this;
             }
 
             append_separator_if_needed(_p);
-            value_ += _p.value_;
+            value_.append(_p);
         }
 
+        return *this;
+    }
+
+    auto path::assign_concat(std::string_view _parent, std::string_view _child) -> path&
+    {
+        if (!_child.empty() && is_separator(_child.front())) {
+            value_.assign(_child);
+            return *this;
+        }
+
+        const bool need_sep = !_parent.empty() && !is_separator(_parent.back()) && !_child.empty();
+        value_.clear();
+        value_.reserve(_parent.size() + (need_sep ? 1 : 0) + _child.size());
+        value_.append(_parent);
+        if (need_sep) {
+            value_.push_back(preferred_separator);
+        }
+        value_.append(_child);
         return *this;
     }
 
@@ -97,7 +186,7 @@ namespace irods::experimental::filesystem
                 p /= {};
             }
             else if (next_element == dot_dot) {
-                if (p.has_object_name() && p.object_name() != dot_dot) {
+                if (p.has_object_name() && p.object_name_view() != dot_dot) {
                     p.remove_object_name();
                 }
                 else if (root_separator != p) {
@@ -148,95 +237,152 @@ namespace irods::experimental::filesystem
         return !p.empty() ? p : *this;
     }
 
-    auto path::compare(const path& _p) const noexcept -> int
+    auto path::compare(std::string_view _p) const noexcept -> int
     {
-        auto first1 = begin();
-        const auto last1 = end();
+        component_scanner s1{value_};
+        component_scanner s2{_p};
 
-        auto first2 = _p.begin();
-        const auto last2 = _p.end();
-
-        for (; first1 != last1 && first2 != last2; ++first1, ++first2) {
-            if (first1->value_ < first2->value_) {
-                return -1;
-            }
-
-            if (first1->value_ > first2->value_) {
-                return 1;
+        for (; !s1.at_end && !s2.at_end; s1.advance(), s2.advance()) {
+            if (const int cmp = s1.current.compare(s2.current); cmp != 0) {
+                return cmp < 0 ? -1 : 1;
             }
         }
 
-        // Case 1: first1 == end1 && first2 == end2 =>  0
-        // Case 2: first1 == end1 && first2 != end2 => -1
-        // Case 3: first1 != end1 && first2 == end2 =>  1
-
-        if (first1 == last1) {
-            if (first2 == last2) {
-                return 0;
-            }
-
-            return -1;
+        if (s1.at_end) {
+            return s2.at_end ? 0 : -1;
         }
 
         return 1;
     }
 
+    auto path::compare(const path& _p) const noexcept -> int
+    {
+        return compare(_p.string_view());
+    }
+
+    auto path::root_collection_view() const noexcept -> std::string_view
+    {
+        return is_absolute() ? std::string_view{value_}.substr(0, 1) : std::string_view{};
+    }
+
+    auto path::relative_path_view() const noexcept -> std::string_view
+    {
+        if (value_.empty()) {
+            return {};
+        }
+
+        if (is_absolute()) {
+            const auto pos = value_.find_first_not_of(preferred_separator);
+            return (pos != string_type::npos) ? std::string_view{value_}.substr(pos) : std::string_view{};
+        }
+
+        return std::string_view{value_};
+    }
+
+    auto path::parent_path_view() const noexcept -> std::string_view
+    {
+        if (!has_relative_path()) {
+            return is_absolute() ? std::string_view{value_}.substr(0, 1) : std::string_view{value_};
+        }
+
+        const auto last_sep = value_.find_last_of(preferred_separator);
+        if (last_sep == string_type::npos) {
+            return {};
+        }
+
+        auto end_pos = last_sep;
+        while (end_pos > 0 && is_separator(value_[end_pos - 1])) {
+            --end_pos;
+        }
+
+        if (end_pos == 0) {
+            return std::string_view{value_}.substr(0, 1);
+        }
+
+        return std::string_view{value_}.substr(0, end_pos);
+    }
+
+    auto path::object_name_view() const noexcept -> std::string_view
+    {
+        if (!has_relative_path() || is_separator(value_.back())) {
+            return {};
+        }
+
+        const auto last_sep = value_.find_last_of(preferred_separator);
+        if (last_sep == string_type::npos) {
+            return std::string_view{value_};
+        }
+
+        return std::string_view{value_}.substr(last_sep + 1);
+    }
+
+    auto path::stem_view() const noexcept -> std::string_view
+    {
+        const auto n = object_name_view();
+        if (n.empty() || n == dot || n == dot_dot) {
+            return {};
+        }
+
+        if (const auto pos = n.find_last_of(dot); std::string_view::npos != pos) {
+            return n.substr(0, pos);
+        }
+
+        return {};
+    }
+
+    auto path::extension_view() const noexcept -> std::string_view
+    {
+        const auto n = object_name_view();
+        if (n.empty() || n == dot || n == dot_dot) {
+            return {};
+        }
+
+        if (const auto pos = n.find_last_of(dot); std::string_view::npos != pos) {
+            return n.substr(pos);
+        }
+
+        return {};
+    }
+
     auto path::root_collection() const -> path
     {
-        return is_absolute() ? *begin() : path{};
+        return path{root_collection_view()};
     }
 
     auto path::relative_path() const -> path
     {
-        if (has_root_collection()) {
+        const auto rv = relative_path_view();
+        if (rv.find("//") != std::string_view::npos) {
             return join(++begin(), end());
         }
-
-        return empty() ? path{} : *this;
+        return path{rv};
     }
 
     auto path::parent_path() const -> path
     {
-        return !has_relative_path() ? *this : join(begin(), --end());
+        if (!has_relative_path()) {
+            return *this;
+        }
+        const auto pv = parent_path_view();
+        if (pv.find("//") != std::string_view::npos) {
+            return join(begin(), --end());
+        }
+        return path{pv};
     }
 
     auto path::object_name() const -> path
     {
-        return relative_path().empty() ? path{} : *--end();
+        return path{object_name_view()};
     }
 
     auto path::stem() const -> path
     {
-        if (empty() || object_name() == dot || object_name() == dot_dot)
-        {
-            return {};
-        }
-
-        const auto n = object_name();
-
-        if (auto pos = n.value_.find_last_of(dot); string_type::npos != pos)
-        {
-            return n.value_.substr(0, pos);
-        }
-
-        return {};
+        return path{stem_view()};
     }
 
     auto path::extension() const -> path
     {
-        if (empty() || object_name() == dot || object_name() == dot_dot)
-        {
-            return {};
-        }
-
-        const auto n = object_name();
-
-        if (auto pos = n.value_.find_last_of(dot); string_type::npos != pos)
-        {
-            return n.value_.substr(pos);
-        }
-
-        return {};
+        return path{extension_view()};
     }
 
     auto path::begin() const -> iterator
@@ -262,11 +408,11 @@ namespace irods::experimental::filesystem
         return reverse_iterator{begin()};
     }
 
-    auto path::append_separator_if_needed(const path& _p) -> void
+    auto path::append_separator_if_needed(std::string_view _p) -> void
     {
         if (value_.empty() ||
             preferred_separator == value_.back() ||
-            preferred_separator == _p.value_.front())
+            preferred_separator == _p.front())
         {
             return;
         }
@@ -421,24 +567,33 @@ namespace irods::experimental::filesystem
     {
         path::string_type t;
         _is >> std::quoted(t);
-        _p = t;
+        _p = std::move(t);
         return _is;
     }
 
     auto hash_value(const path& _p) noexcept -> std::size_t
     {
-        const auto pstr = _p.string();
+        const auto& pstr = _p.native();
         return boost::hash_range(std::begin(pstr), std::end(pstr));
+    }
+
+    auto zone_name_view(const path& _p) noexcept -> std::optional<std::string_view>
+    {
+        component_scanner scanner{_p.string_view()};
+        if (scanner.at_end) {
+            return std::nullopt;
+        }
+        scanner.advance();
+        if (scanner.at_end) {
+            return std::nullopt;
+        }
+        return scanner.current;
     }
 
     auto zone_name(const path& _p) -> std::optional<std::string>
     {
-        using difference_type = path::iterator::difference_type;
-
-        auto iter = std::begin(_p);
-
-        if (constexpr difference_type hops = 2; std::distance(iter, std::end(_p)) >= hops) {
-            return *++iter;
+        if (const auto zv = zone_name_view(_p); zv.has_value()) {
+            return std::string{*zv};
         }
 
         return std::nullopt;

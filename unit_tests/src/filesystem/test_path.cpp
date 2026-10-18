@@ -558,3 +558,82 @@ TEST_CASE("path validation functions", "[validation]")
     }());
     // clang-format on
 }
+
+TEST_CASE("path zero-copy string_view observers and decomposition", "[zero-copy][views]")
+{
+    const fs::path p{"/tempZone/home/rods/archive.tar.gz"};
+
+    // string() and native() return references to the internal buffer (zero copy)
+    REQUIRE(&p.string() == &p.native());
+    REQUIRE(p.string().data() == p.c_str());
+    REQUIRE(p.string_view().data() == p.c_str());
+    REQUIRE(p.size() == std::strlen("/tempZone/home/rods/archive.tar.gz"));
+
+    // Construct and append from std::string_view directly
+    constexpr std::string_view sv = "/tempZone/home/rods";
+    fs::path p_from_sv{sv};
+    p_from_sv /= std::string_view{"sub/file.txt"};
+    REQUIRE(p_from_sv == "/tempZone/home/rods/sub/file.txt");
+
+    // Zero-allocation string_view decomposition views match path decomposition
+    REQUIRE(p.root_collection_view() == "/");
+    REQUIRE(p.relative_path_view() == "tempZone/home/rods/archive.tar.gz");
+    REQUIRE(p.parent_path_view() == "/tempZone/home/rods");
+    REQUIRE(p.object_name_view() == "archive.tar.gz");
+    REQUIRE(p.stem_view() == "archive.tar");
+    REQUIRE(p.extension_view() == ".gz");
+
+    // Views point directly into p.c_str() buffer (zero allocation)
+    REQUIRE(p.parent_path_view().data() == p.c_str());
+    REQUIRE(p.object_name_view().data() == p.c_str() + std::strlen("/tempZone/home/rods/"));
+
+    // Edge cases for decomposition views
+    REQUIRE(fs::path{"/"}.parent_path_view() == "/");
+    REQUIRE(fs::path{"/"}.object_name_view().empty());
+    REQUIRE(fs::path{"/tempZone/home/rods/"}.object_name_view().empty());
+    REQUIRE(fs::path{"/tempZone/home/rods/"}.parent_path_view() == "/tempZone/home/rods");
+    REQUIRE(fs::path{"/tempZone/home/rods/."}.stem_view().empty());
+    REQUIRE(fs::path{"/tempZone/home/rods/.."}.stem_view().empty());
+    REQUIRE(fs::path{"/tempZone/home/rods/."}.extension_view().empty());
+    REQUIRE(fs::path{"/tempZone/home/rods/.."}.extension_view().empty());
+
+    // Zone name view extracts zone without allocation
+    const auto zv = fs::zone_name_view(p);
+    REQUIRE(zv.has_value());
+    REQUIRE(*zv == "tempZone");
+    REQUIRE(zv->data() == p.c_str() + 1);
+    REQUIRE(fs::zone_name(p) == std::optional<std::string>{"tempZone"});
+    REQUIRE_FALSE(fs::zone_name_view(fs::path{"/"}).has_value());
+    REQUIRE_FALSE(fs::zone_name_view(fs::path{}).has_value());
+
+    // In-place assign_concat reuses buffer capacity
+    fs::path reusable;
+    reusable.assign_concat("/tempZone/home/rods", "data.bin");
+    REQUIRE(reusable == "/tempZone/home/rods/data.bin");
+    reusable.assign_concat("/tempZone/home/rods/", "next.bin");
+    REQUIRE(reusable == "/tempZone/home/rods/next.bin");
+}
+
+TEST_CASE("non-throwing path validation and bounded C-array copy", "[validation][error_code]")
+{
+    std::error_code ec;
+
+    REQUIRE_FALSE(fs::validate_path("", ec));
+    REQUIRE(ec == irods::experimental::make_error_code(SYS_INVALID_INPUT_PARAM));
+
+    const std::string too_long(MAX_NAME_LEN, 'a');
+    REQUIRE_FALSE(fs::validate_path(fs::path{too_long}, ec));
+    REQUIRE(ec == irods::experimental::make_error_code(USER_PATH_EXCEEDS_MAX));
+
+    REQUIRE(fs::validate_path("/tempZone/home/rods", ec));
+    REQUIRE_FALSE(ec);
+
+    char buf[16];
+    REQUIRE(fs::copy_to_c_array(buf, "/a/b/c", ec));
+    REQUIRE_FALSE(ec);
+    REQUIRE(std::string_view{buf} == "/a/b/c");
+
+    REQUIRE_FALSE(fs::copy_to_c_array(buf, "0123456789abcdef", ec));
+    REQUIRE(ec == irods::experimental::make_error_code(USER_PATH_EXCEEDS_MAX));
+}
+

@@ -2,6 +2,7 @@
 #define IRODS_FILESYSTEM_PATH_TRAITS_HPP
 
 #include <string>
+#include <string_view>
 #include <vector>
 #include <list>
 
@@ -18,6 +19,7 @@ namespace irods::experimental::filesystem
         template <> inline constexpr bool is_pathable<char*>             = true;
         template <> inline constexpr bool is_pathable<const char*>       = true;
         template <> inline constexpr bool is_pathable<std::string>       = true;
+        template <> inline constexpr bool is_pathable<std::string_view>  = true;
         template <> inline constexpr bool is_pathable<std::vector<char>> = true;
         template <> inline constexpr bool is_pathable<std::list<char>>   = true;
         template <> inline constexpr bool is_pathable<collection_entry>  = true;
