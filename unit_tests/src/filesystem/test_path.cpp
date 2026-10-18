@@ -637,3 +637,34 @@ TEST_CASE("non-throwing path validation and bounded C-array copy", "[validation]
     REQUIRE(ec == irods::experimental::make_error_code(USER_PATH_EXCEEDS_MAX));
 }
 
+#include "irods/filesystem/object_status.hpp"
+
+TEST_CASE("object_status move semantics and status_options bitmask", "[object_status][zero-copy]")
+{
+    std::vector<fs::entity_permission> perms{
+        {"rods", "tempZone", fs::perms::own, "rodsadmin"}
+    };
+    const auto* original_data_ptr = perms.data();
+
+    fs::object_status st{fs::object_type::collection, std::move(perms)};
+    REQUIRE(st.permissions().data() == original_data_ptr);
+
+    fs::object_status moved_st{std::move(st)};
+    REQUIRE(moved_st.permissions().data() == original_data_ptr);
+    REQUIRE(moved_st.type() == fs::object_type::collection);
+
+    std::vector<fs::entity_permission> perms2{
+        {"alice", "tempZone", fs::perms::read_object, "rodsuser"}
+    };
+    const auto* perms2_ptr = perms2.data();
+    moved_st.permissions(std::move(perms2));
+    REQUIRE(moved_st.permissions().data() == perms2_ptr);
+
+    constexpr auto opts = fs::status_options::include_permissions | fs::status_options::include_inheritance;
+    STATIC_REQUIRE(opts == fs::status_options::full);
+    STATIC_REQUIRE((opts & fs::status_options::include_permissions) == fs::status_options::include_permissions);
+    STATIC_REQUIRE((opts & fs::status_options::include_inheritance) == fs::status_options::include_inheritance);
+    STATIC_REQUIRE((fs::status_options::basic & fs::status_options::full) == fs::status_options::basic);
+}
+
+

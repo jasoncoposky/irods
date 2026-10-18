@@ -19,10 +19,22 @@
 
 #include <chrono>
 
-namespace irods::experimental::filesystem::NAMESPACE_IMPL
+#ifndef IRODS_FILESYSTEM_COLLECTION_ENTRY_CLASS_DEFINED
+#define IRODS_FILESYSTEM_COLLECTION_ENTRY_CLASS_DEFINED
+
+namespace irods::experimental::filesystem
 {
-    class collection_iterator;
-    class recursive_collection_iterator;
+    namespace client
+    {
+        class collection_iterator;
+        class recursive_collection_iterator;
+    } // namespace client
+
+    namespace server
+    {
+        class collection_iterator;
+        class recursive_collection_iterator;
+    } // namespace server
 
     class collection_entry
     {
@@ -33,10 +45,10 @@ namespace irods::experimental::filesystem::NAMESPACE_IMPL
         // NOLINTNEXTLINE(google-explicit-constructor)
         operator const path&() const noexcept                     { return path_; }
         auto path() const noexcept -> const path&                 { return path_; }
-        auto exists() const noexcept -> bool                      { return filesystem::NAMESPACE_IMPL::exists(status_); }
-        auto is_data_object() const noexcept -> bool              { return filesystem::NAMESPACE_IMPL::is_data_object(status_); }
-        auto is_collection() const noexcept -> bool               { return filesystem::NAMESPACE_IMPL::is_collection(status_); }
-        auto is_other() const noexcept -> bool                    { return filesystem::NAMESPACE_IMPL::is_other(status_); }
+        auto exists() const noexcept -> bool                      { return status_.type() != object_type::none && status_.type() != object_type::not_found; }
+        auto is_data_object() const noexcept -> bool              { return status_.type() == object_type::data_object; }
+        auto is_collection() const noexcept -> bool               { return status_.type() == object_type::collection; }
+        auto is_other() const noexcept -> bool                    { return status_.type() == object_type::unknown; }
         auto creation_time() const noexcept -> object_time_type   { return ctime_; }
         auto last_write_time() const noexcept -> object_time_type { return mtime_; }
         auto status() const noexcept -> const object_status&      { return status_; }
@@ -58,20 +70,29 @@ namespace irods::experimental::filesystem::NAMESPACE_IMPL
         // clang-format on
 
     private:
-        friend class collection_iterator;
-        friend class recursive_collection_iterator;
+        friend class client::collection_iterator;
+        friend class client::recursive_collection_iterator;
+        friend class server::collection_iterator;
+        friend class server::recursive_collection_iterator;
 
-        mutable class path path_;
-        mutable object_status status_;
-        mutable unsigned data_mode_;
-        mutable std::uintmax_t data_size_;
-        mutable std::string data_id_;
-        mutable object_time_type ctime_;
-        mutable object_time_type mtime_;
-        mutable std::string checksum_;
-        mutable std::string owner_;
-        mutable std::string data_type_;
+        mutable class path path_{};
+        mutable object_status status_{};
+        mutable unsigned data_mode_{};
+        mutable std::uintmax_t data_size_{};
+        mutable std::string data_id_{};
+        mutable object_time_type ctime_{};
+        mutable object_time_type mtime_{};
+        mutable std::string checksum_{};
+        mutable std::string owner_{};
+        mutable std::string data_type_{};
     };
 } // namespace irods::experimental::filesystem
+
+#endif // IRODS_FILESYSTEM_COLLECTION_ENTRY_CLASS_DEFINED
+
+namespace irods::experimental::filesystem::NAMESPACE_IMPL
+{
+    using collection_entry = ::irods::experimental::filesystem::collection_entry;
+} // namespace irods::experimental::filesystem::NAMESPACE_IMPL
 
 #endif // IRODS_FILESYSTEM_COLLECTION_ENTRY_HPP_INCLUDE_HEADER
