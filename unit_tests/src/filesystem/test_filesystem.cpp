@@ -841,6 +841,51 @@ TEST_CASE("filesystem")
         CHECK(fs::client::copy_data_object(conn, new_data_object, data_object, fs::copy_options::update_existing));
         CHECK(old_mtime < fs::client::last_write_time(conn, data_object));
     }
+
+    SECTION("non-throwing error_code overloads, status_options::basic, and remove_all edge cases")
+    {
+        std::error_code ec;
+
+        // status_options::basic fetches type without querying ACLs
+        const auto basic_st = fs::client::status(conn, sandbox, fs::status_options::basic, ec);
+        REQUIRE_FALSE(ec);
+        REQUIRE(fs::client::exists(basic_st));
+        REQUIRE(fs::client::is_collection(basic_st));
+        REQUIRE(basic_st.permissions().empty());
+
+        // Non-existent path sets not_found and clears ec
+        const auto missing_st = fs::client::status(conn, sandbox / "does_not_exist", fs::status_options::basic, ec);
+        REQUIRE_FALSE(ec);
+        REQUIRE(missing_st.type() == fs::object_type::not_found);
+        REQUIRE_FALSE(fs::client::exists(conn, sandbox / "does_not_exist", ec));
+        REQUIRE_FALSE(ec);
+
+        // remove_all on a single data object removes it and returns 1
+        const auto single_obj = sandbox / "single_remove_all.txt";
+        {
+            default_transport tp{conn};
+            odstream{tp, single_obj} << "payload";
+        }
+        REQUIRE(fs::client::exists(conn, single_obj, ec));
+        REQUIRE(fs::client::remove_all(conn, single_obj, fs::remove_options::no_trash, ec) == 1);
+        REQUIRE_FALSE(ec);
+        REQUIRE_FALSE(fs::client::exists(conn, single_obj, ec));
+
+        // remove_all on /dir does not miscount sibling /dir_sibling
+        const auto dir_a = sandbox / "prefix_dir";
+        const auto dir_b = sandbox / "prefix_dir_sibling";
+        REQUIRE(fs::client::create_collection(conn, dir_a, ec));
+        REQUIRE_FALSE(ec);
+        REQUIRE(fs::client::create_collection(conn, dir_b, ec));
+        REQUIRE_FALSE(ec);
+        {
+            default_transport tp{conn};
+            odstream{tp, dir_b / "keep_me.txt"} << "sibling";
+        }
+        REQUIRE(fs::client::remove_all(conn, dir_a, fs::remove_options::no_trash, ec) == 1);
+        REQUIRE_FALSE(ec);
+        REQUIRE(fs::client::exists(conn, dir_b / "keep_me.txt", ec));
+    }
 }
 
 TEST_CASE("#8912: filesystem does not expand group membership when listing permissions on data objects")

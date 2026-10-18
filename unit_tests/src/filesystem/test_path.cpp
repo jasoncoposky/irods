@@ -667,4 +667,38 @@ TEST_CASE("object_status move semantics and status_options bitmask", "[object_st
     STATIC_REQUIRE((fs::status_options::basic & fs::status_options::full) == fs::status_options::basic);
 }
 
+#include "irods/filesystem/filesystem.hpp"
+
+TEST_CASE("filesystem client non-throwing error_code overloads on invalid paths", "[filesystem][error_code]")
+{
+    RcComm* dummy_comm_ptr = nullptr;
+    auto& dummy_comm = *dummy_comm_ptr;
+    std::error_code ec;
+
+    const fs::path empty_path{};
+    const fs::path overlong_path{std::string(MAX_NAME_LEN, 'x')};
+
+    REQUIRE(fs::client::status(dummy_comm, empty_path, fs::status_options::basic, ec).type() == fs::object_type::none);
+    REQUIRE(ec == irods::experimental::make_error_code(SYS_INVALID_INPUT_PARAM));
+
+    REQUIRE(fs::client::status(dummy_comm, overlong_path, ec).type() == fs::object_type::none);
+    REQUIRE(ec == irods::experimental::make_error_code(USER_PATH_EXCEEDS_MAX));
+
+    REQUIRE_FALSE(fs::client::exists(dummy_comm, empty_path, ec));
+    REQUIRE(ec == irods::experimental::make_error_code(SYS_INVALID_INPUT_PARAM));
+
+    REQUIRE_FALSE(fs::client::is_collection_registered(dummy_comm, empty_path, ec));
+    REQUIRE(ec == irods::experimental::make_error_code(SYS_INVALID_INPUT_PARAM));
+
+    REQUIRE_FALSE(fs::client::is_data_object_registered(dummy_comm, overlong_path, ec));
+    REQUIRE(ec == irods::experimental::make_error_code(USER_PATH_EXCEEDS_MAX));
+
+    REQUIRE(fs::client::data_object_size(dummy_comm, empty_path, ec) == static_cast<std::uintmax_t>(-1));
+    REQUIRE(ec == irods::experimental::make_error_code(SYS_INVALID_INPUT_PARAM));
+
+    REQUIRE(fs::client::remove_all(dummy_comm, empty_path, fs::remove_options::none, ec) == static_cast<std::uintmax_t>(-1));
+    REQUIRE(ec == irods::experimental::make_error_code(SYS_INVALID_INPUT_PARAM));
+}
+
+
 

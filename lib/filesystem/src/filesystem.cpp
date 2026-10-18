@@ -51,56 +51,196 @@
 
 #include <fmt/format.h>
 
+#include <charconv>
 #include <cctype>
+#include <cstdlib>
 #include <cstring>
 #include <string>
+#include <string_view>
 #include <iterator>
 #include <exception>
 #include <sstream>
 #include <iomanip>
 #include <algorithm>
+#include <system_error>
+
+namespace irods::experimental::filesystem::detail
+{
+#ifndef IRODS_FILESYSTEM_SQL_ESCAPED_VIEW_DEFINED
+#define IRODS_FILESYSTEM_SQL_ESCAPED_VIEW_DEFINED
+    struct sql_escaped_view
+    {
+        std::string_view value;
+    };
+#endif // IRODS_FILESYSTEM_SQL_ESCAPED_VIEW_DEFINED
+} // namespace irods::experimental::filesystem::detail
+
+#ifndef IRODS_FILESYSTEM_SQL_ESCAPED_FORMATTER_DEFINED
+#define IRODS_FILESYSTEM_SQL_ESCAPED_FORMATTER_DEFINED
+template <>
+struct fmt::formatter<irods::experimental::filesystem::detail::sql_escaped_view> : fmt::formatter<std::string_view>
+{
+    template <typename FormatContext>
+    auto format(irods::experimental::filesystem::detail::sql_escaped_view _esc, FormatContext& _ctx) const
+    {
+        auto out = _ctx.out();
+        std::string_view sv = _esc.value;
+
+        while (!sv.empty()) {
+            const auto pos = sv.find('\'');
+            if (pos == std::string_view::npos) {
+                out = fmt::format_to(out, "{}", sv);
+                break;
+            }
+            if (pos > 0) {
+                out = fmt::format_to(out, "{}", sv.substr(0, pos));
+            }
+            out = fmt::format_to(out, "\\x27");
+            sv.remove_prefix(pos + 1);
+        }
+
+        return out;
+    }
+};
+#endif // IRODS_FILESYSTEM_SQL_ESCAPED_FORMATTER_DEFINED
 
 namespace irods::experimental::filesystem::NAMESPACE_IMPL
 {
     namespace
     {
+        using ::irods::experimental::filesystem::detail::sql_escaped_view;
+
+        constexpr auto sql_escape(std::string_view _sv) noexcept -> sql_escaped_view
+        {
+            return sql_escaped_view{_sv};
+        }
+
+        constexpr auto sql_escape(const path& _p) noexcept -> sql_escaped_view
+        {
+            return sql_escaped_view{_p.string_view()};
+        }
+
+        template <typename IntType>
+        auto parse_int(std::string_view _sv, IntType& _out) noexcept -> bool
+        {
+            if (_sv.empty()) {
+                return false;
+            }
+            const auto* first = _sv.data();
+            const auto* last = first + _sv.size();
+            const auto [ptr, ec] = std::from_chars(first, last, _out);
+            return ec == std::errc{} && ptr == last;
+        }
+
+        auto apply_zone_hint(irods::experimental::query_builder& _qb, const path& _p) -> void
+        {
+            if (const auto zv = zone_name_view(_p); zv && !zv->empty()) {
+                _qb.zone_hint(std::string{*zv});
+            }
+        }
+
+        auto extract_irods_error(const irods::exception& _e) noexcept -> std::error_code
+        {
+            return make_error_code(static_cast<int>(_e.code()));
+        }
+
 #ifdef IRODS_FILESYSTEM_ENABLE_SERVER_SIDE_API
         int rsDataObjCopy(rsComm_t* _comm, dataObjCopyInp_t* _dataObjCopyInp)
         {
             transferStat_t* ts_ptr{};
-
-            const auto ec = rsDataObjCopy(_comm, _dataObjCopyInp, &ts_ptr);
-
-            if (ts_ptr) {
-                std::free(ts_ptr);
-            }
-
-            return ec;
+            irods::at_scope_exit free_ts{[&ts_ptr] { std::free(ts_ptr); }};
+            return ::rsDataObjCopy(_comm, _dataObjCopyInp, &ts_ptr);
         }
 
         const auto rsRmColl = [](rsComm_t* _comm, collInp_t* _rmCollInp, bool _track_progress) -> int
         {
             collOprStat_t* stat{};
+            irods::at_scope_exit free_stat{[&stat] { std::free(stat); }};
             return ::rsRmColl(_comm, _rmCollInp, _track_progress ? &stat : nullptr);
         };
 #endif // IRODS_FILESYSTEM_ENABLE_SERVER_SIDE_API
 
-        struct stat
+        struct basic_stat_result
         {
-            int error;
-            long long size;
-            int type;
-            int mode;
-            long long id;
-            std::string owner_name;
-            std::string owner_zone;
-            long long ctime;
-            long long mtime;
-            std::vector<entity_permission> prms;
-            bool inheritance;
+            int error{0};
+            long long id{-1};
+            long long size{0};
+            int type{UNKNOWN_OBJ_T};
+            long long ctime{0};
+            long long mtime{0};
+            bool is_special_coll{false};
         };
 
-        auto to_permission_enum(const std::string& _perm) -> perms
+        auto basic_stat(rxComm& _comm, const path& _p, std::error_code& _ec) noexcept -> basic_stat_result
+        {
+            basic_stat_result s{};
+
+            if (!validate_path(_p, _ec)) {
+                s.error = _ec.value();
+                return s;
+            }
+
+            dataObjInp_t input{};
+            if (!copy_to_c_array(input.objPath, _p.string_view(), _ec)) {
+                s.error = _ec.value();
+                return s;
+            }
+
+            rodsObjStat_t* output{};
+            s.error = rxObjStat(&_comm, &input, &output);
+
+            if (s.error >= 0) {
+                irods::at_scope_exit free_stat_out{[output] {
+                    freeRodsObjStat(output);
+                }};
+
+                if (!output) {
+                    s.error = SYS_INTERNAL_ERR;
+                    _ec = make_error_code(SYS_INTERNAL_ERR);
+                    return s;
+                }
+
+                if (!parse_int(output->dataId, s.id) ||
+                    !parse_int(output->createTime, s.ctime) ||
+                    !parse_int(output->modifyTime, s.mtime))
+                {
+                    s.error = SYS_INTERNAL_ERR;
+                    _ec = make_error_code(SYS_INTERNAL_ERR);
+                    return s;
+                }
+
+                s.size = output->objSize;
+                s.type = output->objType;
+                s.is_special_coll = (output->specColl != nullptr);
+                _ec.clear();
+            }
+            else if (USER_FILE_DOES_NOT_EXIST == s.error) {
+                s.error = 0;
+                s.type = UNKNOWN_OBJ_T;
+                _ec.clear();
+            }
+            else {
+                _ec = make_error_code(s.error);
+            }
+
+            return s;
+        }
+
+        constexpr auto to_object_type(int _rods_obj_type) noexcept -> object_type
+        {
+            switch (_rods_obj_type) {
+                case DATA_OBJ_T:
+                    return object_type::data_object;
+                case COLL_OBJ_T:
+                    return object_type::collection;
+                case UNKNOWN_OBJ_T:
+                    return object_type::not_found;
+                default:
+                    return object_type::none;
+            }
+        }
+
+        auto to_permission_enum(std::string_view _perm, std::error_code& _ec) noexcept -> perms
         {
             // clang-format off
             if (_perm == "null")            { return perms::null; }
@@ -119,167 +259,183 @@ namespace irods::experimental::filesystem::NAMESPACE_IMPL
             if (_perm == "own")             { return perms::own; }
             // clang-format on
 
-            throw filesystem_error{
-                "stat error: cannot convert string to permission enum", make_error_code(SYS_INVALID_INPUT_PARAM)};
+            _ec = make_error_code(SYS_INVALID_INPUT_PARAM);
+            return perms::null;
         }
 
-        auto set_permissions(rxComm& _comm, const path& _p, stat& _s) -> void
+        auto fetch_permissions(rxComm& _comm,
+                               const path& _p,
+                               const basic_stat_result& _s,
+                               std::vector<entity_permission>& _out_prms,
+                               std::error_code& _ec) -> void
         {
-            if (DATA_OBJ_T == _s.type) {
-                std::string sql = "select USER_NAME, USER_ZONE, DATA_ACCESS_NAME, USER_TYPE "
-                                  "where DATA_ACCESS_DATA_ID = '";
-                sql += std::to_string(_s.id);
-                sql += "' and DATA_TOKEN_NAMESPACE = 'access_type'";
+            _ec.clear();
 
-                irods::experimental::query_builder qb;
+            try {
+                if (DATA_OBJ_T == _s.type) {
+                    const auto sql = fmt::format(
+                        "select USER_NAME, USER_ZONE, DATA_ACCESS_NAME, USER_TYPE "
+                        "where DATA_ACCESS_DATA_ID = '{}' and DATA_TOKEN_NAMESPACE = 'access_type'",
+                        _s.id);
 
-                if (const auto zone = zone_name(_p); zone) {
-                    qb.zone_hint(*zone);
-                }
-
-                for (const auto& row : qb.build(_comm, sql)) {
-                    _s.prms.push_back({row[0], row[1], to_permission_enum(row[2]), row[3]});
-                }
-            }
-            else if (COLL_OBJ_T == _s.type) {
-                irods::experimental::query_builder qb;
-
-                if (const auto zone = zone_name(_p); zone) {
-                    qb.zone_hint(*zone);
-                }
-
-                try {
-                    std::vector<std::string> args{_p.string()};
-
-                    qb.type(irods::query_type::specific).bind_arguments(args);
-
-                    for (const auto& row : qb.build(_comm, "ShowCollAcls")) {
-                        _s.prms.push_back({row[0], row[1], to_permission_enum(row[2]), row[3]});
-                    }
-                }
-                catch (...) {
-                    // Fallback to GenQuery if the specific query fails (does not exist).
-                    //
-                    // In the case where the specific query, "ShowCollAcls", does not exist,
-                    // this implementation is required to fallback to GenQuery. The following
-                    // code does not require any information from the exception object, therefore
-                    // it is ignored.
-
-                    qb.type(irods::query_type::general);
-
-                    std::string sql = "select COLL_USER_NAME, COLL_ZONE_NAME, COLL_ACCESS_NAME, USER_TYPE "
-                                      "where COLL_TOKEN_NAMESPACE = 'access_type' and COLL_NAME = '";
-                    sql += single_quotes_to_hex(_p);
-                    sql += "'";
+                    irods::experimental::query_builder qb;
+                    apply_zone_hint(qb, _p);
 
                     for (const auto& row : qb.build(_comm, sql)) {
-                        _s.prms.push_back({row[0], row[1], to_permission_enum(row[2]), row[3]});
+                        const auto p = to_permission_enum(row[2], _ec);
+                        if (_ec) {
+                            return;
+                        }
+                        _out_prms.push_back({row[0], row[1], p, row[3]});
+                    }
+                }
+                else if (COLL_OBJ_T == _s.type) {
+                    irods::experimental::query_builder qb;
+                    apply_zone_hint(qb, _p);
+
+                    try {
+                        std::vector<std::string> args{_p.string()};
+                        qb.type(irods::query_type::specific).bind_arguments(args);
+
+                        for (const auto& row : qb.build(_comm, "ShowCollAcls")) {
+                            const auto p = to_permission_enum(row[2], _ec);
+                            if (_ec) {
+                                return;
+                            }
+                            _out_prms.push_back({row[0], row[1], p, row[3]});
+                        }
+                    }
+                    catch (...) {
+                        qb.type(irods::query_type::general);
+
+                        const auto sql = fmt::format(
+                            "select COLL_USER_NAME, COLL_ZONE_NAME, COLL_ACCESS_NAME, USER_TYPE "
+                            "where COLL_TOKEN_NAMESPACE = 'access_type' and COLL_NAME = '{}'",
+                            sql_escape(_p));
+
+                        for (const auto& row : qb.build(_comm, sql)) {
+                            const auto p = to_permission_enum(row[2], _ec);
+                            if (_ec) {
+                                return;
+                            }
+                            _out_prms.push_back({row[0], row[1], p, row[3]});
+                        }
                     }
                 }
             }
+            catch (const irods::exception& e) {
+                _ec = extract_irods_error(e);
+            }
+            catch (...) {
+                _ec = make_error_code(SYS_INTERNAL_ERR);
+            }
         }
 
-        auto get_inheritance(rxComm& _comm, const path& _p, int _object_type) -> bool
+        auto get_inheritance(rxComm& _comm, const path& _p, int _object_type, std::error_code& _ec) -> bool
         {
+            _ec.clear();
+
             if (COLL_OBJ_T != _object_type) {
                 return false;
             }
 
-            irods::experimental::query_builder qb;
+            try {
+                irods::experimental::query_builder qb;
+                apply_zone_hint(qb, _p);
+                qb.type(irods::query_type::general);
 
-            if (const auto zone = zone_name(_p); zone) {
-                qb.zone_hint(*zone);
+                const auto gql = fmt::format("select COLL_INHERITANCE where COLL_NAME = '{}'", sql_escape(_p));
+
+                for (const auto& row : qb.build(_comm, gql)) {
+                    int val = 0;
+                    if (parse_int(row[0], val)) {
+                        return val != 0;
+                    }
+                    return std::atoi(row[0].c_str()) != 0;
+                }
             }
-
-            qb.type(irods::query_type::general);
-
-            const auto gql = fmt::format("select COLL_INHERITANCE where COLL_NAME = '{}'", single_quotes_to_hex(_p));
-
-            for (const auto& row : qb.build(_comm, gql)) {
-                return std::atoi(row[0].data());
+            catch (const irods::exception& e) {
+                _ec = extract_irods_error(e);
+            }
+            catch (...) {
+                _ec = make_error_code(SYS_INTERNAL_ERR);
             }
 
             return false;
         }
 
-        auto stat(rxComm& _comm, const path& _p) -> stat
+        auto is_collection_empty(rxComm& _comm, const path& _p, std::error_code& _ec) -> bool
         {
-            dataObjInp_t input{};
-            std::strncpy(input.objPath, _p.c_str(), std::strlen(_p.c_str()));
-
-            rodsObjStat_t* output{};
-            struct stat s{};
-
-            if (s.error = rxObjStat(&_comm, &input, &output); s.error >= 0) {
-                irods::at_scope_exit at_scope_exit{[output] {
-                    freeRodsObjStat(output);
-                }};
-
-                try {
-                    s.id = std::stoll(output->dataId);
-                    s.ctime = std::stoll(output->createTime);
-                    s.mtime = std::stoll(output->modifyTime);
-                }
-                catch (...) {
-                    throw filesystem_error{"stat error: cannot convert string to integer", _p, make_error_code(SYS_INTERNAL_ERR)};
-                }
-
-                s.size = output->objSize;
-                s.type = output->objType;
-                s.mode = static_cast<int>(output->dataMode);
-                s.owner_name = output->ownerName;
-                s.owner_zone = output->ownerZone;
-                s.inheritance = get_inheritance(_comm, _p, s.type);
-
-                set_permissions(_comm, _p, s);
+            _ec.clear();
+            try {
+                return collection_iterator{} == collection_iterator{_comm, _p};
             }
-            else if (USER_FILE_DOES_NOT_EXIST == s.error) {
-                s.error = 0;
-                s.type = UNKNOWN_OBJ_T;
+            catch (const filesystem_error& e) {
+                _ec = e.code();
+                return false;
             }
-
-            return s;
+            catch (const irods::exception& e) {
+                _ec = extract_irods_error(e);
+                return false;
+            }
+            catch (...) {
+                _ec = make_error_code(SYS_INTERNAL_ERR);
+                return false;
+            }
         }
 
-        auto is_collection_empty(rxComm& _comm, const path& _p) -> bool
+        auto remove_by_type_impl(rxComm& _comm,
+                                 const path& _p,
+                                 int _obj_type,
+                                 extended_remove_options _opts,
+                                 std::error_code& _ec) -> bool
         {
-            return collection_iterator{} == collection_iterator{_comm, _p};
-        }
+            _ec.clear();
 
-        auto remove_impl(rxComm& _comm, const path& _p, extended_remove_options _opts) -> bool
-        {
-            throw_if_path_length_exceeds_limit(_p);
-
-            const auto s = status(_comm, _p);
-
-            if (!exists(s)) {
+            if (UNKNOWN_OBJ_T == _obj_type) {
                 return false;
             }
 
-            if (is_data_object(s)) {
+            if (DATA_OBJ_T == _obj_type) {
                 dataObjInp_t input{};
                 at_scope_exit free_memory{[&input] { clearKeyVal(&input.condInput); }};
 
                 input.oprType = _opts.unregister ? UNREG_OPR : 0;
 
-                std::strncpy(input.objPath, _p.c_str(), std::strlen(_p.c_str()));
+                if (!copy_to_c_array(input.objPath, _p.string_view(), _ec)) {
+                    return false;
+                }
 
                 if (_opts.no_trash) {
                     addKeyVal(&input.condInput, FORCE_FLAG_KW, "");
                 }
 
-                return rxDataObjUnlink(&_comm, &input) == 0;
+                if (const auto err = rxDataObjUnlink(&_comm, &input); err < 0) {
+                    _ec = make_error_code(err);
+                    return false;
+                }
+
+                return true;
             }
 
-            if (is_collection(s)) {
-                if (!_opts.recursive && !is_collection_empty(_comm, _p)) {
-                    throw filesystem_error{"cannot remove non-empty collection", _p, make_error_code(SYS_COLLECTION_NOT_EMPTY)};
+            if (COLL_OBJ_T == _obj_type) {
+                if (!_opts.recursive) {
+                    const bool empty = is_collection_empty(_comm, _p, _ec);
+                    if (_ec) {
+                        return false;
+                    }
+                    if (!empty) {
+                        _ec = make_error_code(SYS_COLLECTION_NOT_EMPTY);
+                        return false;
+                    }
                 }
 
                 collInp_t input{};
                 at_scope_exit free_memory{[&input] { clearKeyVal(&input.condInput); }};
 
-                std::strncpy(input.collName, _p.c_str(), std::strlen(_p.c_str()));
+                if (!copy_to_c_array(input.collName, _p.string_view(), _ec)) {
+                    return false;
+                }
 
                 if (_opts.no_trash) {
                     addKeyVal(&input.condInput, FORCE_FLAG_KW, "");
@@ -289,129 +445,204 @@ namespace irods::experimental::filesystem::NAMESPACE_IMPL
                     addKeyVal(&input.condInput, RECURSIVE_OPR__KW, "");
                 }
 
-                return rxRmColl(&_comm, &input, _opts.progress) >= 0;
+                if (const auto err = rxRmColl(&_comm, &input, _opts.progress); err < 0) {
+                    _ec = make_error_code(err);
+                    return false;
+                }
+
+                return true;
             }
 
-            throw filesystem_error{"cannot remove: unknown object type", _p, make_error_code(CAT_NOT_A_DATAOBJ_AND_NOT_A_COLLECTION)};
+            _ec = make_error_code(CAT_NOT_A_DATAOBJ_AND_NOT_A_COLLECTION);
+            return false;
         }
 
-        auto set_permissions(bool _add_admin_flag,
-                             rxComm& _comm,
-                             const path& _p,
-                             const std::string& _user_or_group,
-                             perms _prms) -> void
+        auto remove_impl(rxComm& _comm, const path& _p, extended_remove_options _opts, std::error_code& _ec) -> bool
         {
-            throw_if_path_length_exceeds_limit(_p);
+            const auto st = basic_stat(_comm, _p, _ec);
+            if (_ec) {
+                return false;
+            }
+            return remove_by_type_impl(_comm, _p, st.type, _opts, _ec);
+        }
+
+        auto remove_all_impl(rxComm& _comm,
+                             const path& _p,
+                             extended_remove_options _opts,
+                             std::error_code& _ec) -> std::uintmax_t
+        {
+            const auto st = basic_stat(_comm, _p, _ec);
+            if (_ec) {
+                return static_cast<std::uintmax_t>(-1);
+            }
+
+            if (UNKNOWN_OBJ_T == st.type) {
+                return 0;
+            }
+
+            if (DATA_OBJ_T == st.type) {
+                _opts.recursive = false;
+                if (remove_by_type_impl(_comm, _p, st.type, _opts, _ec)) {
+                    return 1;
+                }
+                return _ec ? static_cast<std::uintmax_t>(-1) : 0;
+            }
+
+            if (COLL_OBJ_T != st.type) {
+                _ec = make_error_code(CAT_NOT_A_DATAOBJ_AND_NOT_A_COLLECTION);
+                return static_cast<std::uintmax_t>(-1);
+            }
+
+            // Normalize trailing slashes for exact collection + descendant prefix queries.
+            std::string_view p_view = _p.string_view();
+            while (p_view.size() > 1 && is_separator(p_view.back())) {
+                p_view.remove_suffix(1);
+            }
+
+            std::uintmax_t count = 1; // The collection _p itself.
+
+            try {
+                irods::experimental::query_builder qb;
+                apply_zone_hint(qb, _p);
+
+                const auto direct_data_sql = fmt::format(
+                    "select count(DATA_ID) where COLL_NAME = '{}'",
+                    sql_escape(p_view));
+
+                const auto sub_data_sql = (p_view == "/")
+                    ? std::string{"select count(DATA_ID) where COLL_NAME like '/%'"}
+                    : fmt::format("select count(DATA_ID) where COLL_NAME like '{}/%'", sql_escape(p_view));
+
+                const auto sub_colls_sql = (p_view == "/")
+                    ? std::string{"select count(COLL_ID) where COLL_NAME like '/%'"}
+                    : fmt::format("select count(COLL_ID) where COLL_NAME like '{}/%'", sql_escape(p_view));
+
+                for (const auto& sql : {direct_data_sql, sub_data_sql, sub_colls_sql}) {
+                    for (const auto& row : qb.build(_comm, sql)) {
+                        std::uint64_t sub_count = 0;
+                        if (parse_int(row[0], sub_count)) {
+                            count += sub_count;
+                        }
+                    }
+                }
+            }
+            catch (const irods::exception& e) {
+                _ec = extract_irods_error(e);
+                return static_cast<std::uintmax_t>(-1);
+            }
+            catch (...) {
+                _ec = make_error_code(SYS_INTERNAL_ERR);
+                return static_cast<std::uintmax_t>(-1);
+            }
+
+            _opts.recursive = true;
+
+            if (remove_by_type_impl(_comm, _p, st.type, _opts, _ec)) {
+                return count;
+            }
+
+            return _ec ? static_cast<std::uintmax_t>(-1) : 0;
+        }
+
+        constexpr auto permission_to_access_string(bool _add_admin_flag, perms _prms) noexcept -> const char*
+        {
+            if (_add_admin_flag) {
+                switch (_prms) {
+                    case perms::null:            return "admin:null";
+                    case perms::read_metadata:   return "admin:read_metadata";
+                    case perms::read_object:
+                    case perms::read:            return "admin:read";
+                    case perms::create_metadata: return "admin:create_metadata";
+                    case perms::modify_metadata: return "admin:modify_metadata";
+                    case perms::delete_metadata: return "admin:delete_metadata";
+                    case perms::create_object:   return "admin:create_object";
+                    case perms::modify_object:
+                    case perms::write:           return "admin:write";
+                    case perms::delete_object:   return "admin:delete_object";
+                    case perms::own:             return "admin:own";
+                }
+            }
+            else {
+                switch (_prms) {
+                    case perms::null:            return "null";
+                    case perms::read_metadata:   return "read_metadata";
+                    case perms::read_object:
+                    case perms::read:            return "read";
+                    case perms::create_metadata: return "create_metadata";
+                    case perms::modify_metadata: return "modify_metadata";
+                    case perms::delete_metadata: return "delete_metadata";
+                    case perms::create_object:   return "create_object";
+                    case perms::modify_object:
+                    case perms::write:           return "write";
+                    case perms::delete_object:   return "delete_object";
+                    case perms::own:             return "own";
+                }
+            }
+            return nullptr;
+        }
+
+        auto set_permissions_impl(bool _add_admin_flag,
+                                  rxComm& _comm,
+                                  const path& _p,
+                                  const std::string& _user_or_group,
+                                  perms _prms,
+                                  std::error_code& _ec) noexcept -> void
+        {
+            if (!validate_path_length(_p.string_view(), _ec)) {
+                return;
+            }
+
+            const char* access_str = permission_to_access_string(_add_admin_flag, _prms);
+            if (!access_str) {
+                _ec = make_error_code(SYS_INVALID_INPUT_PARAM);
+                return;
+            }
 
             char username[NAME_LEN]{};
             char zone[NAME_LEN]{};
 
-            auto ec = parseUserName(_user_or_group.c_str(), username, zone);
-
-            if (ec != 0) {
-                throw filesystem_error{"cannot parse user/group name", _p, make_error_code(ec)};
+            if (const auto err = parseUserName(_user_or_group.c_str(), username, zone); err != 0) {
+                _ec = make_error_code(err);
+                return;
             }
 
             modAccessControlInp_t input{};
-
             input.userName = username;
             input.zone = zone;
+            input.path = const_cast<char*>(_p.c_str());
+            input.accessLevel = const_cast<char*>(access_str);
 
-            char path[MAX_NAME_LEN]{};
-            std::strncpy(path, _p.c_str(), std::strlen(_p.c_str()));
-            input.path = path;
-
-            char access[16]{};
-
-            if (_add_admin_flag) {
-                std::strcpy(access, "admin:");
-            }
-
-            switch (_prms) {
-                case perms::null:
-                    std::strncat(access, "null", 4);
-                    break;
-
-                case perms::read_metadata:
-                    std::strncat(access, "read_metadata", 13);
-                    break;
-
-                case perms::read_object:
-                case perms::read:
-                    std::strncat(access, "read", 4);
-                    break;
-
-                case perms::create_metadata:
-                    std::strncat(access, "create_metadata", 15);
-                    break;
-
-                case perms::modify_metadata:
-                    std::strncat(access, "modify_metadata", 15);
-                    break;
-
-                case perms::delete_metadata:
-                    std::strncat(access, "delete_metadata", 15);
-                    break;
-
-                case perms::create_object:
-                    std::strncat(access, "create_object", 13);
-                    break;
-
-                case perms::modify_object:
-                case perms::write:
-                    std::strncat(access, "write", 5);
-                    break;
-
-                case perms::delete_object:
-                    std::strncat(access, "delete_object", 13);
-                    break;
-
-                case perms::own:
-                    std::strncat(access, "own", 3);
-                    break;
-            }
-
-            input.accessLevel = access;
-
-            ec = rxModAccessControl(&_comm, &input);
-
-            if (ec != 0) {
-                throw filesystem_error{"cannot set permissions", _p, make_error_code(ec)};
+            if (const auto err = rxModAccessControl(&_comm, &input); err != 0) {
+                _ec = make_error_code(err);
             }
         }
 
-        auto set_inheritance(bool _add_admin_flag, rxComm& _comm, const path& _p, bool _value) -> void
+        auto set_inheritance_impl(bool _add_admin_flag,
+                                  rxComm& _comm,
+                                  const path& _p,
+                                  bool _value,
+                                  std::error_code& _ec) noexcept -> void
         {
-            throw_if_path_is_empty(_p);
-            throw_if_path_length_exceeds_limit(_p);
+            const auto st = basic_stat(_comm, _p, _ec);
+            if (_ec) {
+                return;
+            }
 
-            if (!is_collection(_comm, _p)) {
-                throw filesystem_error{"existing path is not a collection", _p, make_error_code(NOT_A_COLLECTION)};
+            if (COLL_OBJ_T != st.type) {
+                _ec = make_error_code(NOT_A_COLLECTION);
+                return;
             }
 
             modAccessControlInp_t input{};
+            input.userName = const_cast<char*>("");
+            input.zone = const_cast<char*>("");
+            input.path = const_cast<char*>(_p.c_str());
+            input.accessLevel = const_cast<char*>(
+                _add_admin_flag ? (_value ? "admin:inherit" : "admin:noinherit")
+                                : (_value ? "inherit" : "noinherit"));
 
-            input.userName = "";
-            input.zone = "";
-
-            char path[MAX_NAME_LEN]{};
-            std::strncpy(path, _p.c_str(), std::strlen(_p.c_str()));
-            input.path = path;
-
-            char access[16]{};
-
-            if (_add_admin_flag) {
-                std::strcpy(access, "admin:");
-            }
-
-            std::strcat(access, _value ? "inherit" : "noinherit");
-
-            input.accessLevel = access;
-
-            const auto ec = rxModAccessControl(&_comm, &input);
-
-            if (ec != 0) {
-                throw filesystem_error{"cannot set inheritance", _p, make_error_code(ec)};
+            if (const auto err = rxModAccessControl(&_comm, &input); err != 0) {
+                _ec = make_error_code(err);
             }
         }
 
@@ -431,51 +662,44 @@ namespace irods::experimental::filesystem::NAMESPACE_IMPL
             return (p_iter == p_last);
         }
 
-        auto do_metadata_op(bool _add_admin_flag,
-                            rxComm& _comm,
-                            const path& _p,
-                            const metadata& _metadata,
-                            std::string_view op) -> void
+        auto do_metadata_op_impl(bool _add_admin_flag,
+                                 rxComm& _comm,
+                                 const path& _p,
+                                 const metadata& _metadata,
+                                 const char* _op,
+                                 std::error_code& _ec) noexcept -> void
         {
-            throw_if_path_is_empty(_p);
-            throw_if_path_length_exceeds_limit(_p);
-
-            modAVUMetadataInp_t input{};
-
-            char* command = const_cast<char*>(op.data());
-            input.arg0 = command;
-
-            char type[3]{};
-
-            if (const auto s = status(_comm, _p); is_data_object(s)) {
-                std::strncpy(type, "-d", std::strlen("-d"));
+            const auto st = basic_stat(_comm, _p, _ec);
+            if (_ec) {
+                return;
             }
-            else if (is_collection(s)) {
-                std::strncpy(type, "-C", std::strlen("-C"));
+
+            const char* type_arg = nullptr;
+            if (DATA_OBJ_T == st.type) {
+                type_arg = "-d";
+            }
+            else if (COLL_OBJ_T == st.type) {
+                type_arg = "-C";
             }
             else {
-                std::string_view op_full_name = (op == "rm") ? "remove" : op;
-                throw filesystem_error{fmt::format("cannot {} metadata: unknown object type", op_full_name), _p,
-                                       make_error_code(CAT_NOT_A_DATAOBJ_AND_NOT_A_COLLECTION)};
+                _ec = make_error_code(CAT_NOT_A_DATAOBJ_AND_NOT_A_COLLECTION);
+                return;
             }
 
-            input.arg1 = type;
+            if (!validate_path_length(_metadata.attribute, _ec) ||
+                !validate_path_length(_metadata.value, _ec) ||
+                !validate_path_length(_metadata.units, _ec))
+            {
+                return;
+            }
 
-            char path_buf[MAX_NAME_LEN]{};
-            std::strncpy(path_buf, _p.c_str(), std::strlen(_p.c_str()));
-            input.arg2 = path_buf;
-
-            char attr_buf[MAX_NAME_LEN]{};
-            std::strncpy(attr_buf, _metadata.attribute.c_str(), _metadata.attribute.size());
-            input.arg3 = attr_buf;
-
-            char value_buf[MAX_NAME_LEN]{};
-            std::strncpy(value_buf, _metadata.value.c_str(), _metadata.value.size());
-            input.arg4 = value_buf;
-
-            char units_buf[MAX_NAME_LEN]{};
-            std::strncpy(units_buf, _metadata.units.c_str(), _metadata.units.size());
-            input.arg5 = units_buf;
+            modAVUMetadataInp_t input{};
+            input.arg0 = const_cast<char*>(_op);
+            input.arg1 = const_cast<char*>(type_arg);
+            input.arg2 = const_cast<char*>(_p.c_str());
+            input.arg3 = const_cast<char*>(_metadata.attribute.c_str());
+            input.arg4 = const_cast<char*>(_metadata.value.c_str());
+            input.arg5 = const_cast<char*>(_metadata.units.c_str());
 
             at_scope_exit free_memory{[&input] { clearKeyVal(&input.condInput); }};
 
@@ -483,138 +707,344 @@ namespace irods::experimental::filesystem::NAMESPACE_IMPL
                 addKeyVal(&input.condInput, ADMIN_KW, "");
             }
 
-            if (const auto ec = rxModAVUMetadata(&_comm, &input); ec != 0) {
-                std::string_view op_full_name = (op == "rm") ? "remove" : op;
-                throw filesystem_error{fmt::format("cannot {} metadata", op_full_name), _p, make_error_code(ec)};
+            if (const auto err = rxModAVUMetadata(&_comm, &input); err != 0) {
+                _ec = make_error_code(err);
             }
+        }
+
+        auto last_write_time_by_type(rxComm& _comm,
+                                     const path& _p,
+                                     int _obj_type,
+                                     std::error_code& _ec) -> object_time_type
+        {
+            _ec.clear();
+
+            std::string gql;
+            if (DATA_OBJ_T == _obj_type) {
+                gql = fmt::format("select max(DATA_MODIFY_TIME) "
+                                  "where"
+                                  " COLL_NAME = '{}' and"
+                                  " DATA_NAME = '{}' and"
+                                  " DATA_REPL_STATUS = '1'",
+                                  sql_escape(_p.parent_path_view()),
+                                  sql_escape(_p.object_name_view()));
+            }
+            else if (COLL_OBJ_T == _obj_type) {
+                gql = fmt::format("select COLL_MODIFY_TIME where COLL_NAME = '{}'", sql_escape(_p));
+            }
+            else {
+                _ec = make_error_code(INVALID_OBJECT_TYPE);
+                return object_time_type::min();
+            }
+
+            try {
+                irods::experimental::query_builder qb;
+                apply_zone_hint(qb, _p);
+
+                for (auto&& row : qb.build(_comm, gql)) {
+                    std::uint64_t secs = 0;
+                    if (parse_int(row[0], secs)) {
+                        return object_time_type{std::chrono::seconds{secs}};
+                    }
+                    _ec = make_error_code(CAT_NO_ROWS_FOUND);
+                    return object_time_type::min();
+                }
+            }
+            catch (const irods::exception& e) {
+                _ec = extract_irods_error(e);
+                return object_time_type::min();
+            }
+            catch (...) {
+                _ec = make_error_code(SYS_INTERNAL_ERR);
+                return object_time_type::min();
+            }
+
+            _ec = make_error_code(CAT_NO_ROWS_FOUND);
+            return object_time_type::min();
+        }
+
+        auto copy_data_object_with_stats(rxComm& _comm,
+                                         const path& _from,
+                                         const basic_stat_result& _from_stat,
+                                         const path& _to,
+                                         const basic_stat_result& _to_stat,
+                                         copy_options _options,
+                                         std::error_code& _ec) -> bool
+        {
+            _ec.clear();
+
+            if (DATA_OBJ_T != _from_stat.type) {
+                _ec = make_error_code(INVALID_OBJECT_TYPE);
+                return false;
+            }
+
+            dataObjCopyInp_t input{};
+            at_scope_exit free_memory{[&input] {
+                clearKeyVal(&input.srcDataObjInp.condInput);
+                clearKeyVal(&input.destDataObjInp.condInput);
+            }};
+
+            if (UNKNOWN_OBJ_T != _to_stat.type) {
+                if (_from_stat.id == _to_stat.id) {
+                    _ec = make_error_code(SAME_SRC_DEST_PATHS_ERR);
+                    return false;
+                }
+
+                if (DATA_OBJ_T != _to_stat.type) {
+                    _ec = make_error_code(INVALID_OBJECT_TYPE);
+                    return false;
+                }
+
+                if (copy_options::skip_existing == _options) {
+                    return false;
+                }
+
+                if (copy_options::overwrite_existing == _options) {
+                    addKeyVal(&input.destDataObjInp.condInput, FORCE_FLAG_KW, "");
+                }
+                else if (copy_options::update_existing == _options) {
+                    const auto from_mtime = last_write_time_by_type(_comm, _from, DATA_OBJ_T, _ec);
+                    if (_ec) {
+                        return false;
+                    }
+                    const auto to_mtime = last_write_time_by_type(_comm, _to, DATA_OBJ_T, _ec);
+                    if (_ec) {
+                        return false;
+                    }
+                    if (from_mtime <= to_mtime) {
+                        return false;
+                    }
+
+                    addKeyVal(&input.destDataObjInp.condInput, FORCE_FLAG_KW, "");
+                }
+            }
+
+            if (!copy_to_c_array(input.srcDataObjInp.objPath, _from.string_view(), _ec) ||
+                !copy_to_c_array(input.destDataObjInp.objPath, _to.string_view(), _ec))
+            {
+                return false;
+            }
+
+            if (const auto err = rxDataObjCopy(&_comm, &input); err < 0) {
+                _ec = make_error_code(err);
+                return false;
+            }
+
+            return true;
         }
     } // anonymous namespace
 
     // Operational functions
 
-    auto copy(rxComm& _comm, const path& _from, const path& _to, copy_options _options) -> void
+    auto copy(rxComm& _comm, const path& _from, const path& _to, std::error_code& _ec) -> void
     {
-        const auto from_status = status(_comm, _from);
+        copy(_comm, _from, _to, copy_options::none, _ec);
+    }
 
-        if (!exists(from_status)) {
-            throw filesystem_error{"path does not exist", _from, make_error_code(OBJ_PATH_DOES_NOT_EXIST)};
+    auto copy(rxComm& _comm, const path& _from, const path& _to, copy_options _options, std::error_code& _ec) -> void
+    {
+        const auto from_stat = basic_stat(_comm, _from, _ec);
+        if (_ec) {
+            return;
         }
 
-        const auto to_status = status(_comm, _to);
-
-        if (exists(to_status) && equivalent(_comm, _from, _to)) {
-            throw filesystem_error{"paths cannot point to the same object", _from, _to, make_error_code(SAME_SRC_DEST_PATHS_ERR)};
+        if (UNKNOWN_OBJ_T == from_stat.type) {
+            _ec = make_error_code(OBJ_PATH_DOES_NOT_EXIST);
+            return;
         }
 
-        if (is_other(from_status)) {
-            throw filesystem_error{"cannot copy: unknown object type", _from, make_error_code(CAT_NOT_A_DATAOBJ_AND_NOT_A_COLLECTION)};
+        const auto to_stat = basic_stat(_comm, _to, _ec);
+        if (_ec) {
+            return;
         }
 
-        if (is_other(to_status)) {
-            throw filesystem_error{"cannot copy: unknown object type", _to, make_error_code(CAT_NOT_A_DATAOBJ_AND_NOT_A_COLLECTION)};
+        if (UNKNOWN_OBJ_T != to_stat.type && from_stat.id == to_stat.id) {
+            _ec = make_error_code(SAME_SRC_DEST_PATHS_ERR);
+            return;
         }
 
-        if (is_collection(from_status) && is_data_object(to_status)) {
-            throw filesystem_error{"cannot copy a collection into a data object", _from, _to, make_error_code(SYS_INVALID_INPUT_PARAM)};
+        if (DATA_OBJ_T != from_stat.type && COLL_OBJ_T != from_stat.type) {
+            _ec = make_error_code(CAT_NOT_A_DATAOBJ_AND_NOT_A_COLLECTION);
+            return;
         }
 
-        if (is_data_object(from_status)) {
+        if (UNKNOWN_OBJ_T != to_stat.type && DATA_OBJ_T != to_stat.type && COLL_OBJ_T != to_stat.type) {
+            _ec = make_error_code(CAT_NOT_A_DATAOBJ_AND_NOT_A_COLLECTION);
+            return;
+        }
+
+        if (COLL_OBJ_T == from_stat.type && DATA_OBJ_T == to_stat.type) {
+            _ec = make_error_code(SYS_INVALID_INPUT_PARAM);
+            return;
+        }
+
+        if (DATA_OBJ_T == from_stat.type) {
             if (copy_options::collections_only == (copy_options::collections_only & _options)) {
                 return;
             }
 
-            if (is_collection(to_status)) {
-                copy_data_object(_comm, _from, _to / _from.object_name(), _options);
+            if (COLL_OBJ_T == to_stat.type) {
+                const auto target_path = _to / _from.object_name_view();
+                const auto target_stat = basic_stat(_comm, target_path, _ec);
+                if (_ec) {
+                    return;
+                }
+                copy_data_object_with_stats(_comm, _from, from_stat, target_path, target_stat, _options, _ec);
                 return;
             }
 
-            copy_data_object(_comm, _from, _to, _options);
+            copy_data_object_with_stats(_comm, _from, from_stat, _to, to_stat, _options, _ec);
         }
-        else if (is_collection(from_status)) {
+        else if (COLL_OBJ_T == from_stat.type) {
             if (copy_options::recursive == (copy_options::recursive & _options) ||
                 copy_options::none == _options)
             {
-                if (!exists(to_status)) {
-                    if (!create_collection(_comm, _to, _from)) {
-                        throw filesystem_error{"cannot create collection", _to, make_error_code(FILE_CREATE_ERROR)};
+                if (UNKNOWN_OBJ_T == to_stat.type) {
+                    if (!create_collection(_comm, _to, _from, _ec)) {
+                        if (!_ec) {
+                            _ec = make_error_code(FILE_CREATE_ERROR);
+                        }
+                        return;
                     }
                 }
 
-                for (const auto& e : collection_iterator{_comm, _from}) {
-                    copy(_comm, e.path(), _to / e.path().object_name(), _options | copy_options::in_recursive_copy);
+                try {
+                    for (const auto& e : collection_iterator{_comm, _from}) {
+                        copy(_comm, e.path(), _to / e.path().object_name_view(), _options | copy_options::in_recursive_copy, _ec);
+                        if (_ec) {
+                            return;
+                        }
+                    }
+                }
+                catch (const filesystem_error& e) {
+                    _ec = e.code();
                 }
             }
         }
     }
 
+    auto copy(rxComm& _comm, const path& _from, const path& _to, copy_options _options) -> void
+    {
+        std::error_code ec;
+        copy(_comm, _from, _to, _options, ec);
+        if (ec) {
+            throw filesystem_error{"cannot copy", _from, _to, ec};
+        }
+    }
+
+    auto copy_data_object(rxComm& _comm, const path& _from, const path& _to, std::error_code& _ec) -> bool
+    {
+        return copy_data_object(_comm, _from, _to, copy_options::none, _ec);
+    }
+
+    auto copy_data_object(rxComm& _comm, const path& _from, const path& _to, copy_options _options, std::error_code& _ec) -> bool
+    {
+        if (!validate_path_length(_from.string_view(), _ec) || !validate_path_length(_to.string_view(), _ec)) {
+            return false;
+        }
+
+        const auto from_stat = basic_stat(_comm, _from, _ec);
+        if (_ec) {
+            return false;
+        }
+
+        if (DATA_OBJ_T != from_stat.type) {
+            _ec = make_error_code(INVALID_OBJECT_TYPE);
+            return false;
+        }
+
+        const auto to_stat = basic_stat(_comm, _to, _ec);
+        if (_ec) {
+            return false;
+        }
+
+        return copy_data_object_with_stats(_comm, _from, from_stat, _to, to_stat, _options, _ec);
+    }
+
     auto copy_data_object(rxComm& _comm, const path& _from, const path& _to, copy_options _options) -> bool
     {
-        throw_if_path_length_exceeds_limit(_from);
-        throw_if_path_length_exceeds_limit(_to);
+        std::error_code ec;
+        const bool res = copy_data_object(_comm, _from, _to, _options, ec);
+        if (ec) {
+            throw filesystem_error{"cannot copy data object", _from, _to, ec};
+        }
+        return res;
+    }
 
-        if (!is_data_object(_comm, _from)) {
-            throw filesystem_error{"path does not point to a data object", _from, make_error_code(INVALID_OBJECT_TYPE)};
+    auto create_collection(rxComm& _comm, const path& _p, std::error_code& _ec) -> bool
+    {
+        if (!validate_path_length(_p.string_view(), _ec)) {
+            return false;
         }
 
-        dataObjCopyInp_t input{};
-
-        at_scope_exit free_memory{[&input] {
-            clearKeyVal(&input.srcDataObjInp.condInput);
-            clearKeyVal(&input.destDataObjInp.condInput);
-        }};
-
-        if (const auto s = status(_comm, _to); exists(s)) {
-            if (equivalent(_comm, _from, _to)) {
-                throw filesystem_error{"paths cannot point to the same object", _from, _to, make_error_code(SAME_SRC_DEST_PATHS_ERR)};
-            }
-
-            if (!is_data_object(s)) {
-                throw filesystem_error{"path does not point to a data object", _to, make_error_code(INVALID_OBJECT_TYPE)};
-            }
-
-            if (copy_options::skip_existing == _options) {
-                return false;
-            }
-
-            if (copy_options::overwrite_existing == _options) {
-                addKeyVal(&input.destDataObjInp.condInput, FORCE_FLAG_KW, "");
-            }
-            else if (copy_options::update_existing == _options) {
-                if (last_write_time(_comm, _from) <= last_write_time(_comm, _to)) {
-                    return false;
-                }
-
-                addKeyVal(&input.destDataObjInp.condInput, FORCE_FLAG_KW, "");
-            }
+        const auto parent_st = basic_stat(_comm, _p.parent_path(), _ec);
+        if (_ec) {
+            return false;
+        }
+        if (UNKNOWN_OBJ_T == parent_st.type) {
+            _ec = make_error_code(OBJ_PATH_DOES_NOT_EXIST);
+            return false;
         }
 
-        std::strncpy(input.srcDataObjInp.objPath, _from.c_str(), std::strlen(_from.c_str()));
-        std::strncpy(input.destDataObjInp.objPath, _to.c_str(), std::strlen(_to.c_str()));
+        const auto self_st = basic_stat(_comm, _p, _ec);
+        if (_ec) {
+            return false;
+        }
+        if (UNKNOWN_OBJ_T != self_st.type) {
+            return false;
+        }
 
-        if (const auto ec = rxDataObjCopy(&_comm, &input); ec < 0) {
-            throw filesystem_error{"cannot copy data object", _from, _to, make_error_code(ec)};
+        collInp_t input{};
+        if (!copy_to_c_array(input.collName, _p.string_view(), _ec)) {
+            return false;
+        }
+
+        if (const auto err = rxCollCreate(&_comm, &input); err != 0) {
+            _ec = make_error_code(err);
+            return false;
         }
 
         return true;
     }
 
-    auto create_collection(rxComm& _comm, const path& _p) -> bool // Implies perms::all
+    auto create_collection(rxComm& _comm, const path& _p) -> bool
     {
-        throw_if_path_length_exceeds_limit(_p);
-
-        if (!exists(_comm, _p.parent_path())) {
-            throw filesystem_error{"path does not exist", _p.parent_path(), make_error_code(OBJ_PATH_DOES_NOT_EXIST)};
+        std::error_code ec;
+        const bool res = create_collection(_comm, _p, ec);
+        if (ec) {
+            if (ec == make_error_code(OBJ_PATH_DOES_NOT_EXIST)) {
+                throw filesystem_error{"path does not exist", _p.parent_path(), ec};
+            }
+            throw filesystem_error{"cannot create collection", _p, ec};
         }
+        return res;
+    }
 
-        if (exists(_comm, _p)) {
+    auto create_collection(rxComm& _comm, const path& _p, const path& _existing_p, std::error_code& _ec) -> bool
+    {
+        if (!validate_path(_p, _ec) || !validate_path(_existing_p, _ec)) {
             return false;
         }
 
-        collInp_t input{};
-        std::strncpy(input.collName, _p.c_str(), std::strlen(_p.c_str()));
+        const auto s = status(_comm, _existing_p, status_options::include_permissions, _ec);
+        if (_ec) {
+            return false;
+        }
 
-        if (const auto ec = rxCollCreate(&_comm, &input); ec != 0) {
-            throw filesystem_error{"cannot create collection", _p, make_error_code(ec)};
+        if (!is_collection(s)) {
+            _ec = make_error_code(INVALID_OBJECT_TYPE);
+            return false;
+        }
+
+        if (!create_collection(_comm, _p, _ec) && _ec) {
+            return false;
+        }
+
+        for (const auto& p : s.permissions()) {
+            permissions(_comm, _p, p.name, p.prms, _ec);
+            if (_ec) {
+                return false;
+            }
         }
 
         return true;
@@ -622,21 +1052,41 @@ namespace irods::experimental::filesystem::NAMESPACE_IMPL
 
     auto create_collection(rxComm& _comm, const path& _p, const path& _existing_p) -> bool
     {
-        throw_if_path_is_empty(_p);
-        throw_if_path_is_empty(_existing_p);
-        throw_if_path_length_exceeds_limit(_p);
-        throw_if_path_length_exceeds_limit(_existing_p);
+        std::error_code ec;
+        const bool res = create_collection(_comm, _p, _existing_p, ec);
+        if (ec) {
+            if (ec == make_error_code(INVALID_OBJECT_TYPE)) {
+                throw filesystem_error{"existing path is not a collection", _existing_p, ec};
+            }
+            throw filesystem_error{"cannot create collection", _p, _existing_p, ec};
+        }
+        return res;
+    }
 
-        const auto s = status(_comm, _existing_p);
-
-        if (!is_collection(s)) {
-            throw filesystem_error{"existing path is not a collection", _existing_p, make_error_code(INVALID_OBJECT_TYPE)};
+    auto create_collections(rxComm& _comm, const path& _p, std::error_code& _ec) -> bool
+    {
+        if (!validate_path_length(_p.string_view(), _ec)) {
+            return false;
         }
 
-        create_collection(_comm, _p);
+        const auto st = basic_stat(_comm, _p, _ec);
+        if (_ec) {
+            return false;
+        }
+        if (UNKNOWN_OBJ_T != st.type) {
+            return false;
+        }
 
-        for (auto&& p : s.permissions()) {
-            permissions(_comm, _p, p.name, p.prms);
+        collInp_t input{};
+        at_scope_exit free_memory{[&input] { clearKeyVal(&input.condInput); }};
+        if (!copy_to_c_array(input.collName, _p.string_view(), _ec)) {
+            return false;
+        }
+        addKeyVal(&input.condInput, RECURSIVE_OPR__KW, "");
+
+        if (const auto err = rxCollCreate(&_comm, &input); err != 0) {
+            _ec = make_error_code(err);
+            return false;
         }
 
         return true;
@@ -652,7 +1102,8 @@ namespace irods::experimental::filesystem::NAMESPACE_IMPL
 
         collInp_t input{};
         at_scope_exit free_memory{[&input] { clearKeyVal(&input.condInput); }};
-        std::strncpy(input.collName, _p.c_str(), std::strlen(_p.c_str()));
+        std::error_code ec;
+        copy_to_c_array(input.collName, _p.string_view(), ec);
         addKeyVal(&input.condInput, RECURSIVE_OPR__KW, "");
 
         return rxCollCreate(&_comm, &input) == 0;
@@ -663,120 +1114,192 @@ namespace irods::experimental::filesystem::NAMESPACE_IMPL
         return status_known(_s) && _s.type() != object_type::not_found;
     }
 
+    auto exists(rxComm& _comm, const path& _p, std::error_code& _ec) -> bool
+    {
+        const auto st = basic_stat(_comm, _p, _ec);
+        if (_ec) {
+            return false;
+        }
+        return st.type != UNKNOWN_OBJ_T;
+    }
+
     auto exists(rxComm& _comm, const path& _p) -> bool
     {
-        return exists(status(_comm, _p));
+        std::error_code ec;
+        const bool res = exists(_comm, _p, ec);
+        if (ec) {
+            throw filesystem_error{"cannot check existence", _p, ec};
+        }
+        return res;
+    }
+
+    auto is_collection_registered(rxComm& _comm, const path& _p, std::error_code& _ec) -> bool
+    {
+        if (!validate_path(_p, _ec)) {
+            return false;
+        }
+
+        try {
+            irods::experimental::query_builder qb;
+            apply_zone_hint(qb, _p);
+
+            const auto gql = fmt::format("select COLL_ID where COLL_NAME = '{}'", sql_escape(_p));
+            return qb.build(_comm, gql).size() > 0;
+        }
+        catch (const irods::exception& e) {
+            _ec = extract_irods_error(e);
+            return false;
+        }
+        catch (...) {
+            _ec = make_error_code(SYS_INTERNAL_ERR);
+            return false;
+        }
     }
 
     auto is_collection_registered(rxComm& _comm, const path& _p) -> bool
     {
-        throw_if_path_is_empty(_p);
-        throw_if_path_length_exceeds_limit(_p);
+        std::error_code ec;
+        const bool res = is_collection_registered(_comm, _p, ec);
+        if (ec) {
+            throw filesystem_error{"cannot check if collection is registered", _p, ec};
+        }
+        return res;
+    }
 
-        irods::experimental::query_builder qb;
-
-        if (const auto zone = zone_name(_p); zone) {
-            qb.zone_hint(*zone);
+    auto is_data_object_registered(rxComm& _comm, const path& _p, std::error_code& _ec) -> bool
+    {
+        if (!validate_path(_p, _ec)) {
+            return false;
         }
 
-        const auto gql = fmt::format("select COLL_ID where COLL_NAME = '{}'", single_quotes_to_hex(_p));
+        try {
+            irods::experimental::query_builder qb;
+            apply_zone_hint(qb, _p);
 
-        return qb.build(_comm, gql).size() > 0;
+            const auto gql = fmt::format("select DATA_ID where COLL_NAME = '{}' and DATA_NAME = '{}'",
+                                         sql_escape(_p.parent_path_view()),
+                                         sql_escape(_p.object_name_view()));
+
+            return qb.build(_comm, gql).size() > 0;
+        }
+        catch (const irods::exception& e) {
+            _ec = extract_irods_error(e);
+            return false;
+        }
+        catch (...) {
+            _ec = make_error_code(SYS_INTERNAL_ERR);
+            return false;
+        }
     }
 
     auto is_data_object_registered(rxComm& _comm, const path& _p) -> bool
     {
-        throw_if_path_is_empty(_p);
-        throw_if_path_length_exceeds_limit(_p);
-
-        irods::experimental::query_builder qb;
-
-        if (const auto zone = zone_name(_p); zone) {
-            qb.zone_hint(*zone);
+        std::error_code ec;
+        const bool res = is_data_object_registered(_comm, _p, ec);
+        if (ec) {
+            throw filesystem_error{"cannot check if data object is registered", _p, ec};
         }
-
-        const auto gql = fmt::format("select DATA_ID where COLL_NAME = '{}' and DATA_NAME = '{}'",
-                                     single_quotes_to_hex(_p.parent_path()),
-                                     single_quotes_to_hex(_p.object_name()));
-
-        return qb.build(_comm, gql).size() > 0;
+        return res;
     }
 
-    auto equivalent(rxComm& _comm, const path& _p1, const path& _p2) -> bool
+    auto equivalent(rxComm& _comm, const path& _p1, const path& _p2, std::error_code& _ec) -> bool
     {
-        throw_if_path_is_empty(_p1);
-        throw_if_path_is_empty(_p2);
-
-        const auto p1_info = stat(_comm, _p1);
-
-        if (p1_info.error < 0) {
-            throw filesystem_error{"cannot stat path", _p1, make_error_code(p1_info.error)};
+        const auto p1_info = basic_stat(_comm, _p1, _ec);
+        if (_ec) {
+            return false;
         }
-
         if (p1_info.type == UNKNOWN_OBJ_T) {
-            throw filesystem_error{"path does not exist", _p1, make_error_code(OBJ_PATH_DOES_NOT_EXIST)};
+            _ec = make_error_code(OBJ_PATH_DOES_NOT_EXIST);
+            return false;
         }
 
-        const auto p2_info = stat(_comm, _p2);
-
-        if (p2_info.error < 0) {
-            throw filesystem_error{"cannot stat path", _p2, make_error_code(p2_info.error)};
+        const auto p2_info = basic_stat(_comm, _p2, _ec);
+        if (_ec) {
+            return false;
         }
-
         if (p2_info.type == UNKNOWN_OBJ_T) {
-            throw filesystem_error{"path does not exist", _p2, make_error_code(OBJ_PATH_DOES_NOT_EXIST)};
+            _ec = make_error_code(OBJ_PATH_DOES_NOT_EXIST);
+            return false;
         }
 
         return p1_info.id == p2_info.id;
     }
 
-    auto data_object_size(rxComm& _comm, const path& _p) -> std::uintmax_t
+    auto equivalent(rxComm& _comm, const path& _p1, const path& _p2) -> bool
     {
-        throw_if_path_is_empty(_p);
-        throw_if_path_length_exceeds_limit(_p);
+        std::error_code ec;
+        const bool res = equivalent(_comm, _p1, _p2, ec);
+        if (ec) {
+            throw filesystem_error{"cannot check equivalence", _p1, _p2, ec};
+        }
+        return res;
+    }
 
-        if (!is_data_object(_comm, _p)) {
-            throw filesystem_error{"path does not point to a data object", _p, make_error_code(SYS_INVALID_INPUT_PARAM)};
+    auto data_object_size(rxComm& _comm, const path& _p, std::error_code& _ec) -> std::uintmax_t
+    {
+        const auto st = basic_stat(_comm, _p, _ec);
+        if (_ec) {
+            return static_cast<std::uintmax_t>(-1);
         }
 
-        // Fetch information for good replicas only (i.e. DATA_REPL_STATUS = '1').
+        if (DATA_OBJ_T != st.type) {
+            _ec = make_error_code(SYS_INVALID_INPUT_PARAM);
+            return static_cast<std::uintmax_t>(-1);
+        }
+
         const auto gql = fmt::format("select DATA_SIZE, DATA_MODIFY_TIME "
                                      "where"
                                      " COLL_NAME = '{}' and"
                                      " DATA_NAME = '{}' and"
                                      " DATA_REPL_STATUS = '1'",
-                                     single_quotes_to_hex(_p.parent_path()),
-                                     single_quotes_to_hex(_p.object_name()));
+                                     sql_escape(_p.parent_path_view()),
+                                     sql_escape(_p.object_name_view()));
 
-        irods::experimental::query_builder qb;
+        try {
+            irods::experimental::query_builder qb;
+            apply_zone_hint(qb, _p);
 
-        if (const auto zone = zone_name(_p); zone) {
-            qb.zone_hint(*zone);
-        }
+            auto query = qb.build(_comm, gql);
 
-        auto query = qb.build(_comm, gql);
-
-        if (query.size() == 0) {
-            throw filesystem_error{"no good replica found", _p, make_error_code(SYS_NO_GOOD_REPLICA)};
-        }
-
-        // This implementation assumes that any good replica will always satisfy
-        // the requirement within the loop, therefore the first iteration always causes
-        // the size to be captured. The size object should be empty if and only if there
-        // are no good replicas.
-        std::uint64_t latest_mtime = 0;
-        std::uintmax_t size = 0;
-
-        for (auto&& row : query) {
-            // As we iterate over the replicas, compare the mtimes and capture the size
-            // of the latest good replica.
-            if (const auto current_mtime = std::stoull(row[1]); current_mtime > latest_mtime) {
-                latest_mtime = current_mtime;
-                size = std::stoull(row[0]);
+            if (query.size() == 0) {
+                _ec = make_error_code(SYS_NO_GOOD_REPLICA);
+                return static_cast<std::uintmax_t>(-1);
             }
-        }
 
-        return size;
+            std::uint64_t latest_mtime = 0;
+            std::uintmax_t size = 0;
+
+            for (auto&& row : query) {
+                std::uint64_t current_mtime = 0;
+                std::uint64_t row_size = 0;
+                if (parse_int(row[1], current_mtime) && parse_int(row[0], row_size)) {
+                    if (current_mtime > latest_mtime) {
+                        latest_mtime = current_mtime;
+                        size = row_size;
+                    }
+                }
+            }
+
+            return size;
+        }
+        catch (const irods::exception& e) {
+            _ec = extract_irods_error(e);
+            return static_cast<std::uintmax_t>(-1);
+        }
+        catch (...) {
+            _ec = make_error_code(SYS_INTERNAL_ERR);
+            return static_cast<std::uintmax_t>(-1);
+        }
+    }
+
+    auto data_object_size(rxComm& _comm, const path& _p) -> std::uintmax_t
+    {
+        std::error_code ec;
+        const auto res = data_object_size(_comm, _p, ec);
+        if (ec) {
+            throw filesystem_error{"cannot get data object size", _p, ec};
+        }
+        return res;
     }
 
     auto is_collection(const object_status& _s) noexcept -> bool
@@ -784,42 +1307,88 @@ namespace irods::experimental::filesystem::NAMESPACE_IMPL
         return _s.type() == object_type::collection;
     }
 
-    auto is_collection(rxComm& _comm, const path& _p) -> bool
+    auto is_collection(rxComm& _comm, const path& _p, std::error_code& _ec) -> bool
     {
-        return is_collection(status(_comm, _p));
+        const auto st = basic_stat(_comm, _p, _ec);
+        if (_ec) {
+            return false;
+        }
+        return st.type == COLL_OBJ_T;
     }
 
-    auto is_special_collection(rxComm& _comm, const path& _p) -> bool
+    auto is_collection(rxComm& _comm, const path& _p) -> bool
     {
-        throw_if_path_is_empty(_p);
-        throw_if_path_length_exceeds_limit(_p);
+        std::error_code ec;
+        const bool res = is_collection(_comm, _p, ec);
+        if (ec) {
+            throw filesystem_error{"cannot check if path is collection", _p, ec};
+        }
+        return res;
+    }
+
+    auto is_special_collection(rxComm& _comm, const path& _p, std::error_code& _ec) -> bool
+    {
+        if (!validate_path(_p, _ec)) {
+            return false;
+        }
 
         const auto gql = fmt::format("select COLL_TYPE, COLL_INFO_1, COLL_INFO_2 "
                                      "where COLL_NAME = '{}'",
-                                     single_quotes_to_hex(_p));
+                                     sql_escape(_p));
 
-        irods::experimental::query_builder qb;
+        try {
+            irods::experimental::query_builder qb;
+            apply_zone_hint(qb, _p);
 
-        if (const auto zone = zone_name(_p); zone) {
-            qb.zone_hint(*zone);
+            for (auto&& row : qb.build(_comm, gql)) {
+                return !row[0].empty() && (!row[1].empty() || !row[2].empty());
+            }
         }
-
-        for (auto&& row : qb.build(_comm, gql)) {
-            return !row[0].empty() && (!row[1].empty() || !row[2].empty());
+        catch (const irods::exception& e) {
+            _ec = extract_irods_error(e);
+            return false;
+        }
+        catch (...) {
+            _ec = make_error_code(SYS_INTERNAL_ERR);
+            return false;
         }
 
         return false;
     }
 
-    auto is_empty(rxComm& _comm, const path& _p) -> bool
+    auto is_special_collection(rxComm& _comm, const path& _p) -> bool
     {
-        const auto s = status(_comm, _p);
+        std::error_code ec;
+        const bool res = is_special_collection(_comm, _p, ec);
+        if (ec) {
+            throw filesystem_error{"cannot check if collection is special", _p, ec};
+        }
+        return res;
+    }
 
-        if (is_collection(s)) {
-            return is_collection_empty(_comm, _p);
+    auto is_empty(rxComm& _comm, const path& _p, std::error_code& _ec) -> bool
+    {
+        const auto st = basic_stat(_comm, _p, _ec);
+        if (_ec) {
+            return false;
         }
 
-        throw filesystem_error{"cannot check emptiness: unknown object type", _p, make_error_code(CAT_NOT_A_DATAOBJ_AND_NOT_A_COLLECTION)};
+        if (COLL_OBJ_T == st.type) {
+            return is_collection_empty(_comm, _p, _ec);
+        }
+
+        _ec = make_error_code(CAT_NOT_A_DATAOBJ_AND_NOT_A_COLLECTION);
+        return false;
+    }
+
+    auto is_empty(rxComm& _comm, const path& _p) -> bool
+    {
+        std::error_code ec;
+        const bool res = is_empty(_comm, _p, ec);
+        if (ec) {
+            throw filesystem_error{"cannot check emptiness", _p, ec};
+        }
+        return res;
     }
 
     auto is_other(const object_status& _s) noexcept -> bool
@@ -827,9 +1396,23 @@ namespace irods::experimental::filesystem::NAMESPACE_IMPL
         return _s.type() == object_type::unknown;
     }
 
+    auto is_other(rxComm& _comm, const path& _p, std::error_code& _ec) -> bool
+    {
+        const auto st = basic_stat(_comm, _p, _ec);
+        if (_ec) {
+            return false;
+        }
+        return to_object_type(st.type) == object_type::unknown;
+    }
+
     auto is_other(rxComm& _comm, const path& _p) -> bool
     {
-        return is_other(status(_comm, _p));
+        std::error_code ec;
+        const bool res = is_other(_comm, _p, ec);
+        if (ec) {
+            throw filesystem_error{"cannot check if path is other", _p, ec};
+        }
+        return res;
     }
 
     auto is_data_object(const object_status& _s) noexcept -> bool
@@ -837,246 +1420,322 @@ namespace irods::experimental::filesystem::NAMESPACE_IMPL
         return _s.type() == object_type::data_object;
     }
 
+    auto is_data_object(rxComm& _comm, const path& _p, std::error_code& _ec) -> bool
+    {
+        const auto st = basic_stat(_comm, _p, _ec);
+        if (_ec) {
+            return false;
+        }
+        return st.type == DATA_OBJ_T;
+    }
+
     auto is_data_object(rxComm& _comm, const path& _p) -> bool
     {
-        return is_data_object(status(_comm, _p));
+        std::error_code ec;
+        const bool res = is_data_object(_comm, _p, ec);
+        if (ec) {
+            throw filesystem_error{"cannot check if path is data object", _p, ec};
+        }
+        return res;
+    }
+
+    auto last_write_time(rxComm& _comm, const path& _p, std::error_code& _ec) -> object_time_type
+    {
+        const auto st = basic_stat(_comm, _p, _ec);
+        if (_ec) {
+            return object_time_type::min();
+        }
+        return last_write_time_by_type(_comm, _p, st.type, _ec);
     }
 
     auto last_write_time(rxComm& _comm, const path& _p) -> object_time_type
     {
-        std::string gql;
-
-        if (const auto s = status(_comm, _p); is_data_object(s)) {
-            // Fetch information for good replicas only (i.e. DATA_REPL_STATUS = '1').
-            gql = fmt::format("select max(DATA_MODIFY_TIME) "
-                              "where"
-                              " COLL_NAME = '{}' and"
-                              " DATA_NAME = '{}' and"
-                              " DATA_REPL_STATUS = '1'",
-                              single_quotes_to_hex(_p.parent_path()),
-                              single_quotes_to_hex(_p.object_name()));
+        std::error_code ec;
+        const auto res = last_write_time(_comm, _p, ec);
+        if (ec) {
+            throw filesystem_error{"cannot get mtime", _p, ec};
         }
-        else if (is_collection(s)) {
-            gql = fmt::format("select COLL_MODIFY_TIME where COLL_NAME = '{}'", single_quotes_to_hex(_p));
-        }
-        else {
-            throw filesystem_error{"cannot get mtime", _p, make_error_code(INVALID_OBJECT_TYPE)};
-        }
-
-        irods::experimental::query_builder qb;
-
-        if (const auto zone = zone_name(_p); zone) {
-            qb.zone_hint(*zone);
-        }
-
-        for (auto&& row : qb.build(_comm, gql)) {
-            return object_time_type{std::chrono::seconds{std::stoull(row[0])}};
-        }
-
-        throw filesystem_error{"cannot get mtime", _p, make_error_code(CAT_NO_ROWS_FOUND)};
+        return res;
     }
 
-    auto last_write_time(rxComm& _comm, const path& _p, object_time_type _new_time) -> void
+    auto last_write_time(rxComm& _comm, const path& _p, object_time_type _new_time, std::error_code& _ec) -> void
     {
-        throw_if_path_length_exceeds_limit(_p);
+        const auto st = basic_stat(_comm, _p, _ec);
+        if (_ec) {
+            return;
+        }
 
-        if (!is_collection(_comm, _p)) {
-            throw filesystem_error{"path does not point to a collection", _p, make_error_code(SYS_INVALID_INPUT_PARAM)};
+        if (COLL_OBJ_T != st.type) {
+            _ec = make_error_code(SYS_INVALID_INPUT_PARAM);
+            return;
         }
 
         const auto timestamp = fmt::format("{:011}", _new_time.time_since_epoch().count());
 
         collInp_t input{};
         at_scope_exit free_memory{[&input] { clearKeyVal(&input.condInput); }};
-        std::strncpy(input.collName, _p.c_str(), std::strlen(_p.c_str()));
+        if (!copy_to_c_array(input.collName, _p.string_view(), _ec)) {
+            return;
+        }
         addKeyVal(&input.condInput, COLLECTION_MTIME_KW, timestamp.c_str());
 
-        if (const auto ec = rxModColl(&_comm, &input); ec != 0) {
-            throw filesystem_error{"cannot set mtime", _p, make_error_code(ec)};
+        if (const auto err = rxModColl(&_comm, &input); err != 0) {
+            _ec = make_error_code(err);
         }
     }
 
-    auto remove(rxComm& _comm, const path& _p, remove_options _opts) -> bool
+    auto last_write_time(rxComm& _comm, const path& _p, object_time_type _new_time) -> void
+    {
+        std::error_code ec;
+        last_write_time(_comm, _p, _new_time, ec);
+        if (ec) {
+            throw filesystem_error{"cannot set mtime", _p, ec};
+        }
+    }
+
+    auto remove(rxComm& _comm, const path& _p, std::error_code& _ec) -> bool
+    {
+        return remove(_comm, _p, remove_options::none, _ec);
+    }
+
+    auto remove(rxComm& _comm, const path& _p, remove_options _opts, std::error_code& _ec) -> bool
     {
         extended_remove_options opts{};
         opts.no_trash = (remove_options::no_trash == _opts);
         opts.recursive = false;
-        return remove_impl(_comm, _p, opts);
+        return remove_impl(_comm, _p, opts, _ec);
+    }
+
+    auto remove(rxComm& _comm, const path& _p, remove_options _opts) -> bool
+    {
+        std::error_code ec;
+        const bool res = remove(_comm, _p, _opts, ec);
+        if (ec) {
+            throw filesystem_error{"cannot remove", _p, ec};
+        }
+        return res;
+    }
+
+    auto remove(rxComm& _comm, const path& _p, extended_remove_options _opts, std::error_code& _ec) -> bool
+    {
+        return remove_impl(_comm, _p, _opts, _ec);
     }
 
     auto remove(rxComm& _comm, const path& _p, extended_remove_options _opts) -> bool
     {
-        return remove_impl(_comm, _p, _opts);
+        std::error_code ec;
+        const bool res = remove(_comm, _p, _opts, ec);
+        if (ec) {
+            throw filesystem_error{"cannot remove", _p, ec};
+        }
+        return res;
+    }
+
+    auto remove_all(rxComm& _comm, const path& _p, std::error_code& _ec) -> std::uintmax_t
+    {
+        return remove_all(_comm, _p, remove_options::none, _ec);
+    }
+
+    auto remove_all(rxComm& _comm, const path& _p, remove_options _opts, std::error_code& _ec) -> std::uintmax_t
+    {
+        extended_remove_options opts{};
+        opts.no_trash = (remove_options::no_trash == _opts);
+        opts.recursive = true;
+        return remove_all_impl(_comm, _p, opts, _ec);
     }
 
     auto remove_all(rxComm& _comm, const path& _p, remove_options _opts) -> std::uintmax_t
     {
-        std::string data_obj_sql = "select count(DATA_ID) where COLL_NAME like '";
-        data_obj_sql += single_quotes_to_hex(_p);
-        data_obj_sql += "%'";
-
-        std::string colls_sql = "select count(COLL_ID) where COLL_NAME like '";
-        colls_sql += single_quotes_to_hex(_p);
-        colls_sql += "%'";
-
-        irods::experimental::query_builder qb;
-
-        if (const auto zone = zone_name(_p); zone) {
-            qb.zone_hint(*zone);
+        std::error_code ec;
+        const auto res = remove_all(_comm, _p, _opts, ec);
+        if (ec) {
+            throw filesystem_error{"cannot remove all", _p, ec};
         }
+        return res;
+    }
 
-        std::uintmax_t count = 0;
-
-        for (const auto& sql : {data_obj_sql, colls_sql}) {
-            for (const auto& row : qb.build(_comm, sql)) {
-                count += std::stoull(row[0]);
-            }
-        }
-
-        if (0 == count) {
-            return 0;
-        }
-
-        extended_remove_options opts{};
-        opts.no_trash = (remove_options::no_trash == _opts);
-        opts.recursive = true;
-
-        if (remove_impl(_comm, _p, opts)) {
-            return count;
-        }
-
-        return 0;
+    auto remove_all(rxComm& _comm, const path& _p, extended_remove_options _opts, std::error_code& _ec) -> std::uintmax_t
+    {
+        _opts.recursive = true;
+        return remove_all_impl(_comm, _p, _opts, _ec);
     }
 
     auto remove_all(rxComm& _comm, const path& _p, extended_remove_options _opts) -> std::uintmax_t
     {
-        std::string data_obj_sql = "select count(DATA_ID) where COLL_NAME like '";
-        data_obj_sql += single_quotes_to_hex(_p);
-        data_obj_sql += "%'";
-
-        std::string colls_sql = "select count(COLL_ID) where COLL_NAME like '";
-        colls_sql += single_quotes_to_hex(_p);
-        colls_sql += "%'";
-
-        irods::experimental::query_builder qb;
-
-        if (const auto zone = zone_name(_p); zone) {
-            qb.zone_hint(*zone);
+        std::error_code ec;
+        const auto res = remove_all(_comm, _p, _opts, ec);
+        if (ec) {
+            throw filesystem_error{"cannot remove all", _p, ec};
         }
+        return res;
+    }
 
-        std::uintmax_t count = 0;
-
-        for (const auto& sql : {data_obj_sql, colls_sql}) {
-            for (const auto& row : qb.build(_comm, sql)) {
-                count += std::stoull(row[0]);
-            }
-        }
-
-        if (0 == count) {
-            return 0;
-        }
-
-        _opts.recursive = true;
-
-        if (remove_impl(_comm, _p, _opts)) {
-            return count;
-        }
-
-        return 0;
+    auto permissions(rxComm& _comm, const path& _p, const std::string& _user_or_group, perms _prms, std::error_code& _ec) -> void
+    {
+        constexpr auto add_admin_flag = false;
+        set_permissions_impl(add_admin_flag, _comm, _p, _user_or_group, _prms, _ec);
     }
 
     auto permissions(rxComm& _comm, const path& _p, const std::string& _user_or_group, perms _prms) -> void
     {
-        constexpr auto add_admin_flag = false;
-        set_permissions(add_admin_flag, _comm, _p, _user_or_group, _prms);
+        std::error_code ec;
+        permissions(_comm, _p, _user_or_group, _prms, ec);
+        if (ec) {
+            throw filesystem_error{"cannot set permissions", _p, ec};
+        }
+    }
+
+    auto permissions(admin_tag, rxComm& _comm, const path& _p, const std::string& _user_or_group, perms _prms, std::error_code& _ec) -> void
+    {
+        constexpr auto add_admin_flag = true;
+        set_permissions_impl(add_admin_flag, _comm, _p, _user_or_group, _prms, _ec);
     }
 
     auto permissions(admin_tag, rxComm& _comm, const path& _p, const std::string& _user_or_group, perms _prms) -> void
     {
-        constexpr auto add_admin_flag = true;
-        set_permissions(add_admin_flag, _comm, _p, _user_or_group, _prms);
+        std::error_code ec;
+        permissions(admin, _comm, _p, _user_or_group, _prms, ec);
+        if (ec) {
+            throw filesystem_error{"cannot set permissions", _p, ec};
+        }
+    }
+
+    auto enable_inheritance(rxComm& _comm, const path& _p, bool _value, std::error_code& _ec) -> void
+    {
+        constexpr auto add_admin_flag = false;
+        set_inheritance_impl(add_admin_flag, _comm, _p, _value, _ec);
     }
 
     auto enable_inheritance(rxComm& _comm, const path& _p, bool _value) -> void
     {
-        constexpr auto add_admin_flag = false;
-        set_inheritance(add_admin_flag, _comm, _p, _value);
+        std::error_code ec;
+        enable_inheritance(_comm, _p, _value, ec);
+        if (ec) {
+            throw filesystem_error{"cannot set inheritance", _p, ec};
+        }
+    }
+
+    auto enable_inheritance(admin_tag, rxComm& _comm, const path& _p, bool _value, std::error_code& _ec) -> void
+    {
+        constexpr auto add_admin_flag = true;
+        set_inheritance_impl(add_admin_flag, _comm, _p, _value, _ec);
     }
 
     auto enable_inheritance(admin_tag, rxComm& _comm, const path& _p, bool _value) -> void
     {
-        constexpr auto add_admin_flag = true;
-        set_inheritance(add_admin_flag, _comm, _p, _value);
+        std::error_code ec;
+        enable_inheritance(admin, _comm, _p, _value, ec);
+        if (ec) {
+            throw filesystem_error{"cannot set inheritance", _p, ec};
+        }
     }
 
-    auto rename(rxComm& _comm, const path& _old_p, const path& _new_p) -> void
+    auto rename(rxComm& _comm, const path& _old_p, const path& _new_p, std::error_code& _ec) -> void
     {
-        throw_if_path_is_empty(_old_p);
-        throw_if_path_is_empty(_new_p);
-        throw_if_path_length_exceeds_limit(_old_p);
-        throw_if_path_length_exceeds_limit(_new_p);
+        if (!validate_path(_old_p, _ec) || !validate_path(_new_p, _ec)) {
+            return;
+        }
 
-        const auto old_p_stat = status(_comm, _old_p.lexically_normal());
-        const auto new_p_stat = status(_comm, _new_p.lexically_normal());
+        const auto old_norm = _old_p.lexically_normal();
+        const auto new_norm = _new_p.lexically_normal();
+
+        const auto old_stat = basic_stat(_comm, old_norm, _ec);
+        if (_ec) {
+            return;
+        }
+
+        const auto new_stat = basic_stat(_comm, new_norm, _ec);
+        if (_ec) {
+            return;
+        }
 
         // Case 1: "_new_p" is the same object as "_old_p".
-        if (exists(old_p_stat) && exists(new_p_stat) && equivalent(_comm, _old_p, _new_p)) {
+        if (UNKNOWN_OBJ_T != old_stat.type && UNKNOWN_OBJ_T != new_stat.type && old_stat.id == new_stat.id) {
             return;
         }
 
         if (has_prefix(_new_p, _old_p)) {
-            throw filesystem_error{"old path cannot be an ancestor of the new path", _old_p, _new_p, make_error_code(SYS_INVALID_INPUT_PARAM)};
+            _ec = make_error_code(SYS_INVALID_INPUT_PARAM);
+            return;
         }
 
         {
-            const char* dot = ".";
-            const char* dot_dot = "..";
-
-            if (_new_p.object_name() == dot || _new_p.object_name() == dot_dot) {
-                throw filesystem_error{R"_(path cannot end with "." or "..")_", _new_p, make_error_code(SYS_INVALID_INPUT_PARAM)};
+            const auto obj_name = _new_p.object_name_view();
+            if (obj_name == "." || obj_name == "..") {
+                _ec = make_error_code(SYS_INVALID_INPUT_PARAM);
+                return;
             }
         }
 
-        if (is_data_object(old_p_stat)) {
-            // Case 2: "_new_p" is an existing non-collection object.
-            if (exists(new_p_stat)) {
-                if (!is_data_object(new_p_stat)) {
-                    throw filesystem_error{"path is not a data object", _new_p, make_error_code(INVALID_OBJECT_TYPE)};
+        if (DATA_OBJ_T == old_stat.type) {
+            if (UNKNOWN_OBJ_T != new_stat.type) {
+                if (DATA_OBJ_T != new_stat.type) {
+                    _ec = make_error_code(INVALID_OBJECT_TYPE);
+                    return;
                 }
             }
-            // Case 3: "_new_p" is a non-existing data object in an existing collection.
-            else if (!exists(_comm, _new_p.parent_path())) {
-                throw filesystem_error{"path does not exist", _new_p.parent_path(), make_error_code(OBJ_PATH_DOES_NOT_EXIST)};
+            else {
+                const auto parent_st = basic_stat(_comm, _new_p.parent_path(), _ec);
+                if (_ec) {
+                    return;
+                }
+                if (UNKNOWN_OBJ_T == parent_st.type) {
+                    _ec = make_error_code(OBJ_PATH_DOES_NOT_EXIST);
+                    return;
+                }
             }
         }
-        else if (is_collection(old_p_stat)) {
-            // Case 2: "_new_p" is an existing collection.
-            if (exists(new_p_stat)) {
-                if (!is_collection(new_p_stat)) {
-                    throw filesystem_error{"path is not a collection", _new_p, make_error_code(INVALID_OBJECT_TYPE)};
+        else if (COLL_OBJ_T == old_stat.type) {
+            if (UNKNOWN_OBJ_T != new_stat.type) {
+                if (COLL_OBJ_T != new_stat.type) {
+                    _ec = make_error_code(INVALID_OBJECT_TYPE);
+                    return;
                 }
             }
-            // Case 3: "_new_p" is a non-existing collection w/ the following requirements:
-            //  1. Does not end with a collection separator.
-            //  2. The parent collection must exist.
             else if (is_separator(_new_p.string().back())) {
-                throw filesystem_error{"path cannot end with a separator", _new_p, make_error_code(SYS_INVALID_INPUT_PARAM)};
+                _ec = make_error_code(SYS_INVALID_INPUT_PARAM);
+                return;
             }
-            else if (!is_collection(_comm, _new_p.parent_path())) {
-                throw filesystem_error{"path does not exist", _new_p.parent_path(), make_error_code(OBJ_PATH_DOES_NOT_EXIST)};
+            else {
+                const auto parent_st = basic_stat(_comm, _new_p.parent_path(), _ec);
+                if (_ec) {
+                    return;
+                }
+                if (COLL_OBJ_T != parent_st.type) {
+                    _ec = make_error_code(OBJ_PATH_DOES_NOT_EXIST);
+                    return;
+                }
             }
         }
         else {
-            throw filesystem_error{"cannot rename: unknown object type", _new_p, make_error_code(CAT_NOT_A_DATAOBJ_AND_NOT_A_COLLECTION)};
+            _ec = make_error_code(CAT_NOT_A_DATAOBJ_AND_NOT_A_COLLECTION);
+            return;
         }
 
         dataObjCopyInp_t input{};
-        std::strncpy(input.srcDataObjInp.objPath, _old_p.c_str(), std::strlen(_old_p.c_str()));
-        std::strncpy(input.destDataObjInp.objPath, _new_p.c_str(), std::strlen(_new_p.c_str()));
-
-        if (const auto ec = rxDataObjRename(&_comm, &input); ec < 0) {
-            throw filesystem_error{"cannot rename object", _old_p, _new_p, make_error_code(ec)};
+        if (!copy_to_c_array(input.srcDataObjInp.objPath, _old_p.string_view(), _ec) ||
+            !copy_to_c_array(input.destDataObjInp.objPath, _new_p.string_view(), _ec))
+        {
+            return;
         }
+
+        if (const auto err = rxDataObjRename(&_comm, &input); err < 0) {
+            _ec = make_error_code(err);
+        }
+    }
+
+    auto rename(rxComm& _comm, const path& _old_p, const path& _new_p) -> void
+    {
+        std::error_code ec;
+        rename(_comm, _old_p, _new_p, ec);
+        if (ec) {
+            throw filesystem_error{"cannot rename object", _old_p, _new_p, ec};
+        }
+    }
+
+    auto move(rxComm& _comm, const path& _old_p, const path& _new_p, std::error_code& _ec) -> void
+    {
+        rename(_comm, _old_p, _new_p, _ec);
     }
 
     auto move(rxComm& _comm, const path& _old_p, const path& _new_p) -> void
@@ -1084,92 +1743,113 @@ namespace irods::experimental::filesystem::NAMESPACE_IMPL
         rename(_comm, _old_p, _new_p);
     }
 
-    auto data_object_checksum(rxComm& _comm, const path& _p) -> std::string
+    auto data_object_checksum(rxComm& _comm, const path& _p, std::error_code& _ec) -> std::string
     {
-        throw_if_path_is_empty(_p);
-        throw_if_path_length_exceeds_limit(_p);
-
-        if (!is_data_object(_comm, _p)) {
-            throw filesystem_error{"path does not point to a data object", _p, make_error_code(SYS_INVALID_INPUT_PARAM)};
+        const auto st = basic_stat(_comm, _p, _ec);
+        if (_ec) {
+            return {};
         }
 
-        // Fetch information for good replicas only (i.e. DATA_REPL_STATUS = '1').
+        if (DATA_OBJ_T != st.type) {
+            _ec = make_error_code(SYS_INVALID_INPUT_PARAM);
+            return {};
+        }
+
         const auto gql = fmt::format("select DATA_CHECKSUM, DATA_MODIFY_TIME "
                                      "where"
                                      " COLL_NAME = '{}' and"
                                      " DATA_NAME = '{}' and"
                                      " DATA_REPL_STATUS = '1'",
-                                     single_quotes_to_hex(_p.parent_path()),
-                                     single_quotes_to_hex(_p.object_name()));
+                                     sql_escape(_p.parent_path_view()),
+                                     sql_escape(_p.object_name_view()));
 
-        irods::experimental::query_builder qb;
+        try {
+            irods::experimental::query_builder qb;
+            apply_zone_hint(qb, _p);
 
-        if (const auto zone = zone_name(_p); zone) {
-            qb.zone_hint(*zone);
+            std::uint64_t latest_mtime = 0;
+            std::string checksum;
+
+            for (const auto& row : qb.build(_comm, gql)) {
+                std::uint64_t current_mtime = 0;
+                if (parse_int(row[1], current_mtime) && current_mtime > latest_mtime) {
+                    latest_mtime = current_mtime;
+                    checksum = row[0];
+                }
+            }
+
+            return checksum;
+        }
+        catch (const irods::exception& e) {
+            _ec = extract_irods_error(e);
+            return {};
+        }
+        catch (...) {
+            _ec = make_error_code(SYS_INTERNAL_ERR);
+            return {};
+        }
+    }
+
+    auto data_object_checksum(rxComm& _comm, const path& _p) -> std::string
+    {
+        std::error_code ec;
+        auto res = data_object_checksum(_comm, _p, ec);
+        if (ec) {
+            throw filesystem_error{"cannot get data object checksum", _p, ec};
+        }
+        return res;
+    }
+
+    auto status(rxComm& _comm, const path& _p, status_options _opts, std::error_code& _ec) -> object_status
+    {
+        const auto s = basic_stat(_comm, _p, _ec);
+        if (_ec) {
+            return object_status{object_type::none};
         }
 
-        std::uintmax_t latest_mtime = 0;
-        std::string checksum;
+        object_status result{to_object_type(s.type)};
 
-        // This implementation assumes that any good replica will always satisfy
-        // the requirement within the loop, therefore the first iteration always causes
-        // the checksum to be captured. The checksum object should be empty if and only if there
-        // are no good replicas.
-        for (const auto& row : qb.build(_comm, gql)) {
-            // As we iterate over the replicas, compare the mtimes and capture the checksum
-            // of the latest good replica.
-            if (const auto current_mtime = std::stoull(row[1]); current_mtime > latest_mtime) {
-                latest_mtime = current_mtime;
-                checksum = row[0];
+        if (COLL_OBJ_T == s.type &&
+            (_opts & status_options::include_inheritance) == status_options::include_inheritance)
+        {
+            result.inheritance(get_inheritance(_comm, _p, s.type, _ec));
+            if (_ec) {
+                return object_status{object_type::none};
             }
         }
 
-        return checksum;
+        if ((DATA_OBJ_T == s.type || COLL_OBJ_T == s.type) &&
+            (_opts & status_options::include_permissions) == status_options::include_permissions)
+        {
+            std::vector<entity_permission> prms;
+            fetch_permissions(_comm, _p, s, prms, _ec);
+            if (_ec) {
+                return object_status{object_type::none};
+            }
+            result.permissions(std::move(prms));
+        }
+
+        return result;
+    }
+
+    auto status(rxComm& _comm, const path& _p, std::error_code& _ec) -> object_status
+    {
+        return status(_comm, _p, status_options::full, _ec);
+    }
+
+    auto status(rxComm& _comm, const path& _p, status_options _opts) -> object_status
+    {
+        std::error_code ec;
+        auto res = status(_comm, _p, _opts, ec);
+        if (ec) {
+            throw filesystem_error{"cannot get status", _p, ec};
+        }
+        return res;
     }
 
     auto status(rxComm& _comm, const path& _p) -> object_status
     {
-        const auto s = stat(_comm, _p);
-
-        if (s.error < 0) {
-            throw filesystem_error{"cannot get status", _p, make_error_code(s.error)};
-        }
-
-        object_status status;
-
-        status.permissions(s.prms);
-        status.inheritance(s.inheritance);
-
-        // XXX This does not handle the case of object_type::unknown.
-        // This type means a file exists, but the type is unknown.
-        // Maybe this case is not possible in iRODS.
-        switch (s.type) {
-            case DATA_OBJ_T:
-                status.type(object_type::data_object);
-                break;
-
-            case COLL_OBJ_T:
-                status.type(object_type::collection);
-                break;
-
-            // This case indicates that iRODS does not contain a data object or
-            // collection at path "_p".
-            case UNKNOWN_OBJ_T:
-                status.type(object_type::not_found);
-                break;
-
-            /*
-            case ?:
-                status.type(object_type::unknown);
-                break;
-            */
-
-            default:
-                status.type(object_type::none);
-                break;
-        }
-
-        return status;
+        return status(_comm, _p, status_options::full);
     }
 
     auto status_known(const object_status& _s) noexcept -> bool
@@ -1177,77 +1857,149 @@ namespace irods::experimental::filesystem::NAMESPACE_IMPL
         return _s.type() != object_type::none;
     }
 
-    auto get_metadata(rxComm& _comm, const path& _p) -> std::vector<metadata>
+    auto get_metadata(rxComm& _comm, const path& _p, std::error_code& _ec) -> std::vector<metadata>
     {
-        throw_if_path_is_empty(_p);
-        throw_if_path_length_exceeds_limit(_p);
+        const auto st = basic_stat(_comm, _p, _ec);
+        if (_ec) {
+            return {};
+        }
 
         std::string sql;
-
-        if (const auto s = status(_comm, _p); is_data_object(s)) {
-            sql = "select META_DATA_ATTR_NAME, META_DATA_ATTR_VALUE, META_DATA_ATTR_UNITS where DATA_NAME = '";
-            sql += single_quotes_to_hex(_p.object_name());
-            sql += "' and COLL_NAME = '";
-            sql += single_quotes_to_hex(_p.parent_path());
-            sql += "'";
+        if (DATA_OBJ_T == st.type) {
+            sql = fmt::format(
+                "select META_DATA_ATTR_NAME, META_DATA_ATTR_VALUE, META_DATA_ATTR_UNITS "
+                "where DATA_NAME = '{}' and COLL_NAME = '{}'",
+                sql_escape(_p.object_name_view()),
+                sql_escape(_p.parent_path_view()));
         }
-        else if (is_collection(s)) {
-            sql = "select META_COLL_ATTR_NAME, META_COLL_ATTR_VALUE, META_COLL_ATTR_UNITS where COLL_NAME = '";
-            sql += single_quotes_to_hex(_p);
-            sql += "'";
+        else if (COLL_OBJ_T == st.type) {
+            sql = fmt::format(
+                "select META_COLL_ATTR_NAME, META_COLL_ATTR_VALUE, META_COLL_ATTR_UNITS "
+                "where COLL_NAME = '{}'",
+                sql_escape(_p));
         }
         else {
-            throw filesystem_error{"cannot get metadata: unknown object type", _p, make_error_code(CAT_NOT_A_DATAOBJ_AND_NOT_A_COLLECTION)};
+            _ec = make_error_code(CAT_NOT_A_DATAOBJ_AND_NOT_A_COLLECTION);
+            return {};
         }
 
-        irods::experimental::query_builder qb;
+        try {
+            irods::experimental::query_builder qb;
+            apply_zone_hint(qb, _p);
 
-        if (const auto zone = zone_name(_p); zone) {
-            qb.zone_hint(*zone);
+            std::vector<metadata> results;
+            for (const auto& row : qb.build(_comm, sql)) {
+                results.push_back({row[0], row[1], row[2]});
+            }
+            return results;
         }
-
-        std::vector<metadata> results;
-
-        for (const auto& row : qb.build(_comm, sql)) {
-            results.push_back({row[0], row[1], row[2]});
+        catch (const irods::exception& e) {
+            _ec = extract_irods_error(e);
+            return {};
         }
+        catch (...) {
+            _ec = make_error_code(SYS_INTERNAL_ERR);
+            return {};
+        }
+    }
 
-        return results;
+    auto get_metadata(rxComm& _comm, const path& _p) -> std::vector<metadata>
+    {
+        std::error_code ec;
+        auto res = get_metadata(_comm, _p, ec);
+        if (ec) {
+            throw filesystem_error{"cannot get metadata", _p, ec};
+        }
+        return res;
+    }
+
+    auto set_metadata(rxComm& _comm, const path& _p, const metadata& _metadata, std::error_code& _ec) -> void
+    {
+        constexpr auto add_admin_flag = false;
+        do_metadata_op_impl(add_admin_flag, _comm, _p, _metadata, "set", _ec);
     }
 
     auto set_metadata(rxComm& _comm, const path& _p, const metadata& _metadata) -> void
     {
-        constexpr auto add_admin_flag = false;
-        do_metadata_op(add_admin_flag, _comm, _p, _metadata, "set");
+        std::error_code ec;
+        set_metadata(_comm, _p, _metadata, ec);
+        if (ec) {
+            throw filesystem_error{"cannot set metadata", _p, ec};
+        }
+    }
+
+    auto set_metadata(admin_tag, rxComm& _comm, const path& _p, const metadata& _metadata, std::error_code& _ec) -> void
+    {
+        constexpr auto add_admin_flag = true;
+        do_metadata_op_impl(add_admin_flag, _comm, _p, _metadata, "set", _ec);
     }
 
     auto set_metadata(admin_tag, rxComm& _comm, const path& _p, const metadata& _metadata) -> void
     {
-        constexpr auto add_admin_flag = true;
-        do_metadata_op(add_admin_flag, _comm, _p, _metadata, "set");
+        std::error_code ec;
+        set_metadata(admin, _comm, _p, _metadata, ec);
+        if (ec) {
+            throw filesystem_error{"cannot set metadata", _p, ec};
+        }
+    }
+
+    auto add_metadata(rxComm& _comm, const path& _p, const metadata& _metadata, std::error_code& _ec) -> void
+    {
+        constexpr auto add_admin_flag = false;
+        do_metadata_op_impl(add_admin_flag, _comm, _p, _metadata, "add", _ec);
     }
 
     auto add_metadata(rxComm& _comm, const path& _p, const metadata& _metadata) -> void
     {
-        constexpr auto add_admin_flag = false;
-        do_metadata_op(add_admin_flag, _comm, _p, _metadata, "add");
+        std::error_code ec;
+        add_metadata(_comm, _p, _metadata, ec);
+        if (ec) {
+            throw filesystem_error{"cannot add metadata", _p, ec};
+        }
+    }
+
+    auto add_metadata(admin_tag, rxComm& _comm, const path& _p, const metadata& _metadata, std::error_code& _ec) -> void
+    {
+        constexpr auto add_admin_flag = true;
+        do_metadata_op_impl(add_admin_flag, _comm, _p, _metadata, "add", _ec);
     }
 
     auto add_metadata(admin_tag, rxComm& _comm, const path& _p, const metadata& _metadata) -> void
     {
-        constexpr auto add_admin_flag = true;
-        do_metadata_op(add_admin_flag, _comm, _p, _metadata, "add");
+        std::error_code ec;
+        add_metadata(admin, _comm, _p, _metadata, ec);
+        if (ec) {
+            throw filesystem_error{"cannot add metadata", _p, ec};
+        }
+    }
+
+    auto remove_metadata(rxComm& _comm, const path& _p, const metadata& _metadata, std::error_code& _ec) -> void
+    {
+        constexpr auto add_admin_flag = false;
+        do_metadata_op_impl(add_admin_flag, _comm, _p, _metadata, "rm", _ec);
     }
 
     auto remove_metadata(rxComm& _comm, const path& _p, const metadata& _metadata) -> void
     {
-        constexpr auto add_admin_flag = false;
-        do_metadata_op(add_admin_flag, _comm, _p, _metadata, "rm");
+        std::error_code ec;
+        remove_metadata(_comm, _p, _metadata, ec);
+        if (ec) {
+            throw filesystem_error{"cannot remove metadata", _p, ec};
+        }
+    }
+
+    auto remove_metadata(admin_tag, rxComm& _comm, const path& _p, const metadata& _metadata, std::error_code& _ec) -> void
+    {
+        constexpr auto add_admin_flag = true;
+        do_metadata_op_impl(add_admin_flag, _comm, _p, _metadata, "rm", _ec);
     }
 
     auto remove_metadata(admin_tag, rxComm& _comm, const path& _p, const metadata& _metadata) -> void
     {
-        constexpr auto add_admin_flag = true;
-        do_metadata_op(add_admin_flag, _comm, _p, _metadata, "rm");
+        std::error_code ec;
+        remove_metadata(admin, _comm, _p, _metadata, ec);
+        if (ec) {
+            throw filesystem_error{"cannot remove metadata", _p, ec};
+        }
     }
 } // namespace irods::experimental::filesystem::NAMESPACE_IMPL
