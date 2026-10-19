@@ -27,6 +27,9 @@
 #include "irods/irods_file_object.hpp"
 #include "irods/rodsPath.h"
 #include "irods/irods_logger.hpp"
+#include "irods/genquery2_builder.hpp"
+#include "irods/rs_genquery2.hpp"
+#include "irods/scoped_privileged_client.hpp"
 
 #include <boost/filesystem/operations.hpp>
 #include <boost/filesystem/convenience.hpp>
@@ -39,6 +42,7 @@
 #include <sys/wait.h>
 
 #include <algorithm>
+#include <charconv>
 
 using namespace boost::filesystem;
 
@@ -156,10 +160,12 @@ getDataObjInfo(
                      status );
         }
 
-        genQueryInp.continueInx = genQueryOut->continueInx;
-        genQueryInp.maxRows = 0;
-        freeGenQueryOut(&genQueryOut);
-        rsGenQuery(rsComm, &genQueryInp, &genQueryOut);
+        if (genQueryOut && genQueryOut->continueInx > 0) {
+            genQueryInp.continueInx = genQueryOut->continueInx;
+            genQueryInp.maxRows = 0;
+            freeGenQueryOut(&genQueryOut);
+            rsGenQuery(rsComm, &genQueryInp, &genQueryOut);
+        }
 
         freeGenQueryOut(&genQueryOut);
         clearGenQueryInp( &genQueryInp );
@@ -784,18 +790,12 @@ chkOrphanFile(
         return SYS_USER_NO_PERMISSION;
     }
 
-    genQueryInp_t genQueryInp;
-    genQueryOut_t *genQueryOut = NULL;
-    int status;
-    char condStr[MAX_NAME_LEN];
-
     rodsLong_t resc_id;
     irods::error ret = resc_mgr.hier_to_leaf_id(rescName,resc_id);
     if(!ret.ok()) {
         irods::log(PASS(ret));
         return ret.code();
     }
-    std::string resc_id_str = boost::lexical_cast<std::string>(resc_id);;
 
     // resc name should be leaf name, not root name of the hier
     std::string resc_hier;
@@ -805,104 +805,56 @@ chkOrphanFile(
         return ret.code();
     }
 
-    memset( &genQueryInp, 0, sizeof( genQueryInp_t ) );
+    namespace gq2 = irods::experimental::genquery2;
+    using gq2::builder::col;
 
-    snprintf( condStr, MAX_NAME_LEN, "='%s'", filePath );
-    addInxVal( &genQueryInp.sqlCondInp, COL_D_DATA_PATH, condStr );
-    snprintf( condStr, MAX_NAME_LEN, "='%s'", resc_id_str.c_str() );
-    addInxVal( &genQueryInp.sqlCondInp, COL_D_RESC_ID, condStr );
+    const auto q = gq2::builder::select({"DATA_ID", "COLL_NAME", "DATA_NAME", "DATA_REPL_NUM", "DATA_RESC_ID"})
+                       .where(col("DATA_PATH") == filePath && col("DATA_RESC_ID") == fmt::to_string(resc_id))
+                       .limit(1)
+                       .build();
 
-    addInxIval( &genQueryInp.selectInp, COL_D_DATA_ID, 1 );
-    addInxIval( &genQueryInp.selectInp, COL_COLL_NAME, 1 );
-    addInxIval( &genQueryInp.selectInp, COL_DATA_NAME, 1 );
-    addInxIval( &genQueryInp.selectInp, COL_DATA_REPL_NUM, 1 );
-    addInxIval( &genQueryInp.selectInp, COL_D_RESC_ID, 1 );
-
-    genQueryInp.maxRows = MAX_SQL_ROWS;
-
-    // =-=-=-=-=-=-=-
-    // when strict acls are enabled, this query would have returned that no file exists.
-    // this would have resulted in an incorrect orphaning of a file which may actually be
-    // owned by another user.  we potentially disable the use of strict acls for this single
-    // query in order to avoid orphaning another users physical data.
-    addKeyVal( &genQueryInp.condInput, DISABLE_STRICT_ACL_KW, "disable" );
-
-    std::string svr_sid;
-    if (irods::server_property_exists(irods::AGENT_CONN_KW)) {
-        status = rsGenQuery(rsComm, &genQueryInp, &genQueryOut);
-    }
-    else {
-        try {
-            irods::set_server_property<std::string>(irods::AGENT_CONN_KW, "StrictACLOverride");
-            status = rsGenQuery(rsComm, &genQueryInp, &genQueryOut);
-            irods::delete_server_property(irods::AGENT_CONN_KW);
-        }
-        catch (const irods::exception& e) {
-            irods::log(e);
-            return e.code();
-        }
+    nlohmann::json rows;
+    int status = 0;
+    {
+        irods::experimental::scoped_privileged_client spc{*rsComm};
+        status = gq2::try_execute(*rsComm, q, rows);
     }
 
-    clearGenQueryInp( &genQueryInp );
     if ( status < 0 ) {
         if ( status == CAT_NO_ROWS_FOUND ) {
-            freeGenQueryOut( &genQueryOut );
             rsComm->perfStat.orphanCnt ++;
             return 1;
         }
-        else {
-            rodsLog( LOG_ERROR,
-                     "chkOrphanFile: rsGenQuery error for %s, status = %d, rescName %s",
-                     filePath, status, rescName );
-            /* we have unexpected query error. Assume the file is not
-             * orphan */
-			freeGenQueryOut( &genQueryOut );
-            return status;
-        }
+        rodsLog( LOG_ERROR,
+                 "chkOrphanFile: rs_genquery2 error for %s, status = %d, rescName %s",
+                 filePath, status, rescName );
+        /* we have unexpected query error. Assume the file is not
+         * orphan */
+        return status;
     }
-    else {
-        sqlResult_t *dataId, *replNum, *dataName, *collName;
-        rsComm->perfStat.nonOrphanCnt++;
 
-        if ( ( collName =
-                    getSqlResultByInx( genQueryOut, COL_COLL_NAME ) ) == NULL ) {
-            rodsLog( LOG_NOTICE,
-                     "chkOrphanFile: getSqlResultByInx for COL_COLL_NAME failed" );
-            return UNMATCHED_KEY_OR_INDEX;
-        }
-
-        if ( ( dataName = getSqlResultByInx( genQueryOut, COL_DATA_NAME ) )
-                == NULL ) {
-            rodsLog( LOG_NOTICE,
-                     "chkOrphanFile: getSqlResultByInx for COL_DATA_NAME failed" );
-            return UNMATCHED_KEY_OR_INDEX;
-        }
-
-        if ( ( dataId = getSqlResultByInx( genQueryOut, COL_D_DATA_ID ) ) == NULL ) {
-            rodsLog( LOG_NOTICE,
-                     "chkOrphanFile: getSqlResultByInx for COL_D_DATA_ID failed" );
-            return UNMATCHED_KEY_OR_INDEX;
-        }
-
-        if ( ( replNum = getSqlResultByInx( genQueryOut, COL_DATA_REPL_NUM ) ) ==
-                NULL ) {
-            rodsLog( LOG_NOTICE,
-                     "chkOrphanFile: getSqlResultByInx for COL_DATA_REPL_NUM failed" );
-            return UNMATCHED_KEY_OR_INDEX;
-        }
-
-        if ( dataObjInfo != NULL ) {
-            dataObjInfo->dataId = strtoll( dataId->value, 0, 0 );
-            dataObjInfo->replNum = atoi( replNum->value );
-            snprintf( dataObjInfo->objPath, MAX_NAME_LEN, "%s/%s",
-                      collName->value, dataName->value );
-            rstrcpy( dataObjInfo->rescHier, resc_hier.c_str(), MAX_NAME_LEN );
-        }
-
-        freeGenQueryOut( &genQueryOut );
-
-        return 0;
+    if ( rows.empty() ) {
+        rsComm->perfStat.orphanCnt ++;
+        return 1;
     }
+
+    rsComm->perfStat.nonOrphanCnt++;
+
+    if ( dataObjInfo != NULL ) {
+        const auto& row = rows.front();
+        const auto& data_id_str = row.at(0).get_ref<const std::string&>();
+        const auto& coll_name_str = row.at(1).get_ref<const std::string&>();
+        const auto& data_name_str = row.at(2).get_ref<const std::string&>();
+        const auto& repl_num_str = row.at(3).get_ref<const std::string&>();
+
+        std::from_chars(data_id_str.data(), data_id_str.data() + data_id_str.size(), dataObjInfo->dataId);
+        std::from_chars(repl_num_str.data(), repl_num_str.data() + repl_num_str.size(), dataObjInfo->replNum);
+        snprintf( dataObjInfo->objPath, MAX_NAME_LEN, "%s/%s",
+                  coll_name_str.c_str(), data_name_str.c_str() );
+        rstrcpy( dataObjInfo->rescHier, resc_hier.c_str(), MAX_NAME_LEN );
+    }
+
+    return 0;
 }
 
 

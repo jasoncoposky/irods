@@ -16,7 +16,8 @@
 #include "irods/rodsErrorTable.h"
 #include "irods/rsDataObjClose.hpp"
 #include "irods/rsExecCmd.hpp"
-#include "irods/rsGenQuery.hpp"
+#include "irods/genquery2_builder.hpp"
+#include "irods/rs_genquery2.hpp"
 #include "irods/rsGlobalExtern.hpp"
 #include "irods/rsIcatOpr.hpp"
 #include "irods/rsModDataObjMeta.hpp"
@@ -337,11 +338,7 @@ initZone( rsComm_t *rsComm ) {
     rodsServerHost_t *tmpRodsServerHost;
     rodsServerHost_t* primaryServerHost = NULL;
     rodsServerHost_t* secondaryServerHost = NULL;
-    genQueryInp_t genQueryInp;
-    genQueryOut_t *genQueryOut = NULL;
-    int status, i;
-    sqlResult_t *zoneName, *zoneType, *zoneConn, *zoneComment;
-    char *tmpZoneName, *tmpZoneType, *tmpZoneConn;//, *tmpZoneComment;
+    int status;
 
     boost::optional<std::string> zone_name;
     try {
@@ -351,7 +348,7 @@ initZone( rsComm_t *rsComm ) {
         return e.code();
     }
 
-    /* configure the local zone first or rsGenQuery would not work */
+    /* configure the local zone first or rs_genquery2 would not work */
 
     tmpRodsServerHost = ServerHostHead;
     while ( tmpRodsServerHost != NULL ) {
@@ -368,101 +365,72 @@ initZone( rsComm_t *rsComm ) {
     ZoneInfoHead->primaryServerHost = primaryServerHost;
     ZoneInfoHead->secondaryServerHost = secondaryServerHost;
 
-    memset( &genQueryInp, 0, sizeof( genQueryInp ) );
-    addInxIval( &genQueryInp.selectInp, COL_ZONE_NAME, 1 );
-    addInxIval( &genQueryInp.selectInp, COL_ZONE_TYPE, 1 );
-    addInxIval( &genQueryInp.selectInp, COL_ZONE_CONNECTION, 1 );
-    addInxIval( &genQueryInp.selectInp, COL_ZONE_COMMENT, 1 );
-    genQueryInp.maxRows = MAX_SQL_ROWS;
+    namespace gq2 = irods::experimental::genquery2;
+    const auto q = gq2::builder::select({"ZONE_NAME", "ZONE_TYPE", "ZONE_CONNECTION", "ZONE_COMMENT"}).build();
 
-    status =  rsGenQuery( rsComm, &genQueryInp, &genQueryOut );
-
-    clearGenQueryInp( &genQueryInp );
-
+    nlohmann::json rows;
+    status = gq2::try_execute(*rsComm, q, rows);
     if ( status < 0 ) {
-        freeGenQueryOut( &genQueryOut );
         rodsLog( LOG_NOTICE,
-                 "initZone: rsGenQuery error, status = %d", status );
+                 "initZone: rs_genquery2 error, status = %d", status );
         return status;
     }
 
-    if ( genQueryOut == NULL ) {
+    if ( rows.empty() ) {
         rodsLog( LOG_NOTICE,
-                 "initZone: NULL genQueryOut" );
+                 "initZone: empty zone query result" );
         return CAT_NO_ROWS_FOUND;
     }
 
-    if ( ( zoneName = getSqlResultByInx( genQueryOut, COL_ZONE_NAME ) ) == NULL ) {
-        rodsLog( LOG_NOTICE,
-                 "initZone: getSqlResultByInx for COL_ZONE_NAME failed" );
-        return UNMATCHED_KEY_OR_INDEX;
-    }
-
-    if ( ( zoneType = getSqlResultByInx( genQueryOut, COL_ZONE_TYPE ) ) == NULL ) {
-        rodsLog( LOG_NOTICE,
-                 "initZone: getSqlResultByInx for COL_ZONE_TYPE failed" );
-        return UNMATCHED_KEY_OR_INDEX;
-    }
-
-    if ( ( zoneConn = getSqlResultByInx( genQueryOut, COL_ZONE_CONNECTION ) ) == NULL ) {
-        rodsLog( LOG_NOTICE,
-                 "initZone: getSqlResultByInx for COL_ZONE_CONNECTION failed" );
-        return UNMATCHED_KEY_OR_INDEX;
-    }
-
-    if ( ( zoneComment = getSqlResultByInx( genQueryOut, COL_ZONE_COMMENT ) ) == NULL ) {
-        rodsLog( LOG_NOTICE,
-                 "initZone: getSqlResultByInx for COL_ZONE_COMMENT failed" );
-        return UNMATCHED_KEY_OR_INDEX;
-    }
-
-    for ( i = 0; i < genQueryOut->rowCnt; i++ ) {
+    for ( const auto& row : rows ) {
         rodsHostAddr_t addr;
 
-        tmpZoneName = &zoneName->value[zoneName->len * i];
-        tmpZoneType = &zoneType->value[zoneType->len * i];
-        tmpZoneConn = &zoneConn->value[zoneConn->len * i];
-        //tmpZoneComment = &zoneComment->value[zoneComment->len * i];
-        if ( strcmp( tmpZoneType, "local" ) == 0 ) {
-            if ( strcmp( zone_name->c_str(), tmpZoneName ) != 0 ) {
+        const auto& tmpZoneName = row.at(0).get_ref<const std::string&>();
+        const auto& tmpZoneType = row.at(1).get_ref<const std::string&>();
+        const auto& tmpZoneConn = row.at(2).get_ref<const std::string&>();
+
+        if ( tmpZoneType == "local" ) {
+            if ( *zone_name != tmpZoneName ) {
                 rodsLog( LOG_ERROR,
                          "initZone: zoneName in env %s does not match %s in icat ",
-                         zone_name->c_str(), tmpZoneName );
+                         zone_name->c_str(), tmpZoneName.c_str() );
             }
             /* fillin rodsZone if it is not defined */
             if ( strlen( rsComm->proxyUser.rodsZone ) == 0 ) {
-                rstrcpy( rsComm->proxyUser.rodsZone, tmpZoneName, NAME_LEN );
+                rstrcpy( rsComm->proxyUser.rodsZone, tmpZoneName.c_str(), NAME_LEN );
             }
             if ( strlen( rsComm->clientUser.rodsZone ) == 0 ) {
-                rstrcpy( rsComm->clientUser.rodsZone, tmpZoneName, NAME_LEN );
+                rstrcpy( rsComm->clientUser.rodsZone, tmpZoneName.c_str(), NAME_LEN );
             }
             continue;
         }
-        else if ( strlen( tmpZoneConn ) <= 0 ) {
+        else if ( tmpZoneConn.empty() ) {
             rodsLog( LOG_ERROR,
                      "initZone: connection info for zone %s not configured",
-                     tmpZoneName );
+                     tmpZoneName.c_str() );
             continue;
         }
 
         memset( &addr, 0, sizeof( addr ) );
         /* assume address:port */
-        parseHostAddrStr( tmpZoneConn, &addr );
+        char conn_buf[MAX_NAME_LEN]{};
+        rstrcpy(conn_buf, tmpZoneConn.c_str(), sizeof(conn_buf));
+        parseHostAddrStr( conn_buf, &addr );
         if ( addr.portNum == 0 ) {
             addr.portNum = ZoneInfoHead->portNum;
         }
-        rstrcpy( addr.zoneName, tmpZoneName, NAME_LEN ); // JMC - bacport 4562
+        rstrcpy( addr.zoneName, tmpZoneName.c_str(), NAME_LEN ); // JMC - bacport 4562
         status = resolveHost( &addr, &tmpRodsServerHost );
         if ( status < 0 ) {
             rodsLog( LOG_ERROR,
                      "initZone: resolveHost error for %s for zone %s. status = %d",
-                     addr.hostAddr, tmpZoneName, status );
+                     addr.hostAddr, tmpZoneName.c_str(), status );
             continue;
         }
         if ( tmpRodsServerHost->rcatEnabled == LOCAL_ICAT ) {
             rodsLog( LOG_ERROR,
                      "initZone: address %s for remote zone %s already in use",
-                     tmpZoneConn, tmpZoneName );
+                     tmpZoneConn.c_str(), tmpZoneName.c_str() );
             continue;
         }
 
@@ -470,10 +438,10 @@ initZone( rsComm_t *rsComm ) {
         /* REMOTE_ICAT is always on a remote host even if it is one the same
          * host, but will be on different port */
         tmpRodsServerHost->localFlag = REMOTE_HOST; // JMC - bacport 4562
-        queueZone( tmpZoneName, addr.portNum, tmpRodsServerHost, NULL );
+        char zone_buf[NAME_LEN]{};
+        rstrcpy(zone_buf, tmpZoneName.c_str(), sizeof(zone_buf));
+        queueZone( zone_buf, addr.portNum, tmpRodsServerHost, NULL );
     }
-
-    freeGenQueryOut( &genQueryOut );
 
     return 0;
 }
