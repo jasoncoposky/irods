@@ -392,12 +392,13 @@ namespace
 
         if (const auto iter = _state.table_aliases.find("R_COLL_MAIN"); iter != std::end(_state.table_aliases)) {
             // The following columns require the joining of R_OBJT_ACCESS:
-            // - COLL_ACCESS_PERM_ID = R_OBJT_ACCESS.access_type_id
+            // - COLL_ACCESS_PERM_ID / COLL_ACCESS_TYPE = R_OBJT_ACCESS.access_type_id
             // - COLL_ACCESS_USER_ID = R_OBJT_ACCESS.user_id
             [[maybe_unused]] auto added_r_objt_access_table = false;
             auto add_join =
                 std::any_of(std::begin(_state.ast_column_ptrs), std::end(_state.ast_column_ptrs), [](auto* _col_ptr) {
-                    return "COLL_ACCESS_PERM_ID" == _col_ptr->name || "COLL_ACCESS_USER_ID" == _col_ptr->name;
+                    return "COLL_ACCESS_PERM_ID" == _col_ptr->name || "COLL_ACCESS_TYPE" == _col_ptr->name ||
+                           "COLL_ACCESS_USER_ID" == _col_ptr->name;
                 });
             if (add_join) {
                 added_r_objt_access_table = true;
@@ -449,12 +450,13 @@ namespace
 
         if (const auto iter = _state.table_aliases.find("R_DATA_MAIN"); iter != std::end(_state.table_aliases)) {
             // The following columns require the joining of R_OBJT_ACCESS:
-            // - DATA_ACCESS_PERM_ID = R_OBJT_ACCESS.access_type_id
+            // - DATA_ACCESS_PERM_ID / DATA_ACCESS_TYPE = R_OBJT_ACCESS.access_type_id
             // - DATA_ACCESS_USER_ID = R_OBJT_ACCESS.user_id
             [[maybe_unused]] auto added_r_objt_access_table = false;
             auto add_join =
                 std::any_of(std::begin(_state.ast_column_ptrs), std::end(_state.ast_column_ptrs), [](auto* _col_ptr) {
-                    return "DATA_ACCESS_PERM_ID" == _col_ptr->name || "DATA_ACCESS_USER_ID" == _col_ptr->name;
+                    return "DATA_ACCESS_PERM_ID" == _col_ptr->name || "DATA_ACCESS_TYPE" == _col_ptr->name ||
+                           "DATA_ACCESS_USER_ID" == _col_ptr->name;
                 });
             if (add_join) {
                 added_r_objt_access_table = true;
@@ -499,6 +501,48 @@ namespace
                 }
                 sql += fmt::format(" {} join R_USER_GROUP pdug on pdoa.user_id = pdug.group_user_id"
                                    " {} join R_USER_MAIN pdu on pdug.user_id = pdu.user_id",
+                                   join_keyword,
+                                   join_keyword);
+            }
+        }
+
+        if (const auto iter = _state.table_aliases.find("R_RESC_MAIN"); iter != std::end(_state.table_aliases)) {
+            [[maybe_unused]] auto added_r_objt_access_table = false;
+            auto add_join =
+                std::any_of(std::begin(_state.ast_column_ptrs), std::end(_state.ast_column_ptrs), [](auto* _col_ptr) {
+                    return "RESC_ACCESS_PERM_ID" == _col_ptr->name || "RESC_ACCESS_TYPE" == _col_ptr->name ||
+                           "RESC_ACCESS_USER_ID" == _col_ptr->name;
+                });
+            if (add_join) {
+                added_r_objt_access_table = true;
+                sql += fmt::format(
+                    " {} join R_OBJT_ACCESS proa on {}.resc_id = proa.object_id", join_keyword, iter->second);
+            }
+
+            add_join = std::any_of(std::begin(_state.ast_column_ptrs),
+                                   std::end(_state.ast_column_ptrs),
+                                   [](auto* _col_ptr) { return "RESC_ACCESS_PERM_NAME" == _col_ptr->name; });
+            if (add_join) {
+                if (!added_r_objt_access_table) {
+                    added_r_objt_access_table = true;
+                    sql += fmt::format(
+                        " {} join R_OBJT_ACCESS proa on {}.resc_id = proa.object_id", join_keyword, iter->second);
+                }
+                sql += fmt::format(" {} join R_TOKN_MAIN prt on proa.access_type_id = prt.token_id", join_keyword);
+            }
+
+            add_join =
+                std::any_of(std::begin(_state.ast_column_ptrs), std::end(_state.ast_column_ptrs), [](auto* _col_ptr) {
+                    return "RESC_ACCESS_USER_ID" != _col_ptr->name && _col_ptr->name.starts_with("RESC_ACCESS_USER_");
+                });
+            if (add_join) {
+                if (!added_r_objt_access_table) {
+                    added_r_objt_access_table = true;
+                    sql += fmt::format(
+                        " {} join R_OBJT_ACCESS proa on {}.resc_id = proa.object_id", join_keyword, iter->second);
+                }
+                sql += fmt::format(" {} join R_USER_GROUP prug on proa.user_id = prug.group_user_id"
+                                   " {} join R_USER_MAIN pru on prug.user_id = pru.user_id",
                                    join_keyword,
                                    join_keyword);
             }
@@ -702,6 +746,21 @@ namespace
 
             // The alias for R_OBJT_ACCESS as it relates to collections.
             return "pcoa";
+        }
+
+        if (_column.starts_with("RESC_ACCESS_")) {
+            constexpr auto prefix_length = std::char_traits<char>::length("RESC_ACCESS_");
+            const auto tail = _column.substr(prefix_length);
+
+            if (tail == "PERM_NAME") {
+                return "prt";
+            }
+
+            if (tail == "USER_NAME" || tail == "USER_ZONE" || tail == "USER_TYPE") {
+                return "pru";
+            }
+
+            return "proa";
         }
 
         return std::nullopt;
@@ -1036,6 +1095,22 @@ namespace irods::experimental::genquery2
             else {
                 add_r_coll_main = true;
                 table_alias = "pcoa"; // The alias for R_OBJT_ACCESS as it relates to collections.
+            }
+        }
+        else if (_column.name.starts_with("RESC_ACCESS_")) {
+            if (_column.name == "RESC_ACCESS_PERM_NAME") {
+                add_r_resc_main = true;
+                table_alias = "prt";
+            }
+            else if (_column.name == "RESC_ACCESS_USER_NAME" || _column.name == "RESC_ACCESS_USER_ZONE" ||
+                     _column.name == "RESC_ACCESS_USER_TYPE")
+            {
+                add_r_resc_main = true;
+                table_alias = "pru";
+            }
+            else {
+                add_r_resc_main = true;
+                table_alias = "proa";
             }
         }
         else if (_column.name == "DATA_RESC_HIER") {

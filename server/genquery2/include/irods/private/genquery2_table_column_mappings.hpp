@@ -165,13 +165,13 @@ namespace irods::experimental::genquery2
         {"DELAY_RULE_LOCK_HOST_PID", {"R_RULE_EXEC", "lock_host_pid"}},
         {"DELAY_RULE_LOCK_TIME", {"R_RULE_EXEC", "lock_ts"}},
 
-        //{"TOKEN_NAMESPACE", {"R_TOKN_MAIN", "token_namespace"}},
-        //{"TOKEN_ID",        {"R_TOKN_MAIN", "token_id"}},
-        //{"TOKEN_NAME",      {"R_TOKN_MAIN", "token_name"}},
-        //{"TOKEN_VALUE",     {"R_TOKN_MAIN", "token_value"}},
-        //{"TOKEN_VALUE2",    {"R_TOKN_MAIN", "token_value2"}},
-        //{"TOKEN_VALUE3",    {"R_TOKN_MAIN", "token_value3"}},
-        //{"TOKEN_COMMENT",   {"R_TOKN_MAIN", "r_comment"}},
+        {"TOKEN_NAMESPACE", {"R_TOKN_MAIN", "token_namespace"}},
+        {"TOKEN_ID", {"R_TOKN_MAIN", "token_id"}},
+        {"TOKEN_NAME", {"R_TOKN_MAIN", "token_name"}},
+        {"TOKEN_VALUE", {"R_TOKN_MAIN", "token_value"}},
+        {"TOKEN_VALUE2", {"R_TOKN_MAIN", "token_value2"}},
+        {"TOKEN_VALUE3", {"R_TOKN_MAIN", "token_value3"}},
+        {"TOKEN_COMMENT", {"R_TOKN_MAIN", "r_comment"}},
 
         // Should quota information be handled by a set of specific queries?
         // Why should GenQuery handle these?
@@ -192,6 +192,7 @@ namespace irods::experimental::genquery2
         //{"QUOTA_RESC_NAME",         {"R_RESC_MAIN", "resc_name"}}, // special?
 
         {"DATA_ACCESS_PERM_ID", {"R_OBJT_ACCESS", "access_type_id"}},
+        {"DATA_ACCESS_TYPE", {"R_OBJT_ACCESS", "access_type_id"}},
         {"DATA_ACCESS_PERM_NAME", {"R_TOKN_MAIN", "token_name"}},
         {"DATA_ACCESS_USER_ID", {"R_OBJT_ACCESS", "user_id"}},
         {"DATA_ACCESS_USER_NAME", {"R_USER_MAIN", "user_name"}}, // What about groups?
@@ -202,11 +203,20 @@ namespace irods::experimental::genquery2
         //{"DATA_TOKEN_NAMESPACE", {"R_TOKN_MAIN", "token_namespace"}}, // special?
 
         {"COLL_ACCESS_PERM_ID", {"R_OBJT_ACCESS", "access_type_id"}},
+        {"COLL_ACCESS_TYPE", {"R_OBJT_ACCESS", "access_type_id"}},
         {"COLL_ACCESS_PERM_NAME", {"R_TOKN_MAIN", "token_name"}},
         {"COLL_ACCESS_USER_ID", {"R_OBJT_ACCESS", "user_id"}},
         {"COLL_ACCESS_USER_NAME", {"R_USER_MAIN", "user_name"}},
         {"COLL_ACCESS_USER_TYPE", {"R_USER_MAIN", "user_type_name"}},
         {"COLL_ACCESS_USER_ZONE", {"R_USER_MAIN", "zone_name"}},
+
+        {"RESC_ACCESS_PERM_ID", {"R_OBJT_ACCESS", "access_type_id"}},
+        {"RESC_ACCESS_TYPE", {"R_OBJT_ACCESS", "access_type_id"}},
+        {"RESC_ACCESS_PERM_NAME", {"R_TOKN_MAIN", "token_name"}},
+        {"RESC_ACCESS_USER_ID", {"R_OBJT_ACCESS", "user_id"}},
+        {"RESC_ACCESS_USER_NAME", {"R_USER_MAIN", "user_name"}},
+        {"RESC_ACCESS_USER_TYPE", {"R_USER_MAIN", "user_type_name"}},
+        {"RESC_ACCESS_USER_ZONE", {"R_USER_MAIN", "zone_name"}},
         //{"COLL_ACCESS_COLL_ID",  {"R_OBJT_ACCESS", "object_id"}},
         //{"COLL_ACCESS_NAME",     {"R_TOKN_MAIN", "token_name"}}, // special?
         //{"COLL_TOKEN_NAMESPACE", {"R_TOKN_MAIN", "token_namespace"}}, // special?

@@ -297,6 +297,30 @@ TEST_CASE("GenQuery2 SELECT with Explicit From Entity", "[genquery2][select]")
         REQUIRE(params_resc.size() == 1);
         REQUIRE(params_resc[0] == "demoResc");
     }
+
+    SECTION("Select TOKEN_ID and RESC_ACCESS_TYPE / DATA_ACCESS_TYPE / COLL_ACCESS_TYPE")
+    {
+        auto sel_token = gq2::builder::select({"TOKEN_ID"})
+            .where(col("TOKEN_NAMESPACE") == "access_type" && col("TOKEN_NAME") == "own")
+            .build();
+
+        auto [sql_token, params_token] = gq2::to_sql(sel_token, opts);
+        REQUIRE(sql_token.find("R_TOKN_MAIN") != std::string::npos);
+        REQUIRE(sql_token.find("token_id") != std::string::npos);
+        REQUIRE(params_token.size() == 2);
+        REQUIRE(params_token[0] == "access_type");
+        REQUIRE(params_token[1] == "own");
+
+        auto sel_resc_acl = gq2::builder::select({"RESC_ID"})
+            .where(col("RESC_NAME") == "demoResc" && col("RESC_ACCESS_USER_ID") == "10001" && col("RESC_ACCESS_TYPE") >= "1120")
+            .build();
+
+        auto [sql_resc_acl, params_resc_acl] = gq2::to_sql(sel_resc_acl, opts);
+        REQUIRE(sql_resc_acl.find("join R_OBJT_ACCESS proa on") != std::string::npos);
+        REQUIRE(sql_resc_acl.find("proa.user_id = ?") != std::string::npos);
+        REQUIRE(sql_resc_acl.find("proa.access_type_id >= ?") != std::string::npos);
+        REQUIRE(params_resc_acl.size() == 3);
+    }
 }
 
 
