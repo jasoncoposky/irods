@@ -64,6 +64,7 @@ namespace
 
         bool add_sql_for_data_resc_hier = false;
         bool add_joins_for_user_group = false;
+        bool add_joins_for_ticket_data_coll = false;
         bool in_dml = false;
     }; // struct gq_state
 
@@ -92,6 +93,7 @@ namespace
         "R_QUOTA_USAGE",                // 20
         "R_SERVER_LOAD",                // 21
         "R_SERVER_LOAD_DIGEST",         // 22
+        "R_USER_CREDENTIALS",           // 23
     }); // table_names
     // clang-format on
 
@@ -135,6 +137,7 @@ namespace
         {to_index("R_USER_MAIN"), to_index("R_USER_GROUP")},                // R_USER_MAIN.user_id = R_USER_GROUP.group_user_id
         {to_index("R_USER_MAIN"), to_index("R_USER_PASSWORD")},             // R_USER_MAIN.user_id = R_USER_PASSWORD.user_id
         {to_index("R_USER_MAIN"), to_index("R_USER_SESSION_KEY")},          // R_USER_MAIN.user_id = R_USER_SESSION_KEY.user_id
+        {to_index("R_USER_MAIN"), to_index("R_USER_CREDENTIALS")},          // R_USER_MAIN.user_id = R_USER_CREDENTIALS.user_id
 
         {to_index("R_QUOTA_MAIN"), to_index("R_USER_MAIN")},                // R_QUOTA_MAIN.user_id = R_USER_MAIN.user_id
         {to_index("R_QUOTA_MAIN"), to_index("R_RESC_MAIN")},                // R_QUOTA_MAIN.resc_id = R_RESC_MAIN.resc_id
@@ -172,11 +175,12 @@ namespace
         {"{}.user_id = {}.group_user_id", 17},
         {"{}.user_id = {}.user_id", 18},
         {"{}.user_id = {}.user_id", 19},
-
         {"{}.user_id = {}.user_id", 20},
-        {"{}.resc_id = {}.resc_id", 21},
-        {"{}.user_id = {}.user_id", 22},
-        {"{}.resc_id = {}.resc_id", 23},
+
+        {"{}.user_id = {}.user_id", 21},
+        {"{}.resc_id = {}.resc_id", 22},
+        {"{}.user_id = {}.user_id", 23},
+        {"{}.resc_id = {}.resc_id", 24},
     }); // table_joins
     // clang-format on
 
@@ -677,6 +681,41 @@ namespace
                                d_iter->second,
                                _opts.user_zone);
             _state.values.emplace_back(_opts.user_name);
+            condition_clause_prefix = "and";
+        }
+
+        if (const auto t_iter = _state.table_aliases.find("R_TICKET_MAIN"); t_iter != end) {
+            sql += fmt::format(" {} exists ("
+                               "select 1 "
+                               "from R_USER_MAIN u "
+                               "where u.user_id = {}.user_id"
+                               " and u.user_name = ?"
+                               " and u.zone_name = '{}')",
+                               condition_clause_prefix,
+                               t_iter->second,
+                               _opts.user_zone);
+            _state.values.emplace_back(_opts.user_name);
+            condition_clause_prefix = "and";
+        }
+        else {
+            for (const auto* allowed_table :
+                 {"R_TICKET_ALLOWED_HOSTS", "R_TICKET_ALLOWED_USERS", "R_TICKET_ALLOWED_GROUPS"})
+            {
+                if (const auto a_iter = _state.table_aliases.find(allowed_table); a_iter != end) {
+                    sql += fmt::format(" {} exists ("
+                                       "select 1 "
+                                       "from R_TICKET_MAIN tm"
+                                       " inner join R_USER_MAIN u on tm.user_id = u.user_id "
+                                       "where tm.ticket_id = {}.ticket_id"
+                                       " and u.user_name = ?"
+                                       " and u.zone_name = '{}')",
+                                       condition_clause_prefix,
+                                       a_iter->second,
+                                       _opts.user_zone);
+                    _state.values.emplace_back(_opts.user_name);
+                    condition_clause_prefix = "and";
+                }
+            }
         }
 
         return sql;
@@ -722,6 +761,10 @@ namespace
 
         if (_column == "USER_GROUP_ID" || _column == "USER_GROUP_NAME") {
             return "ug_grp";
+        }
+
+        if (_column == "TICKET_DATA_COLL_NAME") {
+            return "td_coll";
         }
 
         if (_column.starts_with("DATA_ACCESS_") && _column != "DATA_ACCESS_TIME") {
@@ -1133,6 +1176,10 @@ namespace irods::experimental::genquery2
             add_r_user_main = _state.add_joins_for_user_group = true;
             table_alias = "ug_grp";
         }
+        else if (_column.name == "TICKET_DATA_COLL_NAME") {
+            add_r_data_main = _state.add_joins_for_ticket_data_coll = true;
+            table_alias = "td_coll";
+        }
         else {
             is_special_column = false;
         }
@@ -1427,6 +1474,8 @@ namespace irods::experimental::genquery2
         if (_entity == "USER_GROUP") return "R_USER_GROUP";
         if (_entity == "USER_AUTH") return "R_USER_AUTH";
         if (_entity == "USER_PASSWORD") return "R_USER_PASSWORD";
+        if (_entity == "USER_CREDENTIALS") return "R_USER_CREDENTIALS";
+        if (_entity == "USER_SESSION_KEY") return "R_USER_SESSION_KEY";
         if (_entity == "METADATA") return "R_META_MAIN";
         if (_entity == "METADATA_MAP") return "R_OBJT_METAMAP";
         if (_entity == "ACCESS") return "R_OBJT_ACCESS";
@@ -1468,6 +1517,9 @@ namespace irods::experimental::genquery2
         try {
             if (!_select.from_entity.empty()) {
                 const auto table = resolve_table_name(_select.from_entity);
+                if (!_opts.admin_mode && (table == "R_USER_CREDENTIALS" || table == "R_USER_SESSION_KEY")) {
+                    return {{}, {}};
+                }
                 gq_state state;
                 state.in_dml = true; // Use direct column name resolution
 
@@ -1546,6 +1598,13 @@ namespace irods::experimental::genquery2
             log_gq::debug("CONDITIONS = {}", conds);
 
             if (state.sql_tables.empty()) {
+                return {{}, {}};
+            }
+
+            if (!_opts.admin_mode &&
+                (state.table_aliases.contains("R_USER_CREDENTIALS") ||
+                 state.table_aliases.contains("R_USER_SESSION_KEY")))
+            {
                 return {{}, {}};
             }
 
@@ -1631,6 +1690,12 @@ namespace irods::experimental::genquery2
                     " inner join R_USER_MAIN ug_grp on ug_map.group_user_id = ug_grp.user_id"
                     " and ug_grp.user_type_name = 'rodsgroup'",
                     state.table_aliases.at("R_USER_MAIN"));
+            }
+
+            if (state.add_joins_for_ticket_data_coll) {
+                sql += fmt::format(
+                    " inner join R_COLL_MAIN td_coll on {}.coll_id = td_coll.coll_id",
+                    state.table_aliases.at("R_DATA_MAIN"));
             }
 
             sql += generate_condition_clause(state, _opts, conds);

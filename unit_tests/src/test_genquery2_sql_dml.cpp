@@ -351,6 +351,94 @@ TEST_CASE("GenQuery2 SELECT with Explicit From Entity", "[genquery2][select]")
         REQUIRE(sql_rule.find("rule_exec_id") != std::string::npos);
         REQUIRE(params_rule.size() == 1);
         REQUIRE(params_rule[0] == "%abc%");
+
+        auto sel_quota_usage = gq2::builder::select({"QUOTA_USAGE_MODIFY_TIME", "QUOTA_RESC_NAME", "QUOTA_USER_NAME", "QUOTA_USER_ZONE", "QUOTA_USAGE"})
+            .where(col("QUOTA_USER_NAME") == "alice" && col("QUOTA_USER_ZONE") == "tempZone")
+            .build();
+        auto [sql_qu, params_qu] = gq2::to_sql(sel_quota_usage, opts);
+        REQUIRE(sql_qu.find("R_QUOTA_USAGE") != std::string::npos);
+        REQUIRE(sql_qu.find("R_RESC_MAIN") != std::string::npos);
+        REQUIRE(sql_qu.find("R_USER_MAIN") != std::string::npos);
+        REQUIRE(sql_qu.find("quota_usage") != std::string::npos);
+        REQUIRE(params_qu.size() == 2);
+    }
+
+    SECTION("Select TICKET_* columns, TICKET_DATA_COLL_NAME join, and non-admin ticket ownership check")
+    {
+        auto sel_ticket = gq2::builder::select({
+                "TICKET_ID", "TICKET_STRING", "TICKET_TYPE", "TICKET_OBJECT_TYPE",
+                "TICKET_OWNER_NAME", "TICKET_OWNER_ZONE", "TICKET_USES_COUNT", "TICKET_USES_LIMIT",
+                "TICKET_WRITE_FILE_COUNT", "TICKET_WRITE_FILE_LIMIT",
+                "TICKET_WRITE_BYTE_COUNT", "TICKET_WRITE_BYTE_LIMIT",
+                "TICKET_EXPIRY_TS", "TICKET_DATA_NAME", "TICKET_DATA_COLL_NAME"
+            })
+            .where(col("TICKET_STRING") == "my_ticket_123")
+            .build();
+
+        auto [sql_admin, params_admin] = gq2::to_sql(sel_ticket, opts);
+        REQUIRE(sql_admin.find("R_TICKET_MAIN") != std::string::npos);
+        REQUIRE(sql_admin.find("R_USER_MAIN") != std::string::npos);
+        REQUIRE(sql_admin.find("R_DATA_MAIN") != std::string::npos);
+        REQUIRE(sql_admin.find("inner join R_COLL_MAIN td_coll on") != std::string::npos);
+        REQUIRE(sql_admin.find("td_coll.coll_name") != std::string::npos);
+        REQUIRE(params_admin.size() == 1);
+        REQUIRE(params_admin[0] == "my_ticket_123");
+
+        gq2::options non_admin_opts{};
+        non_admin_opts.admin_mode = false;
+        non_admin_opts.user_name = "alice";
+        non_admin_opts.user_zone = "tempZone";
+
+        auto [sql_user, params_user] = gq2::to_sql(sel_ticket, non_admin_opts);
+        REQUIRE(sql_user.find("from R_USER_MAIN u where u.user_id =") != std::string::npos);
+        REQUIRE(params_user.size() == 3);
+        REQUIRE(params_user[0] == "my_ticket_123");
+        REQUIRE(params_user[1] == "alice");
+        REQUIRE(params_user[2] == "alice");
+
+        auto sel_host = gq2::builder::select({"TICKET_ALLOWED_HOST"})
+            .where(col("TICKET_ALLOWED_HOST_TICKET_ID") == "999")
+            .build();
+        auto [sql_host, params_host] = gq2::to_sql(sel_host, non_admin_opts);
+        REQUIRE(sql_host.find("R_TICKET_ALLOWED_HOSTS") != std::string::npos);
+        REQUIRE(sql_host.find("from R_TICKET_MAIN tm inner join R_USER_MAIN u on tm.user_id = u.user_id") != std::string::npos);
+        REQUIRE(params_host.size() == 2);
+        REQUIRE(params_host[0] == "999");
+        REQUIRE(params_host[1] == "alice");
+    }
+
+    SECTION("Select USER_CRED_* and USER_SESSION_* columns requires admin_mode")
+    {
+        auto sel_cred = gq2::builder::select({
+                "USER_CRED_HASHED_PASSWORD", "USER_CRED_SALT",
+                "USER_CRED_HASHING_ALGORITHM", "USER_CRED_HASHING_PARAMETERS"
+            })
+            .where(col("USER_NAME") == "alice" && col("USER_ZONE") == "tempZone")
+            .build();
+
+        auto [sql_cred, params_cred] = gq2::to_sql(sel_cred, opts);
+        REQUIRE(sql_cred.find("R_USER_CREDENTIALS") != std::string::npos);
+        REQUIRE(sql_cred.find("R_USER_MAIN") != std::string::npos);
+        REQUIRE(sql_cred.find("hashed_password") != std::string::npos);
+        REQUIRE(params_cred.size() == 2);
+
+        auto sel_sess = gq2::builder::select({
+                "USER_SESSION_KEY", "USER_SESSION_EXPIRY_TIME", "USER_SESSION_SALT"
+            })
+            .where(col("USER_NAME") == "alice" && col("USER_ZONE") == "tempZone")
+            .build();
+
+        auto [sql_sess, params_sess] = gq2::to_sql(sel_sess, opts);
+        REQUIRE(sql_sess.find("R_USER_SESSION_KEY") != std::string::npos);
+        REQUIRE(sql_sess.find("session_key") != std::string::npos);
+        REQUIRE(params_sess.size() == 2);
+
+        gq2::options non_admin_opts{};
+        non_admin_opts.admin_mode = false;
+        auto [sql_cred_denied, _1] = gq2::to_sql(sel_cred, non_admin_opts);
+        REQUIRE(sql_cred_denied.empty());
+        auto [sql_sess_denied, _2] = gq2::to_sql(sel_sess, non_admin_opts);
+        REQUIRE(sql_sess_denied.empty());
     }
 }
 

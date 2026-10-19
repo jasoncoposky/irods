@@ -250,43 +250,50 @@ namespace irods::experimental::genquery2
         //{"COLL_ACCESS_NAME",     {"R_TOKN_MAIN", "token_name"}}, // special?
         //{"COLL_TOKEN_NAMESPACE", {"R_TOKN_MAIN", "token_namespace"}}, // special?
 
-        // Ticket support is disabled until we figure out how to handle them.
-        // This protects against users gaining access to info they don't have access to.
-        //{"TICKET_ID", {"R_TICKET_MAIN", "ticket_id"}},
-        //{"TICKET_STRING", {"R_TICKET_MAIN", "ticket_string"}},
-        //{"TICKET_TYPE", {"R_TICKET_MAIN", "ticket_type"}},
-        //{"TICKET_USER_ID", {"R_TICKET_MAIN", "user_id"}},
-        //{"TICKET_OBJECT_ID", {"R_TICKET_MAIN", "object_id"}},
-        //{"TICKET_OBJECT_TYPE", {"R_TICKET_MAIN", "object_type"}},
-        //{"TICKET_USES_LIMIT", {"R_TICKET_MAIN", "uses_limit"}},
-        //{"TICKET_USES_COUNT", {"R_TICKET_MAIN", "uses_count"}},
-        //{"TICKET_WRITE_FILE_LIMIT", {"R_TICKET_MAIN", "write_file_limit"}},
-        //{"TICKET_WRITE_FILE_COUNT", {"R_TICKET_MAIN", "write_file_count"}},
-        //{"TICKET_WRITE_BYTE_LIMIT", {"R_TICKET_MAIN", "write_byte_limit"}},
-        //{"TICKET_WRITE_BYTE_COUNT", {"R_TICKET_MAIN", "write_byte_count"}},
-        //{"TICKET_EXPIRY_TIME", {"R_TICKET_MAIN", "ticket_expiry_ts"}},
-        //{"TICKET_CREATE_TIME", {"R_TICKET_MAIN", "create_time"}},
-        //{"TICKET_MODIFY_TIME", {"R_TICKET_MAIN", "modify_time"}},
+        {"TICKET_ID", {"R_TICKET_MAIN", "ticket_id"}},
+        {"TICKET_STRING", {"R_TICKET_MAIN", "ticket_string"}},
+        {"TICKET_TYPE", {"R_TICKET_MAIN", "ticket_type"}},
+        {"TICKET_USER_ID", {"R_TICKET_MAIN", "user_id"}},
+        {"TICKET_OBJECT_ID", {"R_TICKET_MAIN", "object_id"}},
+        {"TICKET_OBJECT_TYPE", {"R_TICKET_MAIN", "object_type"}},
+        {"TICKET_USES_LIMIT", {"R_TICKET_MAIN", "uses_limit"}},
+        {"TICKET_USES_COUNT", {"R_TICKET_MAIN", "uses_count"}},
+        {"TICKET_WRITE_FILE_LIMIT", {"R_TICKET_MAIN", "write_file_limit"}},
+        {"TICKET_WRITE_FILE_COUNT", {"R_TICKET_MAIN", "write_file_count"}},
+        {"TICKET_WRITE_BYTE_LIMIT", {"R_TICKET_MAIN", "write_byte_limit"}},
+        {"TICKET_WRITE_BYTE_COUNT", {"R_TICKET_MAIN", "write_byte_count"}},
+        {"TICKET_EXPIRY_TIME", {"R_TICKET_MAIN", "ticket_expiry_ts"}},
+        {"TICKET_EXPIRY_TS", {"R_TICKET_MAIN", "ticket_expiry_ts"}},
+        {"TICKET_EXPIRY", {"R_TICKET_MAIN", "ticket_expiry_ts"}},
+        {"TICKET_CREATE_TIME", {"R_TICKET_MAIN", "create_ts"}},
+        {"TICKET_MODIFY_TIME", {"R_TICKET_MAIN", "modify_ts"}},
 
-        // Is this possible? Does it make sense?
-        // This isn't a thing in GenQuery1.
-        //{"TICKET_LOGICAL_PATH", {"R_TICKET_MAIN", "modify_time"}},
+        {"TICKET_ALLOWED_HOST", {"R_TICKET_ALLOWED_HOSTS", "host"}},
+        {"TICKET_ALLOWED_HOST_TICKET_ID", {"R_TICKET_ALLOWED_HOSTS", "ticket_id"}},
 
-        //{"TICKET_ALLOWED_HOST", {"R_TICKET_ALLOWED_HOSTS", "host"}},
-        //{"TICKET_ALLOWED_HOST_TICKET_ID", {"R_TICKET_ALLOWED_HOSTS", "ticket_id"}},
+        {"TICKET_ALLOWED_USER_NAME", {"R_TICKET_ALLOWED_USERS", "user_name"}},
+        {"TICKET_ALLOWED_USER_TICKET_ID", {"R_TICKET_ALLOWED_USERS", "ticket_id"}},
 
-        //{"TICKET_ALLOWED_USER_NAME", {"R_TICKET_ALLOWED_USERS", "user_name"}},
-        //{"TICKET_ALLOWED_USER_TICKET_ID", {"R_TICKET_ALLOWED_USERS", "ticket_id"}},
+        {"TICKET_ALLOWED_GROUP_NAME", {"R_TICKET_ALLOWED_GROUPS", "group_name"}},
+        {"TICKET_ALLOWED_GROUP_TICKET_ID", {"R_TICKET_ALLOWED_GROUPS", "ticket_id"}},
 
-        //{"TICKET_ALLOWED_GROUP_NAME", {"R_TICKET_ALLOWED_GROUPS", "group_name"}},
-        //{"TICKET_ALLOWED_GROUP_TICKET_ID", {"R_TICKET_ALLOWED_GROUPS", "ticket_id"}},
+        {"TICKET_DATA_NAME", {"R_DATA_MAIN", "data_name"}},
+        {"TICKET_COLL_NAME", {"R_COLL_MAIN", "coll_name"}},
+        {"TICKET_OWNER_NAME", {"R_USER_MAIN", "user_name"}},
+        {"TICKET_OWNER_ZONE", {"R_USER_MAIN", "zone_name"}},
+        {"TICKET_DATA_COLL_NAME", {"R_COLL_MAIN", "coll_name"}},
 
-        //{"TICKET_DATA_NAME",      {"R_DATA_MAIN", "data_name"}}, // special?
-        //{"TICKET_COLL_NAME",      {"R_COLL_MAIN", "coll_name"}}, // special?
-        //{"TICKET_OWNER_NAME",     {"R_USER_MAIN", "user_name"}}, // special?
-        //{"TICKET_OWNER_ZONE",     {"R_USER_MAIN", "zone_name"}}, // special?
-        //{"TICKET_DATA_COLL_NAME", {"R_COLL_MAIN", "coll_name"}} // Includes join between R_DATA_MAIN and
-        //R_COLL_MAIN. What is this?
+        {"USER_CRED_USER_ID", {"R_USER_CREDENTIALS", "user_id"}},
+        {"USER_CRED_HASHED_PASSWORD", {"R_USER_CREDENTIALS", "hashed_password"}},
+        {"USER_CRED_SALT", {"R_USER_CREDENTIALS", "salt"}},
+        {"USER_CRED_HASHING_ALGORITHM", {"R_USER_CREDENTIALS", "hashing_algorithm"}},
+        {"USER_CRED_HASHING_PARAMETERS", {"R_USER_CREDENTIALS", "hashing_parameters"}},
+
+        {"USER_SESSION_USER_ID", {"R_USER_SESSION_KEY", "user_id"}},
+        {"USER_SESSION_KEY", {"R_USER_SESSION_KEY", "session_key"}},
+        {"USER_SESSION_AUTH_SCHEME", {"R_USER_SESSION_KEY", "auth_scheme"}},
+        {"USER_SESSION_EXPIRY_TIME", {"R_USER_SESSION_KEY", "session_expiry_ts"}},
+        {"USER_SESSION_SALT", {"R_USER_SESSION_KEY", "salt"}},
     }; // column_name_mappings
 } // namespace irods::experimental::genquery2
 
