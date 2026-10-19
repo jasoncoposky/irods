@@ -8,10 +8,11 @@
 #include "irods/private/irods_repl_types.hpp"
 #include "irods/icatHighLevelRoutines.hpp"
 #include "irods/dataObjRepl.h"
-#include "irods/genQuery.h"
+#include "irods/filesystem/path.hpp"
+#include "irods/genquery2_builder.hpp"
 #include "irods/rodsLog.h"
 #include "irods/rodsType.h"
-#include "irods/rsGenQuery.hpp"
+#include "irods/rs_genquery2.hpp"
 #include "irods/rodsError.h"
 
 #include <boost/format.hpp>
@@ -19,6 +20,7 @@
 #include <fmt/format.h>
 #include <fmt/ranges.h>
 
+#include <charconv>
 #include <cstdlib>
 #include <cstring>
 #include <iterator>
@@ -42,6 +44,7 @@ namespace {
         parser.str( sub_hier, _current_resc );
 
         dataObjInp_t data_obj_inp{};
+        const irods::at_scope_exit clear_cond{[&data_obj_inp] { clearKeyVal(&data_obj_inp.condInput); }};
         rstrcpy( data_obj_inp.objPath, _obj_path.c_str(), MAX_NAME_LEN );
         data_obj_inp.createMode = _mode;
         addKeyVal( &data_obj_inp.condInput, RESC_HIER_STR_KW,      _src_hier.c_str() );
@@ -69,28 +72,15 @@ namespace {
         return SUCCESS();
     }
 
-    // throws irods::exception
-    sqlResult_t* extract_sql_result(const genQueryInp_t& genquery_inp, genQueryOut_t* genquery_out_ptr, const int column_number) {
-        if (sqlResult_t *sql_result = getSqlResultByInx(genquery_out_ptr, column_number)) {
-            return sql_result;
-        }
-        THROW(
-            NULL_VALUE_ERR,
-            boost::format("getSqlResultByInx failed. column [%d] genquery_inp contents:\n%s\n\n possible iquest [%s]") %
-            column_number %
-            genquery_inp_to_diagnostic_string(&genquery_inp) %
-            genquery_inp_to_iquest_string(&genquery_inp));
-    };
-
-    std::string leaf_bundles_to_genquery_in_syntax(const std::vector<leaf_bundle_t>& _bundles)
+    auto flatten_leaf_bundles_to_strings(const std::vector<leaf_bundle_t>& _bundles) -> std::vector<std::string>
     {
-        fmt::memory_buffer out;
-        auto it = fmt::format_to(std::back_inserter(out), "IN (");
+        std::vector<std::string> resc_ids;
         for (const auto& b : _bundles) {
-            it = fmt::format_to(it, "'{}',", fmt::join(b, "','"));
+            for (const auto id : b) {
+                resc_ids.push_back(fmt::to_string(id));
+            }
         }
-        auto cond_str = to_string(out);
-        return cond_str.replace(out.size() - 1, 1, ")");
+        return resc_ids;
     }
 
     struct ReplicationSourceInfo {
@@ -109,74 +99,48 @@ namespace {
             THROW(SYS_INTERNAL_NULL_INPUT_ERR, "null comm ptr");
         }
 
-        irods::GenQueryInpWrapper genquery_inp_wrapped;
-        genquery_inp_wrapped.get().maxRows = MAX_SQL_ROWS;
-        addInxVal(&genquery_inp_wrapped.get().sqlCondInp, COL_D_DATA_ID, (boost::format("= '%lld'") % _data_id).str().c_str());
+        namespace fs = irods::experimental::filesystem;
+        namespace gq2 = irods::experimental::genquery2;
+        using gq2::builder::col;
 
-        const std::string cond_str = leaf_bundles_to_genquery_in_syntax(_leaf_bundles);
-        addInxVal(&genquery_inp_wrapped.get().sqlCondInp, COL_D_RESC_ID, cond_str.c_str());
+        const auto resc_ids = flatten_leaf_bundles_to_strings(_leaf_bundles);
+        const auto q = gq2::builder::select({"DATA_NAME", "COLL_NAME", "DATA_MODE", "DATA_RESC_ID"})
+            .where(col("DATA_ID") == fmt::to_string(_data_id) &&
+                   col("DATA_RESC_ID").in(resc_ids) &&
+                   col("DATA_REPL_STATUS") == fmt::to_string(GOOD_REPLICA))
+            .limit(1)
+            .build();
 
-        addInxVal(&genquery_inp_wrapped.get().sqlCondInp, COL_D_REPL_STATUS, (boost::format("= '%d'") % GOOD_REPLICA).str().c_str());
-
-        addInxIval(&genquery_inp_wrapped.get().selectInp, COL_DATA_NAME, 1);
-        addInxIval(&genquery_inp_wrapped.get().selectInp, COL_COLL_NAME, 1);
-        addInxIval(&genquery_inp_wrapped.get().selectInp, COL_DATA_MODE, 1);
-        addInxIval(&genquery_inp_wrapped.get().selectInp, COL_D_RESC_ID, 1);
-
-        irods::GenQueryOutPtrWrapper genquery_out_ptr_wrapped;
-        const int status_rsGenQuery = rsGenQuery(_comm, &genquery_inp_wrapped.get(), &genquery_out_ptr_wrapped.get());
-        if (status_rsGenQuery < 0) {
-            THROW(
-                status_rsGenQuery,
-                boost::format("rsGenQuery failed. genquery_inp contents:\n%s\n\n possible iquest [%s]") %
-                genquery_inp_to_diagnostic_string(&genquery_inp_wrapped.get()) %
-                genquery_inp_to_iquest_string(&genquery_inp_wrapped.get()));
+        nlohmann::json rows;
+        if (const int ec = gq2::try_execute(*_comm, q, rows); ec < 0) {
+            THROW(ec, fmt::format("GenQuery2 failed for data_id [{}]: [{}]", _data_id, gq2::to_query_string(q)));
+        }
+        if (rows.empty()) {
+            THROW(CAT_NO_ROWS_FOUND, fmt::format("No good source replica found for data_id [{}]", _data_id));
         }
 
-        if (!genquery_out_ptr_wrapped.get()) {
-            THROW(
-                SYS_INTERNAL_NULL_INPUT_ERR,
-                boost::format("rsGenQuery failed. genquery_inp contents:\n%s\n\n possible iquest [%s]") %
-                genquery_inp_to_diagnostic_string(&genquery_inp_wrapped.get()) %
-                genquery_inp_to_iquest_string(&genquery_inp_wrapped.get()));
+        const auto& row = rows[0];
+        const auto& data_name = row[0].get_ref<const std::string&>();
+        const auto& coll_name = row[1].get_ref<const std::string&>();
+        const auto& data_mode_str = row[2].get_ref<const std::string&>();
+        const auto& resc_id_str = row[3].get_ref<const std::string&>();
+
+        rodsLong_t resc_id = 0;
+        if (const auto [ptr, ec] = std::from_chars(resc_id_str.data(), resc_id_str.data() + resc_id_str.size(), resc_id);
+            ec != std::errc{} || ptr != resc_id_str.data() + resc_id_str.size()) {
+            THROW(INVALID_LEXICAL_CAST, fmt::format("Failed to parse DATA_RESC_ID [{}]", resc_id_str));
         }
-
-
-        sqlResult_t *data_name_result = extract_sql_result(genquery_inp_wrapped.get(), genquery_out_ptr_wrapped.get(), COL_DATA_NAME);
-        char *data_name = &data_name_result->value[0];
-
-        sqlResult_t *coll_name_result = extract_sql_result(genquery_inp_wrapped.get(), genquery_out_ptr_wrapped.get(), COL_COLL_NAME);
-        char *coll_name = &coll_name_result->value[0];
-
-        auto cast_genquery_result = [&genquery_inp_wrapped](char *s) -> rodsLong_t {
-            try {
-                return boost::lexical_cast<rodsLong_t>(s);
-            } catch (const boost::bad_lexical_cast&) {
-                THROW(
-                    INVALID_LEXICAL_CAST,
-                    boost::format("boost::lexical_cast failed. tried to cast [%s]. genquery_inp contents:\n%s\n\n possible iquest [%s]") %
-                    s %
-                    genquery_inp_to_diagnostic_string(&genquery_inp_wrapped.get()) %
-                    genquery_inp_to_iquest_string(&genquery_inp_wrapped.get()));
-            }
-        };
-
-        sqlResult_t *resc_id_result = extract_sql_result(genquery_inp_wrapped.get(), genquery_out_ptr_wrapped.get(), COL_D_RESC_ID);
-        const rodsLong_t resc_id = cast_genquery_result(&resc_id_result->value[0]);
 
         // It is possible that some catalogs may contain invalid data modes (e.g. empty string, non-integer value).
         // In these cases, the system will interpret invalid strings as zero (0).
-        sqlResult_t *data_mode_result = extract_sql_result(genquery_inp_wrapped.get(), genquery_out_ptr_wrapped.get(), COL_DATA_MODE);
-        const int data_mode = std::atoi(&data_mode_result->value[0]);
+        int data_mode = 0;
+        std::from_chars(data_mode_str.data(), data_mode_str.data() + data_mode_str.size(), data_mode);
 
         ReplicationSourceInfo ret;
-        ret.object_path = (boost::format("%s%s%s") % coll_name % irods::get_virtual_path_separator() % data_name).str();
+        ret.object_path = (fs::path{coll_name} / data_name).string();
         irods::error err = resc_mgr.leaf_id_to_hier(resc_id, ret.resource_hierarchy);
         if (!err.ok()) {
-            THROW(err.code(),
-                  boost::format("leaf_id_to_hier failed. resc id [%lld] genquery inp:\n%s") %
-                  resc_id %
-                  genquery_inp_to_diagnostic_string(&genquery_inp_wrapped.get()));
+            THROW(err.code(), fmt::format("leaf_id_to_hier failed for resc id [{}]", resc_id));
         }
         ret.data_mode = data_mode;
         return ret;
@@ -208,62 +172,41 @@ namespace {
             THROW(SYS_INVALID_INPUT_PARAM, "empty invocation timestamp");
         }
 
-        irods::GenQueryInpWrapper genquery_inp_wrapped;
-        genquery_inp_wrapped.get().maxRows = _batch_size;
-        genquery_inp_wrapped.get().rowOffset = _offset;
+        namespace gq2 = irods::experimental::genquery2;
+        using gq2::builder::col;
 
-        const std::string cond_str = leaf_bundles_to_genquery_in_syntax(_bundles);
-        addInxVal(&genquery_inp_wrapped.get().sqlCondInp, COL_D_RESC_ID, cond_str.c_str());
-        addInxVal(&genquery_inp_wrapped.get().sqlCondInp, COL_D_REPL_STATUS, (boost::format("= '%d'") % STALE_REPLICA).str().c_str());
-        const std::string timestamp_str = "<= '" + _invocation_timestamp + "'";
-        addInxVal(&genquery_inp_wrapped.get().sqlCondInp, COL_D_MODIFY_TIME, timestamp_str.c_str());
-        addInxIval(&genquery_inp_wrapped.get().selectInp, COL_D_DATA_ID, 1);
-        addInxIval(&genquery_inp_wrapped.get().selectInp, COL_DATA_REPL_NUM, 1);
-        addInxIval(&genquery_inp_wrapped.get().selectInp, COL_D_RESC_ID, 1);
+        const auto resc_ids = flatten_leaf_bundles_to_strings(_bundles);
+        const auto q = gq2::builder::select({"DATA_ID", "DATA_REPL_NUM", "DATA_RESC_ID"})
+            .where(col("DATA_RESC_ID").in(resc_ids) &&
+                   col("DATA_REPL_STATUS") == fmt::to_string(STALE_REPLICA) &&
+                   col("DATA_MODIFY_TIME") <= _invocation_timestamp)
+            .limit(static_cast<std::size_t>(_batch_size), static_cast<std::size_t>(_offset))
+            .build();
 
-        irods::GenQueryOutPtrWrapper genquery_out_ptr_wrapped;
-        const int status_rsGenQuery = rsGenQuery(_comm, &genquery_inp_wrapped.get(), &genquery_out_ptr_wrapped.get());
-
-        std::vector<ReplicaAndRescId> ret;
-        if (CAT_NO_ROWS_FOUND == status_rsGenQuery) {
-            return ret;
-        } else if (status_rsGenQuery < 0) {
-            THROW(
-                status_rsGenQuery,
-                boost::format("rsGenQuery failed. genquery_inp contents:\n%s\npossible iquest [%s]") %
-                genquery_inp_to_diagnostic_string(&genquery_inp_wrapped.get()) %
-                genquery_inp_to_iquest_string(&genquery_inp_wrapped.get()));
-        } else if (nullptr == genquery_out_ptr_wrapped.get()) {
-            THROW(
-                SYS_INTERNAL_NULL_INPUT_ERR,
-                boost::format("rsGenQuery failed. genquery_inp contents:\n%s\npossible iquest [%s]") %
-                genquery_inp_to_diagnostic_string(&genquery_inp_wrapped.get()) %
-                genquery_inp_to_iquest_string(&genquery_inp_wrapped.get()));
+        nlohmann::json rows;
+        if (const int ec = gq2::try_execute(*_comm, q, rows); ec < 0) {
+            if (CAT_NO_ROWS_FOUND == ec) {
+                return {};
+            }
+            THROW(ec, fmt::format("GenQuery2 failed: [{}]", gq2::to_query_string(q)));
         }
 
-        sqlResult_t *data_id_results       = extract_sql_result(genquery_inp_wrapped.get(), genquery_out_ptr_wrapped.get(), COL_D_DATA_ID);
-        sqlResult_t *data_repl_num_results = extract_sql_result(genquery_inp_wrapped.get(), genquery_out_ptr_wrapped.get(), COL_DATA_REPL_NUM);
-        sqlResult_t *data_resc_id_results  = extract_sql_result(genquery_inp_wrapped.get(), genquery_out_ptr_wrapped.get(), COL_D_RESC_ID);
+        std::vector<ReplicaAndRescId> ret;
+        ret.reserve(rows.size());
+        auto parse_long = [](const std::string& _s) -> rodsLong_t {
+            rodsLong_t val = 0;
+            if (const auto [ptr, ec] = std::from_chars(_s.data(), _s.data() + _s.size(), val);
+                ec != std::errc{} || ptr != _s.data() + _s.size()) {
+                THROW(INVALID_LEXICAL_CAST, fmt::format("Failed to parse integer [{}]", _s));
+            }
+            return val;
+        };
 
-        ret.reserve(genquery_out_ptr_wrapped.get()->rowCnt);
-        for (int i=0; i<genquery_out_ptr_wrapped.get()->rowCnt; ++i) {
-            ReplicaAndRescId repl_and_resc;
-            auto cast_genquery_result = [&genquery_inp_wrapped](int i, char *s) {
-                try {
-                    return boost::lexical_cast<rodsLong_t>(s);
-                } catch (const boost::bad_lexical_cast&) {
-                    THROW(
-                        INVALID_LEXICAL_CAST,
-                        boost::format("boost::lexical_cast failed. index [%d]. tried to cast [%s]. genquery_inp contents:\n%s\npossible iquest [%s]") %
-                        i %
-                        s %
-                        genquery_inp_to_diagnostic_string(&genquery_inp_wrapped.get()) %
-                        genquery_inp_to_iquest_string(&genquery_inp_wrapped.get()));
-                }
-            };
-            repl_and_resc.data_id        = cast_genquery_result(i, &data_id_results      ->value[data_id_results      ->len * i]);
-            repl_and_resc.replica_number = cast_genquery_result(i, &data_repl_num_results->value[data_repl_num_results->len * i]);
-            repl_and_resc.resource_id    = cast_genquery_result(i, &data_resc_id_results ->value[data_resc_id_results ->len * i]);
+        for (const auto& row : rows) {
+            ReplicaAndRescId repl_and_resc{};
+            repl_and_resc.data_id        = parse_long(row[0].get_ref<const std::string&>());
+            repl_and_resc.replica_number = parse_long(row[1].get_ref<const std::string&>());
+            repl_and_resc.resource_id    = parse_long(row[2].get_ref<const std::string&>());
             ret.push_back(repl_and_resc);
         }
         return ret;

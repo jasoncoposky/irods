@@ -22,8 +22,8 @@
 #include "irods/irods_logger.hpp"
 #include "irods/rodsErrorTable.h"
 
-#define IRODS_QUERY_ENABLE_SERVER_SIDE_API
-#include "irods/irods_query.hpp"
+#include "irods/genquery2_builder.hpp"
+#include "irods/rs_genquery2.hpp"
 
 #include <fmt/format.h>
 #include <nanodbc/nanodbc.h>
@@ -63,8 +63,16 @@ namespace
 
     auto is_hostname_valid(RsComm& _comm, const std::string_view _hostname) -> bool
     {
-        irods::query q{&_comm, fmt::format("select RESC_LOC where RESC_LOC = '{}'", _hostname)};
-        return q.size() > 0;
+        namespace gq2 = irods::experimental::genquery2;
+        using gq2::builder::col;
+
+        const auto q = gq2::builder::select({"RESC_LOC"})
+            .where(col("RESC_LOC") == _hostname)
+            .limit(1)
+            .build();
+
+        nlohmann::json rows;
+        return gq2::try_execute(_comm, q, rows) >= 0 && !rows.empty();
     } // is_hostname_valid
 
     auto rs_set_delay_server_migration_info(RsComm* _comm, const DelayServerMigrationInput* _input) -> int

@@ -40,8 +40,8 @@
 #include "irods/irods_server_properties.hpp"
 #include <nlohmann/json.hpp>
 
-#define IRODS_QUERY_ENABLE_SERVER_SIDE_API
-#include "irods/query_builder.hpp"
+#include "irods/genquery2_builder.hpp"
+#include "irods/rs_genquery2.hpp"
 
 #define STATIC_PEP(NAME) static_policy_enforcement_points[#NAME] = NAME
 
@@ -904,10 +904,16 @@ namespace
 
     auto rule_is_not_already_enqueued(rsComm_t* comm, const std::string& hash)
     {
-        auto qs = fmt::format("SELECT RULE_EXEC_NAME WHERE RULE_EXEC_NAME LIKE '%{}%'", hash);
+        namespace gq2 = irods::experimental::genquery2;
+        using gq2::builder::col;
 
-        irods::experimental::query_builder qb;
-        return qb.build(*comm, qs).size() == 0;
+        const auto q = gq2::builder::select({"DELAY_RULE_NAME"})
+            .where(col("DELAY_RULE_NAME").like(fmt::format("%{}%", hash)))
+            .limit(1)
+            .build();
+
+        nlohmann::json rows;
+        return gq2::try_execute(*comm, q, rows) >= 0 && rows.empty();
 
     } // rule_is_not_already_enqueued
 

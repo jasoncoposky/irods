@@ -26,7 +26,6 @@
 #include "irods/irods_configuration_keywords.hpp"
 #include "irods/irods_exception.hpp"
 #include "irods/irods_logger.hpp"
-#include "irods/irods_query.hpp"
 #include "irods/irods_re_serialization.hpp"
 #include "irods/irods_resource_backport.hpp"
 #include "irods/irods_server_api_call.hpp"

@@ -31,7 +31,6 @@
 #include "irods/irods_kvp_string_parser.hpp"
 #include "irods/irods_random.hpp"
 #include "irods/irods_exception.hpp"
-#include "irods/rsGenQuery.hpp"
 #include "irods/key_value_proxy.hpp"
 
 // =-=-=-=-=-=-=-

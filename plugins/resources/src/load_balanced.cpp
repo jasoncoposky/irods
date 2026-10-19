@@ -1,10 +1,10 @@
 // =-=-=-=-=-=-=-
 // irods includes
 #include "irods/msParam.h"
-#include "irods/genQuery.h"
 #include "irods/generalAdmin.h"
 #include "irods/miscServerFunct.hpp"
-#include "irods/rsGenQuery.hpp"
+#include "irods/genquery2_builder.hpp"
+#include "irods/rs_genquery2.hpp"
 
 // =-=-=-=-=-=-=-
 #include "irods/irods_resource_plugin.hpp"
@@ -19,6 +19,7 @@
 
 // =-=-=-=-=-=-=-
 // stl includes
+#include <charconv>
 #include <iostream>
 #include <sstream>
 #include <vector>
@@ -547,60 +548,42 @@ irods::error get_load_lists(
     std::vector< std::string >&     _resc_names,
     std::vector< int >&             _resc_loads,
     std::vector< int >&             _resc_times ) {
-    // =-=-=-=-=-=-=-
-    //
-    int i = 0, j = 0, nresc = 0, status = 0;
-    char* tResult = 0;
-    genQueryInp_t  genQueryInp;
-    genQueryOut_t* genQueryOut = NULL;
+    namespace gq2 = irods::experimental::genquery2;
 
-    // =-=-=-=-=-=-=-
     // query the database in order to retrieve the information on the
     // resources' load
-    memset( &genQueryInp, 0, sizeof( genQueryInp ) );
-    addInxIval( &genQueryInp.selectInp, COL_SLD_RESC_NAME, 1 );
-    addInxIval( &genQueryInp.selectInp, COL_SLD_LOAD_FACTOR, 1 );
-    addInxIval( &genQueryInp.selectInp, COL_SLD_CREATE_TIME, SELECT_MAX );
+    const auto q = gq2::builder::select({"SLD_RESC_NAME", "SLD_LOAD_FACTOR"})
+        .project(gq2::builder::max("SLD_CREATE_TIME"))
+        .limit(MAX_SQL_ROWS * 10)
+        .build();
 
-    // =-=-=-=-=-=-=-
-    // a tmp fix to increase no. of resource to 256
-    genQueryInp.maxRows = MAX_SQL_ROWS * 10;
-    status =  rsGenQuery( _ctx.comm(), &genQueryInp, &genQueryOut );
-    if ( status == 0 ) {
-        nresc = genQueryOut->rowCnt;
-        // =-=-=-=-=-=-=-
-        // vectors should be sized to number of resources
-        // these vectors will be indexed directly, not built
-        _resc_names.resize( nresc );
-        _resc_loads.resize( nresc );
-        _resc_times.resize( nresc );
-
-        for ( i = 0; i < genQueryOut->attriCnt; i++ ) {
-            for ( j = 0; j < nresc; j++ ) {
-                tResult = genQueryOut->sqlResult[i].value;
-                tResult += j * genQueryOut->sqlResult[i].len;
-                switch ( i ) {
-                case 0:
-                    _resc_names[j] = tResult;
-
-                case 1:
-                    _resc_loads[j] = atoi( tResult );
-                    break;
-                case 2:
-                    _resc_times[j] = atoi( tResult );
-                    break;
-                }
-            }
-        }
-    }
-    else {
-        clearGenQueryInp( &genQueryInp );
-        freeGenQueryOut( &genQueryOut );
+    nlohmann::json rows;
+    if (const int status = gq2::try_execute(*_ctx.comm(), q, rows); status < 0) {
         return ERROR( status, "genquery failed" );
     }
+    if (rows.empty()) {
+        return ERROR( CAT_NO_ROWS_FOUND, "genquery failed" );
+    }
 
-    clearGenQueryInp( &genQueryInp );
-    freeGenQueryOut( &genQueryOut );
+    const auto nresc = rows.size();
+    _resc_names.resize( nresc );
+    _resc_loads.resize( nresc );
+    _resc_times.resize( nresc );
+
+    for ( std::size_t j = 0; j < nresc; ++j ) {
+        const auto& row = rows[j];
+        _resc_names[j] = row[0].get_ref<const std::string&>();
+
+        int load = 0;
+        const auto& load_str = row[1].get_ref<const std::string&>();
+        std::from_chars(load_str.data(), load_str.data() + load_str.size(), load);
+        _resc_loads[j] = load;
+
+        int time_val = 0;
+        const auto& time_str = row[2].get_ref<const std::string&>();
+        std::from_chars(time_str.data(), time_str.data() + time_str.size(), time_val);
+        _resc_times[j] = time_val;
+    }
 
     return SUCCESS();
 
