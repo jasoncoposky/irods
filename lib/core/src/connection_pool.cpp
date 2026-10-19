@@ -1,19 +1,80 @@
 #include "irods/connection_pool.hpp"
 
 #include "irods/authentication_plugin_framework.hpp"
+#include "irods/genquery2.h"
+#include "irods/irods_at_scope_exit.hpp"
 #include "irods/irods_exception.hpp"
-#include "irods/irods_query.hpp"
-#include "irods/query_builder.hpp"
 #include "irods/rodsErrorTable.h"
-#include "irods/rodsGenQuery.h"
 #include "irods/thread_pool.hpp"
 
+#include <fmt/format.h>
+#include <nlohmann/json.hpp>
+
 #include <algorithm>
+#include <cstdlib>
 #include <thread>
 #include <tuple> // For std::ignore.
+#include <utility>
 
 namespace irods
 {
+    namespace
+    {
+        auto fetch_resource_state(RcComm& _conn) -> std::pair<std::int32_t, std::string>
+        {
+            Genquery2Input input{};
+            input.query_string = const_cast<char*>(
+                "select RESC_MODIFY_TIME, RESC_MODIFY_TIME_MILLIS "
+                "order by RESC_MODIFY_TIME desc, RESC_MODIFY_TIME_MILLIS desc");
+
+            char* output_str = nullptr;
+            irods::at_scope_exit free_output{[&output_str] {
+                if (output_str) {
+                    std::free(output_str);
+                }
+            }};
+
+            if (const auto ec = rc_genquery2(&_conn, &input, &output_str); ec < 0) {
+                // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-array-to-pointer-decay)
+                THROW(ec, "Failed to query resource modification state");
+            }
+
+            if (!output_str) {
+                // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-array-to-pointer-decay)
+                THROW(SYS_INTERNAL_ERR, "Null GenQuery2 output");
+            }
+
+            const auto rows = nlohmann::json::parse(output_str);
+            const auto resc_count = static_cast<std::int32_t>(rows.size());
+            std::string latest_mtime;
+
+            if (resc_count > 0) {
+                const auto& row = rows.front();
+                latest_mtime = fmt::format(
+                    "{}.{}",
+                    row.at(0).get_ref<const std::string&>(),
+                    row.at(1).get_ref<const std::string&>());
+            }
+
+            return {resc_count, std::move(latest_mtime)};
+        }
+
+        auto is_connection_alive(RcComm& _conn) noexcept -> bool
+        {
+            Genquery2Input input{};
+            input.query_string = const_cast<char*>("select ZONE_NAME where ZONE_TYPE = 'local'");
+
+            char* output_str = nullptr;
+            irods::at_scope_exit free_output{[&output_str] {
+                if (output_str) {
+                    std::free(output_str);
+                }
+            }};
+
+            return rc_genquery2(&_conn, &input, &output_str) >= 0;
+        }
+    } // anonymous namespace
+
     //
     // Connection Proxy Implementation
     //
@@ -37,13 +98,19 @@ namespace irods
 
     connection_pool::connection_proxy& connection_pool::connection_proxy::operator=(connection_proxy&& _other) noexcept
     {
-        pool_ = _other.pool_;
-        conn_ = _other.conn_;
-        index_ = _other.index_;
+        if (this != &_other) {
+            if (pool_ && uninitialized_index != index_) {
+                pool_->return_connection(index_);
+            }
 
-        _other.pool_ = nullptr;
-        _other.conn_ = nullptr;
-        _other.index_ = uninitialized_index;
+            pool_ = _other.pool_;
+            conn_ = _other.conn_;
+            index_ = _other.index_;
+
+            _other.pool_ = nullptr;
+            _other.conn_ = nullptr;
+            _other.index_ = uninitialized_index;
+        }
 
         return *this;
     } // operator=
@@ -175,19 +242,7 @@ namespace irods
             // Capture the latest time any resource was modified.
             // This will be used to track when a connection should be refreshed.
             // This helps with long-running agents.
-
-            auto q = irods::experimental::query_builder{}
-                         .options(NO_DISTINCT | RETURN_TOTAL_ROW_COUNT) // NOLINT(hicpp-signed-bitwise)
-                         .build(*conn_ctxs_[0].conn,
-                                "select order_desc(RESC_MODIFY_TIME), order_desc(RESC_MODIFY_TIME_MILLIS)");
-
-            const auto resc_count = q.total_row_count();
-            std::string latest_mtime;
-
-            if (resc_count > 0) {
-                const auto row = q.front();
-                latest_mtime = fmt::format("{}.{}", row[0], row[1]);
-            }
+            const auto [resc_count, latest_mtime] = fetch_resource_state(*conn_ctxs_[0].conn);
 
             // Attach the resource information to each connection context.
             std::for_each(std::begin(conn_ctxs_), std::end(conn_ctxs_), [&latest_mtime, resc_count](auto&& _ctx) {
@@ -319,33 +374,17 @@ namespace irods
                 // resource property be updated to avoid unnecessary refreshes of the connection.
                 auto in_sync = true;
 
-                auto q =
-                    irods::experimental::query_builder{}
-                        .options(NO_DISTINCT | RETURN_TOTAL_ROW_COUNT) // NOLINT(hicpp-signed-bitwise)
-                        .build(*ctx.conn, "select order_desc(RESC_MODIFY_TIME), order_desc(RESC_MODIFY_TIME_MILLIS)");
+                auto [resc_count, latest_mtime] = fetch_resource_state(*ctx.conn);
 
-                if (const auto v = q.total_row_count(); v != ctx.resc_count) {
+                if (resc_count != ctx.resc_count) {
                     in_sync = false;
-                    ctx.resc_count = v;
+                    ctx.resc_count = resc_count;
                 }
 
                 if (ctx.resc_count > 0) {
-                    const auto row = q.front();
-
-                    try {
-                        auto latest_mtime = fmt::format("{}.{}", row[0], row[1]);
-
-                        if (latest_mtime != ctx.latest_resc_mtime) {
-                            in_sync = false;
-                            ctx.latest_resc_mtime = std::move(latest_mtime);
-                        }
-                    }
-                    catch (...) {
-                        // In theory, we should never reach this block. However, if we do, just
-                        // go ahead and refresh the connection. At the very least, the agent will
-                        // reflect the latest state in the catalog for a small penalty of TCP socket
-                        // reconstruction.
+                    if (latest_mtime != ctx.latest_resc_mtime) {
                         in_sync = false;
+                        ctx.latest_resc_mtime = std::move(latest_mtime);
                     }
                 }
 
@@ -359,11 +398,8 @@ namespace irods
                     return in_sync;
                 }
             }
-            else {
-                // Check if the connection is still valid.
-                // This query will always succeed unless there's an issue in which case an exception will
-                // be thrown.
-                query{ctx.conn.get(), "select ZONE_NAME where ZONE_TYPE = 'local'"}; // NOLINT(bugprone-unused-raii)
+            else if (!is_connection_alive(*ctx.conn)) {
+                return false;
             }
         }
         catch (const std::exception&) {
@@ -395,27 +431,44 @@ namespace irods
 
     connection_pool::connection_proxy connection_pool::get_connection()
     {
-        for (int i = 0;; i = (i + 1) % static_cast<int>(conn_ctxs_.size())) {
-            std::unique_lock<std::mutex> lock{conn_ctxs_[i].mutex, std::defer_lock};
+        const auto pool_size = static_cast<int>(conn_ctxs_.size());
 
-            if (lock.try_lock()) {
-                if (!conn_ctxs_[i].in_use.load()) {
-                    conn_ctxs_[i].in_use.store(true);
-                    connection_proxy proxy{*this, *refresh_connection(i), i};
+        for (int i = 0;; i = (i + 1) % pool_size) {
+            {
+                std::unique_lock<std::mutex> lock{conn_ctxs_[i].mutex, std::defer_lock};
 
-                    if (options_.number_of_retrievals_before_connection_refresh) {
-                        ++conn_ctxs_[i].retrieval_count;
+                if (lock.try_lock()) {
+                    if (!conn_ctxs_[i].in_use.load(std::memory_order_acquire)) {
+                        conn_ctxs_[i].in_use.store(true, std::memory_order_release);
+                        bool acquired = false;
+                        irods::at_scope_exit rollback_in_use{[this, i, &acquired] {
+                            if (!acquired) {
+                                conn_ctxs_[i].in_use.store(false, std::memory_order_release);
+                            }
+                        }};
+
+                        auto* conn_ptr = refresh_connection(i);
+                        connection_proxy proxy{*this, *conn_ptr, i};
+
+                        if (options_.number_of_retrievals_before_connection_refresh) {
+                            ++conn_ctxs_[i].retrieval_count;
+                        }
+
+                        acquired = true;
+                        return proxy;
                     }
-
-                    return proxy;
                 }
+            }
+
+            if (i + 1 == pool_size) {
+                std::this_thread::yield();
             }
         }
     } // get_connection
 
     void connection_pool::return_connection(int _index)
     {
-        conn_ctxs_[_index].in_use.store(false);
+        conn_ctxs_[_index].in_use.store(false, std::memory_order_release);
     } // return_connection
 
     void connection_pool::release_connection(int _index)
