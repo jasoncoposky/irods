@@ -20,6 +20,8 @@
 #include "irods/rsObjStat.hpp"
 #include "irods/rsCollCreate.hpp"
 #include "irods/rsDataObjRename.hpp"
+#include "irods/genquery2_builder.hpp"
+#include "irods/rs_genquery2.hpp"
 
 #include "irods/irods_virtual_path.hpp"
 
@@ -270,128 +272,95 @@ isCollEmpty( rsComm_t *rsComm, char *collection ) {
 int
 collStat( rsComm_t *rsComm, const dataObjInp_t *dataObjInp,
           rodsObjStat_t **rodsObjStatOut ) {
-    genQueryInp_t genQueryInp;
-    genQueryOut_t *genQueryOut = NULL;
-    int status;
-    char condStr[MAX_NAME_LEN];
-    sqlResult_t *dataId;
-    sqlResult_t *ownerName;
-    sqlResult_t *ownerZone;
-    sqlResult_t *createTime;
-    sqlResult_t *modifyTime;
-    sqlResult_t *collType;
-    sqlResult_t *collInfo1;
-    sqlResult_t *collInfo2;
-
-    /* see if objPath is a collection */
-    memset( &genQueryInp, 0, sizeof( genQueryInp ) );
-
-    snprintf( condStr, MAX_NAME_LEN, "='%s'", dataObjInp->objPath );
-    addInxVal( &genQueryInp.sqlCondInp, COL_COLL_NAME, condStr );
-
-    addInxIval( &genQueryInp.selectInp, COL_COLL_ID, 1 );
-    /* XXXX COL_COLL_NAME added for queueSpecColl */
-    addInxIval( &genQueryInp.selectInp, COL_COLL_NAME, 1 );
-    addInxIval( &genQueryInp.selectInp, COL_COLL_OWNER_NAME, 1 );
-    addInxIval( &genQueryInp.selectInp, COL_COLL_OWNER_ZONE, 1 );
-    addInxIval( &genQueryInp.selectInp, COL_COLL_CREATE_TIME, 1 );
-    addInxIval( &genQueryInp.selectInp, COL_COLL_MODIFY_TIME, 1 );
-    /* XXXX may want to do this if spec coll is supported */
-    addInxIval( &genQueryInp.selectInp, COL_COLL_TYPE, 1 );
-    addInxIval( &genQueryInp.selectInp, COL_COLL_INFO1, 1 );
-    addInxIval( &genQueryInp.selectInp, COL_COLL_INFO2, 1 );
-
-    genQueryInp.maxRows = MAX_SQL_ROWS;
-
-    status = rsGenQuery( rsComm, &genQueryInp, &genQueryOut );
-    if ( status >= 0 ) {
-        *rodsObjStatOut = ( rodsObjStat_t * ) malloc( sizeof( rodsObjStat_t ) );
-        memset( *rodsObjStatOut, 0, sizeof( rodsObjStat_t ) );
-        ( *rodsObjStatOut )->objType = COLL_OBJ_T;
-        status = ( int )COLL_OBJ_T;
-        if ( ( dataId = getSqlResultByInx( genQueryOut,
-                                           COL_COLL_ID ) ) == NULL ) {
-            rodsLog( LOG_ERROR,
-                     "_rsObjStat: getSqlResultByInx for COL_COLL_ID failed" );
-            return UNMATCHED_KEY_OR_INDEX;
-        }
-        else if ( ( ownerName = getSqlResultByInx( genQueryOut,
-                                COL_COLL_OWNER_NAME ) ) == NULL ) {
-            rodsLog( LOG_ERROR,
-                     "_rsObjStat:getSqlResultByInx for COL_COLL_OWNER_NAME failed" );
-            return UNMATCHED_KEY_OR_INDEX;
-        }
-        else if ( ( ownerZone = getSqlResultByInx( genQueryOut,
-                                COL_COLL_OWNER_ZONE ) ) == NULL ) {
-            rodsLog( LOG_ERROR,
-                     "_rsObjStat:getSqlResultByInx for COL_COLL_OWNER_ZONE failed" );
-            return UNMATCHED_KEY_OR_INDEX;
-        }
-        else if ( ( createTime = getSqlResultByInx( genQueryOut,
-                                 COL_COLL_CREATE_TIME ) ) == NULL ) {
-            rodsLog( LOG_ERROR,
-                     "_rsObjStat:getSqlResultByInx for COL_COLL_CREATE_TIME failed" );
-            return UNMATCHED_KEY_OR_INDEX;
-        }
-        else if ( ( modifyTime = getSqlResultByInx( genQueryOut,
-                                 COL_COLL_MODIFY_TIME ) ) == NULL ) {
-            rodsLog( LOG_ERROR,
-                     "_rsObjStat:getSqlResultByInx for COL_COLL_MODIFY_TIME failed" );
-            return UNMATCHED_KEY_OR_INDEX;
-        }
-        else if ( ( collType = getSqlResultByInx( genQueryOut,
-                               COL_COLL_TYPE ) ) == NULL ) {
-            rodsLog( LOG_ERROR,
-                     "_rsObjStat:getSqlResultByInx for COL_COLL_TYPE failed" );
-            return UNMATCHED_KEY_OR_INDEX;
-        }
-        else if ( ( collInfo1 = getSqlResultByInx( genQueryOut,
-                                COL_COLL_INFO1 ) ) == NULL ) {
-            rodsLog( LOG_ERROR,
-                     "_rsObjStat:getSqlResultByInx for COL_COLL_INFO1 failed" );
-            return UNMATCHED_KEY_OR_INDEX;
-        }
-        else if ( ( collInfo2 = getSqlResultByInx( genQueryOut,
-                                COL_COLL_INFO2 ) ) == NULL ) {
-            rodsLog( LOG_ERROR,
-                     "_rsObjStat:getSqlResultByInx for COL_COLL_INFO2 failed" );
-            return UNMATCHED_KEY_OR_INDEX;
-        }
-        else {
-            rstrcpy( ( *rodsObjStatOut )->dataId, dataId->value, NAME_LEN );
-            rstrcpy( ( *rodsObjStatOut )->ownerName, ownerName->value,
-                     NAME_LEN );
-            rstrcpy( ( *rodsObjStatOut )->ownerZone, ownerZone->value,
-                     NAME_LEN );
-            rstrcpy( ( *rodsObjStatOut )->createTime, createTime->value,
-                     TIME_LEN );
-            rstrcpy( ( *rodsObjStatOut )->modifyTime, modifyTime->value,
-                     TIME_LEN );
-
-            if ( strlen( collType->value ) > 0 ) {
-                specCollCache_t *specCollCache = 0;
-
-                if ( ( specCollCache = matchSpecCollCache( dataObjInp->objPath ) ) != NULL ) {
-                    replSpecColl( &specCollCache->specColl,
-                                  &( *rodsObjStatOut )->specColl );
-                }
-                else {
-                    status = queueSpecCollCache( rsComm, genQueryOut, // JMC - backport 4680?
-                                                 dataObjInp->objPath );
-                    if ( status < 0 ) {
-                        return status;
-                    }
-                    replSpecColl( &SpecCollCacheHead->specColl,
-                                  &( *rodsObjStatOut )->specColl );
-                }
-
-
-            }
-        }
+    if (!rsComm || !dataObjInp || !rodsObjStatOut) {
+        return SYS_INTERNAL_NULL_INPUT_ERR;
     }
 
-    clearGenQueryInp( &genQueryInp );
-    freeGenQueryOut( &genQueryOut );
+    namespace gq2 = irods::experimental::genquery2;
+    using gq2::builder::col;
+
+    const auto q = gq2::builder::select({"COLL_ID",
+                                         "COLL_NAME",
+                                         "COLL_OWNER_NAME",
+                                         "COLL_OWNER_ZONE",
+                                         "COLL_CREATE_TIME",
+                                         "COLL_MODIFY_TIME",
+                                         "COLL_TYPE",
+                                         "COLL_INFO1",
+                                         "COLL_INFO2"})
+                       .where(col("COLL_NAME") == dataObjInp->objPath)
+                       .limit(1)
+                       .build();
+
+    nlohmann::json rows;
+    int status = gq2::try_execute(*rsComm, q, rows);
+    if ( status < 0 ) {
+        return status;
+    }
+    if ( rows.empty() ) {
+        return CAT_NO_ROWS_FOUND;
+    }
+
+    const auto& row = rows.front();
+    const auto& data_id_str = row.at(0).get_ref<const std::string&>();
+    const auto& coll_name_str = row.at(1).get_ref<const std::string&>();
+    const auto& owner_name_str = row.at(2).get_ref<const std::string&>();
+    const auto& owner_zone_str = row.at(3).get_ref<const std::string&>();
+    const auto& create_time_str = row.at(4).get_ref<const std::string&>();
+    const auto& modify_time_str = row.at(5).get_ref<const std::string&>();
+    const auto& coll_type_str = row.at(6).get_ref<const std::string&>();
+    const auto& coll_info1_str = row.at(7).get_ref<const std::string&>();
+    const auto& coll_info2_str = row.at(8).get_ref<const std::string&>();
+
+    *rodsObjStatOut = ( rodsObjStat_t * ) malloc( sizeof( rodsObjStat_t ) );
+    memset( *rodsObjStatOut, 0, sizeof( rodsObjStat_t ) );
+    ( *rodsObjStatOut )->objType = COLL_OBJ_T;
+    status = ( int )COLL_OBJ_T;
+
+    rstrcpy( ( *rodsObjStatOut )->dataId, data_id_str.c_str(), NAME_LEN );
+    rstrcpy( ( *rodsObjStatOut )->ownerName, owner_name_str.c_str(), NAME_LEN );
+    rstrcpy( ( *rodsObjStatOut )->ownerZone, owner_zone_str.c_str(), NAME_LEN );
+    rstrcpy( ( *rodsObjStatOut )->createTime, create_time_str.c_str(), TIME_LEN );
+    rstrcpy( ( *rodsObjStatOut )->modifyTime, modify_time_str.c_str(), TIME_LEN );
+
+    if ( !coll_type_str.empty() ) {
+        if ( specCollCache_t *specCollCache = matchSpecCollCache( dataObjInp->objPath ); specCollCache != NULL ) {
+            replSpecColl( &specCollCache->specColl, &( *rodsObjStatOut )->specColl );
+        }
+        else {
+            char tmp_coll_type[NAME_LEN]{};
+            char tmp_coll_name[MAX_NAME_LEN]{};
+            char tmp_coll_info1[MAX_NAME_LEN]{};
+            char tmp_coll_info2[MAX_NAME_LEN]{};
+            rstrcpy(tmp_coll_type, coll_type_str.c_str(), sizeof(tmp_coll_type));
+            rstrcpy(tmp_coll_name, coll_name_str.c_str(), sizeof(tmp_coll_name));
+            rstrcpy(tmp_coll_info1, coll_info1_str.c_str(), sizeof(tmp_coll_info1));
+            rstrcpy(tmp_coll_info2, coll_info2_str.c_str(), sizeof(tmp_coll_info2));
+
+            specColl_t tmp_spec_coll{};
+            int spec_status = resolveSpecCollType(tmp_coll_type, tmp_coll_name, tmp_coll_info1, tmp_coll_info2, &tmp_spec_coll);
+            if ( spec_status < 0 ) {
+                freeRodsObjStat( *rodsObjStatOut );
+                *rodsObjStatOut = NULL;
+                return spec_status;
+            }
+
+            if ( tmp_spec_coll.collClass == STRUCT_FILE_COLL &&
+                 tmp_spec_coll.type      == TAR_STRUCT_FILE_T ) {
+                spec_status = getPhyPath( rsComm, tmp_spec_coll.objPath, tmp_spec_coll.resource, tmp_spec_coll.phyPath, tmp_spec_coll.rescHier );
+                if ( spec_status < 0 ) {
+                    rodsLog( LOG_ERROR, "collStat - getPhyPath failed for [%s] on resource [%s] with cache dir [%s] and collection [%s]",
+                             tmp_spec_coll.objPath, tmp_spec_coll.resource, tmp_spec_coll.cacheDir, tmp_spec_coll.collection );
+                    freeRodsObjStat( *rodsObjStatOut );
+                    *rodsObjStatOut = NULL;
+                    return spec_status;
+                }
+            }
+
+            replSpecColl( &tmp_spec_coll, &( *rodsObjStatOut )->specColl );
+            queueSpecCollCacheWithObjStat( *rodsObjStatOut );
+        }
+    }
 
     return status;
 }

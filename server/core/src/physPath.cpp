@@ -30,7 +30,8 @@
 #include "irods/rsFileChksum.hpp"
 #include "irods/rsFileCreate.hpp"
 #include "irods/rsFileRename.hpp"
-#include "irods/rsGenQuery.hpp"
+#include "irods/genquery2_builder.hpp"
+#include "irods/rs_genquery2.hpp"
 #include "irods/rsGlobalExtern.hpp"
 #include "irods/rsModDataObjMeta.hpp"
 #include "irods/rsObjStat.hpp"
@@ -41,6 +42,7 @@
 #include <unistd.h> // JMC - backport 4598
 #include <fcntl.h> // JMC - backport 4598
 
+#include <charconv>
 #include <cstdint>
 #include <cstring>
 #include <ctime>
@@ -1087,122 +1089,67 @@ syncDataObjPhyPathS( rsComm_t *rsComm, dataObjInp_t *dataObjInp,
 
 int
 syncCollPhyPath( rsComm_t *rsComm, char *collection ) {
-    int status, i;
-    int savedStatus = 0;
-    genQueryOut_t *genQueryOut = NULL;
-    genQueryInp_t genQueryInp;
-    int continueInx;
+    if (!rsComm || !collection) {
+        return SYS_INTERNAL_NULL_INPUT_ERR;
+    }
 
-    status = rsQueryDataObjInCollReCur( rsComm, collection,
-                                        &genQueryInp, &genQueryOut, NULL, 0 );
+    namespace gq2 = irods::experimental::genquery2;
+    using gq2::builder::col;
+    using gq2::builder::group;
 
+    const auto coll_prefix = (std::strcmp(collection, "/") == 0)
+                                 ? std::string{"/%"}
+                                 : fmt::format("{}/%", collection);
+
+    const auto q = gq2::builder::select({"DATA_ID",
+                                         "COLL_NAME",
+                                         "DATA_NAME",
+                                         "DATA_REPL_NUM",
+                                         "DATA_RESC_NAME",
+                                         "DATA_PATH",
+                                         "DATA_RESC_ID"})
+                       .where(group(col("COLL_NAME") == collection || col("COLL_NAME").like(coll_prefix)))
+                       .build();
+
+    nlohmann::json rows;
+    int status = gq2::try_execute(*rsComm, q, rows);
     if ( status < 0 && status != CAT_NO_ROWS_FOUND ) {
-        savedStatus = status; /* return the error code */
+        return status;
     }
 
-    while ( status >= 0 ) {
-        sqlResult_t *dataIdRes, *subCollRes, *dataNameRes, *replNumRes,
-                    *rescNameRes, *filePathRes, *rescIdRes;
-        char *tmpDataId, *tmpDataName, *tmpSubColl, *tmpReplNum,
-             *tmpRescName, *tmpFilePath, *tmpRescId;
-        dataObjInfo_t dataObjInfo;
+    int savedStatus = 0;
 
-        memset( &dataObjInfo, 0, sizeof( dataObjInfo ) );
+    for ( const auto& row : rows ) {
+        const auto& tmpDataId = row.at(0).get_ref<const std::string&>();
+        const auto& tmpSubColl = row.at(1).get_ref<const std::string&>();
+        const auto& tmpDataName = row.at(2).get_ref<const std::string&>();
+        const auto& tmpReplNum = row.at(3).get_ref<const std::string&>();
+        const auto& tmpRescName = row.at(4).get_ref<const std::string&>();
+        const auto& tmpFilePath = row.at(5).get_ref<const std::string&>();
+        const auto& tmpRescId = row.at(6).get_ref<const std::string&>();
 
-        if ( ( dataIdRes = getSqlResultByInx( genQueryOut, COL_D_DATA_ID ) )
-                == NULL ) {
+        dataObjInfo_t dataObjInfo{};
+        std::from_chars(tmpDataId.data(), tmpDataId.data() + tmpDataId.size(), dataObjInfo.dataId);
+        snprintf( dataObjInfo.objPath, MAX_NAME_LEN, "%s/%s",
+                  tmpSubColl.c_str(), tmpDataName.c_str() );
+        std::from_chars(tmpReplNum.data(), tmpReplNum.data() + tmpReplNum.size(), dataObjInfo.replNum);
+        rstrcpy( dataObjInfo.rescName, tmpRescName.c_str(), NAME_LEN );
+
+        std::from_chars(tmpRescId.data(), tmpRescId.data() + tmpRescId.size(), dataObjInfo.rescId);
+        std::string resc_hier;
+        resc_mgr.leaf_id_to_hier(dataObjInfo.rescId, resc_hier);
+
+        rstrcpy( dataObjInfo.rescHier, resc_hier.c_str(), MAX_NAME_LEN );
+        rstrcpy( dataObjInfo.filePath, tmpFilePath.c_str(), MAX_NAME_LEN );
+
+        status = syncDataObjPhyPathS( rsComm, NULL, &dataObjInfo, collection );
+        if ( status < 0 ) {
             rodsLog( LOG_ERROR,
-                     "syncCollPhyPath: getSqlResultByInx for COL_D_DATA_ID failed" );
-            return UNMATCHED_KEY_OR_INDEX;
-        }
-        if ( ( subCollRes = getSqlResultByInx( genQueryOut, COL_COLL_NAME ) )
-                == NULL ) {
-            rodsLog( LOG_ERROR,
-                     "syncCollPhyPath: getSqlResultByInx for COL_COLL_NAME failed" );
-            return UNMATCHED_KEY_OR_INDEX;
-        }
-        if ( ( dataNameRes = getSqlResultByInx( genQueryOut, COL_DATA_NAME ) )
-                == NULL ) {
-            rodsLog( LOG_ERROR,
-                     "syncCollPhyPath: getSqlResultByInx for COL_DATA_NAME failed" );
-            return UNMATCHED_KEY_OR_INDEX;
-        }
-        if ( ( replNumRes = getSqlResultByInx( genQueryOut, COL_DATA_REPL_NUM ) )
-                == NULL ) {
-            rodsLog( LOG_ERROR,
-                     "syncCollPhyPath:getSqlResultByIn for COL_DATA_REPL_NUM failed" );
-            return UNMATCHED_KEY_OR_INDEX;
-        }
-        if ( ( rescNameRes = getSqlResultByInx( genQueryOut, COL_D_RESC_NAME ) )
-                == NULL ) {
-            rodsLog( LOG_ERROR,
-                     "syncCollPhyPath: getSqlResultByInx for COL_D_RESC_NAME failed" );
-            return UNMATCHED_KEY_OR_INDEX;
-        }
-        if ( ( filePathRes = getSqlResultByInx( genQueryOut, COL_D_DATA_PATH ) )
-                == NULL ) {
-            rodsLog( LOG_ERROR,
-                     "syncCollPhyPath: getSqlResultByInx for COL_D_DATA_PATH failed" );
-            return UNMATCHED_KEY_OR_INDEX;
-        }
-
-        if ( ( rescIdRes = getSqlResultByInx( genQueryOut, COL_D_RESC_ID ) )
-                == NULL ) {
-            rodsLog( LOG_ERROR,
-                     "syncCollPhyPath: getSqlResultByInx for COL_D_RESC_ID failed" );
-            return UNMATCHED_KEY_OR_INDEX;
-        }
-
-        for ( i = 0; i < genQueryOut->rowCnt; i++ ) {
-            tmpDataId = &dataIdRes->value[dataIdRes->len * i];
-            tmpDataName = &dataNameRes->value[dataNameRes->len * i];
-            tmpSubColl = &subCollRes->value[subCollRes->len * i];
-            tmpReplNum = &replNumRes->value[replNumRes->len * i];
-            tmpRescName = &rescNameRes->value[rescNameRes->len * i];
-            tmpFilePath = &filePathRes->value[filePathRes->len * i];
-            tmpRescId = &rescIdRes->value[rescIdRes->len * i];
-
-            dataObjInfo.dataId = strtoll( tmpDataId, 0, 0 );
-            snprintf( dataObjInfo.objPath, MAX_NAME_LEN, "%s/%s",
-                      tmpSubColl, tmpDataName );
-            dataObjInfo.replNum = atoi( tmpReplNum );
-            rstrcpy( dataObjInfo.rescName, tmpRescName, NAME_LEN );
-
-            dataObjInfo.rescId = strtoll(tmpRescId, 0, 0);
-            std::string resc_hier;
-            resc_mgr.leaf_id_to_hier(dataObjInfo.rescId, resc_hier);
-
-            rstrcpy( dataObjInfo.rescHier, resc_hier.c_str(), MAX_NAME_LEN );
-
-            rstrcpy( dataObjInfo.filePath, tmpFilePath, MAX_NAME_LEN );
-
-            status = syncDataObjPhyPathS( rsComm, NULL, &dataObjInfo,
-                                          collection );
-            if ( status < 0 ) {
-                rodsLog( LOG_ERROR,
-                         "syncCollPhyPath: syncDataObjPhyPathS error for %s,stat=%d",
-                         dataObjInfo.filePath, status );
-                savedStatus = status;
-            }
-
-        }
-
-        continueInx = genQueryOut->continueInx;
-
-        freeGenQueryOut( &genQueryOut );
-
-        if ( continueInx > 0 ) {
-            /* More to come */
-            genQueryInp.continueInx = continueInx;
-            status =  rsGenQuery( rsComm, &genQueryInp, &genQueryOut );
-        }
-        else {
-            break;
+                     "syncCollPhyPath: syncDataObjPhyPathS error for %s,stat=%d",
+                     dataObjInfo.filePath, status );
+            savedStatus = status;
         }
     }
-
-	freeGenQueryOut( &genQueryOut );
-    clearGenQueryInp( &genQueryInp );
 
     return savedStatus;
 }

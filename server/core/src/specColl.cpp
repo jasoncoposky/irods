@@ -184,7 +184,7 @@ queueSpecCollCache( rsComm_t *rsComm, genQueryOut_t *genQueryOut, const char *ob
         return UNMATCHED_KEY_OR_INDEX;
     }
 
-    for ( i = 0; i <= genQueryOut->rowCnt; i++ ) {
+    for ( i = 0; i < genQueryOut->rowCnt; i++ ) {
         int len;
 
         tmpCollection = &collection->value[collection->len * i];
