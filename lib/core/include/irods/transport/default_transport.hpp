@@ -60,13 +60,16 @@
 #include "irods/rcMisc.h"
 #include "irods/transport/transport.hpp"
 #include "irods/irods_at_scope_exit.hpp"
-#include "irods/irods_hierarchy_parser.hpp"
 
+#include <fmt/format.h>
 #include <nlohmann/json.hpp>
 
+#include <array>
+#include <charconv>
 #include <cstdlib>
 #include <string>
-#include <vector>
+#include <string_view>
+#include <utility>
 
 namespace irods::experimental::io::NAMESPACE_IMPL
 {
@@ -92,8 +95,78 @@ namespace irods::experimental::io::NAMESPACE_IMPL
         inline static const     auto seek_error                    = pos_type{off_type{-1}};
         // clang-format on
 
+        struct cond_input_binder
+        {
+#ifdef IRODS_IO_TRANSPORT_ENABLE_SERVER_SIDE_API
+            keyValPair_t& cond;
+
+            explicit cond_input_binder(keyValPair_t& _cond) noexcept
+                : cond{_cond}
+            {
+            }
+
+            ~cond_input_binder()
+            {
+                clearKeyVal(&cond);
+            }
+
+            void add(const char* _key, const std::string& _val) noexcept
+            {
+                addKeyVal(&cond, _key, _val.c_str());
+            }
+
+            void add_int(const char* _key, int _val) noexcept
+            {
+                std::array<char, 16> buf{};
+                auto [ptr, ec] = std::to_chars(buf.data(), buf.data() + buf.size() - 1, _val);
+                *ptr = '\0';
+                addKeyVal(&cond, _key, buf.data());
+            }
+#else
+            keyValPair_t& cond;
+            std::array<char*, 2> keys{};
+            std::array<char*, 2> vals{};
+            std::array<char, 16> repl_num_buf{};
+            int len = 0;
+
+            explicit cond_input_binder(keyValPair_t& _cond) noexcept
+                : cond{_cond}
+            {
+            }
+
+            ~cond_input_binder()
+            {
+                cond.len = 0;
+                cond.keyWord = nullptr;
+                cond.value = nullptr;
+            }
+
+            void add(const char* _key, const std::string& _val) noexcept
+            {
+                keys[len] = const_cast<char*>(_key);
+                vals[len] = const_cast<char*>(_val.c_str());
+                ++len;
+                cond.len = len;
+                cond.keyWord = keys.data();
+                cond.value = vals.data();
+            }
+
+            void add_int(const char* _key, int _val) noexcept
+            {
+                auto [ptr, ec] = std::to_chars(repl_num_buf.data(), repl_num_buf.data() + repl_num_buf.size() - 1, _val);
+                *ptr = '\0';
+                keys[len] = const_cast<char*>(_key);
+                vals[len] = repl_num_buf.data();
+                ++len;
+                cond.len = len;
+                cond.keyWord = keys.data();
+                cond.value = vals.data();
+            }
+#endif
+        };
+
     public:
-        explicit basic_transport(rxComm& _comm)
+        explicit basic_transport(rxComm& _comm) noexcept
             : transport<CharT>{}
             , comm_{&_comm}
             , fd_{uninitialized_file_descriptor}
@@ -104,19 +177,49 @@ namespace irods::experimental::io::NAMESPACE_IMPL
         {
         }
 
+        basic_transport(const basic_transport&) = delete;
+        basic_transport& operator=(const basic_transport&) = delete;
+
+        basic_transport(basic_transport&& _other) noexcept
+            : transport<CharT>{}
+            , comm_{std::exchange(_other.comm_, nullptr)}
+            , fd_{std::exchange(_other.fd_, uninitialized_file_descriptor)}
+            , root_resc_name_{std::move(_other.root_resc_name_)}
+            , leaf_resc_name_{std::move(_other.leaf_resc_name_)}
+            , replica_number_{std::exchange(_other.replica_number_, {})}
+            , replica_token_{std::move(_other.replica_token_)}
+            , last_error_{std::exchange(_other.last_error_, 0)}
+        {
+        }
+
+        basic_transport& operator=(basic_transport&& _other) noexcept
+        {
+            if (this != &_other) {
+                comm_ = std::exchange(_other.comm_, nullptr);
+                fd_ = std::exchange(_other.fd_, uninitialized_file_descriptor);
+                root_resc_name_ = std::move(_other.root_resc_name_);
+                leaf_resc_name_ = std::move(_other.leaf_resc_name_);
+                replica_number_ = std::exchange(_other.replica_number_, {});
+                replica_token_ = std::move(_other.replica_token_);
+                last_error_ = std::exchange(_other.last_error_, 0);
+            }
+            return *this;
+        }
+
+        ~basic_transport() override = default;
+
         bool open(const irods::experimental::filesystem::path& _path,
                   std::ios_base::openmode _mode) override
         {
-            return open_impl(_path, _mode, [](auto&) {});
+            return open_impl(_path, _mode, [](auto&, auto&) {});
         }
 
         bool open(const irods::experimental::filesystem::path& _path,
                   const replica_number& _replica_number,
                   std::ios_base::openmode _mode) override
         {
-            return open_impl(_path, _mode, [_replica_number](auto& _input) {
-                const auto replica = std::to_string(_replica_number.value);
-                addKeyVal(&_input.condInput, REPL_NUM_KW, replica.c_str());
+            return open_impl(_path, _mode, [_replica_number](auto& _input, auto& _cond) {
+                _cond.add_int(REPL_NUM_KW, _replica_number.value);
 
                 // Providing a replica number implies that the replica already exists.
                 // This constructor does not support creation of new replicas.
@@ -129,8 +232,8 @@ namespace irods::experimental::io::NAMESPACE_IMPL
                   std::ios_base::openmode _mode) override
         {
             // This leaves the decision making to the server (i.e. the policy).
-            return open_impl(_path, _mode, [&_root_resource_name](auto& _input) {
-                addKeyVal(&_input.condInput, RESC_NAME_KW, _root_resource_name.value.c_str());
+            return open_impl(_path, _mode, [&_root_resource_name](auto&, auto& _cond) {
+                _cond.add(RESC_NAME_KW, _root_resource_name.value);
             });
         }
 
@@ -139,8 +242,8 @@ namespace irods::experimental::io::NAMESPACE_IMPL
                   std::ios_base::openmode _mode) override
         {
             // This is when the client knows exactly where the replica should reside.
-            return open_impl(_path, _mode, [&_leaf_resource_name](auto& _input) {
-                addKeyVal(&_input.condInput, LEAF_RESOURCE_NAME_KW, _leaf_resource_name.value.c_str());
+            return open_impl(_path, _mode, [&_leaf_resource_name](auto&, auto& _cond) {
+                _cond.add(LEAF_RESOURCE_NAME_KW, _leaf_resource_name.value);
             });
         }
 
@@ -149,10 +252,9 @@ namespace irods::experimental::io::NAMESPACE_IMPL
                   const replica_number& _replica_number,
                   std::ios_base::openmode _mode) override
         {
-            return open_impl(_path, _mode, [_replica_token, _replica_number](auto& _input) {
-                const auto replica = std::to_string(_replica_number.value);
-                addKeyVal(&_input.condInput, REPLICA_TOKEN_KW, _replica_token.value.data());
-                addKeyVal(&_input.condInput, REPL_NUM_KW, replica.c_str());
+            return open_impl(_path, _mode, [&_replica_token, _replica_number](auto& _input, auto& _cond) {
+                _cond.add(REPLICA_TOKEN_KW, _replica_token.value);
+                _cond.add_int(REPL_NUM_KW, _replica_number.value);
 
                 // Providing a replica number implies that the replica already exists.
                 // This constructor does not support creation of new replicas.
@@ -165,29 +267,40 @@ namespace irods::experimental::io::NAMESPACE_IMPL
                   const leaf_resource_name& _leaf_resource_name,
                   std::ios_base::openmode _mode) override
         {
-            return open_impl(_path, _mode, [_replica_token, &_leaf_resource_name](auto& _input) {
-                addKeyVal(&_input.condInput, REPLICA_TOKEN_KW, _replica_token.value.data());
-                addKeyVal(&_input.condInput, LEAF_RESOURCE_NAME_KW, _leaf_resource_name.value.c_str());
+            return open_impl(_path, _mode, [&_replica_token, &_leaf_resource_name](auto&, auto& _cond) {
+                _cond.add(REPLICA_TOKEN_KW, _replica_token.value);
+                _cond.add(LEAF_RESOURCE_NAME_KW, _leaf_resource_name.value);
             });
         }
 
         bool close(const on_close_success* _on_close_success = nullptr) override
         {
-            using json = nlohmann::json;
-
-            json json_input{{"fd", fd_}};
-
-            if (_on_close_success) {
-                json_input["update_size"] = _on_close_success->update_size;
-                json_input["update_status"] = _on_close_success->update_status;
-                json_input["compute_checksum"] = _on_close_success->compute_checksum;
-                json_input["send_notifications"] = _on_close_success->send_notifications;
-                json_input["preserve_replica_state_table"] = _on_close_success->preserve_replica_state_table;
+            if (!is_open()) {
+                last_error_ = FILE_INDEX_LOOKUP_ERR;
+                return false;
             }
 
-            const auto json_string = json_input.dump();
+            std::array<char, 256> json_buf{};
+            char* end_ptr = nullptr;
 
-            last_error_ = rx_replica_close(comm_, json_string.c_str());
+            if (_on_close_success) {
+                end_ptr = fmt::format_to_n(
+                    json_buf.data(),
+                    json_buf.size() - 1,
+                    R"({{"fd":{},"update_size":{},"update_status":{},"compute_checksum":{},"send_notifications":{},"preserve_replica_state_table":{}}})",
+                    fd_,
+                    _on_close_success->update_size,
+                    _on_close_success->update_status,
+                    _on_close_success->compute_checksum,
+                    _on_close_success->send_notifications,
+                    _on_close_success->preserve_replica_state_table).out;
+            }
+            else {
+                end_ptr = fmt::format_to_n(json_buf.data(), json_buf.size() - 1, R"({{"fd":{}}})", fd_).out;
+            }
+            *end_ptr = '\0';
+
+            last_error_ = rx_replica_close(comm_, json_buf.data());
             if (0 != last_error_) {
                 return false;
             }
@@ -255,6 +368,7 @@ namespace irods::experimental::io::NAMESPACE_IMPL
                     break;
 
                 default:
+                    last_error_ = SYS_INVALID_INPUT_PARAM;
                     return seek_error;
             }
 
@@ -267,7 +381,7 @@ namespace irods::experimental::io::NAMESPACE_IMPL
             }};
 
             last_error_ = rxDataObjLseek(comm_, &input, &output);
-            if (last_error_ < 0) {
+            if (last_error_ < 0 || !output) {
                 return seek_error;
             }
 
@@ -354,24 +468,36 @@ namespace irods::experimental::io::NAMESPACE_IMPL
         template <typename Function>
         bool open_impl(const filesystem::path& _path, std::ios_base::openmode _mode, Function _func)
         {
+            if (is_open()) {
+                last_error_ = SYS_NOT_ALLOWED;
+                return false;
+            }
+
+            const auto& path_str = _path.string();
+            if (path_str.size() >= sizeof(std::declval<dataObjInp_t>().objPath)) {
+                last_error_ = USER_STRLEN_TOOLONG;
+                return false;
+            }
+
             const auto flags = make_open_flags(_mode);
 
             if (flags == translation_error) {
+                last_error_ = SYS_INVALID_INPUT_PARAM;
                 return false;
             }
 
             dataObjInp_t input{};
-            at_scope_exit free_memory{[&input] { clearKeyVal(&input.condInput); }};
+            cond_input_binder cond_binder{input.condInput};
 
             // Set dataSize to invalid size to signal unknown size for streaming.
             input.dataSize = -1;
             input.createMode = 0600;
             input.openFlags = flags;
-            rstrcpy(input.objPath, _path.c_str(), sizeof(input.objPath));
+            rstrcpy(input.objPath, path_str.c_str(), sizeof(input.objPath));
 
-            _func(input);
+            _func(input, cond_binder);
 
-            char* json_output{}; 
+            char* json_output{};
             at_scope_exit free_json_output{[&json_output] {
                 if (json_output) {
                     std::free(json_output);
@@ -386,25 +512,53 @@ namespace irods::experimental::io::NAMESPACE_IMPL
 
             fd_ = last_error_;
 
-            try {
-                const auto fd_info = nlohmann::json::parse(json_output);
-
-                const auto& dobj_info = fd_info.at("data_object_info");
-                const hierarchy_parser hp{dobj_info.at("resource_hierarchy").get_ref<const std::string&>()};
-
-                root_resc_name_.value = hp.first_resc();
-                leaf_resc_name_.value = hp.last_resc();
-                replica_number_.value = dobj_info.at("replica_number").get<int>();
-                replica_token_.value = fd_info.at("replica_token").get_ref<const std::string&>();
-            }
-            catch (const nlohmann::json::parse_error& e) {
+            auto close_preserving_error = [this](int _err) noexcept {
                 close();
+                last_error_ = _err;
                 return false;
+            };
+
+            if (!json_output) {
+                return close_preserving_error(SYS_INTERNAL_ERR);
             }
+
+            const auto fd_info = nlohmann::json::parse(json_output, nullptr, false);
+            if (fd_info.is_discarded() || !fd_info.is_object()) {
+                return close_preserving_error(SYS_INTERNAL_ERR);
+            }
+
+            const auto dobj_it = fd_info.find("data_object_info");
+            const auto token_it = fd_info.find("replica_token");
+            if (dobj_it == fd_info.end() || !dobj_it->is_object() ||
+                token_it == fd_info.end() || !token_it->is_string())
+            {
+                return close_preserving_error(SYS_INTERNAL_ERR);
+            }
+
+            const auto hier_it = dobj_it->find("resource_hierarchy");
+            const auto repl_num_it = dobj_it->find("replica_number");
+            if (hier_it == dobj_it->end() || !hier_it->is_string() ||
+                repl_num_it == dobj_it->end() || !repl_num_it->is_number_integer())
+            {
+                return close_preserving_error(SYS_INTERNAL_ERR);
+            }
+
+            const std::string_view hier = hier_it->get_ref<const std::string&>();
+            if (hier.empty()) {
+                return close_preserving_error(SYS_INTERNAL_ERR);
+            }
+
+            const auto first_sep = hier.find(';');
+            root_resc_name_.value.assign(hier.substr(0, first_sep));
+
+            const auto last_sep = hier.rfind(';');
+            leaf_resc_name_.value.assign(last_sep == std::string_view::npos ? hier : hier.substr(last_sep + 1));
+
+            replica_number_.value = repl_num_it->get<int>();
+            replica_token_.value = token_it->get_ref<const std::string&>();
 
             if (!seek_to_end_if_required(_mode)) {
-                close();
-                return false;
+                return close_preserving_error(last_error_);
             }
 
             return true;
