@@ -35,8 +35,8 @@
 #include "irods/rodsConnect.h"
 #include "irods/server_utilities.hpp"
 
-#define IRODS_QUERY_ENABLE_SERVER_SIDE_API
-#include "irods/irods_query.hpp"
+#include "irods/genquery2_builder.hpp"
+#include "irods/rs_genquery2.hpp"
 
 #define IRODS_FILESYSTEM_ENABLE_SERVER_SIDE_API
 #include "irods/filesystem.hpp"
@@ -46,6 +46,7 @@
 #include <nanodbc/nanodbc.h>
 #include "irods/db_flavor.hpp"
 
+#include <charconv>
 #include <cstdlib>
 #include <string>
 #include <string_view>
@@ -154,27 +155,41 @@ namespace
                        const std::string& _entity_name,
                        const ic::entity_type _entity_type) -> id_type
     {
-        std::string gql;
+        namespace gq2 = irods::experimental::genquery2;
+        using gq2::builder::col;
+
+        gq2::select q;
         switch (_entity_type) {
             case ic::entity_type::collection:
-                gql = fmt::format("select COLL_ID where COLL_NAME = '{}'", irods::single_quotes_to_hex(_entity_name));
+                q = gq2::builder::select({"COLL_ID"})
+                        .where(col("COLL_NAME") == _entity_name)
+                        .limit(1)
+                        .build();
                 break;
 
             case ic::entity_type::data_object:
             {
-                fs::path p = _entity_name;
-                gql = fmt::format("select DATA_ID where COLL_NAME = '{}' and DATA_NAME = '{}'",
-                                  irods::single_quotes_to_hex(p.parent_path()),
-                                  irods::single_quotes_to_hex(p.object_name()));
+                const fs::path p = _entity_name;
+                q = gq2::builder::select({"DATA_ID"})
+                        .where(col("COLL_NAME") == p.parent_path_view() &&
+                               col("DATA_NAME") == p.object_name_view())
+                        .limit(1)
+                        .build();
                 break;
             }
 
             case ic::entity_type::user:
-                gql = fmt::format("select USER_ID where USER_NAME = '{}'", _entity_name);
+                q = gq2::builder::select({"USER_ID"})
+                        .where(col("USER_NAME") == _entity_name)
+                        .limit(1)
+                        .build();
                 break;
 
             case ic::entity_type::resource:
-                gql = fmt::format("select RESC_ID where RESC_NAME = '{}'", _entity_name);
+                q = gq2::builder::select({"RESC_ID"})
+                        .where(col("RESC_NAME") == _entity_name)
+                        .limit(1)
+                        .build();
                 break;
 
             default: {
@@ -189,8 +204,12 @@ namespace
             }
         }
 
-        for (auto&& row : irods::query{&_comm, gql}) {
-            return std::stoll(row[0]);
+        const auto rows = gq2::execute(_comm, q);
+        if (!rows.empty()) {
+            const auto& id_str = rows.front().at(0).get_ref<const std::string&>();
+            id_type id = 0;
+            std::from_chars(id_str.data(), id_str.data() + id_str.size(), id);
+            return id;
         }
 
         throw std::runtime_error{fmt::format("Entity does not exist [entity_name={}]", _entity_name)};

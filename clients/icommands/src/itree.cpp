@@ -199,19 +199,19 @@ template<class... Ts> overloaded(Ts...) -> overloaded<Ts...>; // deduction guide
 
 // Helper function to invoke the right match type (regex / glob) based on std::variant contents.
 
-auto flexible_match(const std::string& obj_name, const pattern_matcher& pattern_variant) -> bool
+auto flexible_match(std::string_view obj_name, const pattern_matcher& pattern_variant) -> bool
 {
     auto matches = overloaded{
         [](const auto &)->bool { return false; },
-        [&obj_name](const std::string& glob)->bool { return !fnmatch(glob.c_str(), obj_name.c_str(), 0); },
-        [&obj_name](const std::regex& rgx)->bool { return std::regex_match(obj_name, rgx); }
+        [obj_name](const std::string& glob)->bool { return !fnmatch(glob.c_str(), obj_name.data(), 0); },
+        [obj_name](const std::regex& rgx)->bool { return std::regex_match(obj_name.begin(), obj_name.end(), rgx); }
     };
     return std::visit(matches, pattern_variant);
 }
 
 // Convenience function to wrap the logic for matching/ignoring.
 auto object_matches(const fs::client::collection_entry& entry) -> bool {
-    const auto obj_name = entry.path().object_name().string();
+    const auto obj_name = entry.path().object_name_view();
 
     // consider --ignore* and --pattern* as logically AND'ed together
     return ((!contains_pattern(exclude_matcher) || !flexible_match(obj_name, exclude_matcher)) &&
@@ -251,21 +251,17 @@ auto directory_depth(const fs::path& origin, const fs::path& descendant) -> int{
 
 auto print_entry(const fs::client::collection_entry& e, const po::variables_map& vm, int depth){
     fmt::print("{:{}}","",depth * vm["indent"].as<unsigned int>());
-    auto disp = e.path();
-    if( !vm["fullpath"].as<bool>() ){
-        disp=e.path().object_name();
-    }
-    std::string suffix;
-    if( vm["classify"].as<bool>() && e.is_collection() ) {
-        suffix = "/";
-    }
+    const std::string_view disp = vm["fullpath"].as<bool>()
+        ? std::string_view{e.path().string()}
+        : e.path().object_name_view();
+    const std::string_view suffix = (vm["classify"].as<bool>() && e.is_collection()) ? "/" : "";
     if( vm["color"].as<bool>() ) {
         fmt::print(fmt::fg(e.is_collection()?directory_color:file_color),
                    "{}{}",
-                   static_cast<std::string>(disp),suffix);
+                   disp,suffix);
     } else {
         fmt::print("{}{}",
-                   static_cast<std::string>(disp),
+                   disp,
                    suffix);
     }
     if ( vm.count("owner") && !e.owner().empty() ) {
@@ -292,15 +288,16 @@ auto print_dir(const fs::path& path,
     const int max_depth = vm["depth"].as<int>();
     const bool fullpath = vm["fullpath"].as<bool>();
     const bool classify = vm["classify"].as<bool>();
-    const char* suffix = (classify || path.object_name().string().empty())?"/":"";
+    const char* suffix = (classify || path.object_name_view().empty())?"/":"";
 
     std::uintmax_t total_size = 0;
+    const std::string_view header_disp = fullpath ? std::string_view{path.string()} : path.object_name_view();
     if( vm["color"].as<bool>() ) {
         fmt::print(fmt::fg(directory_color),"{}{}\n",
-                   fullpath?path.c_str():path.object_name().c_str(), suffix);
+                   header_disp, suffix);
     }else{
         fmt::print("{}{}\n",
-                   fullpath?path.c_str(): path.object_name().c_str(), suffix);
+                   header_disp, suffix);
     }
     //    unsigned int objects = 0, collections = 0;
     for(auto &&iter:fsiter){
@@ -402,10 +399,10 @@ auto get_json(const fs::path& path, const po::variables_map& vm, ix::client_conn
     auto fsiter = fs::client::collection_iterator(conn, path);
     nlohmann::json value;
     value["type"] = "collection";
-    if( vm["fullpath"].as<bool>() || path.object_name().string().empty() ) {
+    if( vm["fullpath"].as<bool>() || path.object_name_view().empty() ) {
         value["name"] = path;
     } else {
-        value["name"] = path.object_name();
+        value["name"] = path.object_name_view();
     }
     value["contents"] = nlohmann::json::value_t::array;
     if( depth == 0 ) {
@@ -425,7 +422,7 @@ auto get_json(const fs::path& path, const po::variables_map& vm, ix::client_conn
             if( vm["fullpath"].as<bool>() ){
                 data_object["name"] = object.path();
             } else {
-                data_object["name"] = object.path().object_name().string();
+                data_object["name"] = object.path().object_name_view();
             }
             data_object["type"] = "data_object";
 

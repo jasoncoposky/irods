@@ -17,11 +17,12 @@
 #include "irods/rsGlobalExtern.hpp"
 #include "irods/irods_logger.hpp"
 
-#define IRODS_QUERY_ENABLE_SERVER_SIDE_API
-#include "irods/query_builder.hpp"
+#include "irods/genquery2_builder.hpp"
+#include "irods/rs_genquery2.hpp"
 
 #include <fmt/format.h>
 
+#include <charconv>
 #include <iostream>
 #include <vector>
 #include <iterator>
@@ -231,31 +232,34 @@ namespace irods
 //          attached resources and instantiate them
     error resource_manager::init_from_catalog(rsComm_t& _comm)
     {
+        namespace gq2 = irods::experimental::genquery2;
+
         resource_name_map_.clear();
 
-        constexpr char* query_str = "select "
-                                    "RESC_ID, "             // 0
-                                    "RESC_NAME, "           // 1
-                                    "RESC_ZONE_NAME, "      // 2
-                                    "RESC_TYPE_NAME, "      // 3
-                                    "RESC_CLASS_NAME, "     // 4
-                                    "RESC_LOC, "            // 5
-                                    "RESC_VAULT_PATH, "     // 6
-                                    "RESC_FREE_SPACE, "     // 7
-                                    "RESC_INFO, "           // 8
-                                    "RESC_COMMENT, "        // 9
-                                    "RESC_CREATE_TIME, "    // 10
-                                    "RESC_MODIFY_TIME, "    // 11
-                                    "RESC_STATUS, "         // 12
-                                    "RESC_CHILDREN, "       // 13
-                                    "RESC_CONTEXT, "        // 14
-                                    "RESC_PARENT, "         // 15
-                                    "RESC_PARENT_CONTEXT";  // 16
+        const auto q = gq2::builder::select({
+                           "RESC_ID",             // 0
+                           "RESC_NAME",           // 1
+                           "RESC_ZONE_NAME",      // 2
+                           "RESC_TYPE_NAME",      // 3
+                           "RESC_CLASS_NAME",     // 4
+                           "RESC_LOC",            // 5
+                           "RESC_VAULT_PATH",     // 6
+                           "RESC_FREE_SPACE",     // 7
+                           "RESC_INFO",           // 8
+                           "RESC_COMMENT",        // 9
+                           "RESC_CREATE_TIME",    // 10
+                           "RESC_MODIFY_TIME",    // 11
+                           "RESC_STATUS",         // 12
+                           "RESC_CHILDREN",       // 13
+                           "RESC_CONTEXT",        // 14
+                           "RESC_PARENT",         // 15
+                           "RESC_PARENT_CONTEXT"  // 16
+                       }).build();
 
-        for (auto&& row : irods::experimental::query_builder{}.build(_comm, query_str)) {
-            const auto& name = row.at(1);
-            const auto& type = row.at(3);
-            const auto& context = row.at(14);
+        for (const auto& row : gq2::execute(_comm, q)) {
+            const auto& name = row.at(1).get_ref<const std::string&>();
+            const auto& type = row.at(3).get_ref<const std::string&>();
+            const auto& context = row.at(14).get_ref<const std::string&>();
 
             resource_ptr resc;
             if (const auto ret = load_resource_plugin(resc, type, name, context); !ret.ok()) {
@@ -263,9 +267,9 @@ namespace irods
                 continue;
             }
 
-            const auto& location = row.at(5);
+            const auto& location = row.at(5).get_ref<const std::string&>();
             if (irods::EMPTY_RESC_HOST != location) {
-                const auto& zone_name = row.at(2);
+                const auto& zone_name = row.at(2).get_ref<const std::string&>();
                 rodsHostAddr_t addr{};
                 std::strncpy(addr.hostAddr, location.c_str(), LONG_NAME_LEN);
                 std::strncpy(addr.zoneName, zone_name.c_str(), NAME_LEN);
@@ -283,30 +287,32 @@ namespace irods
                 resc->set_property<rodsServerHost_t*>(RESOURCE_HOST, nullptr);
             }
 
-            const rodsLong_t id = std::strtoll(row.at(0).c_str(), 0, 0);
+            const auto& id_str = row.at(0).get_ref<const std::string&>();
+            rodsLong_t id = 0;
+            std::from_chars(id_str.data(), id_str.data() + id_str.size(), id);
             resc->set_property<rodsLong_t>(RESOURCE_ID, id);
             resc->set_property<long>(RESOURCE_QUOTA, RESC_QUOTA_UNINIT);
 
-            const auto& status = row.at(12);
+            const auto& status = row.at(12).get_ref<const std::string&>();
             resc->set_property(RESOURCE_STATUS, status == RESC_DOWN
                                                 ? INT_RESC_STATUS_DOWN
                                                 : INT_RESC_STATUS_UP);
 
-            resc->set_property<std::string>(RESOURCE_FREESPACE,      row.at(7));
-            resc->set_property<std::string>(RESOURCE_ZONE,           row.at(2));
+            resc->set_property<std::string>(RESOURCE_FREESPACE,      row.at(7).get<std::string>());
+            resc->set_property<std::string>(RESOURCE_ZONE,           row.at(2).get<std::string>());
             resc->set_property<std::string>(RESOURCE_NAME,           name);
             resc->set_property<std::string>(RESOURCE_LOCATION,       location);
             resc->set_property<std::string>(RESOURCE_TYPE,           type);
-            resc->set_property<std::string>(RESOURCE_CLASS,          row.at(4));
-            resc->set_property<std::string>(RESOURCE_PATH,           row.at(6));
-            resc->set_property<std::string>(RESOURCE_INFO,           row.at(8));
-            resc->set_property<std::string>(RESOURCE_COMMENTS,       row.at(9));
-            resc->set_property<std::string>(RESOURCE_CREATE_TS,      row.at(10));
-            resc->set_property<std::string>(RESOURCE_MODIFY_TS,      row.at(11));
-            resc->set_property<std::string>(RESOURCE_CHILDREN,       row.at(13));
+            resc->set_property<std::string>(RESOURCE_CLASS,          row.at(4).get<std::string>());
+            resc->set_property<std::string>(RESOURCE_PATH,           row.at(6).get<std::string>());
+            resc->set_property<std::string>(RESOURCE_INFO,           row.at(8).get<std::string>());
+            resc->set_property<std::string>(RESOURCE_COMMENTS,       row.at(9).get<std::string>());
+            resc->set_property<std::string>(RESOURCE_CREATE_TS,      row.at(10).get<std::string>());
+            resc->set_property<std::string>(RESOURCE_MODIFY_TS,      row.at(11).get<std::string>());
+            resc->set_property<std::string>(RESOURCE_CHILDREN,       row.at(13).get<std::string>());
             resc->set_property<std::string>(RESOURCE_CONTEXT,        context);
-            resc->set_property<std::string>(RESOURCE_PARENT,         row.at(15));
-            resc->set_property<std::string>(RESOURCE_PARENT_CONTEXT, row.at(16));
+            resc->set_property<std::string>(RESOURCE_PARENT,         row.at(15).get<std::string>());
+            resc->set_property<std::string>(RESOURCE_PARENT_CONTEXT, row.at(16).get<std::string>());
 
             resource_name_map_[name] = resc;
             resource_id_map_[id] = resc;

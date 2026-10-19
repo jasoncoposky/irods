@@ -38,12 +38,12 @@
 #define IRODS_REPLICA_ENABLE_SERVER_SIDE_API
 #include "irods/replica.hpp"
 
-#define IRODS_QUERY_ENABLE_SERVER_SIDE_API
-#include "irods/query_builder.hpp"
+#include "irods/genquery2_builder.hpp"
 
 #include <fmt/format.h>
 #include <nlohmann/json.hpp>
 
+#include <charconv>
 #include <string>
 #include <string_view>
 #include <chrono>
@@ -370,36 +370,35 @@ namespace
         // The user did not specify a target replica, so fetch the replica number
         // of the latest good replica.
 
-        ix::query_builder qb;
-
-        if (const auto zone = fs::zone_name(_path); zone) {
-            qb.zone_hint(*zone);
-        }
+        namespace gq2 = irods::experimental::genquery2;
+        using gq2::builder::col;
 
         // Fetch only good replicas (i.e. DATA_REPL_STATUS = '1').
-        const auto gql = fmt::format("select DATA_MODIFY_TIME, DATA_REPL_NUM "
-                                     "where"
-                                     " COLL_NAME = '{}' and"
-                                     " DATA_NAME = '{}' and"
-                                     " DATA_REPL_STATUS = '1'",
-                                     irods::single_quotes_to_hex(_path.parent_path()),
-                                     irods::single_quotes_to_hex(_path.object_name()));
+        const auto q = gq2::builder::select({"DATA_MODIFY_TIME", "DATA_REPL_NUM"})
+                           .where(col("COLL_NAME") == _path.parent_path_view() &&
+                                  col("DATA_NAME") == _path.object_name_view() &&
+                                  col("DATA_REPL_STATUS") == "1")
+                           .build();
 
-        auto query = qb.build<rsComm_t>(_comm, gql);
+        const auto zone = fs::zone_name(_path);
+        const auto rows = gq2::execute(_comm, q, zone ? std::string_view{*zone} : std::string_view{});
 
-        if (query.size() == 0) {
+        if (rows.empty()) {
             THROW(SYS_NO_GOOD_REPLICA, "No good replicas found.");
         }
 
         std::uintmax_t latest_mtime = 0;
         replica_number_type replica_number = -1;
 
-        for (auto&& row : query) {
-            const auto mtime = std::stoull(row[0]);
+        for (const auto& row : rows) {
+            const auto& mtime_str = row.at(0).get_ref<const std::string&>();
+            std::uintmax_t mtime = 0;
+            std::from_chars(mtime_str.data(), mtime_str.data() + mtime_str.size(), mtime);
 
             if (mtime > latest_mtime) {
                 latest_mtime = mtime;
-                replica_number = std::stoi(row[1]);
+                const auto& repl_str = row.at(1).get_ref<const std::string&>();
+                std::from_chars(repl_str.data(), repl_str.data() + repl_str.size(), replica_number);
             }
         }
 
@@ -456,7 +455,7 @@ namespace
             // The target object exists. Update the mtime.
             //
 
-            const auto object_status = fs::server::status(*_comm, path);
+            const auto object_status = fs::server::status(*_comm, path, fs::status_options::basic);
             const auto is_collection = fs::server::is_collection(object_status);
             const auto is_data_object = fs::server::is_data_object(object_status);
 

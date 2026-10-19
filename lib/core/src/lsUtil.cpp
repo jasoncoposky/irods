@@ -8,8 +8,8 @@
 #include "irods/miscUtil.h"
 #include "irods/rcGlobalExtern.h"
 #include "irods/filesystem.hpp"
-#include "irods/irods_query.hpp"
-#include "irods/escape_utilities.hpp"
+#include "irods/genQuery.h"
+#include "irods/genquery2_builder.hpp"
 
 #include <fmt/format.h>
 
@@ -42,9 +42,11 @@ int lsUtil(rcComm_t *conn,
         rstrcpy( zoneHint, rodsPathInp->srcPath[i].outPath, MAX_NAME_LEN );
 
         namespace fs = irods::experimental::filesystem;
+        namespace gq2 = irods::experimental::genquery2;
+        using gq2::builder::col;
 
         auto* src_path = rodsPathInp->srcPath[i].outPath;
-        const auto object_status = fs::client::status(*conn, src_path);
+        const auto object_status = fs::client::status(*conn, src_path, fs::status_options::basic);
 
         if (!fs::client::exists(object_status)) {
             rodsLog(LOG_ERROR, "lsUtil: srcPath %s does not exist or user lacks access permission", src_path);
@@ -60,14 +62,13 @@ int lsUtil(rcComm_t *conn,
             return status;
         }
 
-        const auto escaped_data_name = irods::single_quotes_to_hex(data_name);
-        const auto escaped_coll_name = irods::single_quotes_to_hex(coll_name);
-        irods::query qobj{
-            conn,
-            fmt::format(
-                "select DATA_ID where DATA_NAME = '{}' and COLL_NAME = '{}'", escaped_data_name, escaped_coll_name)};
-        if (qobj.size() > 0) {
-            if (const auto id = qobj.front()[0]; !id.empty()) {
+        const auto q = gq2::builder::select({"DATA_ID"})
+                           .where(col("DATA_NAME") == data_name && col("COLL_NAME") == coll_name)
+                           .limit(1)
+                           .build();
+        if (const auto rows = gq2::try_execute(*conn, q); rows && !rows->empty()) {
+            const auto& id = rows->front().at(0).get_ref<const std::string&>();
+            if (!id.empty()) {
                 rstrcpy(rodsPathInp->srcPath[i].dataId, id.c_str(), sizeof(rodsPathInp->srcPath[i].dataId));
             }
         }

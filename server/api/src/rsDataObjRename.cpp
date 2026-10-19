@@ -484,7 +484,7 @@ int rsDataObjRename(rsComm_t *rsComm, dataObjCopyInp_t *dataObjRenameInp)
     bool quota_violated = false;
 
     // Allow if source and destination paths are the same.
-    if (src_path.parent_path() != dest_path.parent_path()) {
+    if (src_path.parent_path_view() != dest_path.parent_path_view()) {
         // Since some fs operations may be slightly heavier, guard
         // with the violation flags to avoid unnecessary work.
         try {
@@ -550,7 +550,7 @@ int rsDataObjRename(rsComm_t *rsComm, dataObjCopyInp_t *dataObjRenameInp)
     if (quota_violated) {
         log_api::info("{}: Logical quota violation on collection [{}] with source [{}] and destination [{}].",
                       __func__,
-                      dest_path.parent_path().string(),
+                      dest_path.parent_path_view(),
                       src_path.string(),
                       dest_path.string());
         return LOGICAL_QUOTA_EXCEEDED;
@@ -560,8 +560,8 @@ int rsDataObjRename(rsComm_t *rsComm, dataObjCopyInp_t *dataObjRenameInp)
 
     // Update the mtime of the parent collections.
     if (ec == 0) {
-        const auto src_parent_path = fs::path{dataObjRenameInp->srcDataObjInp.objPath}.parent_path();
-        const auto dst_parent_path = fs::path{dataObjRenameInp->destDataObjInp.objPath}.parent_path();
+        const auto src_parent_path = src_path.parent_path();
+        const auto dst_parent_path = dest_path.parent_path();
 
         using std::chrono::system_clock;
         using std::chrono::time_point_cast;

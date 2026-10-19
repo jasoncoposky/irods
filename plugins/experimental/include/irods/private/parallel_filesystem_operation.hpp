@@ -5,10 +5,13 @@
 #include "irods/irods_get_full_path_for_config_file.hpp"
 #include "irods/irods_logger.hpp"
 #include "irods/filesystem.hpp"
+#include "irods/genquery2_builder.hpp"
 #include "irods/thread_pool.hpp"
 #include "irods/connection_pool.hpp"
 
 #include <fmt/format.h>
+
+#include <charconv>
 
 namespace irods::experimental::api {
 
@@ -60,20 +63,27 @@ namespace irods::experimental::api {
 
             auto get_object_count(rcComm_t& comm, const fs::path& path)
             {
-                auto p_str = path.string();
+                namespace gq2 = irods::experimental::genquery2;
+                using gq2::builder::col;
 
-                if(ends_with(path, std::string{fs::path::preferred_separator})) {
-                    p_str.erase(p_str.size()-1);
+                std::string_view p_view = path.string();
+                if (p_view.size() > 1 && p_view.ends_with(fs::path::preferred_separator)) {
+                    p_view.remove_suffix(1);
                 }
 
-                auto q_str = fmt::format("SELECT COUNT(DATA_ID) WHERE COLL_NAME like '{}/%' ||= '{}'", p_str, p_str);
+                const auto q = gq2::builder::select({gq2::builder::count("DATA_ID")})
+                                   .where(col("COLL_NAME").like(fmt::format("{}/%", p_view)) ||
+                                          col("COLL_NAME") == p_view)
+                                   .build();
 
-                auto query = query_builder{}.build<rcComm_t>(comm, q_str);
-
-                auto count = std::strtoull(query.front()[0].c_str(), nullptr, 10);
+                const auto rows = gq2::execute(comm, q);
+                unsigned long long count = 0;
+                if (!rows.empty()) {
+                    const auto& c_str = rows.front().at(0).get_ref<const std::string&>();
+                    std::from_chars(c_str.data(), c_str.data() + c_str.size(), count);
+                }
 
                 return count;
-
             } // get_object_count
 
             void process_collection(locking_json& bb, const json& req)

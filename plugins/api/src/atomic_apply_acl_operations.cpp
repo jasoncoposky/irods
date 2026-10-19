@@ -35,8 +35,8 @@
 #include "irods/rodsLog.h"
 #include "irods/server_utilities.hpp"
 
-#define IRODS_QUERY_ENABLE_SERVER_SIDE_API
-#include "irods/irods_query.hpp"
+#include "irods/genquery2_builder.hpp"
+#include "irods/rs_genquery2.hpp"
 
 #define IRODS_FILESYSTEM_ENABLE_SERVER_SIDE_API
 #include "irods/filesystem.hpp"
@@ -45,6 +45,7 @@
 #include <fmt/format.h>
 #include <nanodbc/nanodbc.h>
 
+#include <charconv>
 #include <cstdlib>
 #include <string>
 #include <string_view>
@@ -165,10 +166,13 @@ namespace
 
     auto get_object_id(rsComm_t& _comm, std::string_view _logical_path) -> id_type
     {
-        fs::path p = _logical_path.data();
-        std::string gql;
+        namespace gq2 = irods::experimental::genquery2;
+        using gq2::builder::col;
 
-        const auto s = fs::server::status(_comm, p);
+        const fs::path p{_logical_path};
+        gq2::select q;
+
+        const auto s = fs::server::status(_comm, p, fs::status_options::basic);
 
         if (!fs::server::exists(s)) {
             log::api::error("Object does not exist at the provided logical path [path={}]", _logical_path);
@@ -176,22 +180,28 @@ namespace
         }
 
         if (fs::server::is_collection(s)) {
-            gql = fmt::format(
-                "select COLL_ID where COLL_NAME = '{}'", irods::single_quotes_to_hex(std::string{_logical_path}));
+            q = gq2::builder::select({"COLL_ID"})
+                    .where(col("COLL_NAME") == _logical_path)
+                    .limit(1)
+                    .build();
         }
         else if (fs::server::is_data_object(s)) {
-            fs::path p = _logical_path.data();
-            gql = fmt::format("select DATA_ID where COLL_NAME = '{}' and DATA_NAME = '{}'",
-                              irods::single_quotes_to_hex(p.parent_path()),
-                              irods::single_quotes_to_hex(p.object_name()));
+            q = gq2::builder::select({"DATA_ID"})
+                    .where(col("COLL_NAME") == p.parent_path_view() &&
+                           col("DATA_NAME") == p.object_name_view())
+                    .limit(1)
+                    .build();
         }
         else {
             log::api::error("Object is not a data object or collection [path={}]", _logical_path);
             return CAT_NOT_A_DATAOBJ_AND_NOT_A_COLLECTION;
         }
 
-        for (auto&& row : irods::query{&_comm, gql}) {
-            return std::stoll(row[0]);
+        if (const auto rows = gq2::try_execute(_comm, q); rows && !rows->empty()) {
+            const auto& id_str = rows->front().at(0).get_ref<const std::string&>();
+            id_type id = 0;
+            std::from_chars(id_str.data(), id_str.data() + id_str.size(), id);
+            return id;
         }
 
         log::api::error("Failed to resolve path to an ID [path={}]", _logical_path);

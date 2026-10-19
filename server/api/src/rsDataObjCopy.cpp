@@ -30,6 +30,9 @@
 #define IRODS_REPLICA_ENABLE_SERVER_SIDE_API
 #include "irods/data_object_proxy.hpp"
 
+#include "irods/genquery2_builder.hpp"
+#include "irods/rs_genquery2.hpp"
+
 // =-=-=-=-=-=-=-
 #include "irods/irods_resource_redirect.hpp"
 
@@ -250,21 +253,27 @@ namespace
                     destination_resource) {
                     // Construct a query to determine whether the data object has any replicas in a resource hierarchy
                     // that starts with the target resource.
-                    irods::experimental::query_builder qb;
-                    if (const auto zone = fs::zone_name(destDataObjInp->objPath); zone) {
-                        qb.zone_hint(*zone);
-                    }
+                    namespace gq2 = irods::experimental::genquery2;
+                    using gq2::builder::col;
+
                     const auto path = fs::path{destDataObjInp->objPath};
-                    const auto qstr = fmt::format("select DATA_ID where COLL_NAME = '{0}' and DATA_NAME = '{1}' and "
-                                                  "DATA_RESC_HIER like '{2};%' || = '{2}'",
-                                                  irods::single_quotes_to_hex(path.parent_path()),
-                                                  irods::single_quotes_to_hex(path.object_name()),
-                                                  destination_resource);
+                    const auto q = gq2::builder::select({"DATA_ID"})
+                                       .where(col("COLL_NAME") == path.parent_path_view() &&
+                                              col("DATA_NAME") == path.object_name_view() &&
+                                              gq2::builder::group(
+                                                  col("DATA_RESC_HIER").like(fmt::format("{};%", destination_resource)) ||
+                                                  col("DATA_RESC_HIER") == destination_resource))
+                                       .limit(1)
+                                       .build();
+
+                    const auto zone = fs::zone_name(destDataObjInp->objPath);
 
                     // If no results come back from the query, that means no replica exists on the target resource.
                     // Creating new replicas on existing data objects with copy is not allowed, so we throw an error
                     // indicating that an error occurred while resolving the hierarchy.
-                    if (auto q = qb.build(*rsComm, qstr); q.empty()) {
+                    if (const auto rows = gq2::execute(*rsComm, q, zone ? std::string_view{*zone} : std::string_view{});
+                        rows.empty())
+                    {
                         log_api::error(fmt::format(
                             "[{}]: Cannot overwrite [{}] on resource [{}] because resource does not hold a replica.",
                             __func__,

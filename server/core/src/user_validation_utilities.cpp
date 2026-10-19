@@ -1,8 +1,8 @@
 #include "irods/rodsConnect.h"
 #include "irods/user_validation_utilities.hpp"
 
-#define IRODS_QUERY_ENABLE_SERVER_SIDE_API
-#include "irods/query_builder.hpp"
+#include "irods/genquery2_builder.hpp"
+#include "irods/rs_genquery2.hpp"
 
 #include <fmt/format.h>
 
@@ -12,6 +12,9 @@ namespace irods::user
 {
     auto get_type(RsComm& _comm, const std::string_view _user_name) -> std::string
     {
+        namespace gq2 = irods::experimental::genquery2;
+        using gq2::builder::col;
+
         const auto user_and_zone = validate_name(_user_name);
         if (!user_and_zone) {
             THROW(USER_INVALID_USERNAME_FORMAT, "provided username is not properly formatted");
@@ -19,18 +22,19 @@ namespace irods::user
 
         const auto& [user, zone] = *user_and_zone;
 
-        const std::string qstr = fmt::format(
-            "SELECT USER_TYPE where USER_NAME = '{}' and USER_ZONE = '{}'",
-            user, zone.empty() ? getLocalZoneName() : zone);
+        const auto q = gq2::builder::select({"USER_TYPE"})
+                           .where(col("USER_NAME") == user &&
+                                  col("USER_ZONE") == (zone.empty() ? std::string_view{getLocalZoneName()} : std::string_view{zone}))
+                           .limit(1)
+                           .build();
 
-        irods::experimental::query_builder qb;
-        auto q = qb.build<RsComm>(_comm, qstr);
-        if (q.empty()) {
+        const auto rows = gq2::execute(_comm, q);
+        if (rows.empty()) {
             // This is only called via admin functions so CAT_INVALID_USER is okay to return.
             THROW(CAT_INVALID_USER, "user does not exist");
         }
 
-        return q.front()[0];
+        return rows.front().at(0).get<std::string>();
     } // get_type
 
     auto type_is_valid(const std::string_view _user_type) -> bool
