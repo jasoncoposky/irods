@@ -2,23 +2,33 @@
 
 #ifdef IRODS_USER_ADMINISTRATION_ENABLE_SERVER_SIDE_API
 #  define IRODS_QUERY_ENABLE_SERVER_SIDE_API
+#  include "irods/rodsConnect.h"
+#  include "irods/rs_genquery2.hpp"
 #endif // IRODS_USER_ADMINISTRATION_ENABLE_SERVER_SIDE_API
 
-#include "irods/irods_query.hpp"
-#include "irods/query_builder.hpp"
+#include "irods/genquery2_builder.hpp"
 #include "irods/version.hpp"
 
 namespace irods::experimental::administration::NAMESPACE_IMPL
 {
     namespace
     {
+        namespace gq2 = irods::experimental::genquery2;
+        using gq2::builder::col;
+
         auto get_local_zone([[maybe_unused]] RxComm& _comm) -> std::string
         {
 #ifdef IRODS_USER_ADMINISTRATION_ENABLE_SERVER_SIDE_API
             return getLocalZoneName();
 #else
-            for (auto&& row : irods::query{&_comm, "select ZONE_NAME where ZONE_TYPE = 'local'"}) {
-                return row[0];
+            const auto q = gq2::builder::select({"ZONE_NAME"})
+                               .where(col("ZONE_TYPE") == "local")
+                               .limit(1)
+                               .build();
+
+            const auto rows = gq2::execute(_comm, q);
+            if (!rows.empty()) {
+                return rows.front().at(0).get<std::string>();
             }
 
             // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-array-to-pointer-decay)
@@ -239,114 +249,113 @@ namespace irods::experimental::administration::NAMESPACE_IMPL
 
     auto users(RxComm& _comm) -> std::vector<user>
     {
-        std::vector<user> users;
+        const auto q = gq2::builder::select({"USER_NAME", "USER_ZONE"})
+                           .where(col("USER_TYPE") != "rodsgroup")
+                           .build();
 
-        for (auto&& row : irods::query{&_comm, "select USER_NAME, USER_ZONE where USER_TYPE != 'rodsgroup'"}) {
-            users.emplace_back(row[0], row[1]);
+        const auto rows = gq2::execute(_comm, q);
+        std::vector<user> result;
+        result.reserve(rows.size());
+
+        for (const auto& row : rows) {
+            result.emplace_back(row.at(0).get<std::string>(), row.at(1).get<std::string>());
         }
 
-        return users;
+        return result;
     } // users
 
     auto users(RxComm& _comm, const group& _group) -> std::vector<user>
     {
-        std::vector<user> users;
+        const auto q = gq2::builder::select({"USER_NAME", "USER_ZONE"})
+                           .where(col("USER_TYPE") != "rodsgroup" &&
+                                  col("USER_GROUP_NAME") == _group.name)
+                           .build();
 
-        std::string gql = "select USER_NAME, USER_ZONE where USER_TYPE != 'rodsgroup' and USER_GROUP_NAME = '";
-        gql += _group.name;
-        gql += "'";
+        const auto rows = gq2::execute(_comm, q);
+        std::vector<user> result;
+        result.reserve(rows.size());
 
-        for (auto&& row : irods::query{&_comm, gql}) {
-            users.emplace_back(row[0], row[1]);
+        for (const auto& row : rows) {
+            result.emplace_back(row.at(0).get<std::string>(), row.at(1).get<std::string>());
         }
 
-        return users;
+        return result;
     } // users
 
     auto groups(RxComm& _comm) -> std::vector<group>
     {
-        std::vector<group> groups;
+        const auto q = gq2::builder::select({"USER_GROUP_NAME"})
+                           .where(col("USER_TYPE") == "rodsgroup")
+                           .build();
 
-        for (auto&& row : irods::query{&_comm, "select USER_GROUP_NAME where USER_TYPE = 'rodsgroup'"}) {
-            groups.emplace_back(row[0]);
+        const auto rows = gq2::execute(_comm, q);
+        std::vector<group> result;
+        result.reserve(rows.size());
+
+        for (const auto& row : rows) {
+            result.emplace_back(row.at(0).get<std::string>());
         }
 
-        return groups;
+        return result;
     } // groups
 
     auto groups(RxComm& _comm, const user& _user) -> std::vector<group>
     {
-        std::vector<std::string> args{local_unique_name(_comm, _user)};
+        const auto zone = _user.zone.empty() ? get_local_zone(_comm) : _user.zone;
+        const auto q = gq2::builder::select({"USER_GROUP_NAME"})
+                           .where(col("USER_TYPE") != "rodsgroup" &&
+                                  col("USER_NAME") == _user.name &&
+                                  col("USER_ZONE") == zone)
+                           .build();
 
-        query_builder qb;
+        const auto rows = gq2::execute(_comm, q, zone);
+        std::vector<group> result;
+        result.reserve(rows.size());
 
-        // clang-format off
-        qb.type(irods::query_type::specific)
-          .zone_hint(_user.zone.empty() ? get_local_zone(_comm) : _user.zone)
-          .bind_arguments(args);
-        // clang-format on
-
-        std::vector<group> groups;
-
-        try {
-            for (auto&& row : qb.build(_comm, "listGroupsForUser")) {
-                groups.emplace_back(row[1]);
-            }
-        }
-        catch (...) {
-            // GenQuery fallback.
-            groups.clear();
-
-            for (auto&& g : NAMESPACE_IMPL::groups(_comm)) {
-                if (user_is_member_of_group(_comm, g, _user)) {
-                    groups.push_back(std::move(g));
-                }
-            }
+        for (const auto& row : rows) {
+            result.emplace_back(row.at(0).get<std::string>());
         }
 
-        return groups;
+        return result;
     } // groups
 
     auto exists(RxComm& _comm, const user& _user) -> bool
     {
-        std::string gql = "select USER_ID where USER_TYPE != 'rodsgroup' and USER_NAME = '";
-        gql += _user.name;
-        gql += "' and USER_ZONE = '";
-        gql += (_user.zone.empty() ? get_local_zone(_comm) : _user.zone);
-        gql += "'";
+        const auto zone = _user.zone.empty() ? get_local_zone(_comm) : _user.zone;
+        const auto q = gq2::builder::select({"USER_ID"})
+                           .where(col("USER_TYPE") != "rodsgroup" &&
+                                  col("USER_NAME") == _user.name &&
+                                  col("USER_ZONE") == zone)
+                           .limit(1)
+                           .build();
 
-        for (auto&& row : irods::query{&_comm, gql}) { // NOLINTNEXTLINE(readability-use-anyofallof)
-            static_cast<void>(row);
-            return true;
-        }
-
-        return false;
+        return !gq2::execute(_comm, q).empty();
     } // exists
 
     auto exists(RxComm& _comm, const group& _group) -> bool
     {
-        std::string gql = "select USER_GROUP_ID where USER_TYPE = 'rodsgroup' and USER_GROUP_NAME = '";
-        gql += _group.name;
-        gql += "'";
+        const auto q = gq2::builder::select({"USER_GROUP_ID"})
+                           .where(col("USER_TYPE") == "rodsgroup" &&
+                                  col("USER_GROUP_NAME") == _group.name)
+                           .limit(1)
+                           .build();
 
-        for (auto&& row : irods::query{&_comm, gql}) { // NOLINTNEXTLINE(readability-use-anyofallof)
-            static_cast<void>(row);
-            return true;
-        }
-
-        return false;
+        return !gq2::execute(_comm, q).empty();
     } // exists
 
     auto id(RxComm& _comm, const user& _user) -> std::optional<std::string>
     {
-        std::string gql = "select USER_ID where USER_TYPE != 'rodsgroup' and USER_NAME = '";
-        gql += _user.name;
-        gql += "' and USER_ZONE = '";
-        gql += (_user.zone.empty() ? get_local_zone(_comm) : _user.zone);
-        gql += "'";
+        const auto zone = _user.zone.empty() ? get_local_zone(_comm) : _user.zone;
+        const auto q = gq2::builder::select({"USER_ID"})
+                           .where(col("USER_TYPE") != "rodsgroup" &&
+                                  col("USER_NAME") == _user.name &&
+                                  col("USER_ZONE") == zone)
+                           .limit(1)
+                           .build();
 
-        for (auto&& row : irods::query{&_comm, gql}) {
-            return row[0];
+        const auto rows = gq2::execute(_comm, q);
+        if (!rows.empty()) {
+            return rows.front().at(0).get<std::string>();
         }
 
         return std::nullopt;
@@ -354,12 +363,15 @@ namespace irods::experimental::administration::NAMESPACE_IMPL
 
     auto id(RxComm& _comm, const group& _group) -> std::optional<std::string>
     {
-        std::string gql = "select USER_GROUP_ID where USER_TYPE = 'rodsgroup' and USER_GROUP_NAME = '";
-        gql += _group.name;
-        gql += "'";
+        const auto q = gq2::builder::select({"USER_GROUP_ID"})
+                           .where(col("USER_TYPE") == "rodsgroup" &&
+                                  col("USER_GROUP_NAME") == _group.name)
+                           .limit(1)
+                           .build();
 
-        for (auto&& row : irods::query{&_comm, gql}) {
-            return row[0];
+        const auto rows = gq2::execute(_comm, q);
+        if (!rows.empty()) {
+            return rows.front().at(0).get<std::string>();
         }
 
         return std::nullopt;
@@ -367,14 +379,17 @@ namespace irods::experimental::administration::NAMESPACE_IMPL
 
     auto type(RxComm& _comm, const user& _user) -> std::optional<user_type>
     {
-        std::string gql = "select USER_TYPE where USER_TYPE != 'rodsgroup' and USER_NAME = '";
-        gql += _user.name;
-        gql += "' and USER_ZONE = '";
-        gql += (_user.zone.empty() ? get_local_zone(_comm) : _user.zone);
-        gql += "'";
+        const auto zone = _user.zone.empty() ? get_local_zone(_comm) : _user.zone;
+        const auto q = gq2::builder::select({"USER_TYPE"})
+                           .where(col("USER_TYPE") != "rodsgroup" &&
+                                  col("USER_NAME") == _user.name &&
+                                  col("USER_ZONE") == zone)
+                           .limit(1)
+                           .build();
 
-        for (auto&& row : irods::query{&_comm, gql}) {
-            return to_user_type(row[0]);
+        const auto rows = gq2::execute(_comm, q);
+        if (!rows.empty()) {
+            return to_user_type(rows.front().at(0).get_ref<const std::string&>());
         }
 
         return std::nullopt;
@@ -382,36 +397,35 @@ namespace irods::experimental::administration::NAMESPACE_IMPL
 
     auto auth_names(RxComm& _comm, const user& _user) -> std::vector<std::string>
     {
-        std::vector<std::string> auth_names;
+        const auto zone = _user.zone.empty() ? get_local_zone(_comm) : _user.zone;
+        const auto q = gq2::builder::select({"USER_DN"})
+                           .where(col("USER_TYPE") != "rodsgroup" &&
+                                  col("USER_NAME") == _user.name &&
+                                  col("USER_ZONE") == zone)
+                           .build();
 
-        std::string gql = "select USER_DN where USER_TYPE != 'rodsgroup' and USER_NAME = '";
-        gql += _user.name;
-        gql += "' and USER_ZONE = '";
-        gql += (_user.zone.empty() ? get_local_zone(_comm) : _user.zone);
-        gql += "'";
+        const auto rows = gq2::execute(_comm, q);
+        std::vector<std::string> result;
+        result.reserve(rows.size());
 
-        for (auto&& row : irods::query{&_comm, gql}) {
-            auth_names.push_back(row[0]);
+        for (const auto& row : rows) {
+            result.push_back(row.at(0).get<std::string>());
         }
 
-        return auth_names;
+        return result;
     } // auth_names
 
     auto user_is_member_of_group(RxComm& _comm, const group& _group, const user& _user) -> bool
     {
-        std::string gql = "select USER_ID where USER_TYPE != 'rodsgroup' and USER_NAME = '";
-        gql += _user.name;
-        gql += "' and USER_ZONE = '";
-        gql += (_user.zone.empty() ? get_local_zone(_comm) : _user.zone);
-        gql += "' and USER_GROUP_NAME = '";
-        gql += _group.name;
-        gql += "'";
+        const auto zone = _user.zone.empty() ? get_local_zone(_comm) : _user.zone;
+        const auto q = gq2::builder::select({"USER_ID"})
+                           .where(col("USER_TYPE") != "rodsgroup" &&
+                                  col("USER_NAME") == _user.name &&
+                                  col("USER_ZONE") == zone &&
+                                  col("USER_GROUP_NAME") == _group.name)
+                           .limit(1)
+                           .build();
 
-        for (auto&& row : irods::query{&_comm, gql}) { // NOLINTNEXTLINE(readability-use-anyofallof)
-            static_cast<void>(row);
-            return true;
-        }
-
-        return false;
+        return !gq2::execute(_comm, q).empty();
     } // user_is_member_of_group
 } // namespace irods::experimental::administration::NAMESPACE_IMPL

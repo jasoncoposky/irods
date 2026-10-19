@@ -1,9 +1,12 @@
 #include "irods/zone_administration.hpp"
 
+#include "irods/genquery2_builder.hpp"
+
 #include <charconv>
 #include <system_error>
 
 #ifdef IRODS_ZONE_ADMINISTRATION_ENABLE_SERVER_SIDE_API
+#  include "irods/rs_genquery2.hpp"
 // The server maintains a list of the zones known to the system.
 // The library takes advantage of this information where possible to avoid
 // unnecessary network and database operations.
@@ -65,11 +68,15 @@ namespace irods::experimental::administration::NAMESPACE_IMPL
             }
         }
 #else
-        const auto gql = fmt::format("select ZONE_NAME where ZONE_NAME = '{}'", _zone_name);
+        namespace gq2 = irods::experimental::genquery2;
+        using gq2::builder::col;
 
-        for ([[maybe_unused]] auto&& row : irods::query{&_comm, gql}) {
-            return true;
-        }
+        const auto q = gq2::builder::select({"ZONE_NAME"})
+                           .where(col("ZONE_NAME") == _zone_name)
+                           .limit(1)
+                           .build();
+
+        return !gq2::execute(_comm, q).empty();
 #endif // IRODS_ZONE_ADMINISTRATION_ENABLE_SERVER_SIDE_API
 
         return false;
@@ -82,15 +89,23 @@ namespace irods::experimental::administration::NAMESPACE_IMPL
             THROW(SYS_INVALID_INPUT_PARAM, "Invalid zone name: cannot be empty");
         }
 
-        const auto gql =
-            fmt::format("select ZONE_ID, ZONE_TYPE, ZONE_CONNECTION, ZONE_COMMENT where ZONE_NAME = '{}'", _zone_name);
+        namespace gq2 = irods::experimental::genquery2;
+        using gq2::builder::col;
 
-        for (auto&& row : irods::query{&_comm, gql}) {
+        const auto q = gq2::builder::select({"ZONE_ID", "ZONE_TYPE", "ZONE_CONNECTION", "ZONE_COMMENT"})
+                           .where(col("ZONE_NAME") == _zone_name)
+                           .limit(1)
+                           .build();
+
+        const auto rows = gq2::execute(_comm, q);
+        if (!rows.empty()) {
+            const auto& row = rows.front();
             // Set the zone id member variable to -1 if its value exceeds the representable range of a
             // signed 32-bit integer.
             int zone_id = -1;
-            const auto* b = row[0].c_str();
-            const auto* e = b + row[0].size(); // NOLINT(cppcoreguidelines-pro-bounds-pointer-arithmetic)
+            const auto& id_str = row.at(0).get_ref<const std::string&>();
+            const auto* b = id_str.c_str();
+            const auto* e = b + id_str.size(); // NOLINT(cppcoreguidelines-pro-bounds-pointer-arithmetic)
             auto [ptr, ec] = std::from_chars(b, e, zone_id);
             if (std::errc{} != ec || e != ptr) {
                 zone_id = -1;
@@ -99,10 +114,10 @@ namespace irods::experimental::administration::NAMESPACE_IMPL
             // clang-format off
             return administration::zone_info{
                 .name{_zone_name},
-                .connection_info = std::move(row[2]),
-                .comment = std::move(row[3]),
+                .connection_info = row.at(2).get<std::string>(),
+                .comment = row.at(3).get<std::string>(),
                 .id = zone_id,
-                .type = (row[1] == "local") ? zone_type::local : zone_type::remote
+                .type = (row.at(1).get_ref<const std::string&>() == "local") ? zone_type::local : zone_type::remote
             };
             // clang-format on
         }

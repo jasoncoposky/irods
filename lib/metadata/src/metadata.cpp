@@ -2,6 +2,7 @@
 
 #ifdef IRODS_METADATA_ENABLE_SERVER_SIDE_API
 #    include "irods/rsModAVUMetadata.hpp"
+#    include "irods/rs_genquery2.hpp"
 #    define rxModAVUMetadata rsModAVUMetadata
 #    define IRODS_FILESYSTEM_ENABLE_SERVER_SIDE_API
 #    define IRODS_QUERY_ENABLE_SERVER_SIDE_API
@@ -10,8 +11,8 @@
 #    define rxModAVUMetadata rcModAVUMetadata
 #endif // IRODS_METADATA_ENABLE_SERVER_SIDE_API
 
-#include "irods/irods_query.hpp"
 #include "irods/filesystem.hpp"
+#include "irods/genquery2_builder.hpp"
 
 namespace irods::experimental::metadata
 {
@@ -126,42 +127,50 @@ namespace irods::experimental::metadata
     auto get(rxComm_t& _comm, entity_type _et, const std::string& _tgt) -> std::vector<avu>
     {
         namespace fs = irods::experimental::filesystem;
+        namespace gq2 = irods::experimental::genquery2;
+        using gq2::builder::col;
 
-        auto temp = std::string{"SELECT META_{}_ATTR_NAME, META_{}_ATTR_VALUE, META_{}_ATTR_UNITS WHERE {}"};
+        gq2::select q;
 
-        const std::map<entity_type, std::string> type_to_string{{entity_type::collection, "COLL"},
-                                                                {entity_type::data_object, "DATA"},
-                                                                {entity_type::user, "USER"},
-                                                                {entity_type::resource, "RESC"}};
+        switch (_et) {
+            case entity_type::collection:
+                q = gq2::builder::select({"META_COLL_ATTR_NAME", "META_COLL_ATTR_VALUE", "META_COLL_ATTR_UNITS"})
+                        .where(col("COLL_NAME") == _tgt)
+                        .build();
+                break;
 
-        const std::map<entity_type, std::string> type_to_query{
-            {entity_type::collection, "COLL_NAME = '{}'"},
-            {entity_type::data_object, "COLL_NAME = '{}' AND DATA_NAME = '{}'"},
-            {entity_type::user, "USER_NAME = '{}'"},
-            {entity_type::resource, "RESC_NAME = '{}'"}};
+            case entity_type::data_object: {
+                const fs::path p{_tgt};
+                q = gq2::builder::select({"META_DATA_ATTR_NAME", "META_DATA_ATTR_VALUE", "META_DATA_ATTR_UNITS"})
+                        .where(col("COLL_NAME") == p.parent_path_view() &&
+                               col("DATA_NAME") == p.object_name_view())
+                        .build();
+                break;
+            }
 
-        auto where = type_to_query.at(_et);
+            case entity_type::user:
+                q = gq2::builder::select({"META_USER_ATTR_NAME", "META_USER_ATTR_VALUE", "META_USER_ATTR_UNITS"})
+                        .where(col("USER_NAME") == _tgt)
+                        .build();
+                break;
 
-        std::string where_fmt;
-        if (entity_type::data_object == _et) {
-            fs::path p{_tgt};
-            auto obj = p.object_name().string();
-            auto coll = p.parent_path().string();
+            case entity_type::resource:
+                q = gq2::builder::select({"META_RESC_ATTR_NAME", "META_RESC_ATTR_VALUE", "META_RESC_ATTR_UNITS"})
+                        .where(col("RESC_NAME") == _tgt)
+                        .build();
+                break;
 
-            where_fmt = fmt::format(fmt::runtime(where), coll, obj);
+            default:
+                THROW(SYS_INTERNAL_ERR, "Invalid entity type");
         }
-        else {
-            where_fmt = fmt::format(fmt::runtime(where), _tgt);
-        }
 
-        auto type_str = type_to_string.at(_et);
-        auto query_str = fmt::format(fmt::runtime(temp), type_str, type_str, type_str, where_fmt);
-
-        auto res = std::vector<avu>{};
+        std::vector<avu> res;
 
         try {
-            for (auto&& r : query(&_comm, query_str)) {
-                res.push_back(avu{r[0], r[1], r[2]});
+            const auto rows = gq2::execute(_comm, q);
+            res.reserve(rows.size());
+            for (const auto& r : rows) {
+                res.push_back(avu{r.at(0).get<std::string>(), r.at(1).get<std::string>(), r.at(2).get<std::string>()});
             }
         }
         catch (const irods::exception& e) {

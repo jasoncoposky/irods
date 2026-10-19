@@ -4,6 +4,7 @@
 
 #ifdef IRODS_RESOURCE_ADMINISTRATION_ENABLE_SERVER_SIDE_API
 #  include "irods/rsGeneralAdmin.hpp"
+#  include "irods/rs_genquery2.hpp"
 #  define rxGeneralAdmin rsGeneralAdmin
 #  define IRODS_QUERY_ENABLE_SERVER_SIDE_API
 #else
@@ -11,13 +12,28 @@
 #  define rxGeneralAdmin rcGeneralAdmin
 #endif // IRODS_RESOURCE_ADMINISTRATION_ENABLE_SERVER_SIDE_API
 
+#include "irods/genquery2_builder.hpp"
 #include "irods/rodsErrorTable.h"
-#include "irods/query_builder.hpp"
 
 #include <fmt/format.h>
 
+#include <charconv>
+
 namespace irods::experimental::administration::NAMESPACE_IMPL
 {
+    namespace
+    {
+        namespace gq2 = irods::experimental::genquery2;
+        using gq2::builder::col;
+
+        auto parse_u64(std::string_view _sv) noexcept -> std::uint64_t
+        {
+            std::uint64_t val = 0;
+            std::from_chars(_sv.data(), _sv.data() + _sv.size(), val);
+            return val;
+        }
+    } // anonymous namespace
+
     auto add_resource(RxComm& _comm, const resource_registration_info& _info) -> void
     {
         std::string location;
@@ -92,7 +108,12 @@ namespace irods::experimental::administration::NAMESPACE_IMPL
     auto resource_exists(RxComm& _comm, const resource_name_type _name) -> bool
     {
         try {
-            return query_builder{}.build(_comm, fmt::format("select RESC_ID where RESC_NAME = '{}'", _name)).size() > 0;
+            const auto q = gq2::builder::select({"RESC_ID"})
+                               .where(col("RESC_NAME") == _name)
+                               .limit(1)
+                               .build();
+
+            return !gq2::execute(_comm, q).empty();
         }
         catch (const std::exception& e) {
             // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-array-to-pointer-decay)
@@ -108,38 +129,53 @@ namespace irods::experimental::administration::NAMESPACE_IMPL
     auto resource_info(RxComm& _comm, const resource_name_type _name) -> std::optional<class resource_info>
     {
         try {
-            const auto gql = fmt::format("select RESC_ID, RESC_TYPE_NAME, RESC_ZONE_NAME, "
-                                         "RESC_LOC, RESC_VAULT_PATH, RESC_STATUS, "
-                                         "RESC_CONTEXT, RESC_COMMENT, RESC_INFO, "
-                                         "RESC_FREE_SPACE, RESC_FREE_SPACE_TIME, "
-                                         "RESC_PARENT, RESC_CREATE_TIME, RESC_MODIFY_TIME, RESC_MODIFY_TIME_MILLIS, "
-                                         "RESC_PARENT_CONTEXT "
-                                         "where RESC_NAME = '{}'",
-                                         _name);
+            const auto q = gq2::builder::select({
+                               "RESC_ID",
+                               "RESC_TYPE_NAME",
+                               "RESC_ZONE_NAME",
+                               "RESC_LOC",
+                               "RESC_VAULT_PATH",
+                               "RESC_STATUS",
+                               "RESC_CONTEXT",
+                               "RESC_COMMENT",
+                               "RESC_INFO",
+                               "RESC_FREE_SPACE",
+                               "RESC_FREE_SPACE_TIME",
+                               "RESC_PARENT",
+                               "RESC_CREATE_TIME",
+                               "RESC_MODIFY_TIME",
+                               "RESC_MODIFY_TIME_MILLIS",
+                               "RESC_PARENT_CONTEXT"})
+                               .where(col("RESC_NAME") == _name)
+                               .limit(1)
+                               .build();
 
-            for (auto&& row : query_builder{}.build(_comm, gql)) {
+            const auto rows = gq2::execute(_comm, q);
+            if (!rows.empty()) {
+                const auto& row = rows.front();
                 class resource_info info;
                 info.name_ = std::string{_name};
 
                 // NOLINTBEGIN(cppcoreguidelines-avoid-magic-numbers)
-                info.id_ = row[0];
-                info.type_ = row[1];
-                info.zone_name_ = row[2];
-                info.host_name_ = row[3];
-                info.vault_path_ = row[4];
-                info.status_ = to_resource_status(row[5]);
-                info.context_string_ = row[6];
-                info.parent_context_string_ = row[15];
-                info.comments_ = row[7];
-                info.info_ = row[8];
-                info.free_space_ = row[9];
-                info.parent_id_ = row[11];
-                info.ctime_ = resource_time_type{std::chrono::seconds{std::stoull(row[12])}};
-                info.mtime_ = resource_time_type{std::chrono::seconds{std::stoull(row[13])}};
-                info.mtime_millis_ = std::chrono::milliseconds{std::stoull(row[14])};
+                info.id_ = row.at(0).get<std::string>();
+                info.type_ = row.at(1).get<std::string>();
+                info.zone_name_ = row.at(2).get<std::string>();
+                info.host_name_ = row.at(3).get<std::string>();
+                info.vault_path_ = row.at(4).get<std::string>();
+                info.status_ = to_resource_status(row.at(5).get_ref<const std::string&>());
+                info.context_string_ = row.at(6).get<std::string>();
+                info.parent_context_string_ = row.at(15).get<std::string>();
+                info.comments_ = row.at(7).get<std::string>();
+                info.info_ = row.at(8).get<std::string>();
+                info.free_space_ = row.at(9).get<std::string>();
+                info.parent_id_ = row.at(11).get<std::string>();
+                info.ctime_ = resource_time_type{std::chrono::seconds{parse_u64(row.at(12).get_ref<const std::string&>())}};
+                info.mtime_ = resource_time_type{std::chrono::seconds{parse_u64(row.at(13).get_ref<const std::string&>())}};
+                info.mtime_millis_ = std::chrono::milliseconds{parse_u64(row.at(14).get_ref<const std::string&>())};
 
-                if (!row[10].empty()) {
-                    info.free_space_time_ = resource_time_type{std::chrono::seconds{std::stoull(row[10])}};
+                const auto& fs_time_str = row.at(10).get_ref<const std::string&>();
+                if (!fs_time_str.empty()) {
+                    info.free_space_time_ = resource_time_type{std::chrono::seconds{parse_u64(fs_time_str)}};
                 }
                 // NOLINTEND(cppcoreguidelines-avoid-magic-numbers)
 
@@ -177,10 +213,14 @@ namespace irods::experimental::administration::NAMESPACE_IMPL
     auto resource_name(RxComm& _comm, const resource_id_type _id) -> std::optional<std::string>
     {
         try {
-            const auto gql = fmt::format("select RESC_NAME where RESC_ID = '{}'", _id);
+            const auto q = gq2::builder::select({"RESC_NAME"})
+                               .where(col("RESC_ID") == _id)
+                               .limit(1)
+                               .build();
 
-            for (auto&& row : query_builder{}.build(_comm, gql)) {
-                return row[0];
+            const auto rows = gq2::execute(_comm, q);
+            if (!rows.empty()) {
+                return rows.front().at(0).get<std::string>();
             }
 
             return std::nullopt;
