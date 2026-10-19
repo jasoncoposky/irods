@@ -10,6 +10,7 @@
     #include "irods/rsDataObjChksum.hpp"
     #include "irods/rsModDataObjMeta.hpp"
     #include "irods/rsFileStat.hpp"
+    #include "irods/rs_genquery2.hpp"
 
     #define rxFileStat rsFileStat
 #else
@@ -26,6 +27,7 @@
 #include "irods/escape_utilities.hpp"
 #include "irods/filesystem.hpp"
 #include "irods/filesystem/path_utilities.hpp"
+#include "irods/genquery2_builder.hpp"
 #include "irods/irods_at_scope_exit.hpp"
 #include "irods/irods_exception.hpp"
 #include "irods/key_value_proxy.hpp"
@@ -36,8 +38,8 @@
 
 #include <fmt/format.h>
 
+#include <charconv>
 #include <chrono>
-#include <iomanip>
 #include <optional>
 #include <string_view>
 #include <variant>
@@ -94,6 +96,36 @@ namespace irods::experimental::replica
 
     namespace detail
     {
+        inline auto replica_columns() -> std::vector<std::string>
+        {
+            return {
+                "DATA_ID",
+                "DATA_COLL_ID",
+                "DATA_NAME",
+                "DATA_REPL_NUM",
+                "DATA_VERSION",
+                "DATA_TYPE_NAME",
+                "DATA_SIZE",
+                "DATA_RESC_NAME",
+                "DATA_PATH",
+                "DATA_OWNER_NAME",
+                "DATA_OWNER_ZONE",
+                "DATA_REPL_STATUS",
+                "DATA_STATUS",
+                "DATA_CHECKSUM",
+                "DATA_EXPIRY",
+                "DATA_MAP_ID",
+                "DATA_COMMENTS",
+                "DATA_ACCESS_TIME",
+                "DATA_CREATE_TIME",
+                "DATA_MODIFY_TIME",
+                "DATA_MODE",
+                "DATA_RESC_HIER",
+                "DATA_RESC_ID",
+                "COLL_NAME"
+            };
+        }
+
         /// \param[in] _comm connection object
         /// \param[in] _logical_path
         ///
@@ -105,7 +137,9 @@ namespace irods::experimental::replica
             rxComm& _comm,
             const irods::experimental::filesystem::path& _logical_path) -> void
         {
-            if (!irods::experimental::filesystem::NAMESPACE_IMPL::is_data_object(_comm, _logical_path)) {
+            namespace fs = irods::experimental::filesystem;
+            const auto s = fs::NAMESPACE_IMPL::status(_comm, _logical_path, fs::status_options::basic);
+            if (!fs::NAMESPACE_IMPL::is_data_object(s)) {
                 THROW(SYS_INVALID_INPUT_PARAM, "path does not point to a data object");
             }
         } // throw_if_path_is_not_a_data_object
@@ -159,14 +193,11 @@ namespace irods::experimental::replica
             }
         } // throw_if_replica_resource_name_is_invalid
 
-        /// \brief Gets a row from r_data_main using irods::query
-        ///
-        /// Passing an empty string for the _query_condition_string input will result in all replicas
-        /// being returned.
+        /// \brief Gets a row from r_data_main using GenQuery2 AST
         ///
         /// \param[in] _comm connection object
         /// \param[in] _logical_path
-        /// \param[in] _query_condition_string Additional constraints for selection of replica information
+        /// \param[in] _extra_condition Additional AST condition for selection of replica information
         ///
         /// \throws irods::exception If no replica information is found or query fails
         ///
@@ -177,57 +208,38 @@ namespace irods::experimental::replica
         auto get_data_object_info_impl(
             rxComm& _comm,
             const irods::experimental::filesystem::path& _logical_path,
-            std::string_view _query_condition_string = "") -> query_value_type
+            std::optional<irods::experimental::genquery2::builder::condition_builder> _extra_condition = std::nullopt) -> query_value_type
         {
+            namespace gq2 = irods::experimental::genquery2;
+            using gq2::builder::col;
+
             detail::throw_if_replica_logical_path_is_invalid(_comm, _logical_path);
 
-            query_builder qb;
-
-            if (const auto zone = irods::experimental::filesystem::zone_name(_logical_path); zone) {
-                qb.zone_hint(*zone);
+            auto cond = (col("DATA_NAME") == _logical_path.object_name_view() &&
+                         col("COLL_NAME") == _logical_path.parent_path_view());
+            if (_extra_condition) {
+                cond = ( std::move(cond) && std::move(*_extra_condition) );
             }
 
-            std::string qstr = fmt::format("SELECT "
-                                           "DATA_ID, "
-                                           "DATA_COLL_ID, "
-                                           "DATA_NAME, "
-                                           "DATA_REPL_NUM, "
-                                           "DATA_VERSION,"
-                                           "DATA_TYPE_NAME, "
-                                           "DATA_SIZE, "
-                                           "DATA_RESC_NAME, "
-                                           "DATA_PATH, "
-                                           "DATA_OWNER_NAME, "
-                                           "DATA_OWNER_ZONE, "
-                                           "DATA_REPL_STATUS, "
-                                           "DATA_STATUS, "
-                                           "DATA_CHECKSUM, "
-                                           "DATA_EXPIRY, "
-                                           "DATA_MAP_ID, "
-                                           "DATA_COMMENTS, "
-                                           "DATA_ACCESS_TIME, "
-                                           "DATA_CREATE_TIME, "
-                                           "DATA_MODIFY_TIME, "
-                                           "DATA_MODE, "
-                                           "DATA_RESC_HIER, "
-                                           "DATA_RESC_ID, "
-                                           "COLL_NAME"
-                                           " WHERE DATA_NAME = '{}' AND COLL_NAME = '{}'",
-                                           irods::single_quotes_to_hex(_logical_path.object_name()),
-                                           irods::single_quotes_to_hex(_logical_path.parent_path()));
+            const auto q = gq2::builder::select(replica_columns())
+                               .where(std::move(cond))
+                               .build();
 
-            if (!_query_condition_string.empty()) {
-                qstr += fmt::format(" AND {}", _query_condition_string.data());
-            }
-
-            auto q = qb.build<rxComm>(_comm, qstr);
-            if (q.size() <= 0) {
+            const auto zone = irods::experimental::filesystem::zone_name(_logical_path);
+            const auto rows = gq2::execute(_comm, q, zone ? std::string_view{*zone} : std::string_view{});
+            if (rows.empty()) {
                 THROW(CAT_NO_ROWS_FOUND, "no replica information found");
             }
 
             query_value_type output;
-            for (auto&& result : q) {
-                output.push_back(result);
+            output.reserve(rows.size());
+            for (const auto& row : rows) {
+                std::vector<std::string> r;
+                r.reserve(row.size());
+                for (const auto& cell : row) {
+                    r.push_back(cell.template get<std::string>());
+                }
+                output.push_back(std::move(r));
             }
 
             return output;
@@ -305,8 +317,9 @@ namespace irods::experimental::replica
             const irods::experimental::filesystem::object_time_type _new_time) -> void
         {
             const auto seconds = _new_time.time_since_epoch();
-            std::stringstream new_time;
-            new_time << std::setfill('0') << std::setw(11) << std::to_string(seconds.count());
+            char time_buf[32]{};
+            const auto [end_ptr, _] = fmt::format_to_n(time_buf, sizeof(time_buf) - 1, "{:011d}", seconds.count());
+            *end_ptr = '\0';
 
             DataObjInfo info{};
             std::snprintf(info.objPath, sizeof(info.objPath), "%s", _logical_path.c_str());
@@ -315,7 +328,7 @@ namespace irods::experimental::replica
             keyValPair_t kvp{};
             at_scope_exit free_memory{[&kvp] { clearKeyVal(&kvp); }};
             auto reg_params = make_key_value_proxy(kvp);
-            reg_params[DATA_MODIFY_KW] = new_time.str();
+            reg_params[DATA_MODIFY_KW] = time_buf;
 
             modDataObjMeta_t input{};
             input.dataObjInfo = &info;
@@ -372,7 +385,7 @@ namespace irods::experimental::replica
         } // get_replica_size_from_storage_impl
     } // namespace detail
 
-    /// \brief Gets a row from r_data_main using irods::query
+    /// \brief Gets a row from r_data_main using GenQuery2
     ///
     /// \param[in] _comm connection object
     /// \param[in] _logical_path
@@ -389,14 +402,15 @@ namespace irods::experimental::replica
         const irods::experimental::filesystem::path& _logical_path,
         const replica_number_type _replica_number) -> query_value_type
     {
+        using irods::experimental::genquery2::builder::col;
+
         detail::throw_if_replica_number_is_invalid(_replica_number);
 
-        const std::string qstr = fmt::format("DATA_REPL_NUM = '{}'", _replica_number);
-
-        return detail::get_data_object_info_impl(_comm, _logical_path, qstr);
+        return detail::get_data_object_info_impl(
+            _comm, _logical_path, col("DATA_REPL_NUM") == std::to_string(_replica_number));
     } // get_data_object_info
 
-    /// \brief Gets a row from r_data_main using irods::query
+    /// \brief Gets a row from r_data_main using GenQuery2
     ///
     /// \param[in] _comm connection object
     /// \param[in] _logical_path
@@ -413,14 +427,15 @@ namespace irods::experimental::replica
         const irods::experimental::filesystem::path& _logical_path,
         const leaf_resource_name_type& _leaf_resource_name) -> query_value_type
     {
+        using irods::experimental::genquery2::builder::col;
+
         detail::throw_if_replica_resource_name_is_invalid(_leaf_resource_name);
 
-        const std::string qstr = fmt::format("DATA_RESC_NAME = '{}'", _leaf_resource_name);
-
-        return detail::get_data_object_info_impl(_comm, _logical_path, qstr);
+        return detail::get_data_object_info_impl(
+            _comm, _logical_path, col("DATA_RESC_NAME") == _leaf_resource_name);
     } // get_data_object_info
 
-    /// \brief Gets a row from r_data_main using irods::query
+    /// \brief Gets a row from r_data_main using GenQuery2
     ///
     /// \param[in] _comm connection object
     /// \param[in] _logical_path
@@ -438,10 +453,10 @@ namespace irods::experimental::replica
         return detail::get_data_object_info_impl(_comm, _logical_path);
     } // get_data_object_info
 
-    /// \brief Gets a row from r_data_main using irods::query
+    /// \brief Gets a row from r_data_main using GenQuery2
     ///
     /// \param[in] _comm connection object
-    /// \param[in] _logical_path
+    /// \param[in] _data_id
     ///
     /// \throws irods::exception If no replica information is found or query fails
     ///
@@ -453,23 +468,30 @@ namespace irods::experimental::replica
         rxComm& _comm,
         const rodsLong_t _data_id) -> query_value_type
     {
-        namespace fs = irods::experimental::filesystem;
+        namespace gq2 = irods::experimental::genquery2;
+        using gq2::builder::col;
 
-        const std::string qstr = fmt::format("SELECT COLL_NAME, DATA_NAME where DATA_ID = '{}'", _data_id);
+        const auto q = gq2::builder::select(detail::replica_columns())
+                           .where(col("DATA_ID") == std::to_string(_data_id))
+                           .build();
 
-        query_builder qb;
-
-        auto q = qb.build<rxComm>(_comm, qstr);
-        if (q.size() <= 0) {
+        const auto rows = gq2::execute(_comm, q);
+        if (rows.empty()) {
             THROW(CAT_NO_ROWS_FOUND, "no replica information found");
         }
 
-        const auto& result = q.front();
-        const auto& coll_name = result[0];
-        const auto& data_name = result[1];
-        const auto logical_path = fs::path{coll_name} / data_name;
+        query_value_type output;
+        output.reserve(rows.size());
+        for (const auto& row : rows) {
+            std::vector<std::string> r;
+            r.reserve(row.size());
+            for (const auto& cell : row) {
+                r.push_back(cell.template get<std::string>());
+            }
+            output.push_back(std::move(r));
+        }
 
-        return detail::get_data_object_info_impl(_comm, logical_path);
+        return output;
     } // get_data_object_info
 
     /// \param[in] _comm connection object
@@ -491,9 +513,11 @@ namespace irods::experimental::replica
     {
         const auto result = get_data_object_info(_comm, _logical_path, _replica_number).front();
 
-        std::string_view size = result[genquery_column_index::DATA_SIZE];
+        const std::string_view size = result[genquery_column_index::DATA_SIZE];
+        std::uintmax_t val = 0;
+        std::from_chars(size.data(), size.data() + size.size(), val);
 
-        return static_cast<std::uintmax_t>(std::stoull(size.data()));
+        return val;
     } // replica_size
 
     /// \param[in] _comm connection object
@@ -515,9 +539,11 @@ namespace irods::experimental::replica
     {
         const auto result = get_data_object_info(_comm, _logical_path, _leaf_resource_name).front();
 
-        std::string_view size = result[genquery_column_index::DATA_SIZE];
+        const std::string_view size = result[genquery_column_index::DATA_SIZE];
+        std::uintmax_t val = 0;
+        std::from_chars(size.data(), size.data() + size.size(), val);
 
-        return static_cast<std::uintmax_t>(std::stoull(size.data()));
+        return val;
     } // replica_size
 
     /// \param[in] _comm connection object
@@ -639,9 +665,11 @@ namespace irods::experimental::replica
 
         const auto result = get_data_object_info(_comm, _logical_path, _replica_number).front();
 
-        std::string_view mtime = result[genquery_column_index::DATA_MODIFY_TIME];
+        const std::string_view mtime = result[genquery_column_index::DATA_MODIFY_TIME];
+        std::uint64_t val = 0;
+        std::from_chars(mtime.data(), mtime.data() + mtime.size(), val);
 
-        return object_time_type{std::chrono::seconds{std::stoull(mtime.data())}};
+        return object_time_type{std::chrono::seconds{val}};
     } // last_write_time
 
     /// \brief Returns timestamp of last time this replica was written to
@@ -667,9 +695,11 @@ namespace irods::experimental::replica
 
         const auto result = get_data_object_info(_comm, _logical_path, _leaf_resource_name).front();
 
-        std::string_view mtime = result[genquery_column_index::DATA_MODIFY_TIME];
+        const std::string_view mtime = result[genquery_column_index::DATA_MODIFY_TIME];
+        std::uint64_t val = 0;
+        std::from_chars(mtime.data(), mtime.data() + mtime.size(), val);
 
-        return object_time_type{std::chrono::seconds{std::stoull(mtime.data())}};
+        return object_time_type{std::chrono::seconds{val}};
     } // last_write_time
 
     /// \brief Sets value of the timestamp of last time this replica was written to
@@ -774,7 +804,10 @@ namespace irods::experimental::replica
         try {
             const auto replica_info = get_data_object_info(_comm, _logical_path, _leaf_resource_name).front();
 
-            return std::stoi(replica_info[genquery_column_index::DATA_REPL_NUM]);
+            const std::string_view repl_num = replica_info[genquery_column_index::DATA_REPL_NUM];
+            replica_number_type val = 0;
+            std::from_chars(repl_num.data(), repl_num.data() + repl_num.size(), val);
+            return val;
         }
         catch (const irods::exception& e) {
             if (CAT_NO_ROWS_FOUND == e.code()) {
@@ -790,8 +823,8 @@ namespace irods::experimental::replica
     ///
     /// \throws irods::exception If query fails
     ///
-    /// \retval true if qb.build returns results
-    /// \retval false if qb.build returns no results
+    /// \retval true if query returns results
+    /// \retval false if query returns no results
     ///
     /// \since 4.2.9
     template<typename rxComm>
@@ -800,22 +833,22 @@ namespace irods::experimental::replica
         const irods::experimental::filesystem::path& _logical_path,
         const leaf_resource_name_type& _leaf_resource_name) -> bool
     {
+        namespace gq2 = irods::experimental::genquery2;
+        using gq2::builder::col;
+
         detail::throw_if_replica_logical_path_is_invalid(_comm, _logical_path);
         detail::throw_if_replica_resource_name_is_invalid(_leaf_resource_name);
 
-        query_builder qb;
+        const auto q = gq2::builder::select({"DATA_ID"})
+                           .where(col("DATA_NAME") == _logical_path.object_name_view() &&
+                                  col("COLL_NAME") == _logical_path.parent_path_view() &&
+                                  col("DATA_RESC_NAME") == _leaf_resource_name)
+                           .limit(1)
+                           .build();
 
-        if (const auto zone = irods::experimental::filesystem::zone_name(_logical_path); zone) {
-            qb.zone_hint(*zone);
-        }
-
-        const std::string qstr =
-            fmt::format("SELECT DATA_ID WHERE DATA_NAME = '{}' AND COLL_NAME = '{}' AND DATA_RESC_NAME = '{}'",
-                        irods::single_quotes_to_hex(_logical_path.object_name()),
-                        irods::single_quotes_to_hex(_logical_path.parent_path()),
-                        _leaf_resource_name.data());
-
-        return 0 != qb.build<rxComm>(_comm, qstr).size();
+        const auto zone = irods::experimental::filesystem::zone_name(_logical_path);
+        const auto rows = gq2::execute(_comm, q, zone ? std::string_view{*zone} : std::string_view{});
+        return !rows.empty();
     } // replica_exists
 
     /// \param[in] _comm connection object
@@ -824,8 +857,8 @@ namespace irods::experimental::replica
     ///
     /// \throws irods::exception If query fails
     ///
-    /// \retval true if qb.build returns results
-    /// \retval false if qb.build returns no results
+    /// \retval true if query returns results
+    /// \retval false if query returns no results
     ///
     /// \since 4.2.9
     template<typename rxComm>
@@ -834,22 +867,22 @@ namespace irods::experimental::replica
         const irods::experimental::filesystem::path& _logical_path,
         const replica_number_type& _replica_number) -> bool
     {
+        namespace gq2 = irods::experimental::genquery2;
+        using gq2::builder::col;
+
         detail::throw_if_replica_logical_path_is_invalid(_comm, _logical_path);
         detail::throw_if_replica_number_is_invalid(_replica_number);
 
-        query_builder qb;
+        const auto q = gq2::builder::select({"DATA_ID"})
+                           .where(col("DATA_NAME") == _logical_path.object_name_view() &&
+                                  col("COLL_NAME") == _logical_path.parent_path_view() &&
+                                  col("DATA_REPL_NUM") == std::to_string(_replica_number))
+                           .limit(1)
+                           .build();
 
-        if (const auto zone = irods::experimental::filesystem::zone_name(_logical_path); zone) {
-            qb.zone_hint(*zone);
-        }
-
-        const std::string qstr =
-            fmt::format("SELECT DATA_ID WHERE DATA_NAME = '{}' AND COLL_NAME = '{}' AND DATA_REPL_NUM = '{}'",
-                        irods::single_quotes_to_hex(_logical_path.object_name()),
-                        irods::single_quotes_to_hex(_logical_path.parent_path()),
-                        _replica_number);
-
-        return 0 != qb.build<rxComm>(_comm, qstr).size();
+        const auto zone = irods::experimental::filesystem::zone_name(_logical_path);
+        const auto rows = gq2::execute(_comm, q, zone ? std::string_view{*zone} : std::string_view{});
+        return !rows.empty();
     } // replica_exists
 
     /// \param[in] _comm connection object
@@ -871,9 +904,11 @@ namespace irods::experimental::replica
     {
         const auto result = get_data_object_info(_comm, _logical_path, _replica_number).front();
 
-        std::string_view status = result[genquery_column_index::DATA_REPL_STATUS];
+        const std::string_view status = result[genquery_column_index::DATA_REPL_STATUS];
+        int val = 0;
+        std::from_chars(status.data(), status.data() + status.size(), val);
 
-        return static_cast<int>(std::stoi(status.data()));
+        return val;
     } // replica_status
 
     /// \param[in] _comm connection object
@@ -895,9 +930,11 @@ namespace irods::experimental::replica
     {
         const auto result = get_data_object_info(_comm, _logical_path, _leaf_resource_name).front();
 
-        std::string_view status = result[genquery_column_index::DATA_REPL_STATUS];
+        const std::string_view status = result[genquery_column_index::DATA_REPL_STATUS];
+        int val = 0;
+        std::from_chars(status.data(), status.data() + status.size(), val);
 
-        return static_cast<int>(std::stoi(status.data()));
+        return val;
     } // replica_status
 
     /// \param[in] _comm connection object
