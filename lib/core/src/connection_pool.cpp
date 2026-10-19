@@ -1,7 +1,7 @@
 #include "irods/connection_pool.hpp"
 
 #include "irods/authentication_plugin_framework.hpp"
-#include "irods/genquery2.h"
+#include "irods/genquery2_builder.hpp"
 #include "irods/irods_at_scope_exit.hpp"
 #include "irods/irods_exception.hpp"
 #include "irods/rodsErrorTable.h"
@@ -22,29 +22,14 @@ namespace irods
     {
         auto fetch_resource_state(RcComm& _conn) -> std::pair<std::int32_t, std::string>
         {
-            Genquery2Input input{};
-            input.query_string = const_cast<char*>(
-                "select RESC_MODIFY_TIME, RESC_MODIFY_TIME_MILLIS "
-                "order by RESC_MODIFY_TIME desc, RESC_MODIFY_TIME_MILLIS desc");
+            namespace gq2 = irods::experimental::genquery2;
 
-            char* output_str = nullptr;
-            irods::at_scope_exit free_output{[&output_str] {
-                if (output_str) {
-                    std::free(output_str);
-                }
-            }};
+            const auto q = gq2::builder::select({"RESC_MODIFY_TIME", "RESC_MODIFY_TIME_MILLIS"})
+                               .order_by("RESC_MODIFY_TIME", /*asc=*/false)
+                               .order_by("RESC_MODIFY_TIME_MILLIS", /*asc=*/false)
+                               .build();
 
-            if (const auto ec = rc_genquery2(&_conn, &input, &output_str); ec < 0) {
-                // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-array-to-pointer-decay)
-                THROW(ec, "Failed to query resource modification state");
-            }
-
-            if (!output_str) {
-                // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-array-to-pointer-decay)
-                THROW(SYS_INTERNAL_ERR, "Null GenQuery2 output");
-            }
-
-            const auto rows = nlohmann::json::parse(output_str);
+            const auto rows = gq2::execute(_conn, q);
             const auto resc_count = static_cast<std::int32_t>(rows.size());
             std::string latest_mtime;
 
@@ -61,17 +46,14 @@ namespace irods
 
         auto is_connection_alive(RcComm& _conn) noexcept -> bool
         {
-            Genquery2Input input{};
-            input.query_string = const_cast<char*>("select ZONE_NAME where ZONE_TYPE = 'local'");
+            namespace gq2 = irods::experimental::genquery2;
+            using gq2::builder::col;
 
-            char* output_str = nullptr;
-            irods::at_scope_exit free_output{[&output_str] {
-                if (output_str) {
-                    std::free(output_str);
-                }
-            }};
+            const auto q = gq2::builder::select({"ZONE_NAME"})
+                               .where(col("ZONE_TYPE") == "local")
+                               .build();
 
-            return rc_genquery2(&_conn, &input, &output_str) >= 0;
+            return gq2::try_execute(_conn, q).has_value();
         }
     } // anonymous namespace
 
