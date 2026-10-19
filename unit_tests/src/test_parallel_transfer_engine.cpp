@@ -317,3 +317,57 @@ auto create_local_file(const boost::filesystem::path& _p, std::size_t _size) noe
     return false;
 }
 
+TEST_CASE("parallel transfer engine offline semantics", "[offline]")
+{
+    const auto src_file = boost::filesystem::temp_directory_path() / "irods_pte_offline_src.bin";
+    const auto dst_file = boost::filesystem::temp_directory_path() / "irods_pte_offline_dst.bin";
+
+    REQUIRE(create_local_file(src_file, 4_mb));
+    {
+        std::ofstream dst_init{dst_file.c_str(), std::ios::binary | std::ios::out | std::ios::trunc};
+        REQUIRE(dst_init);
+    }
+
+    irods::at_scope_exit cleanup{[&src_file, &dst_file] {
+        boost::filesystem::remove(src_file);
+        boost::filesystem::remove(dst_file);
+    }};
+
+    const auto src_fac = io::make_fstream_factory(src_file.string());
+    const auto dst_fac = io::make_fstream_factory(dst_file.string());
+
+    SECTION("multi-channel fstream transfer completes and matches size")
+    {
+        parallel_transfer<std::fstream, std::fstream>(src_fac, dst_fac, static_cast<std::int64_t>(4_mb), 4, 0);
+        CHECK(boost::filesystem::file_size(dst_file) == 4_mb);
+    }
+
+    SECTION("immediate stop_and_wait does not deadlock")
+    {
+        io::parallel_transfer_engine_builder<std::fstream, std::fstream>
+            builder{src_fac, dst_fac, io::close_stream<std::fstream>, static_cast<std::int64_t>(4_mb)};
+
+        auto transfer = builder.number_of_channels(5).offset(0).build();
+        transfer.stop_and_wait();
+        boost::filesystem::remove(transfer.restart_handle());
+    }
+
+    SECTION("exception on secondary stream creation cleans up running tasks without deadlock")
+    {
+        int call_count = 0;
+        auto failing_sink_fac = [&](std::ios_base::openmode _mode, std::fstream* _base) -> std::fstream {
+            ++call_count;
+            if (call_count == 3) {
+                return std::fstream{}; // Unopened stream -> !out is true -> throws stream_error
+            }
+            return dst_fac(_mode, _base);
+        };
+
+        io::parallel_transfer_engine_builder<std::fstream, std::fstream>
+            builder{src_fac, failing_sink_fac, io::close_stream<std::fstream>, static_cast<std::int64_t>(4_mb)};
+
+        CHECK_THROWS_AS(builder.number_of_channels(4).offset(0).build(), io::stream_error);
+    }
+}
+
+

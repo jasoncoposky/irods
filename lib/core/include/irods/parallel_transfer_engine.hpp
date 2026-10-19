@@ -5,6 +5,7 @@
 #include "irods/rodsErrorTable.h"
 
 #include "irods/connection_pool.hpp"
+#include "irods/irods_at_scope_exit.hpp"
 #include "irods/thread_pool.hpp"
 
 #include <boost/filesystem.hpp>
@@ -210,7 +211,6 @@ namespace irods::experimental::io
         auto stop() -> void
         {
             stop_.store(true);
-            thread_pool_->stop();
         }
 
         /// Requests the transfer to stop in a graceful manner and waits until all tasks have
@@ -430,19 +430,32 @@ namespace irods::experimental::io
 
             const auto chunk_size = total_bytes_to_transfer_ / number_of_channels_;
 
-            for (decltype(number_of_channels_) i = 1; i < number_of_channels_; ++i) {
-                constexpr auto wait_for_sibling_tasks_to_finish = false;
-                const auto mode = std::ios_base::in | std::ios_base::out;
-                const auto offset = i * chunk_size + offset_ + progress_[i].progress->sent;
+            std::int64_t scheduled_secondary_tasks = 0;
+            try {
+                for (decltype(number_of_channels_) i = 1; i < number_of_channels_; ++i) {
+                    constexpr auto wait_for_sibling_tasks_to_finish = false;
+                    const auto sec_mode = std::ios_base::in | std::ios_base::out;
+                    const auto sec_offset = i * chunk_size + offset_ + progress_[i].progress->sent;
 
-                auto secondary_in_stream = create_source_stream(offset, &primary_in_stream);
-                auto secondary_out_stream = create_sink_stream(mode, offset, &primary_out_stream);
+                    auto secondary_in_stream = create_source_stream(sec_offset, &primary_in_stream);
+                    auto secondary_out_stream = create_sink_stream(sec_mode, sec_offset, &primary_out_stream);
 
-                schedule_transfer_task_on_thread_pool(secondary_in_stream,
-                                                      secondary_out_stream,
-                                                      progress_[i],
-                                                      tasks_running_[i],
-                                                      wait_for_sibling_tasks_to_finish);
+                    schedule_transfer_task_on_thread_pool(secondary_in_stream,
+                                                          secondary_out_stream,
+                                                          progress_[i],
+                                                          tasks_running_[i],
+                                                          wait_for_sibling_tasks_to_finish);
+                    ++scheduled_secondary_tasks;
+                }
+            }
+            catch (...) {
+                stop_.store(true);
+                for (std::int64_t i = scheduled_secondary_tasks; i < number_of_channels_ - 1; ++i) {
+                    latch_->count_down();
+                }
+                thread_pool_->join();
+                sink_stream_close_handler_(primary_out_stream, false);
+                throw;
             }
 
             constexpr auto wait_for_sibling_tasks_to_finish = true;
@@ -498,6 +511,12 @@ namespace irods::experimental::io
                                              &_progress,
                                              _wait_for_sibling_tasks_to_finish]() mutable
             {
+                irods::at_scope_exit count_down_latch{[this, _wait_for_sibling_tasks_to_finish] {
+                    if (!_wait_for_sibling_tasks_to_finish) {
+                        latch_->count_down();
+                    }
+                }};
+
                 try {
                     std::vector<typename source_stream_type::char_type> buf(transfer_buffer_size_);
 
@@ -514,11 +533,26 @@ namespace irods::experimental::io
                             break;
                         }
 
-                        in.read(buf.data(), std::min({_progress.progress->chunk_size - _progress.progress->sent,
-                                                      static_cast<std::int64_t>(buf.size()),
-                                                      _progress.progress->chunk_size}));
-                        out.write(buf.data(), in.gcount());
-                        _progress.progress->sent += in.gcount();
+                        const auto to_read = std::min({_progress.progress->chunk_size - _progress.progress->sent,
+                                                       static_cast<std::int64_t>(buf.size()),
+                                                       _progress.progress->chunk_size});
+                        in.read(buf.data(), to_read);
+                        const auto bytes_read = in.gcount();
+
+                        if (bytes_read <= 0) {
+                            std::lock_guard lock{errors_mutex_};
+                            errors_.emplace_back(parallel_transfer_error::stream_read, "Source stream in bad state");
+                            break;
+                        }
+
+                        out.write(buf.data(), bytes_read);
+                        if (!out) {
+                            std::lock_guard lock{errors_mutex_};
+                            errors_.emplace_back(parallel_transfer_error::stream_write, "Sink stream in bad state");
+                            break;
+                        }
+
+                        _progress.progress->sent += bytes_read;
                     }
 
                     if (_wait_for_sibling_tasks_to_finish) {
@@ -527,7 +561,6 @@ namespace irods::experimental::io
                         sink_stream_close_handler_(out, last_stream);
                     }
                     else {
-                        latch_->count_down();
                         constexpr auto last_stream = false;
                         sink_stream_close_handler_(out, last_stream);
                     }
