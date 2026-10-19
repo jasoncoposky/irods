@@ -92,9 +92,9 @@ namespace irods::experimental::catalog
             .ins_coll_access_recursive =
                 "insert into R_OBJT_ACCESS (object_id, user_id, access_type_id, create_ts, modify_ts)  (select distinct coll_id, cast(? as bigint), (select token_id from R_TOKN_MAIN where token_namespace = 'access_type' and token_name = ?), ?, ? from R_COLL_MAIN where coll_id in (select coll_id from R_MOD_ACCESS_TEMP1 where coll_name = ? or coll_name like ?))",
             .get_hier_resc_vault_template =
-                "select distinct data_id from R_DATA_MAIN where resc_hier like '{}' or resc_hier like '{}' or resc_hier like '{}' except ( select data_id from R_DATA_MAIN where resc_hier like '{}' or resc_hier like '{}' or resc_hier like '{}' ) limit {}",
+                "select distinct data_id from R_DATA_MAIN where resc_hier like ? or resc_hier like ? or resc_hier like ? except ( select data_id from R_DATA_MAIN where resc_hier like ? or resc_hier like ? or resc_hier like ? ) limit {}",
             .get_repl_list_leaf_bundles_template =
-                "select distinct data_id from R_DATA_MAIN where resc_id in ({0}) and modify_ts <= '{1}' except select data_id from R_DATA_MAIN where resc_id in ({2}) limit {3}",
+                "select distinct data_id from R_DATA_MAIN where resc_id in ({0}) and modify_ts <= ? except select data_id from R_DATA_MAIN where resc_id in ({1}) limit {2}",
             .lowercase_column_names = false,
             .explicit_begin_required = true,
             .supports_catalog_properties = true,
@@ -138,9 +138,9 @@ namespace irods::experimental::catalog
             .ins_coll_access_recursive =
                 "insert into R_OBJT_ACCESS (object_id, user_id, access_type_id, create_ts, modify_ts)  (select distinct coll_id, cast(? as integer), (select token_id from R_TOKN_MAIN where token_namespace = 'access_type' and token_name = ?), ?, ? from R_COLL_MAIN where coll_name = ? or coll_name like ? ESCAPE '\\'))",
             .get_hier_resc_vault_template =
-                "select distinct data_id from R_DATA_MAIN where ( resc_hier like '{}' or resc_hier like '{}' or resc_hier like '{}' ) and data_id not in ( select data_id from R_DATA_MAIN where resc_hier like '{}' or resc_hier like '{}' or resc_hier like '{}' ) and rownum < {}",
+                "select distinct data_id from R_DATA_MAIN where ( resc_hier like ? or resc_hier like ? or resc_hier like ? ) and data_id not in ( select data_id from R_DATA_MAIN where resc_hier like ? or resc_hier like ? or resc_hier like ? ) and rownum < {}",
             .get_repl_list_leaf_bundles_template =
-                "select data_id from (select distinct data_id from R_DATA_MAIN where data_id in (select data_id from R_DATA_MAIN where resc_id in ({0})) and data_id not in (select data_id from R_DATA_MAIN where resc_id in ({2})) and modify_ts <= '{1}') where rownum <= {3}",
+                "select data_id from (select distinct data_id from R_DATA_MAIN where data_id in (select data_id from R_DATA_MAIN where resc_id in ({0})) and data_id not in (select data_id from R_DATA_MAIN where resc_id in ({1})) and modify_ts <= ?) where rownum <= {2}",
             .lowercase_column_names = true,
             .explicit_begin_required = false,
             .supports_catalog_properties = false,
@@ -184,9 +184,9 @@ namespace irods::experimental::catalog
             .ins_coll_access_recursive =
                 "insert into R_OBJT_ACCESS (object_id, user_id, access_type_id, create_ts, modify_ts)  (select distinct coll_id, ?, (select token_id from R_TOKN_MAIN where token_namespace = 'access_type' and token_name = ?), ?, ? from R_COLL_MAIN where coll_id in (select coll_id from R_COLL_MAIN where coll_name = ? or coll_name like ?))",
             .get_hier_resc_vault_template =
-                "select distinct data_id from R_DATA_MAIN where ( resc_hier like '{}' or resc_hier like '{}' or resc_hier like '{}' ) and data_id not in ( select data_id from R_DATA_MAIN where resc_hier like '{}' or resc_hier like '{}' or resc_hier like '{}' ) limit {};",
+                "select distinct data_id from R_DATA_MAIN where ( resc_hier like ? or resc_hier like ? or resc_hier like ? ) and data_id not in ( select data_id from R_DATA_MAIN where resc_hier like ? or resc_hier like ? or resc_hier like ? ) limit {};",
             .get_repl_list_leaf_bundles_template =
-                "select distinct data_id from R_DATA_MAIN where resc_id in ({0}) and data_id not in ( select data_id from R_DATA_MAIN where resc_id in ({2}) ) and modify_ts <= '{1}' limit {3}",
+                "select distinct data_id from R_DATA_MAIN where resc_id in ({0}) and data_id not in ( select data_id from R_DATA_MAIN where resc_id in ({1}) ) and modify_ts <= ? limit {2}",
             .lowercase_column_names = false,
             .explicit_begin_required = true,
             .supports_catalog_properties = false,

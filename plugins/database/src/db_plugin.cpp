@@ -77,12 +77,39 @@
 #include <vector>
 
 // clang-format off
+#include "irods/filesystem/path.hpp"
+
 using log_db        = irods::experimental::log::database;
 using log_sql       = irods::experimental::log::sql;
 using leaf_bundle_t = irods::resource_manager::leaf_bundle_t;
 namespace gq2       = irods::experimental::genquery2;
+namespace fs        = irods::experimental::filesystem;
 using gq2::builder::col;
 // clang-format on
+
+namespace
+{
+    auto split_logical_path(const fs::path& _p, std::string_view& _parent, std::string_view& _name) noexcept -> int
+    {
+        if (_p.empty()) {
+            _parent = {};
+            _name = {};
+            return 0;
+        }
+        const auto sv = _p.string_view();
+        if (sv.find('/') == std::string_view::npos) {
+            _parent = {};
+            _name = sv;
+            return SYS_INVALID_FILE_PATH;
+        }
+        _parent = _p.parent_path_view();
+        _name = _p.object_name_view();
+        if (_parent.size() >= MAX_NAME_LEN || _name.size() >= MAX_NAME_LEN) {
+            return USER_STRLEN_TOOLONG;
+        }
+        return 0;
+    }
+} // anonymous namespace
 
 extern irods::resource_manager resc_mgr;
 
@@ -1071,19 +1098,15 @@ bool _userInRUserAuth( const char* userName, const char* zoneName, const char* a
    does not do the commit.
 */
 static int _delColl( rsComm_t *rsComm, collInfo_t *collInfo ) {
-    char logicalEndName[MAX_NAME_LEN];
-    char logicalParentDirName[MAX_NAME_LEN];
     char collIdNum[MAX_NAME_LEN];
 
-    if (const auto ec = splitPathByKey(collInfo->collName, logicalParentDirName, MAX_NAME_LEN, logicalEndName, MAX_NAME_LEN, '/'); ec < 0) {
+    const fs::path coll_path{collInfo->collName};
+    std::string_view logicalParentDirName;
+    std::string_view logicalEndName;
+    if (const auto ec = split_logical_path(coll_path, logicalParentDirName, logicalEndName); ec < 0) {
         log_db::error(
             "[{}:{}] - failed in splitPathByKey [path=[{}], ec=[{}]]", __func__, __LINE__, collInfo->collName, ec);
         return ec;
-    }
-
-    if ( strlen( logicalParentDirName ) == 0 ) {
-        snprintf( logicalParentDirName, sizeof( logicalParentDirName ), "%s", PATH_SEPARATOR );
-        snprintf( logicalEndName, sizeof( logicalEndName ), "%s", collInfo->collName + 1 );
     }
 
     try {
@@ -1337,8 +1360,6 @@ rodsLong_t checkAndGetObjectId(
     }
 
     int itype;
-    char logicalEndName[MAX_NAME_LEN];
-    char logicalParentDirName[MAX_NAME_LEN];
     rodsLong_t status;
     rodsLong_t objId;
     char userName[NAME_LEN];
@@ -1377,13 +1398,12 @@ rodsLong_t checkAndGetObjectId(
         auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
 
         if ( itype == 1 ) {
-            if (const auto ec = splitPathByKey(name, logicalParentDirName, MAX_NAME_LEN, logicalEndName, MAX_NAME_LEN, '/'); ec < 0) {
+            const fs::path obj_path{name};
+            std::string_view logicalParentDirName;
+            std::string_view logicalEndName;
+            if (const auto ec = split_logical_path(obj_path, logicalParentDirName, logicalEndName); ec < 0) {
                 log_db::error("[{}:{}] - failed in splitPathByKey [path=[{}], ec=[{}]]", __func__, __LINE__, name, ec);
                 return ec;
-            }
-            if ( strlen( logicalParentDirName ) == 0 ) {
-                snprintf( logicalParentDirName, sizeof( logicalParentDirName ), "%s", PATH_SEPARATOR );
-                snprintf( logicalEndName, sizeof( logicalEndName ), "%s", name );
             }
             log_sql::debug("checkAndGetObjectId SQL 1 ");
             status = irods::experimental::catalog::access_control::check_data_object_only(
@@ -2163,8 +2183,6 @@ irods::error db_mod_data_obj_meta_op(
     int status = 0, upCols = 0;
     rodsLong_t iVal = 0; // JMC cppcheck - uninit var
 
-    char logicalFileName[MAX_NAME_LEN];
-    char logicalDirName[MAX_NAME_LEN];
     char *theVal = 0;
     char replNum1[MAX_NAME_LEN];
 
@@ -2375,7 +2393,10 @@ irods::error db_mod_data_obj_meta_op(
     }
 
     if ( _data_obj_info->dataId <= 0 ) {
-        if (const auto ec = splitPathByKey(_data_obj_info->objPath, logicalDirName, MAX_NAME_LEN, logicalFileName, MAX_NAME_LEN, '/'); ec < 0) {
+        const fs::path obj_path{_data_obj_info->objPath};
+        std::string_view logicalDirName;
+        std::string_view logicalFileName;
+        if (const auto ec = split_logical_path(obj_path, logicalDirName, logicalFileName); ec < 0) {
             return ERROR(ec, fmt::format(
                          "[{}:{}] - failed in splitPathByKey [path=[{}], ec=[{}]]",
                          __func__, __LINE__, _data_obj_info->objPath, ec));
@@ -2651,8 +2672,6 @@ irods::error db_reg_data_obj_op(
     // =-=-=-=-=-=-=-
     //
     char myTime[50];
-    char logicalFileName[MAX_NAME_LEN];
-    char logicalDirName[MAX_NAME_LEN];
     rodsLong_t seqNum;
     rodsLong_t iVal;
     char dataIdNum[MAX_NAME_LEN];
@@ -2680,7 +2699,10 @@ irods::error db_reg_data_obj_op(
     snprintf( dataIdNum, MAX_NAME_LEN, "%lld", seqNum );
     _data_obj_info->dataId = seqNum; /* store as output parameter */
 
-    if (const auto ec = splitPathByKey(_data_obj_info->objPath, logicalDirName, MAX_NAME_LEN, logicalFileName, MAX_NAME_LEN, '/'); ec < 0) {
+    const fs::path obj_path{_data_obj_info->objPath};
+    std::string_view logicalDirName;
+    std::string_view logicalFileName;
+    if (const auto ec = split_logical_path(obj_path, logicalDirName, logicalFileName); ec < 0) {
         return ERROR(ec, fmt::format(
                      "[{}:{}] - failed in splitPathByKey [path=[{}], ec=[{}]]",
                      __func__, __LINE__, _data_obj_info->objPath, ec));
@@ -2907,8 +2929,6 @@ irods::error db_reg_replica_op(
     }
 
     char myTime[50];
-    char logicalFileName[MAX_NAME_LEN];
-    char logicalDirName[MAX_NAME_LEN];
     rodsLong_t iVal;
     rodsLong_t status;
     int nextReplNum;
@@ -2944,7 +2964,10 @@ irods::error db_reg_replica_op(
         return ERROR( CATALOG_NOT_CONNECTED, "catalog not connected" );
     }
 
-    if (const auto ec = splitPathByKey(_src_data_obj_info->objPath, logicalDirName, MAX_NAME_LEN, logicalFileName, MAX_NAME_LEN, '/'); ec < 0) {
+    const fs::path src_obj_path{_src_data_obj_info->objPath};
+    std::string_view logicalDirName;
+    std::string_view logicalFileName;
+    if (const auto ec = split_logical_path(src_obj_path, logicalDirName, logicalFileName); ec < 0) {
         return ERROR(ec, fmt::format(
                      "[{}:{}] - failed in splitPathByKey [path=[{}], ec=[{}]]",
                      __func__, __LINE__, _src_data_obj_info->objPath, ec));
@@ -3128,8 +3151,6 @@ irods::error db_unreg_replica_op(
 
     // =-=-=-=-=-=-=-
     //
-    char logicalFileName[MAX_NAME_LEN];
-    char logicalDirName[MAX_NAME_LEN];
     rodsLong_t status;
     char dataObjNumber[30];
     int adminMode;
@@ -3158,7 +3179,10 @@ irods::error db_unreg_replica_op(
         }
     }
 
-    if (const auto ec = splitPathByKey(_data_obj_info->objPath, logicalDirName, MAX_NAME_LEN, logicalFileName, MAX_NAME_LEN, '/'); ec < 0) {
+    const fs::path obj_path{_data_obj_info->objPath};
+    std::string_view logicalDirName;
+    std::string_view logicalFileName;
+    if (const auto ec = split_logical_path(obj_path, logicalDirName, logicalFileName); ec < 0) {
         return ERROR(ec, fmt::format(
                      "[{}:{}] - failed in splitPathByKey [path=[{}], ec=[{}]]",
                      __func__, __LINE__, _data_obj_info->objPath, ec));
@@ -3185,15 +3209,13 @@ irods::error db_unreg_replica_op(
             return ERROR( CAT_INSUFFICIENT_PRIVILEGE_LEVEL, "insufficient privilege" );
         }
         if ( trashMode ) {
-            int len;
             std::string zone;
             ret = getLocalZone( _ctx.prop_map(), &icss, zone );
             if ( !ret.ok() ) {
                 return PASS( ret );
             }
             snprintf( checkPath, MAX_NAME_LEN, "/%s/trash", zone.c_str() );
-            len = strlen( checkPath );
-            if ( strncmp( checkPath, logicalDirName, len ) != 0 ) {
+            if ( !logicalDirName.starts_with(checkPath) ) {
                 addRErrorMsg( &_ctx.comm()->rError, 0,
                               "TRASH_KW but not zone/trash path" );
                 return ERROR( CAT_INVALID_ARGUMENT, "TRASH_KW but not zone/trash path" );
@@ -4264,8 +4286,8 @@ irods::error db_reg_coll_by_admin_op(
     }
 
     char myTime[50];
-    char logicalEndName[MAX_NAME_LEN];
-    char logicalParentDirName[MAX_NAME_LEN];
+    std::string_view logicalEndName;
+    std::string_view logicalParentDirName;
     int status;
     char userName[NAME_LEN];
     char zoneName[NAME_LEN];
@@ -4296,15 +4318,11 @@ irods::error db_reg_coll_by_admin_op(
         // =-=-=-=-=-=-=-
     }
 
-    if (const auto ec = splitPathByKey(_coll_info->collName, logicalParentDirName, MAX_NAME_LEN, logicalEndName, MAX_NAME_LEN, '/'); ec < 0) {
+    const fs::path coll_path{_coll_info->collName};
+    if (const auto ec = split_logical_path(coll_path, logicalParentDirName, logicalEndName); ec < 0) {
         return ERROR(ec, fmt::format(
-                     "[{}:{}] - failed in splitPathByKey [path=[{}], ec=[{}]]",
+                     "[{}:{}] - failed in split_logical_path [path=[{}], ec=[{}]]",
                      __func__, __LINE__, _coll_info->collName, ec));
-    }
-
-    if ( strlen( logicalParentDirName ) == 0 ) {
-        snprintf( logicalParentDirName, sizeof( logicalParentDirName ), "%s", PATH_SEPARATOR );
-        snprintf( logicalEndName, sizeof( logicalEndName ), "%s", _coll_info->collName + 1 );
     }
 
     /* Check that the parent collection exists */
@@ -4435,8 +4453,8 @@ irods::error db_reg_coll_op(
     }
 
     char myTime[50];
-    char logicalEndName[MAX_NAME_LEN];
-    char logicalParentDirName[MAX_NAME_LEN];
+    std::string_view logicalEndName;
+    std::string_view logicalParentDirName;
     rodsLong_t status;
     int inheritFlag;
 
@@ -4446,15 +4464,11 @@ irods::error db_reg_coll_op(
         return ERROR( CATALOG_NOT_CONNECTED, "catalog not connected" );
     }
 
-    if (const auto ec = splitPathByKey(_coll_info->collName, logicalParentDirName, MAX_NAME_LEN, logicalEndName, MAX_NAME_LEN, '/'); ec < 0) {
+    const fs::path coll_path{_coll_info->collName};
+    if (const auto ec = split_logical_path(coll_path, logicalParentDirName, logicalEndName); ec < 0) {
         return ERROR(ec, fmt::format(
-                     "[{}:{}] - failed in splitPathByKey [path=[{}], ec=[{}]]",
+                     "[{}:{}] - failed in split_logical_path [path=[{}], ec=[{}]]",
                      __func__, __LINE__, _coll_info->collName, ec));
-    }
-
-    if ( strlen( logicalParentDirName ) == 0 ) {
-        snprintf( logicalParentDirName, sizeof( logicalParentDirName ), "%s", PATH_SEPARATOR );
-        snprintf( logicalEndName, sizeof( logicalEndName ), "%s", _coll_info->collName + 1 );
     }
 
     /* Check that the parent collection exists and user has write permission,
@@ -5306,18 +5320,14 @@ irods::error db_del_coll_by_admin_op(
         return ERROR( CAT_INSUFFICIENT_PRIVILEGE_LEVEL, "insufficient privilege" );
     }
 
-    char logicalEndName[MAX_NAME_LEN];
-    char logicalParentDirName[MAX_NAME_LEN];
+    std::string_view logicalEndName;
+    std::string_view logicalParentDirName;
+    const fs::path coll_path{_coll_info->collName};
 
-    if (const auto ec = splitPathByKey(_coll_info->collName, logicalParentDirName, MAX_NAME_LEN, logicalEndName, MAX_NAME_LEN, '/'); ec < 0) {
+    if (const auto ec = split_logical_path(coll_path, logicalParentDirName, logicalEndName); ec < 0) {
         return ERROR(ec, fmt::format(
-                     "[{}:{}] - failed in splitPathByKey [path=[{}], ec=[{}]]",
+                     "[{}:{}] - failed in split_logical_path [path=[{}], ec=[{}]]",
                      __func__, __LINE__, _coll_info->collName, ec));
-    }
-
-    if ( strlen( logicalParentDirName ) == 0 ) {
-        snprintf( logicalParentDirName, sizeof( logicalParentDirName ), "%s", PATH_SEPARATOR );
-        snprintf( logicalEndName, sizeof( logicalEndName ), "%s", _coll_info->collName + 1 );
     }
 
     try {
@@ -7612,8 +7622,8 @@ irods::error db_add_avu_metadata_op(
 
     int itype;
     char myTime[50];
-    char logicalEndName[MAX_NAME_LEN];
-    char logicalParentDirName[MAX_NAME_LEN];
+    std::string_view logicalEndName;
+    std::string_view logicalParentDirName;
     rodsLong_t seqNum;
     rodsLong_t objId, status;
     char userName[NAME_LEN];
@@ -7660,16 +7670,12 @@ irods::error db_add_avu_metadata_op(
 
     // Data Objects
     if (itype == 1) {
-        const auto ec = splitPathByKey(_name, logicalParentDirName, MAX_NAME_LEN, logicalEndName, MAX_NAME_LEN, '/'); 
+        const fs::path obj_path{_name};
+        const auto ec = split_logical_path(obj_path, logicalParentDirName, logicalEndName);
 
         if (ec < 0) {
-            return ERROR(ec, fmt::format("[{}:{}] - failed in splitPathByKey [path=[{}], ec=[{}]]",
+            return ERROR(ec, fmt::format("[{}:{}] - failed in split_logical_path [path=[{}], ec=[{}]]",
                                          __func__, __LINE__, _name, ec));
-        }
-
-        if (std::strlen(logicalParentDirName ) == 0) {
-            snprintf(logicalParentDirName, sizeof(logicalParentDirName), "%s", PATH_SEPARATOR);
-            snprintf(logicalEndName, sizeof(logicalEndName), "%s", _name);
         }
 
         log_sql::debug("chlAddAVUMetadata SQL 2");
@@ -7982,8 +7988,8 @@ irods::error db_del_avu_metadata_op(
     }
 
     int itype;
-    char logicalEndName[MAX_NAME_LEN];
-    char logicalParentDirName[MAX_NAME_LEN];
+    std::string_view logicalEndName;
+    std::string_view logicalParentDirName;
     rodsLong_t status;
     rodsLong_t objId;
     std::string objIdStr;
@@ -8024,15 +8030,11 @@ irods::error db_del_avu_metadata_op(
     }
 
     if ( itype == 1 ) {
-        if (const auto ec = splitPathByKey(_name, logicalParentDirName, MAX_NAME_LEN, logicalEndName, MAX_NAME_LEN, '/'); ec < 0) {
+        const fs::path obj_path{_name};
+        if (const auto ec = split_logical_path(obj_path, logicalParentDirName, logicalEndName); ec < 0) {
             return ERROR(ec, fmt::format(
-                         "[{}:{}] - failed in splitPathByKey [path=[{}], ec=[{}]]",
+                         "[{}:{}] - failed in split_logical_path [path=[{}], ec=[{}]]",
                          __func__, __LINE__, _name, ec));
-        }
-
-        if ( strlen( logicalParentDirName ) == 0 ) {
-            snprintf( logicalParentDirName, sizeof( logicalParentDirName ), "%s", PATH_SEPARATOR );
-            snprintf( logicalEndName, sizeof( logicalEndName ), "%s", _name );
         }
 
         log_sql::debug("chlDeleteAVUMetadata SQL 1 ");
@@ -8653,17 +8655,13 @@ irods::error db_mod_access_control_op(
 
     /* Not a collection (with access for non-Admin) */
     if ( status1 < 0 ) {
-        char logicalEndName[MAX_NAME_LEN];
-        char logicalParentDirName[MAX_NAME_LEN];
-        if (const auto ec = splitPathByKey(_path_name, logicalParentDirName, MAX_NAME_LEN, logicalEndName, MAX_NAME_LEN, '/'); ec < 0) {
+        std::string_view logicalEndName;
+        std::string_view logicalParentDirName;
+        const fs::path obj_path{_path_name};
+        if (const auto ec = split_logical_path(obj_path, logicalParentDirName, logicalEndName); ec < 0) {
             return ERROR(ec, fmt::format(
-                         "[{}:{}] - failed in splitPathByKey [path=[{}], ec=[{}]]",
+                         "[{}:{}] - failed in split_logical_path [path=[{}], ec=[{}]]",
                          __func__, __LINE__, _path_name, ec));
-        }
-
-        if ( strlen( logicalParentDirName ) == 0 ) {
-            snprintf( logicalParentDirName, sizeof( logicalParentDirName ), "%s", PATH_SEPARATOR );
-            snprintf( logicalEndName, sizeof( logicalEndName ), "%s", _path_name + 1 );
         }
 
         int status2 = 0;
@@ -11230,18 +11228,21 @@ irods::error db_get_distinct_data_objs_missing_from_child_given_parent_op(
     const auto& flavor = irods::experimental::catalog::get_db_flavor(icss.databaseType);
     const std::string query = fmt::format(
         fmt::runtime(flavor.get_hier_resc_vault_template),
+        _limit);
+
+    const std::vector<std::string> bind_params = {
         fmt::format("{};%", *_parent),
         fmt::format("%;{};%", *_parent),
         fmt::format("%;{}", *_parent),
         fmt::format("{};%", *_child),
         fmt::format("%;{};%", *_child),
-        fmt::format("%;{}", *_child),
-        _limit);
+        fmt::format("%;{}", *_child)
+    };
 
     try {
         auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
 
-        auto rows = executor.execute_query(db_conn, query);
+        auto rows = executor.execute_query(db_conn, query, bind_params);
         while (rows.next()) {
             _results->push_back(rows.get<std::int64_t>(0));
         }
@@ -11323,16 +11324,17 @@ irods::error db_get_repl_list_for_leaf_bundles_op(
     const std::string query = fmt::format(
         fmt::runtime(flavor.get_repl_list_leaf_bundles_template),
         not_child_array,
-        *_invocation_timestamp,
         child_array,
         _count);
+
+    const std::vector<std::string> bind_params = {*_invocation_timestamp};
 
     _results->reserve(_count);
 
     try {
         auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
 
-        auto rows = executor.execute_query(db_conn, query);
+        auto rows = executor.execute_query(db_conn, query, bind_params);
         while (rows.next()) {
             _results->push_back(rows.get<rodsLong_t>(0));
         }
@@ -11415,10 +11417,9 @@ irods::error db_get_repl_list_for_leaf_bundles_offset_op(irods::plugin_context& 
     const std::string query =
         fmt::format("select data_id from (select distinct data_id from R_DATA_MAIN where data_id in (select data_id "
                     "from R_DATA_MAIN where resc_id in ({})) and data_id not in (select data_id from R_DATA_MAIN "
-                    "where resc_id in ({})) and modify_ts <= '{}') where rownum <= {} order by data_id",
+                    "where resc_id in ({})) and modify_ts <= ?) where rownum <= {} order by data_id",
                     not_child_array,
                     child_array,
-                    _invocation_timestamp->c_str(),
                     _count);
 #elif MY_ICAT
     /* MySQL (MariaDB doesn't get 'except' until v10.3)*/
@@ -11426,19 +11427,18 @@ irods::error db_get_repl_list_for_leaf_bundles_offset_op(irods::plugin_context& 
                                           "where resc_id in ({}) and data_id not in ( "
                                           "select data_id from R_DATA_MAIN "
                                           "where resc_id in ({}) "
-                                          ") and modify_ts <= '{}' "
+                                          ") and modify_ts <= ? "
                                           "order by data_id "
                                           "limit {} "
                                           "offset {}",
                                           not_child_array,
                                           child_array,
-                                          _invocation_timestamp->c_str(),
                                           _count,
                                           _offset);
 #else
     /* Postgres */
     const std::string query = fmt::format("select distinct data_id from R_DATA_MAIN "
-                                          "where resc_id in ({}) and modify_ts <= '{}' "
+                                          "where resc_id in ({}) and modify_ts <= ? "
                                           "except "
                                           "select data_id from R_DATA_MAIN "
                                           "where resc_id in ({}) "
@@ -11446,17 +11446,18 @@ irods::error db_get_repl_list_for_leaf_bundles_offset_op(irods::plugin_context& 
                                           "offset {} "
                                           "limit {}",
                                           not_child_array,
-                                          _invocation_timestamp->c_str(),
                                           child_array,
                                           _offset,
                                           _count);
 #endif
 
+    const std::vector<std::string> bind_params = {*_invocation_timestamp};
+
     _results->reserve(_count);
 
     try {
         auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
-        auto res = executor.execute_query(db_conn, query);
+        auto res = executor.execute_query(db_conn, query, bind_params);
         while (res.next()) {
             _results->push_back(res.get<long long>(0));
         }
@@ -12030,8 +12031,8 @@ irods::error db_mod_ticket_op(
     using gq2::builder::col;
 
     rodsLong_t status, status2, status3;
-    char logicalEndName[MAX_NAME_LEN];
-    char logicalParentDirName[MAX_NAME_LEN];
+    std::string_view logicalEndName;
+    std::string_view logicalParentDirName;
     rodsLong_t objId = 0;
     rodsLong_t userId;
     rodsLong_t ticketId;
@@ -12089,15 +12090,11 @@ irods::error db_mod_ticket_op(
             return ERROR( CAT_TICKET_INVALID, "ticket string cannot be a number" );
         }
 
-        if (const auto ec = splitPathByKey(_arg4, logicalParentDirName, MAX_NAME_LEN, logicalEndName, MAX_NAME_LEN, '/'); ec < 0) {
+        const fs::path target_path{_arg4};
+        if (const auto ec = split_logical_path(target_path, logicalParentDirName, logicalEndName); ec < 0) {
             return ERROR(ec, fmt::format(
-                         "[{}:{}] - failed in splitPathByKey [path=[{}], ec=[{}]]",
+                         "[{}:{}] - failed in split_logical_path [path=[{}], ec=[{}]]",
                          __func__, __LINE__, _arg4, ec));
-        }
-
-        if ( strlen( logicalParentDirName ) == 0 ) {
-            snprintf( logicalParentDirName, sizeof( logicalParentDirName ), "%s", PATH_SEPARATOR );
-            snprintf( logicalEndName, sizeof( logicalEndName ), "%s", _arg4 + 1 );
         }
 
         status2 = irods::experimental::catalog::access_control::check_data_object_only(
@@ -13333,37 +13330,42 @@ auto db_check_password_op(irods::plugin_context& _ctx, const char* _json_input, 
         std::string default_algorithm;
         nlohmann::json default_hash_params;
         try {
-            auto [db_instance, db_conn] = irods::experimental::catalog::new_database_connection();
+            auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
 
             // Get the server's configured hashing parameters. These are used for doing a dummy password
             // hash in case the user does not exist for time equalization purposes.
             {
-                if (auto params_result = nanodbc::execute(
-                        db_conn,
-                        "select option_value from R_GRID_CONFIGURATION "
-                        "where namespace = 'authentication' and option_name = 'password_hashing_parameters'");
-                    params_result.next())
-                {
-                    const auto params_json = nlohmann::json::parse(params_result.get<std::string>(0));
+                const auto opt_params = irods::experimental::catalog::query_catalog_string(
+                    executor,
+                    db_conn,
+                    gq2::builder::select({"GRID_CONFIG_OPTION_VALUE"})
+                        .where(col("GRID_CONFIG_NAMESPACE") == "authentication" &&
+                               col("GRID_CONFIG_OPTION_NAME") == "password_hashing_parameters")
+                        .build());
+                if (opt_params) {
+                    const auto params_json = nlohmann::json::parse(*opt_params);
                     default_algorithm = params_json.at("algorithm").get<std::string>();
                     default_hash_params = params_json.at("parameters");
                 }
             }
 
-            nanodbc::statement stmt{db_conn};
-            nanodbc::prepare(stmt,
-                             "select R_USER_CREDENTIALS.hashed_password, R_USER_CREDENTIALS.salt, "
-                             "R_USER_CREDENTIALS.hashing_algorithm, R_USER_CREDENTIALS.hashing_parameters from "
-                             "R_USER_CREDENTIALS, R_USER_MAIN "
-                             "where user_name=? and zone_name=? and R_USER_MAIN.user_id = R_USER_CREDENTIALS.user_id");
-            stmt.bind(0, user_name.c_str());
-            stmt.bind(1, zone_name.c_str());
-            for (auto result = nanodbc::execute(stmt); result.next();) {
-                const auto hashed_password = result.get<std::string>(0);
-                const auto salt = result.get<std::string>(1);
-                const auto algorithm = result.get<std::string>(2);
-                const auto params = result.get<std::string>(3);
-                credentials.emplace_back(credential{hashed_password, salt, algorithm, nlohmann::json::parse(params)});
+            auto q_res = irods::experimental::catalog::execute_catalog(
+                executor,
+                db_conn,
+                gq2::builder::select({"USER_CRED_HASHED_PASSWORD",
+                                      "USER_CRED_SALT",
+                                      "USER_CRED_HASHING_ALGORITHM",
+                                      "USER_CRED_HASHING_PARAMETERS"})
+                    .where(col("USER_NAME") == user_name && col("USER_ZONE") == zone_name)
+                    .build());
+            if (q_res.query_result) {
+                while (q_res.query_result->next()) {
+                    const auto hashed_password = q_res.query_result->get<std::string>(0);
+                    const auto salt = q_res.query_result->get<std::string>(1);
+                    const auto algorithm = q_res.query_result->get<std::string>(2);
+                    const auto params = q_res.query_result->get<std::string>(3);
+                    credentials.emplace_back(credential{hashed_password, salt, algorithm, nlohmann::json::parse(params)});
+                }
             }
         }
         catch (const std::exception& e) {
@@ -13541,20 +13543,25 @@ auto db_check_session_token_op(irods::plugin_context& _ctx, const char* _json_in
 
         std::vector<session_token_info> tokens;
         try {
-            auto [db_instance, db_conn] = irods::experimental::catalog::new_database_connection();
-            nanodbc::statement stmt{db_conn};
-            nanodbc::prepare(
-                stmt,
-                "select R_USER_SESSION_KEY.session_key, R_USER_SESSION_KEY.session_expiry_ts, R_USER_SESSION_KEY.salt "
-                "from R_USER_SESSION_KEY, "
-                "R_USER_MAIN where user_name=? and zone_name=? and R_USER_MAIN.user_id = R_USER_SESSION_KEY.user_id");
-            stmt.bind(0, user_name.c_str());
-            stmt.bind(1, zone_name.c_str());
-            for (auto result = nanodbc::execute(stmt); result.next();) {
-                const auto token = result.get<std::string>(0);
-                const auto expiration = std::stoll(result.get<std::string>(1));
-                const auto salt = result.get<std::string>(2);
-                tokens.emplace_back(session_token_info{token, expiration, salt});
+            auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
+            auto q_res = irods::experimental::catalog::execute_catalog(
+                executor,
+                db_conn,
+                gq2::builder::select({"USER_SESSION_KEY", "USER_SESSION_EXPIRY_TIME", "USER_SESSION_SALT"})
+                    .where(col("USER_NAME") == user_name && col("USER_ZONE") == zone_name)
+                    .build());
+            if (q_res.query_result) {
+                while (q_res.query_result->next()) {
+                    const auto token = q_res.query_result->get<std::string>(0);
+                    const auto exp_str = q_res.query_result->get<std::string>(1);
+                    std::int64_t expiration = 0;
+                    const auto [ptr, ec] = std::from_chars(exp_str.data(), exp_str.data() + exp_str.size(), expiration);
+                    if (ec != std::errc{}) {
+                        THROW(SYS_LIBRARY_ERROR, fmt::format("Invalid session expiration timestamp [{}]", exp_str));
+                    }
+                    const auto salt = q_res.query_result->get<std::string>(2);
+                    tokens.emplace_back(session_token_info{token, expiration, salt});
+                }
             }
         }
         catch (const std::exception& e) {
@@ -13744,10 +13751,10 @@ irods::error db_calc_logical_usage_and_quota_op(irods::plugin_context& _ctx, [[m
     try {
         auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
         nanodbc::transaction trans{db_conn};
-        nanodbc::statement stmt{db_conn};
 
 #ifdef MY_ICAT
-        nanodbc::prepare(stmt,
+        executor.execute_dml(
+            db_conn,
             "UPDATE R_LOGICAL_QUOTA_MAIN "
             "LEFT JOIN "
               "(SELECT bcoll AS basecoll, "
@@ -13779,11 +13786,11 @@ irods::error db_calc_logical_usage_and_quota_op(irods::plugin_context& _ctx, [[m
                "GROUP BY basecoll) AS totals ON totals.basecoll = R_LOGICAL_QUOTA_MAIN.coll_id "
             "SET over_bytes = SIGN(max_bytes)*SIGN(max_bytes)*(COALESCE(byte_total, 0) - max_bytes), "
                 "over_objects = SIGN(max_objects)*SIGN(max_objects)*(COALESCE(obj_total, 0) - max_objects), "
-                "modify_ts = ?");
-        stmt.bind(0, PATH_SEPARATOR);
-        stmt.bind(1, myTime);
+                "modify_ts = ?",
+            {PATH_SEPARATOR, myTime});
 #else
-        nanodbc::prepare(stmt,
+        executor.execute_dml(
+            db_conn,
             "UPDATE R_LOGICAL_QUOTA_MAIN "
             "SET (over_bytes, "
                  "over_objects, "
@@ -13813,11 +13820,9 @@ irods::error db_calc_logical_usage_and_quota_op(irods::plugin_context& _ctx, [[m
                     "AND RCM1.coll_id = R_LOGICAL_QUOTA_MAIN.coll_id "
                     "AND (RCM2.coll_name LIKE (REPLACE(REPLACE(REPLACE(RCM1.coll_name, \'\\\\\', \'\\\\\\\\\\\\\'), \'%\', \'\\\\%\'), \'_\', \'\\\\_\') || ? || \'%\') ESCAPE \'\\\\\\\\\') "
                          "OR RCM2.coll_name = RCM1.coll_name)) AS ranked_objs "
-               "WHERE ranked_objs.replica_rank = 1)");
-        stmt.bind(0, myTime);
-        stmt.bind(1, PATH_SEPARATOR);
+               "WHERE ranked_objs.replica_rank = 1)",
+            {myTime, PATH_SEPARATOR});
 #endif
-        nanodbc::execute(stmt);
         trans.commit();
         return SUCCESS();
     }
@@ -14002,8 +14007,8 @@ irods::error db_check_logical_quota_op(irods::plugin_context& _ctx,
                 }
             }
 
-            nanodbc::statement stmt{db_conn};
-            nanodbc::prepare(stmt,
+            auto res = executor.execute_query(
+                db_conn,
                 "SELECT R_COLL_MAIN.coll_name, "
                        "R_LOGICAL_QUOTA_MAIN.max_bytes, "
                        "R_LOGICAL_QUOTA_MAIN.max_objects, "
@@ -14017,9 +14022,8 @@ irods::error db_check_logical_quota_op(irods::plugin_context& _ctx,
                 "ORDER BY ( "
                   "(SIGN(R_LOGICAL_QUOTA_MAIN.over_bytes) + 1)*(-1)*(SIGN(R_LOGICAL_QUOTA_MAIN.over_bytes))*(SIGN(R_LOGICAL_QUOTA_MAIN.over_bytes) - 2) + "
                   "(SIGN(R_LOGICAL_QUOTA_MAIN.over_objects) + 1)*(-1)*(SIGN(R_LOGICAL_QUOTA_MAIN.over_objects))*(SIGN(R_LOGICAL_QUOTA_MAIN.over_objects) - 2) "
-                ") DESC");
-            stmt.bind(0, _coll_name);
-            auto res = nanodbc::execute(stmt);
+                ") DESC",
+                {_coll_name});
             while (res.next()) {
                 _quota_values->push_back(std::make_tuple(
                     res.get<std::string>(0),
@@ -14036,8 +14040,8 @@ irods::error db_check_logical_quota_op(irods::plugin_context& _ctx,
                 return ERROR(CAT_INSUFFICIENT_PRIVILEGE_LEVEL, "Only admins may list all logical quotas.");
             }
 
-            nanodbc::statement stmt{db_conn};
-            nanodbc::prepare(stmt,
+            auto res = executor.execute_query(
+                db_conn,
                 "SELECT R_COLL_MAIN.coll_name, "
                        "R_LOGICAL_QUOTA_MAIN.max_bytes, "
                        "R_LOGICAL_QUOTA_MAIN.max_objects, "
@@ -14051,7 +14055,6 @@ irods::error db_check_logical_quota_op(irods::plugin_context& _ctx,
                   "(SIGN(R_LOGICAL_QUOTA_MAIN.over_bytes) + 1)*(-1)*(SIGN(R_LOGICAL_QUOTA_MAIN.over_bytes))*(SIGN(R_LOGICAL_QUOTA_MAIN.over_bytes) - 2) + "
                   "(SIGN(R_LOGICAL_QUOTA_MAIN.over_objects) + 1)*(-1)*(SIGN(R_LOGICAL_QUOTA_MAIN.over_objects))*(SIGN(R_LOGICAL_QUOTA_MAIN.over_objects) - 2) "
                 ") DESC");
-            auto res = nanodbc::execute(stmt);
             while (res.next()) {
                 _quota_values->push_back(std::make_tuple(
                     res.get<std::string>(0),
