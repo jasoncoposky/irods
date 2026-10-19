@@ -12,17 +12,18 @@
 #include "irods/rsDataObjClose.hpp"
 #include "irods/rsDataObjOpen.hpp"
 #include "irods/rsDataObjPhymv.hpp"
-#include "irods/rsDataObjPhymv.hpp"
 #include "irods/rsDataObjRepl.hpp"
 #include "irods/rsDataObjTrim.hpp"
 #include "irods/rsDataObjUnlink.hpp"
 #include "irods/rsFileClose.hpp"
 #include "irods/rsFileOpen.hpp"
 #include "irods/rsGetRescQuota.hpp"
+#include "irods/rs_genquery2.hpp"
 #include "irods/rs_replica_close.hpp"
 #include "irods/specColl.hpp"
 
 #include "irods/finalize_utilities.hpp"
+#include "irods/genquery2_builder.hpp"
 #include "irods/irods_at_scope_exit.hpp"
 #include "irods/irods_hierarchy_parser.hpp"
 #include "irods/irods_resource_backport.hpp"
@@ -39,6 +40,8 @@
 #include "irods/data_object_proxy.hpp"
 
 #include "irods/logical_locking.hpp"
+
+#include <charconv>
 
 namespace
 {
@@ -486,11 +489,21 @@ namespace
 
             // If unlinking the source replica failed, move it to the next available replica number
             // and mark it as a STALE_REPLICA when the object is unlocked.
-            const auto query_string = fmt::format(
-                "select max(DATA_REPL_NUM) where DATA_ID = '{}'", source_replica.data_id()
-            );
+            namespace gq2 = irods::experimental::genquery2;
+            using gq2::builder::col;
 
-            source_replica.replica_number(std::stoi(irods::query{&_comm, query_string}.front().at(0)) + 1);
+            const auto q = gq2::builder::select(gq2::builder::max("DATA_REPL_NUM"))
+                .where(col("DATA_ID") == fmt::to_string(source_replica.data_id()))
+                .build();
+
+            const auto rows = gq2::execute(_comm, q);
+            int max_repl_num = 0;
+            if (!rows.empty() && !rows[0].empty()) {
+                const auto& val = rows[0][0].get_ref<const std::string&>();
+                std::from_chars(val.data(), val.data() + val.size(), max_repl_num);
+            }
+
+            source_replica.replica_number(max_repl_num + 1);
             source_replica.mtime(SET_TIME_TO_NOW_KW);
             source_replica.status(nlohmann::json{{"original_status", std::to_string(STALE_REPLICA)}}.dump());
 

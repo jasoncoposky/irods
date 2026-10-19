@@ -4,10 +4,11 @@
 
 #include "irods/reIn2p3SysRule.hpp"
 
+#include "irods/genquery2_builder.hpp"
 #include "irods/irods_configuration_keywords.hpp"
 #include "irods/irods_logger.hpp"
 #include "irods/rodsErrorTable.h"
-#include "irods/rsGenQuery.hpp"
+#include "irods/rs_genquery2.hpp"
 
 #include <boost/algorithm/string.hpp>
 #include <boost/asio.hpp>
@@ -153,45 +154,39 @@ int checkHostAccessControl(const std::string& _user_name,
  * \sa N/A
  **/
 int msiCheckHostAccessControl( ruleExecInfo_t *rei ) {
-    char group[MAX_NAME_LEN], *hostclient, *result, *username;
-    char condstr[MAX_NAME_LEN];
-    int i, rc, status;
-    genQueryInp_t genQueryInp;
-    genQueryOut_t *genQueryOut = NULL;
-    rsComm_t *rsComm;
-
     RE_TEST_MACRO( "    Calling msiCheckHostAccessControl" )
     /* the above line is needed for loop back testing using irule -i option */
 
-    group[0] = '\0';
-    rsComm = rei->rsComm;
+    rsComm_t *rsComm = rei->rsComm;
 
     /* retrieve user name */
-    username = rsComm->clientUser.userName;
+    const char *username = rsComm->clientUser.userName;
     /* retrieve client IP address */
-    hostclient = inet_ntoa( rsComm->remoteAddr.sin_addr );
-    /* retrieve groups to which the user belong */
-    memset( &genQueryInp, 0, sizeof( genQueryInp ) );
-    snprintf( condstr, MAX_NAME_LEN, "= '%s'", username );
-    addInxVal( &genQueryInp.sqlCondInp, COL_USER_NAME, condstr );
-    addInxIval( &genQueryInp.selectInp, COL_USER_GROUP_NAME, 1 );
-    genQueryInp.maxRows = MAX_SQL_ROWS;
-    status =  rsGenQuery( rsComm, &genQueryInp, &genQueryOut );
-    if ( status >= 0 ) {
-        for ( i = 0; i < genQueryOut->rowCnt; i++ ) {
-            result = genQueryOut->sqlResult[0].value;
-            result += i * genQueryOut->sqlResult[0].len;
-            strcat( group, result );
-            strcat( group, " " );
+    const char *hostclient = inet_ntoa( rsComm->remoteAddr.sin_addr );
+
+    /* retrieve groups to which the user belongs */
+    namespace gq2 = irods::experimental::genquery2;
+    using gq2::builder::col;
+
+    const auto q = gq2::builder::select({"USER_GROUP_NAME"})
+        .where(col("USER_NAME") == username)
+        .build();
+
+    std::string groups;
+    nlohmann::json rows;
+    if (gq2::try_execute(*rsComm, q, rows) >= 0) {
+        for (const auto& row : rows) {
+            if (!row.empty()) {
+                groups += row[0].get_ref<const std::string&>();
+                groups += ' ';
+            }
         }
     }
     else {
-        rstrcpy( group, "all", MAX_NAME_LEN );
+        groups = "all";
     }
-    clearGenQueryInp( &genQueryInp );
-    freeGenQueryOut( &genQueryOut );
 
-    rc = checkHostAccessControl( username, hostclient, group );
+    const int rc = checkHostAccessControl( username, hostclient, groups );
     if ( rc < 0 ) {
         rodsLog( LOG_NOTICE, "Access to user %s from host %s has been refused.\n", username, hostclient );
         rei->status = rc;

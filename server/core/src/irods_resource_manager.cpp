@@ -1,6 +1,5 @@
 #include "irods/irods_resource_manager.hpp"
 
-#include "irods/genQuery.h"
 #include "irods/generalAdmin.h"
 #include "irods/getRescQuota.h"
 #include "irods/irods_children_parser.hpp"
@@ -13,7 +12,6 @@
 #include "irods/irods_string_tokenize.hpp"
 #include "irods/miscServerFunct.hpp"
 #include "irods/rcMisc.h"
-#include "irods/rsGenQuery.hpp"
 #include "irods/rsGlobalExtern.hpp"
 #include "irods/irods_logger.hpp"
 

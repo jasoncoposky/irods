@@ -1,7 +1,6 @@
 #include "irods/rsRuleExecDel.hpp"
 
 #include "irods/catalog_utilities.hpp"
-#include "irods/genQuery.h"
 #include "irods/icatHighLevelRoutines.hpp"
 #include "irods/irods_at_scope_exit.hpp"
 #include "irods/irods_configuration_keywords.hpp"
@@ -12,7 +11,6 @@
 #include "irods/objMetaOpr.hpp"
 #include "irods/rcMisc.h"
 #include "irods/rodsErrorTable.h"
-#include "irods/rsGenQuery.hpp"
 #include "irods/ruleExecSubmit.h"
 
 #include <fmt/format.h>

@@ -22,7 +22,6 @@
 #include "irods/rsDataObjWrite.hpp"
 #include "irods/rsDataObjRead.hpp"
 #include "irods/rsFileOpen.hpp"
-#include "irods/rsGenQuery.hpp"
 #include "irods/rsModAVUMetadata.hpp"
 #include "irods/rsModAccessControl.hpp"
 #include "irods/rsFileClose.hpp"

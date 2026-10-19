@@ -5,7 +5,6 @@
 
 #ifdef IRODS_REPLICA_ENABLE_SERVER_SIDE_API
     #define IRODS_FILESYSTEM_ENABLE_SERVER_SIDE_API
-    #define IRODS_QUERY_ENABLE_SERVER_SIDE_API
 
     #include "irods/rsDataObjChksum.hpp"
     #include "irods/rsModDataObjMeta.hpp"
@@ -15,7 +14,6 @@
     #define rxFileStat rsFileStat
 #else
     #undef IRODS_FILESYSTEM_ENABLE_SERVER_SIDE_API
-    #undef IRODS_QUERY_ENABLE_SERVER_SIDE_API
 
     #include "irods/dataObjChksum.h"
     #include "irods/modDataObjMeta.h"
@@ -32,7 +30,6 @@
 #include "irods/irods_exception.hpp"
 #include "irods/key_value_proxy.hpp"
 #include "irods/objInfo.h"
-#include "irods/query_builder.hpp"
 #include "irods/rcConnect.h"
 #include "irods/rcMisc.h"
 

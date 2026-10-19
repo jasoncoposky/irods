@@ -4,9 +4,11 @@
 
 #include "irods/apiNumber.h"
 #include "irods/dataObjOpr.hpp"
-#include "irods/genQuery.h"
+#include "irods/filesystem/path.hpp"
+#include "irods/genquery2_builder.hpp"
 #include "irods/getRescQuota.h"
 #include "irods/irodsDelayServer.hpp"
+#include "irods/irods_at_scope_exit.hpp"
 #include "irods/irods_logger.hpp"
 #include "irods/irods_resource_backport.hpp"
 #include "irods/irods_server_api_table.hpp"
@@ -19,9 +21,11 @@
 #include "irods/rodsDef.h"
 #include "irods/rodsErrorTable.h"
 #include "irods/rsDataObjRepl.hpp"
-#include "irods/rsGenQuery.hpp"
 #include "irods/rsModDataObjMeta.hpp"
+#include "irods/rs_genquery2.hpp"
 #include "irods/vault_path_policy.hpp"
+
+#include <fmt/format.h>
 
 #include <algorithm>
 #include <cstring>
@@ -363,96 +367,45 @@ msiSetDataTypeFromExt( ruleExecInfo_t *rei ) {
 
     dataObjInfo_t *dataObjInfoHead = rei->doi;
 
-    char logicalCollName[MAX_NAME_LEN];
-    char logicalFileName[MAX_NAME_LEN] = "";
-    int status{splitPathByKey(dataObjInfoHead->objPath,
-                              logicalCollName,
-                              sizeof(logicalCollName),
-                              logicalFileName,
-                              sizeof(logicalFileName),
-                              '/')};
-    if (status < 0) {
-        const auto err{ERROR(status,
-                             (boost::format("splitPathByKey failed for [%s]") %
-                              dataObjInfoHead->objPath).str().c_str())};
-        irods::log(err);
-        return err.code();
-    }
+    namespace fs = irods::experimental::filesystem;
+    namespace gq2 = irods::experimental::genquery2;
+    using gq2::builder::col;
 
-    if ( strlen( logicalFileName ) <= 0 ) {
-        return 0;
-    }
-
-    char logicalFileNameNoExtension[MAX_NAME_LEN] = "";
-    char logicalFileNameExt[MAX_NAME_LEN] = "";
-    status = splitPathByKey(logicalFileName,
-                            logicalFileNameNoExtension,
-                            sizeof(logicalFileNameNoExtension),
-                            logicalFileNameExt,
-                            sizeof(logicalFileNameExt),
-                            '.');
-    if (status < 0) {
-        const auto err{ERROR(status,
-                             (boost::format("splitPathByKey failed for [%s]") %
-                              dataObjInfoHead->objPath).str().c_str())};
-        irods::log(err);
-        return err.code();
-    }
-
-    if ( strlen( logicalFileNameExt ) <= 0 ) {
+    const fs::path obj_path{dataObjInfoHead->objPath};
+    const auto ext_view = obj_path.extension_view();
+    if (ext_view.size() <= 1) {
         return 0;
     }
 
     /* see if there's an entry in the catalog for this extension */
-    genQueryInp_t genQueryInp;
-    memset( &genQueryInp, 0, sizeof( genQueryInp ) );
-    addInxIval( &genQueryInp.selectInp, COL_TOKEN_NAME, 1 );
+    const auto q = gq2::builder::select({"TOKEN_NAME"})
+        .where(col("TOKEN_NAMESPACE") == "data_type" &&
+               col("TOKEN_VALUE2").like(fmt::format("%|{}|%", ext_view)))
+        .limit(1)
+        .build();
 
-    char condStr1[MAX_NAME_LEN];
-    snprintf( condStr1, sizeof( condStr1 ), "= 'data_type'" );
-    addInxVal( &genQueryInp.sqlCondInp,  COL_TOKEN_NAMESPACE, condStr1 );
-
-    char condStr2[MAX_NAME_LEN];
-    snprintf( condStr2, sizeof( condStr2 ), "like '%s|.%s|%s'", "%", logicalFileNameExt, "%" );
-    addInxVal( &genQueryInp.sqlCondInp,  COL_TOKEN_VALUE2, condStr2 );
-
-    genQueryInp.maxRows = 1;
-
-    genQueryOut_t *genQueryOut = NULL;
-    status = rsGenQuery( rei->rsComm, &genQueryInp, &genQueryOut );
-    if ( status != 0 || genQueryOut == NULL ) {
-		freeGenQueryOut( &genQueryOut );
-		clearGenQueryInp( &genQueryInp );
+    nlohmann::json rows;
+    const int ec = gq2::try_execute(*rei->rsComm, q, rows);
+    if (ec != 0 || rows.empty()) {
         return 0;
     }
 
-    rodsLog( LOG_DEBUG, "msiSetDataTypeFromExt: query status %d rowCnt=%d", status, genQueryOut->rowCnt );
-
-    if ( genQueryOut->rowCnt != 1 ) {
-        return 0;
-    }
-
-    status = svrCloseQueryOut(rei->rsComm, genQueryOut);
-    if (status < 0) {
-        const auto err{ERROR(status, "svrCloseQueryOut failed")};
-        irods::log(err);
-        return err.code();
-    }
+    rodsLog( LOG_DEBUG, "msiSetDataTypeFromExt: query status %d rowCnt=%zu", ec, rows.size() );
 
     /* register it */
-    keyValPair_t regParam;
-    memset( &regParam, 0, sizeof( regParam ) );
-    addKeyVal( &regParam, DATA_TYPE_KW,  genQueryOut->sqlResult[0].value );
+    keyValPair_t regParam{};
+    const irods::at_scope_exit clear_reg_param{[&regParam] { clearKeyVal(&regParam); }};
+    addKeyVal( &regParam, DATA_TYPE_KW, rows[0][0].get_ref<const std::string&>().c_str() );
 
     if ( strcmp( dataObjInfoHead->rescHier, "" ) ) {
         addKeyVal( &regParam, IN_PDMO_KW, dataObjInfoHead->rescHier );
     }
 
-    modDataObjMeta_t modDataObjMetaInp;
+    modDataObjMeta_t modDataObjMetaInp{};
     modDataObjMetaInp.dataObjInfo = dataObjInfoHead;
     modDataObjMetaInp.regParam = &regParam;
 
-    status = rsModDataObjMeta(rei->rsComm, &modDataObjMetaInp);
+    const int status = rsModDataObjMeta(rei->rsComm, &modDataObjMetaInp);
     if (status < 0) {
         irods::log(ERROR(status, "rsModDataObjMeta failed"));
     }
@@ -1359,6 +1312,7 @@ msiSetReplComment( msParam_t *inpParam1, msParam_t *inpParam2,
         return USER__NULL_INPUT_ERR;
     }
     memset( &regParam, 0, sizeof( regParam ) );
+    const irods::at_scope_exit clear_reg_param{[&regParam] { clearKeyVal(&regParam); }};
     addKeyVal( &regParam, DATA_COMMENTS_KW, dataCommentStr );
     if ( strcmp( dataObjInfo.rescHier, "" ) ) {
         addKeyVal( &regParam, IN_PDMO_KW, dataObjInfo.rescHier );

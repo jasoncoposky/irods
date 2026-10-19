@@ -12,7 +12,6 @@
 #  define NAMESPACE_IMPL server
 #  define RxComm         RsComm
 #  define rxGeneralAdmin rsGeneralAdmin
-#  define IRODS_QUERY_ENABLE_SERVER_SIDE_API
 // NOLINTEND(cppcoreguidelines-macro-usage)
 
 #  include "irods/rodsConnect.h"
@@ -27,12 +26,13 @@ struct RsComm;
 // NOLINTEND(cppcoreguidelines-macro-usage)
 
 #  include "irods/generalAdmin.h"
+#  include "irods/genquery2.h"
 
 struct RcComm;
 #endif // IRODS_ZONE_ADMINISTRATION_ENABLE_SERVER_SIDE_API
 
+#include "irods/genquery2_builder.hpp"
 #include "irods/irods_exception.hpp"
-#include "irods/irods_query.hpp"
 #include "irods/rodsErrorTable.h"
 #include "irods/zone_type.hpp"
 
@@ -187,8 +187,16 @@ namespace irods::experimental::administration
 #else
                 std::string local_zone_name;
 
-                for (auto&& row : irods::query{&_comm, "select ZONE_NAME where ZONE_TYPE = 'local'"}) {
-                    local_zone_name = std::move(row[0]);
+                namespace gq2 = irods::experimental::genquery2;
+                using gq2::builder::col;
+
+                const auto q = gq2::builder::select({"ZONE_NAME"})
+                    .where(col("ZONE_TYPE") == "local")
+                    .limit(1)
+                    .build();
+
+                for (const auto& row : gq2::execute(_comm, q)) {
+                    local_zone_name = row[0].get_ref<const std::string&>();
                 }
 #endif // IRODS_ZONE_ADMINISTRATION_ENABLE_SERVER_SIDE_API
 

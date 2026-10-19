@@ -15,8 +15,8 @@
 #include "irods/icatHighLevelRoutines.hpp"
 #include "irods/rcMisc.h"
 #include "irods/modAVUMetadata.h"
-#include "irods/genQuery.h"
-#include "irods/rsGenQuery.hpp"
+#include "irods/genquery2_builder.hpp"
+#include "irods/rs_genquery2.hpp"
 #include "irods/rsModAVUMetadata.hpp"
 #include "irods/private/re/reFuncDefs.hpp"
 #include "irods/Hasher.hpp"
@@ -695,32 +695,27 @@ int availableRules() {
 
 
 int readICatUserInfo( char *userName, char *attr, char userInfo[MAX_NAME_LEN], rsComm_t *rsComm ) {
-    int status;
-    genQueryInp_t genQueryInp;
-    genQueryOut_t *genQueryOut = NULL;
-    char condstr[MAX_NAME_LEN];
-    memset( &genQueryInp, 0, sizeof( genQueryInp ) );
-    genQueryInp.maxRows = MAX_SQL_ROWS;
-
-    snprintf( condstr, MAX_NAME_LEN, "= '%s'", userName );
-    addInxVal( &genQueryInp.sqlCondInp, COL_USER_NAME, condstr );
-    snprintf( condstr, MAX_NAME_LEN, "= '%s'", attr );
-    addInxVal( &genQueryInp.sqlCondInp, COL_META_USER_ATTR_NAME, condstr );
-
-    addInxIval( &genQueryInp.selectInp, COL_META_USER_ATTR_VALUE, 1 );
-
-    status = rsGenQuery( rsComm, &genQueryInp, &genQueryOut );
     userInfo[0] = '\0';
-    if ( status >= 0 && genQueryOut->rowCnt > 0 ) {
-        if ( sqlResult_t *r = getSqlResultByInx( genQueryOut, COL_META_USER_ATTR_VALUE ) ) {
-            rstrcpy( userInfo, &r->value[0], MAX_NAME_LEN );
-        }
-        genQueryInp.continueInx =  genQueryOut->continueInx;
-    }
-    clearGenQueryInp( &genQueryInp );
-    freeGenQueryOut( &genQueryOut );
-    return status;
 
+    namespace gq2 = irods::experimental::genquery2;
+    using gq2::builder::col;
+
+    const auto q = gq2::builder::select({"META_USER_ATTR_VALUE"})
+        .where(col("USER_NAME") == userName &&
+               col("META_USER_ATTR_NAME") == attr)
+        .limit(1)
+        .build();
+
+    nlohmann::json rows;
+    if (const int ec = gq2::try_execute(*rsComm, q, rows); ec < 0) {
+        return ec;
+    }
+    if (rows.empty()) {
+        return CAT_NO_ROWS_FOUND;
+    }
+
+    rstrcpy( userInfo, rows[0][0].get_ref<const std::string&>().c_str(), MAX_NAME_LEN );
+    return 0;
 }
 
 int writeICatUserInfo( char *userName, char *attr, char *value, rsComm_t *rsComm ) {
