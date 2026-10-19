@@ -4,11 +4,13 @@
 #include "irods/rodsErrorTable.h"
 #include "irods/rodsLog.h"
 #include "irods/miscUtil.h"
+#include "irods/genquery2_builder.hpp"
 #include "irods/rcGlobalExtern.h"
 #include "irods/rcMisc.h"
 
 #include <boost/filesystem/operations.hpp>
 #include <boost/filesystem/convenience.hpp>
+#include <fmt/format.h>
 
 using namespace boost::filesystem;
 
@@ -260,78 +262,54 @@ statPhysFile( rcComm_t *conn, genQueryOut_t *genQueryOut2 ) {
 
 int
 chkObjExist( rcComm_t *conn, const char *inpPath, const char *hostname ) {
-    int status;
-    genQueryInp_t genQueryInp;
-    genQueryOut_t *genQueryOut = NULL;
-    char condStr[MAX_NAME_LEN];
+    namespace gq2 = irods::experimental::genquery2;
+    using gq2::builder::col;
 
-    memset( &genQueryInp, 0, sizeof( genQueryInp ) );
-    addInxIval( &genQueryInp.selectInp, COL_D_DATA_ID, 1 );
-    genQueryInp.maxRows = 0;
-    /*
-     Use the AUTO_CLOSE option to close down the statement after the
-     query, avoiding later 'too many concurrent statements' errors (and
-     CAT_SQL_ERR: -806000) later.  This could also be done by asking for 2
-     rows (maxRows), but the rows are not needed, just the status.
-     This may also fix a segfault error which might be related.
-     */
-    genQueryInp.options = AUTO_CLOSE;
+    const auto q = gq2::builder::select({"DATA_ID"})
+        .where(col("DATA_PATH") == inpPath &&
+               (col("RESC_LOC").like(fmt::format("{}%", hostname)) || col("RESC_LOC") == hostname))
+        .limit(1)
+        .build();
 
-    snprintf( condStr, MAX_NAME_LEN, "='%s'", inpPath );
-    addInxVal( &genQueryInp.sqlCondInp, COL_D_DATA_PATH, condStr );
-    snprintf( condStr, MAX_NAME_LEN, "like '%s%%' || ='%s'", hostname, hostname );
-    addInxVal( &genQueryInp.sqlCondInp, COL_R_LOC, condStr );
-
-    status =  rcGenQuery( conn, &genQueryInp, &genQueryOut );
-    if ( status == CAT_NO_ROWS_FOUND ) {
+    nlohmann::json rows;
+    const int status = gq2::try_execute(*conn, q, rows);
+    if ( status < 0 ) {
+        return status;
+    }
+    if ( rows.empty() ) {
         printf( "%s is not registered in iRODS\n", inpPath );
+        return CAT_NO_ROWS_FOUND;
     }
 
-    clearGenQueryInp( &genQueryInp );
-    freeGenQueryOut( &genQueryOut );
-
-    return status;
-
+    return 0;
 }
 
 int
 checkIsMount( rcComm_t *conn, const char *inpPath ) {
-    int i, minLen, status, status1;
-    genQueryInp_t genQueryInp;
-    genQueryOut_t *genQueryOut = NULL;
-    char condStr[MAX_NAME_LEN], *dirMPath;
+    namespace gq2 = irods::experimental::genquery2;
+    using gq2::builder::col;
 
-    memset( &genQueryInp, 0, sizeof( genQueryInp ) );
-    addInxIval( &genQueryInp.selectInp, COL_COLL_INFO1, 1 );
-    genQueryInp.maxRows = MAX_SQL_ROWS;
+    const auto q = gq2::builder::select({"COLL_INFO_1"})
+        .where(col("COLL_TYPE") == "mountPoint")
+        .build();
 
-    snprintf( condStr, MAX_NAME_LEN, "='%s'", "mountPoint" );
-    addInxVal( &genQueryInp.sqlCondInp, COL_COLL_TYPE, condStr );
-
-    status1 = rcGenQuery( conn, &genQueryInp, &genQueryOut );
-    if ( status1 == CAT_NO_ROWS_FOUND ) {
-        status = 0;  /* there is no mounted collection, so no potential problem */
+    nlohmann::json rows;
+    if (gq2::try_execute(*conn, q, rows) < 0 || rows.empty()) {
+        return 0; /* there is no mounted collection, so no potential problem */
     }
-    else {  /* check if inpPath is part of one of the mounted collections */
-        status = 0;
-        for ( i = 0; i < genQueryOut->rowCnt; i++ ) {
-            dirMPath = genQueryOut->sqlResult[0].value;
-            dirMPath += i * genQueryOut->sqlResult[0].len;
-            if ( strlen( dirMPath ) <= strlen( inpPath ) ) {
-                minLen = strlen( dirMPath );
-            }
-            else {
-                minLen = strlen( inpPath );
-            }
-            if ( strncmp( dirMPath, inpPath, minLen ) == 0 ) {
-                status = -1;
-            }
+
+    int status = 0;
+    const std::string_view inp_view{inpPath};
+    for (const auto& row : rows) {
+        if (row.empty()) {
+            continue;
+        }
+        const auto& dir_mpath = row[0].get_ref<const std::string&>();
+        const auto min_len = std::min(dir_mpath.size(), inp_view.size());
+        if (std::strncmp(dir_mpath.data(), inp_view.data(), min_len) == 0) {
+            status = -1;
         }
     }
 
-    clearGenQueryInp( &genQueryInp );
-    freeGenQueryOut( &genQueryOut );
-
     return status;
-
 }

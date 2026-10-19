@@ -585,72 +585,38 @@ printSpecLsLong( char *objPath, char *ownerName, char *objSize,
 
 int
 printDataAcl( rcComm_t *conn, char *dataId ) {
-    genQueryOut_t *genQueryOut = NULL;
-    int status;
-    int i;
-    sqlResult_t *userName, *userZone, *userType, *dataAccess;
-    char *userNameStr, *userZoneStr, *dataAccessStr;
-
-    status = queryDataObjAcl( conn, dataId, zoneHint, &genQueryOut );
+    namespace gq2 = irods::experimental::genquery2;
+    using gq2::builder::col;
 
     printf( "        ACL - " );
 
-    if ( status < 0 ) {
+    const auto q = gq2::builder::select({"DATA_ACCESS_USER_NAME", "DATA_ACCESS_USER_ZONE", "DATA_ACCESS_NAME", "DATA_ACCESS_USER_TYPE"})
+        .where(col("DATA_ID") == dataId)
+        .build();
+
+    nlohmann::json rows;
+    if (const int status = gq2::try_execute(*conn, q, rows, zoneHint); status < 0) {
         printf( "\n" );
         return status;
     }
 
-    if ( ( userName = getSqlResultByInx( genQueryOut, COL_USER_NAME ) ) == NULL ) {
-        rodsLog( LOG_ERROR,
-                 "printDataAcl: getSqlResultByInx for COL_USER_NAME failed" );
-        return UNMATCHED_KEY_OR_INDEX;
-    }
-
-    if ( ( userZone = getSqlResultByInx( genQueryOut, COL_USER_ZONE ) ) == NULL ) {
-        rodsLog( LOG_ERROR,
-                 "printDataAcl: getSqlResultByInx for COL_USER_ZONE failed" );
-        return UNMATCHED_KEY_OR_INDEX;
-    }
-
-    if ( ( userType = getSqlResultByInx( genQueryOut, COL_USER_TYPE ) ) == NULL ) {
-        rodsLog( LOG_ERROR,
-                 "printDataAcl: getSqlResultByInx for COL_USER_TYPE failed" );
-        return UNMATCHED_KEY_OR_INDEX;
-    }
-
-    if ( ( dataAccess = getSqlResultByInx( genQueryOut, COL_DATA_ACCESS_NAME ) )
-            == NULL ) {
-        rodsLog( LOG_ERROR,
-                 "printDataAcl: getSqlResultByInx for COL_DATA_ACCESS_NAME failed" );
-        return UNMATCHED_KEY_OR_INDEX;
-    }
-
-    char group_prefix[3];
-
-    for ( i = 0; i < genQueryOut->rowCnt; i++ ) {
-        userNameStr = &userName->value[userName->len * i];
-        userZoneStr = &userZone->value[userZone->len * i];
-        dataAccessStr = &dataAccess->value[dataAccess->len * i];
-
-        const auto include_prefix = (std::strncmp(&userType->value[userType->len * i], "rodsgroup", 9) == 0);
-        std::strcpy(group_prefix, include_prefix ? "g:" : "");
-        printf( "%s%s#%s:%s   ", group_prefix, userNameStr, userZoneStr, dataAccessStr );
+    for (const auto& row : rows) {
+        const auto& user_name = row[0].get_ref<const std::string&>();
+        const auto& user_zone = row[1].get_ref<const std::string&>();
+        const auto& access_name = row[2].get_ref<const std::string&>();
+        const auto& user_type = row[3].get_ref<const std::string&>();
+        const char* group_prefix = (user_type == "rodsgroup") ? "g:" : "";
+        printf( "%s%s#%s:%s   ", group_prefix, user_name.c_str(), user_zone.c_str(), access_name.c_str() );
     }
 
     printf( "\n" );
-
-    freeGenQueryOut( &genQueryOut );
-
-    return status;
+    return 0;
 }
 
 int
 printCollAcl( rcComm_t *conn, char *collName ) {
     genQueryOut_t *genQueryOut = NULL;
     int status;
-    int i;
-    sqlResult_t *userName, *userZone, *dataAccess ;
-    char *userNameStr, *userZoneStr, *dataAccessStr;
 
     printf( "        ACL - " );
     /* First try a specific-query.  If this is defined, it should be
@@ -686,81 +652,58 @@ printCollAcl( rcComm_t *conn, char *collName ) {
         return status;
     }
 
-    status = queryCollAcl( conn, collName, zoneHint, &genQueryOut );
+    namespace gq2 = irods::experimental::genquery2;
+    using gq2::builder::col;
 
-    if ( status < 0 ) {
+    const auto q = gq2::builder::select({"COLL_ACCESS_USER_NAME", "COLL_ACCESS_USER_ZONE", "COLL_ACCESS_NAME"})
+        .where(col("COLL_NAME") == collName)
+        .build();
+
+    nlohmann::json rows;
+    if (status = gq2::try_execute(*conn, q, rows, zoneHint); status < 0) {
         printf( "\n" );
-        freeGenQueryOut( &genQueryOut );
         return status;
     }
 
-    if ( ( userName = getSqlResultByInx( genQueryOut, COL_COLL_USER_NAME ) ) == NULL ) {
-        rodsLog( LOG_ERROR,
-                 "printCollAcl: getSqlResultByInx for COL_COLL_USER_NAME failed" );
-        freeGenQueryOut( &genQueryOut );
-        return UNMATCHED_KEY_OR_INDEX;
-    }
-    if ( ( userZone = getSqlResultByInx( genQueryOut, COL_COLL_USER_ZONE ) ) == NULL ) {
-        rodsLog( LOG_ERROR,
-                 "printCollAcl: getSqlResultByInx for COL_COLL_USER_ZONE failed" );
-        freeGenQueryOut( &genQueryOut );
-        return UNMATCHED_KEY_OR_INDEX;
-    }
-
-    if ( ( dataAccess = getSqlResultByInx( genQueryOut, COL_COLL_ACCESS_NAME ) ) == NULL ) {
-        rodsLog( LOG_ERROR,
-                 "printCollAcl: getSqlResultByInx for COL_COLL_ACCESS_NAME failed" );
-        freeGenQueryOut( &genQueryOut );
-        return UNMATCHED_KEY_OR_INDEX;
-    }
-
-    for ( i = 0; i < genQueryOut->rowCnt; i++ ) {
-        userNameStr = &userName->value[userName->len * i];
-        userZoneStr = &userZone->value[userZone->len * i];
-        dataAccessStr = &dataAccess->value[dataAccess->len * i];
-        printf( "%s#%s:%s   ",  userNameStr, userZoneStr, dataAccessStr );
+    for (const auto& row : rows) {
+        const auto& user_name = row[0].get_ref<const std::string&>();
+        const auto& user_zone = row[1].get_ref<const std::string&>();
+        const auto& access_name = row[2].get_ref<const std::string&>();
+        printf( "%s#%s:%s   ", user_name.c_str(), user_zone.c_str(), access_name.c_str() );
     }
 
     printf( "\n" );
-
-    freeGenQueryOut( &genQueryOut );
-
-    return status;
+    return 0;
 }
 
 int
 printCollInheritance( rcComm_t *conn, char *collName ) {
-    genQueryOut_t *genQueryOut = NULL;
-    int status;
-    sqlResult_t *inheritResult;
-    char *inheritStr;
+    namespace gq2 = irods::experimental::genquery2;
+    using gq2::builder::col;
 
-    status = queryCollInheritance( conn, collName, &genQueryOut );
+    const auto q = gq2::builder::select({"COLL_INHERITANCE"})
+        .where(col("COLL_NAME") == collName)
+        .limit(1)
+        .build();
 
-    if ( status < 0 ) {
-        freeGenQueryOut( &genQueryOut );
+    nlohmann::json rows;
+    if (const int status = gq2::try_execute(*conn, q, rows, collName); status < 0) {
         return status;
     }
-
-    if ( ( inheritResult = getSqlResultByInx( genQueryOut, COL_COLL_INHERITANCE ) ) == NULL ) {
-        rodsLog( LOG_ERROR,
-                 "printCollInheritance: getSqlResultByInx for COL_COLL_INHERITANCE failed" );
-        freeGenQueryOut( &genQueryOut );
-        return UNMATCHED_KEY_OR_INDEX;
+    if (rows.empty() || rows[0].empty()) {
+        return CAT_NO_ROWS_FOUND;
     }
 
-    inheritStr = &inheritResult->value[0];
+    const auto& inherit_str = rows[0][0].get_ref<const std::string&>();
     printf( "        Inheritance - " );
-    if ( *inheritStr == '1' ) {
+    if ( !inherit_str.empty() && inherit_str[0] == '1' ) {
         printf( "Enabled\n" );
     }
     else {
         printf( "Disabled\n" );
     }
 
-    freeGenQueryOut( &genQueryOut );
-
-    return status;
+    return 0;
 }
 
 void
@@ -795,74 +738,34 @@ printCollOrDir( char *myName, objType_t myType, rodsArguments_t *rodsArgs,
 
 int
 lsSubfilesInBundle( rcComm_t *conn, char *srcPath ) {
-    int i, status;
-    genQueryOut_t *genQueryOut = NULL;
-    genQueryInp_t genQueryInp;
-    char condStr[MAX_NAME_LEN];
-    sqlResult_t *dataName, *collection, *dataSize;
-    char *dataNameStr, *collectionStr, *dataSizeStr;
-    int continueInx = 1;
+    namespace gq2 = irods::experimental::genquery2;
+    using gq2::builder::col;
 
     fprintf( stdout, "Bundle file: %s\n", srcPath );
     fprintf( stdout, "Subfiles:\n" );
-    std::memset(&genQueryInp, 0, sizeof(genQueryInp));
-    genQueryInp.maxRows = MAX_SQL_ROWS;
 
-    snprintf( condStr, MAX_NAME_LEN, "='%s'", srcPath );
-    addInxVal( &genQueryInp.sqlCondInp, COL_D_DATA_PATH, condStr );
-    snprintf( condStr, MAX_NAME_LEN, "='%s'", BUNDLE_RESC_CLASS );
-    addInxVal( &genQueryInp.sqlCondInp, COL_R_CLASS_NAME, condStr );
-    addKeyVal( &genQueryInp.condInput, ZONE_KW, srcPath );
+    const auto q = gq2::builder::select({"COLL_NAME", "DATA_NAME", "DATA_SIZE"})
+        .where(col("DATA_PATH") == srcPath &&
+               col("RESC_CLASS_NAME") == BUNDLE_RESC_CLASS)
+        .build();
 
-    addInxIval( &genQueryInp.selectInp, COL_COLL_NAME, 1 );
-    addInxIval( &genQueryInp.selectInp, COL_DATA_NAME, 1 );
-    addInxIval( &genQueryInp.selectInp, COL_DATA_SIZE, 1 );
-
-    while ( continueInx > 0 ) {
-        status =  rcGenQuery( conn, &genQueryInp, &genQueryOut );
-
-        if ( status < 0 ) {
-            if ( status != CAT_NO_ROWS_FOUND ) {
-                rodsLogError( LOG_ERROR, status,
-                              "lsSubfilesInBundle: rsGenQuery error for %s",
-                              srcPath );
-            }
-            clearGenQueryInp( &genQueryInp );
-            return status;
+    nlohmann::json rows;
+    if (const int status = gq2::try_execute(*conn, q, rows, srcPath); status < 0) {
+        if ( status != CAT_NO_ROWS_FOUND ) {
+            rodsLogError( LOG_ERROR, status,
+                          "lsSubfilesInBundle: rsGenQuery error for %s",
+                          srcPath );
         }
-
-        if ( ( collection = getSqlResultByInx( genQueryOut, COL_COLL_NAME ) ) ==
-                NULL ) {
-            rodsLog( LOG_ERROR,
-                     "lsSubfilesInBundle: getSqlResultByInx for COL_COLL_NAME failed" );
-            return UNMATCHED_KEY_OR_INDEX;
-        }
-        if ( ( dataName = getSqlResultByInx( genQueryOut, COL_DATA_NAME ) ) ==
-                NULL ) {
-            rodsLog( LOG_ERROR,
-                     "lsSubfilesInBundle: getSqlResultByInx for COL_DATA_NAME failed" );
-            return UNMATCHED_KEY_OR_INDEX;
-        }
-        if ( ( dataSize = getSqlResultByInx( genQueryOut, COL_DATA_SIZE ) ) ==
-                NULL ) {
-            rodsLog( LOG_ERROR,
-                     "lsSubfilesInBundle: getSqlResultByInx for COL_DATA_SIZE failed" );
-            return UNMATCHED_KEY_OR_INDEX;
-        }
-
-        for ( i = 0; i < genQueryOut->rowCnt; i++ ) {
-            collectionStr = &collection->value[collection->len * i];
-            dataNameStr = &dataName->value[dataName->len * i];
-            dataSizeStr = &dataSize->value[dataSize->len * i];
-            fprintf( stdout, "    %s/%s    %s\n",
-                     collectionStr, dataNameStr, dataSizeStr );
-        }
-
-        continueInx = genQueryInp.continueInx =
-                          genQueryOut->continueInx;
-        freeGenQueryOut( &genQueryOut );
+        return status;
     }
-    clearGenQueryInp( &genQueryInp );
-    return status;
+
+    for (const auto& row : rows) {
+        fprintf( stdout, "    %s/%s    %s\n",
+                 row[0].get_ref<const std::string&>().c_str(),
+                 row[1].get_ref<const std::string&>().c_str(),
+                 row[2].get_ref<const std::string&>().c_str() );
+    }
+
+    return 0;
 }
 

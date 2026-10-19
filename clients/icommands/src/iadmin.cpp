@@ -9,7 +9,7 @@
 #include <irods/get_logical_quota.h>
 #include <irods/key_value_proxy.hpp>
 #include <irods/parseCommandLine.h>
-#include <irods/query_builder.hpp>
+#include <irods/genquery2_builder.hpp>
 #include <irods/rodsClient.h>
 #include <irods/rodsError.h>
 #include <irods/rodsErrorTable.h>
@@ -476,21 +476,23 @@ auto print_genquery_result(std::string_view _label, std::string_view _value) -> 
     }
 } // print_genquery_result
 
-auto print_genquery_results(const std::string_view _query_string, const std::vector<const char*>& _labels) -> void
+auto print_genquery_results(const irods::experimental::genquery2::select& _query, const std::vector<const char*>& _labels) -> void
 {
-    auto q = irods::query(Conn, _query_string.data());
-    if (q.empty()) {
+    namespace gq2 = irods::experimental::genquery2;
+
+    const auto rows = gq2::execute(*Conn, _query);
+    if (rows.empty()) {
         fmt::print("No rows found\n");
         return;
     }
 
-    for (auto&& result : q) {
+    for (const auto& result : rows) {
         if (result.size() != _labels.size()) {
             THROW(SYS_INVALID_INPUT_PARAM, "Selected columns and labels must be a one-to-one mapping");
         }
 
         for (std::size_t l = 0; l < _labels.size(); ++l) {
-            print_genquery_result(_labels.at(l), result.at(l));
+            print_genquery_result(_labels.at(l), result.at(l).get_ref<const std::string&>());
         }
     }
 } // print_genquery_results
@@ -503,19 +505,25 @@ auto set_local_zone_global() -> int
     }
 
     try {
-        const auto q = irods::query(Conn, "select ZONE_NAME where ZONE_TYPE = 'local'");
-        if (q.empty()) {
+        namespace gq2 = irods::experimental::genquery2;
+
+        const auto q = gq2::builder::select({"ZONE_NAME"})
+            .where(gq2::builder::col("ZONE_TYPE") == "local")
+            .build();
+
+        const auto rows = gq2::execute(*Conn, q);
+        if (rows.empty()) {
             fmt::print(stderr, "Error getting local zone\n");
             return 1;
         }
 
-        const auto& local_zone_name = q.front();
+        const auto& local_zone_name = rows.front();
         if (local_zone_name.empty()) {
             fmt::print(stderr, "Error getting local zone\n");
             return 2;
         }
 
-        std::strncpy(localZone, q.front().at(0).data(), BIG_STR);
+        std::strncpy(localZone, local_zone_name.at(0).get_ref<const std::string&>().data(), BIG_STR);
     }
     catch (const irods::exception& e) {
         fmt::print(stderr, "Error getting local zone\n{}\n", e.client_display_what());
@@ -531,37 +539,28 @@ auto set_local_zone_global() -> int
 auto show_token(const char* _token_namespace = nullptr, const char* _token = nullptr) -> int
 {
     try {
+        namespace gq2 = irods::experimental::genquery2;
+
         constexpr const char* default_namespace = "token_namespace";
         const char* token_namespace =
             !_token_namespace || std::string_view{_token_namespace}.empty() ? default_namespace : _token_namespace;
         if (!_token || std::string_view{_token}.empty()) {
-            const auto list_token_namespaces =
-                fmt::format(fmt::runtime("select TOKEN_NAME where TOKEN_NAMESPACE = '{}'"), token_namespace);
-            const auto query_string = fmt::format(fmt::runtime(list_token_namespaces), _token_namespace);
+            const auto q = gq2::builder::select({"TOKEN_NAME"})
+                .where(gq2::builder::col("TOKEN_NAMESPACE") == token_namespace)
+                .build();
 
-            auto q = irods::query(Conn, query_string);
-            if (q.empty()) {
+            const auto rows = gq2::execute(*Conn, q);
+            if (rows.empty()) {
                 fmt::print("No rows found");
                 return 0;
             }
 
-            for (auto&& result : q) {
-                fmt::print("{}\n", result.at(0));
+            for (const auto& result : rows) {
+                fmt::print("{}\n", result.at(0).get_ref<const std::string&>());
             }
 
             return 0;
         }
-
-        constexpr std::array columns{
-            "TOKEN_NAMESPACE",
-            "TOKEN_ID",
-            "TOKEN_NAME",
-            "TOKEN_VALUE",
-            "TOKEN_VALUE2",
-            "TOKEN_VALUE3",
-            "TOKEN_COMMENT",
-            "TOKEN_CREATE_TIME",
-            "TOKEN_MODIFY_TIME"};
 
         static const std::vector labels{
             "token_namespace",
@@ -574,11 +573,22 @@ auto show_token(const char* _token_namespace = nullptr, const char* _token = nul
             "create_ts",
             "modify_ts"};
 
-        const auto query_string_template = fmt::format(
-            FMT_COMPILE("select {} where TOKEN_NAMESPACE = '{{}}' and TOKEN_NAME like '{{}}'"),
-            fmt::join(columns, ", "));
+        const auto q = gq2::builder::select({
+                "TOKEN_NAMESPACE",
+                "TOKEN_ID",
+                "TOKEN_NAME",
+                "TOKEN_VALUE",
+                "TOKEN_VALUE2",
+                "TOKEN_VALUE3",
+                "TOKEN_COMMENT",
+                "TOKEN_CREATE_TIME",
+                "TOKEN_MODIFY_TIME"
+            })
+            .where(gq2::builder::col("TOKEN_NAMESPACE") == token_namespace &&
+                   gq2::builder::col("TOKEN_NAME").like(_token))
+            .build();
 
-        print_genquery_results(fmt::format(fmt::runtime(query_string_template), token_namespace, _token), labels);
+        print_genquery_results(q, labels);
     }
     catch (const irods::exception& e) {
         fmt::print(stderr, fmt::runtime(e.client_display_what()));
@@ -594,36 +604,41 @@ auto show_token(const char* _token_namespace = nullptr, const char* _token = nul
 auto show_group(const char* _group = nullptr) -> int
 {
     try {
+        namespace gq2 = irods::experimental::genquery2;
+
         if (_group && !std::string_view{_group}.empty()) {
             fmt::print("Members of group {}:\n", _group);
 
-            constexpr const char* list_group_members =
-                "select USER_NAME, USER_ZONE where USER_GROUP_NAME = '{}' and USER_TYPE != 'rodsgroup'";
-            const auto query_string = fmt::format(fmt::runtime(list_group_members), _group);
+            const auto q = gq2::builder::select({"USER_NAME", "USER_ZONE"})
+                .where(gq2::builder::col("USER_GROUP_NAME") == _group &&
+                       gq2::builder::col("USER_TYPE") != "rodsgroup")
+                .build();
 
-            auto q = irods::query(Conn, query_string);
-            if (q.empty()) {
+            const auto rows = gq2::execute(*Conn, q);
+            if (rows.empty()) {
                 fmt::print("No rows found\n");
                 return 0;
             }
 
-            for (auto&& result : q) {
-                const auto& user = result.at(0);
-                const auto& zone = result.at(1);
+            for (const auto& result : rows) {
+                const auto& user = result.at(0).get_ref<const std::string&>();
+                const auto& zone = result.at(1).get_ref<const std::string&>();
                 fmt::print(fmt::runtime("{}#{}\n"), user, zone);
             }
         }
         else {
-            constexpr const char* query_string = "select USER_NAME where USER_TYPE = 'rodsgroup'";
+            const auto q = gq2::builder::select({"USER_NAME"})
+                .where(gq2::builder::col("USER_TYPE") == "rodsgroup")
+                .build();
 
-            auto q = irods::query(Conn, query_string);
-            if (q.empty()) {
+            const auto rows = gq2::execute(*Conn, q);
+            if (rows.empty()) {
                 fmt::print("No rows found\n");
                 return 0;
             }
 
-            for (auto&& result : q) {
-                fmt::print("{}\n", result.at(0));
+            for (const auto& result : rows) {
+                fmt::print("{}\n", result.at(0).get_ref<const std::string&>());
             }
         }
 
@@ -643,38 +658,22 @@ auto show_group(const char* _group = nullptr) -> int
 auto show_resource(const char* _resc = nullptr) -> int
 {
     try {
+        namespace gq2 = irods::experimental::genquery2;
+
         if (!_resc || std::string_view{_resc}.empty()) {
-            auto q = irods::query(Conn, "select RESC_NAME");
-            if (q.empty()) {
+            const auto q = gq2::builder::select({"RESC_NAME"}).build();
+            const auto rows = gq2::execute(*Conn, q);
+            if (rows.empty()) {
                 fmt::print("No rows found\n");
                 return 0;
             }
 
-            for (auto&& result : q) {
-                fmt::print(fmt::runtime("{}\n"), result.at(0));
+            for (const auto& result : rows) {
+                fmt::print(fmt::runtime("{}\n"), result.at(0).get_ref<const std::string&>());
             }
 
             return 0;
         }
-
-        constexpr std::array columns{
-            "RESC_ID",
-            "RESC_NAME",
-            "RESC_ZONE_NAME",
-            "RESC_TYPE_NAME",
-            "RESC_LOC",
-            "RESC_VAULT_PATH",
-            "RESC_FREE_SPACE",
-            "RESC_FREE_SPACE_TIME",
-            "RESC_INFO",
-            "RESC_COMMENT",
-            "RESC_STATUS",
-            "RESC_CREATE_TIME",
-            "RESC_MODIFY_TIME",
-            "RESC_CHILDREN",
-            "RESC_CONTEXT",
-            "RESC_PARENT",
-            "RESC_PARENT_CONTEXT"};
 
         static const std::vector labels{
             "resc_id",
@@ -695,10 +694,29 @@ auto show_resource(const char* _resc = nullptr) -> int
             "resc_parent",
             "resc_parent_context"};
 
-        const auto query_string_template =
-            fmt::format(FMT_COMPILE("select {} where RESC_NAME = '{{}}'"), fmt::join(columns, ", "));
+        const auto q = gq2::builder::select({
+                "RESC_ID",
+                "RESC_NAME",
+                "RESC_ZONE_NAME",
+                "RESC_TYPE_NAME",
+                "RESC_LOC",
+                "RESC_VAULT_PATH",
+                "RESC_FREE_SPACE",
+                "RESC_FREE_SPACE_TIME",
+                "RESC_INFO",
+                "RESC_COMMENT",
+                "RESC_STATUS",
+                "RESC_CREATE_TIME",
+                "RESC_MODIFY_TIME",
+                "RESC_CHILDREN",
+                "RESC_CONTEXT",
+                "RESC_PARENT",
+                "RESC_PARENT_CONTEXT"
+            })
+            .where(gq2::builder::col("RESC_NAME") == _resc)
+            .build();
 
-        print_genquery_results(fmt::format(fmt::runtime(query_string_template), _resc), labels);
+        print_genquery_results(q, labels);
     }
     catch (const irods::exception& e) {
         fmt::print(stderr, fmt::runtime(e.client_display_what()));
@@ -714,36 +732,39 @@ auto show_resource(const char* _resc = nullptr) -> int
 auto show_zone(const char* _zone = nullptr) -> int
 {
     try {
+        namespace gq2 = irods::experimental::genquery2;
+
         if (!_zone || std::string_view{_zone}.empty()) {
-            auto q = irods::query(Conn, "select ZONE_NAME");
-            if (q.empty()) {
+            const auto q = gq2::builder::select({"ZONE_NAME"}).build();
+            const auto rows = gq2::execute(*Conn, q);
+            if (rows.empty()) {
                 fmt::print("No rows found\n");
                 return 0;
             }
 
-            for (auto&& result : q) {
-                fmt::print(fmt::runtime("{}\n"), result.at(0));
+            for (const auto& result : rows) {
+                fmt::print(fmt::runtime("{}\n"), result.at(0).get_ref<const std::string&>());
             }
 
             return 0;
         }
 
-        constexpr std::array columns{
-            "ZONE_ID",
-            "ZONE_NAME",
-            "ZONE_TYPE",
-            "ZONE_CONNECTION",
-            "ZONE_COMMENT",
-            "ZONE_CREATE_TIME",
-            "ZONE_MODIFY_TIME"};
-
         static const std::vector labels{
             "zone_id", "zone_name", "zone_type_name", "zone_conn_string", "r_comment", "create_ts", "modify_ts"};
 
-        const auto query_string_template =
-            fmt::format(FMT_COMPILE("select {} where ZONE_NAME = '{{}}'"), fmt::join(columns, ", "));
+        const auto q = gq2::builder::select({
+                "ZONE_ID",
+                "ZONE_NAME",
+                "ZONE_TYPE",
+                "ZONE_CONNECTION",
+                "ZONE_COMMENT",
+                "ZONE_CREATE_TIME",
+                "ZONE_MODIFY_TIME"
+            })
+            .where(gq2::builder::col("ZONE_NAME") == _zone)
+            .build();
 
-        print_genquery_results(fmt::format(fmt::runtime(query_string_template), _zone), labels);
+        print_genquery_results(q, labels);
     }
     catch (const irods::exception& e) {
         fmt::print(stderr, fmt::runtime(e.client_display_what()));
@@ -759,42 +780,44 @@ auto show_zone(const char* _zone = nullptr) -> int
 auto show_user(const char* _user, const char* _zone = nullptr) -> int
 {
     try {
-        if (!_user || std::string_view{_user}.empty()) {
-            constexpr const char* query_string = "select USER_NAME, USER_ZONE where USER_TYPE != 'rodsgroup'";
+        namespace gq2 = irods::experimental::genquery2;
 
-            for (auto&& result : irods::query(Conn, query_string)) {
-                const auto& user = result.at(0);
-                const auto& zone = result.at(1);
+        if (!_user || std::string_view{_user}.empty()) {
+            const auto q = gq2::builder::select({"USER_NAME", "USER_ZONE"})
+                .where(gq2::builder::col("USER_TYPE") != "rodsgroup")
+                .build();
+
+            for (const auto& result : gq2::execute(*Conn, q)) {
+                const auto& user = result.at(0).get_ref<const std::string&>();
+                const auto& zone = result.at(1).get_ref<const std::string&>();
                 fmt::print(fmt::runtime("{}#{}\n"), user, zone);
             }
 
             return 0;
         }
 
-        constexpr std::array columns{
-            "USER_ID",
-            "USER_NAME",
-            "USER_TYPE",
-            "USER_ZONE",
-            "USER_INFO",
-            "USER_COMMENT",
-            "USER_CREATE_TIME",
-            "USER_MODIFY_TIME"};
-
         static const std::vector labels{
             "user_id", "user_name", "user_type_name", "zone_name", "user_info", "r_comment", "create_ts", "modify_ts"};
 
-        static const auto user_query =
-            fmt::format(FMT_COMPILE("select {} where USER_NAME = '{{}}'"), fmt::join(columns, ", "));
+        auto b = gq2::builder::select({
+                "USER_ID",
+                "USER_NAME",
+                "USER_TYPE",
+                "USER_ZONE",
+                "USER_INFO",
+                "USER_COMMENT",
+                "USER_CREATE_TIME",
+                "USER_MODIFY_TIME"
+            });
 
-        static const auto user_query_with_zone = fmt::format(
-            FMT_COMPILE("select {} where USER_NAME = '{{}}' and USER_ZONE = '{{}}'"), fmt::join(columns, ", "));
+        if (_zone && !std::string_view{_zone}.empty()) {
+            b.where(gq2::builder::col("USER_NAME") == _user && gq2::builder::col("USER_ZONE") == _zone);
+        }
+        else {
+            b.where(gq2::builder::col("USER_NAME") == _user);
+        }
 
-        const auto query_string = _zone && !std::string_view{_zone}.empty()
-                                      ? fmt::format(fmt::runtime(user_query_with_zone), _user, _zone)
-                                      : fmt::format(fmt::runtime(user_query), _user);
-
-        print_genquery_results(query_string, labels);
+        print_genquery_results(b.build(), labels);
     }
     catch (const irods::exception& e) {
         fmt::print(stderr, fmt::runtime(e.client_display_what()));
@@ -810,33 +833,29 @@ auto show_user(const char* _user, const char* _zone = nullptr) -> int
 auto show_user_auth(const char* _user, const char* _zone = nullptr) -> int
 {
     try {
-        std::string query_string;
+        namespace gq2 = irods::experimental::genquery2;
 
-        if (!_user || std::string_view{_user}.empty()) {
-            query_string = "select USER_NAME, USER_DN";
-        }
-        else {
-            constexpr std::array columns{"USER_NAME", "USER_DN"};
+        auto b = gq2::builder::select({"USER_NAME", "USER_DN"});
 
-            static const auto user_query =
-                fmt::format(FMT_COMPILE("select {} where USER_NAME = '{{}}'"), fmt::join(columns, ", "));
-
-            static const auto user_query_with_zone = fmt::format(
-                FMT_COMPILE("select {} where USER_NAME = '{{}}' and USER_ZONE = '{{}}'"), fmt::join(columns, ", "));
-
-            query_string = _zone && !std::string_view{_zone}.empty()
-                               ? fmt::format(fmt::runtime(user_query_with_zone), _user, _zone)
-                               : fmt::format(fmt::runtime(user_query), _user);
+        if (_user && !std::string_view{_user}.empty()) {
+            if (_zone && !std::string_view{_zone}.empty()) {
+                b.where(gq2::builder::col("USER_NAME") == _user && gq2::builder::col("USER_ZONE") == _zone);
+            }
+            else {
+                b.where(gq2::builder::col("USER_NAME") == _user);
+            }
         }
 
-        auto q = irods::query(Conn, query_string);
-        if (q.empty()) {
+        const auto rows = gq2::execute(*Conn, b.build());
+        if (rows.empty()) {
             fmt::print("No rows found\n");
             return 0;
         }
 
-        for (auto&& result : q) {
-            fmt::print("{} {}\n", result.at(0), result.at(1));
+        for (const auto& result : rows) {
+            fmt::print("{} {}\n",
+                       result.at(0).get_ref<const std::string&>(),
+                       result.at(1).get_ref<const std::string&>());
         }
     }
     catch (const irods::exception& e) {
@@ -858,15 +877,22 @@ auto show_user_auth_name(const char* _auth_name) -> int
     }
 
     try {
-        auto q =
-            irods::query(Conn, fmt::format(fmt::runtime("select USER_NAME, USER_DN where USER_DN = '{}'"), _auth_name));
-        if (q.empty()) {
+        namespace gq2 = irods::experimental::genquery2;
+
+        const auto q = gq2::builder::select({"USER_NAME", "USER_DN"})
+            .where(gq2::builder::col("USER_DN") == _auth_name)
+            .build();
+
+        const auto rows = gq2::execute(*Conn, q);
+        if (rows.empty()) {
             fmt::print("No rows found\n");
             return 0;
         }
 
-        for (auto&& result : q) {
-            fmt::print("{} {}\n", result.at(0), result.at(1));
+        for (const auto& result : rows) {
+            fmt::print("{} {}\n",
+                       result.at(0).get_ref<const std::string&>(),
+                       result.at(1).get_ref<const std::string&>());
         }
     }
     catch (const irods::exception& e) {
@@ -883,18 +909,18 @@ auto show_user_auth_name(const char* _auth_name) -> int
 auto show_global_quotas(const char* _user_or_group = nullptr) -> int
 {
     try {
-        constexpr std::array columns{
-            "QUOTA_USER_NAME", "QUOTA_USER_ZONE", "QUOTA_LIMIT", "QUOTA_OVER", "QUOTA_MODIFY_TIME"};
+        namespace gq2 = irods::experimental::genquery2;
+
         static const std::vector labels{"user_name", "zone_name", "quota_limit", "quota_over", "modify_ts"};
+
+        auto b = gq2::builder::select({"QUOTA_USER_NAME", "QUOTA_USER_ZONE", "QUOTA_LIMIT", "QUOTA_OVER", "QUOTA_MODIFY_TIME"});
 
         const auto user_provided = _user_or_group && !std::string_view{_user_or_group}.empty();
         if (!user_provided) {
             fmt::print("\nGlobal (total usage) quotas (if any) for users/groups:\n");
 
-            const auto query_string =
-                fmt::format(FMT_COMPILE("select {} where QUOTA_RESC_ID = '0'"), fmt::join(columns, ", "));
-
-            print_genquery_results(query_string, labels);
+            b.where(gq2::builder::col("QUOTA_RESC_ID") == "0");
+            print_genquery_results(b.build(), labels);
 
             return 0;
         }
@@ -914,12 +940,11 @@ auto show_global_quotas(const char* _user_or_group = nullptr) -> int
 
         fmt::print("\nGlobal (total usage) quotas (if any) for user/group {}:\n", _user_or_group);
 
-        const auto query_string_template = fmt::format(
-            FMT_COMPILE(
-                "select {} where QUOTA_USER_NAME = '{{}}' and QUOTA_USER_ZONE = '{{}}' and QUOTA_RESC_ID = '0'"),
-            fmt::join(columns, ", "));
+        b.where(gq2::builder::col("QUOTA_USER_NAME") == user_name &&
+                gq2::builder::col("QUOTA_USER_ZONE") == zone_name &&
+                gq2::builder::col("QUOTA_RESC_ID") == "0");
 
-        print_genquery_results(fmt::format(fmt::runtime(query_string_template), user_name, zone_name), labels);
+        print_genquery_results(b.build(), labels);
     }
     catch (const irods::exception& e) {
         fmt::print(stderr, fmt::runtime(e.client_display_what()));
@@ -935,19 +960,26 @@ auto show_global_quotas(const char* _user_or_group = nullptr) -> int
 auto show_resource_quotas(const char* _user_or_group = nullptr) -> int
 {
     try {
-        constexpr std::array columns{
-            "QUOTA_USER_NAME", "QUOTA_USER_ZONE", "QUOTA_RESC_NAME", "QUOTA_LIMIT", "QUOTA_OVER", "QUOTA_MODIFY_TIME"};
+        namespace gq2 = irods::experimental::genquery2;
+
         static const std::vector labels{
             "user_name", "zone_name", "resc_name", "quota_limit", "quota_over", "modify_ts"};
+
+        auto b = gq2::builder::select({
+                "QUOTA_USER_NAME",
+                "QUOTA_USER_ZONE",
+                "QUOTA_RESC_NAME",
+                "QUOTA_LIMIT",
+                "QUOTA_OVER",
+                "QUOTA_MODIFY_TIME"
+            });
 
         const auto user_provided = _user_or_group && !std::string_view{_user_or_group}.empty();
         if (!user_provided) {
             fmt::print("Per resource quotas (if any) for users/groups:\n");
 
-            const auto query_string =
-                fmt::format(FMT_COMPILE("select {} where QUOTA_RESC_ID != '0'"), fmt::join(columns, ", "));
-
-            print_genquery_results(query_string, labels);
+            b.where(gq2::builder::col("QUOTA_RESC_ID") != "0");
+            print_genquery_results(b.build(), labels);
 
             return 0;
         }
@@ -967,12 +999,11 @@ auto show_resource_quotas(const char* _user_or_group = nullptr) -> int
 
         fmt::print("Per resource quotas (if any) for user/group {}:\n", _user_or_group);
 
-        const auto query_string_template = fmt::format(
-            FMT_COMPILE(
-                "select {} where QUOTA_USER_NAME = '{{}}' and QUOTA_USER_ZONE = '{{}}' and QUOTA_RESC_ID != '0'"),
-            fmt::join(columns, ", "));
+        b.where(gq2::builder::col("QUOTA_USER_NAME") == user_name &&
+                gq2::builder::col("QUOTA_USER_ZONE") == zone_name &&
+                gq2::builder::col("QUOTA_RESC_ID") != "0");
 
-        print_genquery_results(fmt::format(fmt::runtime(query_string_template), user_name, zone_name), labels);
+        print_genquery_results(b.build(), labels);
     }
     catch (const irods::exception& e) {
         fmt::print(stderr, fmt::runtime(e.client_display_what()));

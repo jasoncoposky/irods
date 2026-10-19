@@ -1,12 +1,12 @@
 #include "utility.hpp"
+#include <irods/genquery2_builder.hpp>
 #include <irods/irods_client_api_table.hpp>
 #include <irods/irods_pack_table.hpp>
-#include <irods/irods_query.hpp>
 #include <irods/rods.h>
 #include <irods/rodsClient.h>
 #include <irods/rodsError.h>
 
-#include <boost/format.hpp>
+#include <nlohmann/json.hpp>
 
 #include <cstdio>
 
@@ -22,36 +22,40 @@ struct userinfo_t {
     char* zone_name;
 };
 
-std::string construct_userinfo_query_string(
-    const userinfo_t& _info,
-    const std::string& _select_string) {
-    return std::string{(boost::format("SELECT %s WHERE USER_NAME = '%s' AND USER_ZONE = '%s'") %
-                        _select_string % _info.user_name % _info.zone_name).str()};
-}
-
 bool print_general_info(const userinfo_t& _info) {
-    // Construct query object for listing info for specified user
-    const std::string select{
-        "USER_NAME, USER_ID, USER_TYPE, USER_ZONE, USER_INFO, USER_COMMENT, USER_CREATE_TIME, USER_MODIFY_TIME"};
-    irods::query<rcComm_t> qobj{Conn, construct_userinfo_query_string(_info, select)};
+    namespace gq2 = irods::experimental::genquery2;
 
-    // Ensure that user exists
-    if (qobj.begin() == qobj.end()) {
+    const auto q = gq2::builder::select({
+            "USER_NAME",
+            "USER_ID",
+            "USER_TYPE",
+            "USER_ZONE",
+            "USER_INFO",
+            "USER_COMMENT",
+            "USER_CREATE_TIME",
+            "USER_MODIFY_TIME"
+        })
+        .where(gq2::builder::col("USER_NAME") == _info.user_name &&
+               gq2::builder::col("USER_ZONE") == _info.zone_name)
+        .build();
+
+    nlohmann::json rows;
+    if (gq2::try_execute(*Conn, q, rows) < 0 || rows.empty()) {
         return false;
     }
 
-    // Print information concerning found users
     const std::vector<std::string> general_info_labels{
         "name", "id", "type", "zone", "info", "comment", "create time", "modify time"};
     int i{};
-    for (const auto& selections: *qobj.begin()) {
+    for (const auto& cell : rows.front()) {
+        const auto& val = cell.get_ref<const std::string&>();
         if (std::string::npos != (general_info_labels[i].find("time"))) {
             char local_time[TIME_LEN]{};
-            getLocalTimeFromRodsTime(selections.c_str(), local_time);
-            printf("%s: %s: %s\n", general_info_labels[i].c_str(), selections.c_str(), local_time);
+            getLocalTimeFromRodsTime(val.c_str(), local_time);
+            printf("%s: %s: %s\n", general_info_labels[i].c_str(), val.c_str(), local_time);
         }
         else {
-            printf("%s: %s\n", general_info_labels[i].c_str(), selections.c_str());
+            printf("%s: %s\n", general_info_labels[i].c_str(), val.c_str());
         }
         i++;
     }
@@ -59,21 +63,39 @@ bool print_general_info(const userinfo_t& _info) {
 }
 
 void print_auth_info(const userinfo_t& _info) {
-    irods::query<rcComm_t> qobj{Conn, construct_userinfo_query_string(_info, "USER_DN")};
-    for (const auto& result: qobj) {
-        printf("GSI DN or Kerberos Principal Name: %s\n", result[0].c_str());
+    namespace gq2 = irods::experimental::genquery2;
+
+    const auto q = gq2::builder::select({"USER_DN"})
+        .where(gq2::builder::col("USER_NAME") == _info.user_name &&
+               gq2::builder::col("USER_ZONE") == _info.zone_name)
+        .build();
+
+    nlohmann::json rows;
+    if (gq2::try_execute(*Conn, q, rows) < 0) {
+        return;
+    }
+
+    for (const auto& row : rows) {
+        printf("GSI DN or Kerberos Principal Name: %s\n", row[0].get_ref<const std::string&>().c_str());
     }
 }
 
 void print_group_info(const userinfo_t& _info) {
-    irods::query<rcComm_t> qobj{Conn, construct_userinfo_query_string(_info, "USER_GROUP_NAME")};
-    if (qobj.begin() == qobj.end()) {
+    namespace gq2 = irods::experimental::genquery2;
+
+    const auto q = gq2::builder::select({"USER_GROUP_NAME"})
+        .where(gq2::builder::col("USER_NAME") == _info.user_name &&
+               gq2::builder::col("USER_ZONE") == _info.zone_name)
+        .build();
+
+    nlohmann::json rows;
+    if (gq2::try_execute(*Conn, q, rows) < 0 || rows.empty()) {
         printf("Not a member of any group\n");
         return;
     }
 
-    for (const auto& result: qobj) {
-        printf("member of group: %s\n", result[0].c_str());
+    for (const auto& row : rows) {
+        printf("member of group: %s\n", row[0].get_ref<const std::string&>().c_str());
     }
 }
 

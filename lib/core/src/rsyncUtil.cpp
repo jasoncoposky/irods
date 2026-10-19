@@ -13,7 +13,7 @@
 #include "irods/irods_hasher_factory.hpp"
 #include "irods/irods_path_recursion.hpp"
 #include "irods/irods_exception.hpp"
-#include "irods/irods_query.hpp"
+#include "irods/genquery2_builder.hpp"
 #include "irods/collection_entry_validation.hpp"
 
 #include <boost/filesystem/operations.hpp>
@@ -565,16 +565,19 @@ rsyncDataToDataUtil( rcComm_t *conn, rodsPath_t *srcPath,
     }
     else if ( strlen( srcPath->chksum ) > 0 && strlen( targPath->chksum ) > 0 ) {
         /* src and trg has a checksum value */
+        namespace gq2 = irods::experimental::genquery2;
+        using gq2::builder::col;
 
-        const static auto good_replica_string = std::to_string(GOOD_REPLICA);
-        const irods::experimental::filesystem::path _path{targPath->outPath};
-        const auto query_str = fmt::format(
-            "select DATA_REPL_STATUS where COLL_NAME = '{}' and DATA_NAME = '{}' and DATA_REPL_STATUS = '1'",
-            _path.parent_path().c_str(),
-            _path.object_name().c_str());
-        irods::query qobj{conn, query_str};
+        const irods::experimental::filesystem::path targ_path{targPath->outPath};
+        const auto q = gq2::builder::select({"DATA_REPL_STATUS"})
+            .where(col("COLL_NAME") == targ_path.parent_path_view() &&
+                   col("DATA_NAME") == targ_path.object_name_view() &&
+                   col("DATA_REPL_STATUS") == "1")
+            .limit(1)
+            .build();
 
-        if (qobj.size() == 0 || strcmp(targPath->chksum, srcPath->chksum) != 0) {
+        nlohmann::json rows;
+        if (gq2::try_execute(*conn, q, rows) < 0 || rows.empty() || strcmp(targPath->chksum, srcPath->chksum) != 0) {
             cpFlag = 1;
         }
     }
