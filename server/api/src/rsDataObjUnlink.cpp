@@ -37,8 +37,8 @@
 #include "irods/irods_logger.hpp"
 #include "irods/scoped_privileged_client.hpp"
 
-#define IRODS_QUERY_ENABLE_SERVER_SIDE_API
-#include "irods/irods_query.hpp"
+#include "irods/genquery2_builder.hpp"
+#include "irods/rs_genquery2.hpp"
 
 #define IRODS_FILESYSTEM_ENABLE_SERVER_SIDE_API
 #include "irods/filesystem.hpp"
@@ -51,6 +51,7 @@
 #include <boost/filesystem/path.hpp>
 #include <fmt/format.h>
 
+#include <charconv>
 #include <cstring>
 #include <string>
 #include <string_view>
@@ -63,46 +64,34 @@ namespace
     namespace id = irods::experimental::data_object;
     namespace ir = irods::experimental::replica;
     namespace ill = irods::logical_locking;
+    namespace gq2 = irods::experimental::genquery2;
 
     int getNumSubfilesInBunfileObj(rsComm_t *rsComm, const char *objPath)
     {
-        int status;
-        genQueryOut_t *genQueryOut = NULL;
-        genQueryInp_t genQueryInp;
-        int totalRowCount;
-        char condStr[MAX_NAME_LEN];
-
-        std::memset(&genQueryInp, 0, sizeof(genQueryInp));
-        genQueryInp.maxRows = 1;
-        genQueryInp.options = RETURN_TOTAL_ROW_COUNT;
-
-        snprintf( condStr, MAX_NAME_LEN, "='%s'", objPath );
-        addInxVal( &genQueryInp.sqlCondInp, COL_D_DATA_PATH, condStr );
-        snprintf( condStr, MAX_NAME_LEN, "='%s'", BUNDLE_RESC_CLASS );
-        addInxVal( &genQueryInp.sqlCondInp, COL_R_CLASS_NAME, condStr );
-        addKeyVal( &genQueryInp.condInput, ZONE_KW, objPath );
-
-        addInxIval( &genQueryInp.selectInp, COL_COLL_NAME, 1 );
-        addInxIval( &genQueryInp.selectInp, COL_DATA_NAME, 1 );
-        addInxIval( &genQueryInp.selectInp, COL_DATA_SIZE, 1 );
-
-        status = rsGenQuery( rsComm, &genQueryInp, &genQueryOut );
-        if ( genQueryOut == NULL || status < 0 ) {
-            freeGenQueryOut( &genQueryOut );
-            clearGenQueryInp( &genQueryInp );
-            if ( status == CAT_NO_ROWS_FOUND ) {
-                return 0;
-            }
-            else {
-                return status;
-            }
+        if (!rsComm || !objPath) {
+            return USER__NULL_INPUT_ERR;
         }
-        totalRowCount = genQueryOut->totalRowCount;
-        freeGenQueryOut( &genQueryOut );
-        /* clear result */
-        genQueryInp.maxRows = 0;
-        rsGenQuery( rsComm, &genQueryInp, &genQueryOut );
-        clearGenQueryInp( &genQueryInp );
+
+        using gq2::builder::col;
+        const auto q = gq2::builder::select({gq2::builder::count("DATA_ID")})
+                           .where(col("DATA_PATH") == objPath && col("RESC_CLASS_NAME") == BUNDLE_RESC_CLASS)
+                           .build();
+
+        nlohmann::json rows;
+        if (const int ec = gq2::try_execute(*rsComm, q, rows, objPath); ec < 0) {
+            return (ec == CAT_NO_ROWS_FOUND) ? 0 : ec;
+        }
+
+        if (rows.empty() || rows[0].empty()) {
+            return 0;
+        }
+
+        const auto count_str = rows[0][0].get_ref<const std::string&>();
+        int totalRowCount = 0;
+        const auto [ptr, err] = std::from_chars(count_str.data(), count_str.data() + count_str.size(), totalRowCount);
+        if (err != std::errc{} || ptr != count_str.data() + count_str.size()) {
+            return INVALID_LEXICAL_CAST;
+        }
 
         return totalRowCount;
     } // getNumSubfilesInBunfileObj

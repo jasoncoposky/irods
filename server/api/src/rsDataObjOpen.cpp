@@ -74,9 +74,6 @@
 #define IRODS_FILESYSTEM_ENABLE_SERVER_SIDE_API
 #include "irods/filesystem.hpp"
 
-#define IRODS_QUERY_ENABLE_SERVER_SIDE_API
-#include "irods/irods_query.hpp"
-
 #define IRODS_REPLICA_ENABLE_SERVER_SIDE_API
 #include "irods/data_object_proxy.hpp"
 

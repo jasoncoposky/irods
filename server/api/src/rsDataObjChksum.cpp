@@ -22,13 +22,13 @@
 #include "irods/irods_at_scope_exit.hpp"
 #include "irods/irods_logger.hpp"
 
-#define IRODS_QUERY_ENABLE_SERVER_SIDE_API
-#include "irods/irods_query.hpp"
+#include "irods/genquery2_builder.hpp"
+#include "irods/rs_genquery2.hpp"
 
-#include <boost/lexical_cast.hpp>
 #include <fmt/format.h>
 #include <nlohmann/json.hpp>
 
+#include <charconv>
 #include <cstring>
 #include <optional>
 #include <algorithm>
@@ -40,6 +40,7 @@
 namespace
 {
     namespace ix = irods::experimental;
+    namespace gq2 = irods::experimental::genquery2;
     
     using json = nlohmann::json;
 
@@ -74,12 +75,12 @@ namespace
     // being called on a server in the zone the object belongs to.
     int verifyVaultSizeEqualsDatabaseSize(RsComm& rsComm, DataObjInfo& dataObjInfo)
     {
-        fileStatInp_t fileStatInp;
-        memset(&fileStatInp, 0, sizeof(fileStatInp));
+        fileStatInp_t fileStatInp{};
         rstrcpy(fileStatInp.objPath, dataObjInfo.objPath, sizeof(fileStatInp.objPath));
         rstrcpy(fileStatInp.rescHier, dataObjInfo.rescHier, sizeof(fileStatInp.rescHier));
         rstrcpy(fileStatInp.fileName, dataObjInfo.filePath, sizeof(fileStatInp.fileName));
         rodsStat_t *fileStatOut = nullptr;
+        irods::at_scope_exit free_stat_out{[&fileStatOut] { std::free(fileStatOut); }};
         const int status_rsFileStat = rsFileStat(&rsComm, &fileStatInp, &fileStatOut);
         if (status_rsFileStat < 0) {
             rodsLog(LOG_ERROR, "verifyVaultSizeEqualsDatabaseSize: rsFileStat of objPath [%s] rescHier [%s] fileName [%s] failed with [%d]",
@@ -88,29 +89,38 @@ namespace
         }
 
         const rodsLong_t size_in_vault = fileStatOut->st_size;
-        free(fileStatOut);
-        std::optional<rodsLong_t> size_in_database {};
-        auto select_and_condition =
-            fmt::format("select DATA_SIZE where DATA_PATH = '{}'", irods::single_quotes_to_hex(dataObjInfo.filePath));
-        for (auto&& row : irods::query{&rsComm, select_and_condition}) {
-            try {
-                size_in_database = boost::lexical_cast<rodsLong_t>(row[0]);
-            }
-            catch (const boost::bad_lexical_cast&) {
-                log::api::error("_rsFileChksum: lexical_cast of [{}] for [{}] [{}] [{}] failed",
-                    row[0],
-                    dataObjInfo.filePath,
-                    dataObjInfo.rescHier,
-                    dataObjInfo.objPath);
-                return INVALID_LEXICAL_CAST;
-            }
+
+        using gq2::builder::col;
+        const auto q = gq2::builder::select({"DATA_SIZE"})
+                           .where(col("DATA_PATH") == dataObjInfo.filePath)
+                           .limit(1)
+                           .build();
+
+        nlohmann::json rows;
+        if (const int ec = gq2::try_execute(rsComm, q, rows); ec < 0) {
+            return ec;
         }
 
-        if (!size_in_database.has_value()) { return CAT_NO_ROWS_FOUND; }
-        if (size_in_database.value() != size_in_vault) {
+        if (rows.empty()) {
+            return CAT_NO_ROWS_FOUND;
+        }
+
+        const auto size_str = rows[0][0].get_ref<const std::string&>();
+        rodsLong_t size_in_database = 0;
+        const auto [ptr, err] = std::from_chars(size_str.data(), size_str.data() + size_str.size(), size_in_database);
+        if (err != std::errc{} || ptr != size_str.data() + size_str.size()) {
+            log::api::error("_rsFileChksum: from_chars of [{}] for [{}] [{}] [{}] failed",
+                size_str,
+                dataObjInfo.filePath,
+                dataObjInfo.rescHier,
+                dataObjInfo.objPath);
+            return INVALID_LEXICAL_CAST;
+        }
+
+        if (size_in_database != size_in_vault) {
             rodsLog(LOG_ERROR, "_rsFileChksum: file size mismatch. resource hierarchy [%s] vault path [%s] size [%ji] object path [%s] size [%ji]",
                     dataObjInfo.rescHier, dataObjInfo.filePath,
-                    static_cast<intmax_t>(size_in_vault), dataObjInfo.objPath, static_cast<intmax_t>(size_in_database.value()));
+                    static_cast<intmax_t>(size_in_vault), dataObjInfo.objPath, static_cast<intmax_t>(size_in_database));
             return USER_FILE_SIZE_MISMATCH;
         }
 

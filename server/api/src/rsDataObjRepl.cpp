@@ -59,8 +59,8 @@
 #include "irods/replication_utilities.hpp"
 #include "irods/voting.hpp"
 
-#define IRODS_QUERY_ENABLE_SERVER_SIDE_API
-#include "irods/irods_query.hpp"
+#include "irods/genquery2_builder.hpp"
+#include "irods/rs_genquery2.hpp"
 
 #define IRODS_REPLICA_ENABLE_SERVER_SIDE_API
 #include "irods/data_object_proxy.hpp"
@@ -483,7 +483,7 @@ namespace
 
     auto user_has_permission_to_replicate_object(RsComm& _comm, const irods::file_object_ptr _obj) -> bool
     {
-        namespace adm = irods::experimental::administration;
+        namespace gq2 = irods::experimental::genquery2;
         using access_type = irods::experimental::catalog::access_type;
 
         // Short-circuit the query by checking to see whether this is a rodsadmin using the ADMIN_KW, which allows
@@ -492,43 +492,24 @@ namespace
             return true;
         }
 
-        const auto user = adm::user{_comm.clientUser.userName, _comm.clientUser.rodsZone};
-        const auto path = irods::experimental::filesystem::path{_obj->logical_path()};
-
         constexpr auto minimum_permission_required_for_replication = access_type::modify_object;
 
-        // Check access permission for the user first...
-        const auto user_permission_query_string =
-            fmt::format("select DATA_ACCESS_TYPE where USER_NAME = '{}' and USER_ZONE = '{}' and DATA_ID = '{}' and "
-                        "DATA_ACCESS_TYPE >= '{}'",
-                        user.name,
-                        user.zone,
-                        _obj->data_id(),
-                        static_cast<int>(minimum_permission_required_for_replication));
-        auto user_permission_query = irods::query{&_comm, user_permission_query_string};
-        if (!user_permission_query.empty()) {
-            return true;
+        using gq2::builder::col;
+        const auto q = gq2::builder::select({"DATA_ACCESS_PERM_ID"})
+                           .where(col("DATA_ID") == fmt::to_string(_obj->data_id()) &&
+                                  col("DATA_ACCESS_USER_NAME") == _comm.clientUser.userName &&
+                                  col("DATA_ACCESS_USER_ZONE") == _comm.clientUser.rodsZone &&
+                                  col("DATA_ACCESS_PERM_ID") >=
+                                      fmt::to_string(static_cast<int>(minimum_permission_required_for_replication)))
+                           .limit(1)
+                           .build();
+
+        nlohmann::json rows;
+        if (gq2::try_execute(_comm, q, rows) < 0) {
+            return false;
         }
 
-        // If the user does not have sufficient permissions on the data object for replication, perhaps one of their
-        // groups does...
-        const auto groups = adm::server::groups(_comm, user);
-        std::vector<std::string> groups_with_quotes;
-        groups_with_quotes.reserve(groups.size());
-        std::transform(std::cbegin(groups),
-                       std::cend(groups),
-                       std::back_inserter(groups_with_quotes),
-                       [](const auto& group) -> std::string { return fmt::format("'{}'", group.name); });
-        const auto group_permission_query_string =
-            fmt::format("select DATA_ACCESS_TYPE where USER_NAME in ({}) and USER_TYPE = 'rodsgroup' and DATA_ID = "
-                        "'{}' and DATA_ACCESS_TYPE >= '{}'",
-                        fmt::join(groups_with_quotes, ", "),
-                        _obj->data_id(),
-                        static_cast<int>(minimum_permission_required_for_replication));
-        auto group_permission_query = irods::query{&_comm, group_permission_query_string};
-        // If the query returns any results at all, that means at least one group has the minimum required
-        // permissions, so we return true if the result set is not empty.
-        return !group_permission_query.empty();
+        return !rows.empty();
     } // user_has_permission_to_replicate_object
 
     int replicate_data(RsComm& _comm, DataObjInp& _source_inp, DataObjInp& _destination_inp, transferStat_t** _stat)
