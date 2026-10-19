@@ -6,11 +6,9 @@
 
 // clang-format off
 #ifdef IRODS_FILESYSTEM_ENABLE_SERVER_SIDE_API
-#  define IRODS_QUERY_ENABLE_SERVER_SIDE_API
-
 #  include "irods/rods.h"
 #  include "irods/apiHeaderAll.h"
-#  include "irods/rsSpecificQuery.hpp"
+#  include "irods/rs_genquery2.hpp"
 #  include "irods/rsObjStat.hpp"
 #  include "irods/rsDataObjCopy.hpp"
 #  include "irods/rsDataObjRename.hpp"
@@ -24,7 +22,7 @@
 #  include "irods/rsModDataObjMeta.hpp"
 #else
 #  include "irods/rodsClient.h"
-#  include "irods/specificQuery.h"
+#  include "irods/genquery2.h"
 #  include "irods/objStat.h"
 #  include "irods/dataObjCopy.h"
 #  include "irods/dataObjRename.h"
@@ -44,12 +42,10 @@
 #include "irods/irods_log.hpp"
 #include "irods/irods_error.hpp"
 #include "irods/irods_exception.hpp"
-#include "irods/irods_query.hpp"
 #include "irods/irods_at_scope_exit.hpp"
-#include "irods/query_builder.hpp"
-#include "irods/escape_utilities.hpp"
 
 #include <fmt/format.h>
+#include <nlohmann/json.hpp>
 
 #include <charconv>
 #include <cctype>
@@ -59,10 +55,10 @@
 #include <string_view>
 #include <iterator>
 #include <exception>
-#include <sstream>
-#include <iomanip>
 #include <algorithm>
 #include <system_error>
+#include <utility>
+#include <vector>
 
 namespace irods::experimental::filesystem::detail
 {
@@ -87,7 +83,7 @@ struct fmt::formatter<irods::experimental::filesystem::detail::sql_escaped_view>
         std::string_view sv = _esc.value;
 
         while (!sv.empty()) {
-            const auto pos = sv.find('\'');
+            const auto pos = sv.find_first_of("'\\");
             if (pos == std::string_view::npos) {
                 out = fmt::format_to(out, "{}", sv);
                 break;
@@ -95,7 +91,12 @@ struct fmt::formatter<irods::experimental::filesystem::detail::sql_escaped_view>
             if (pos > 0) {
                 out = fmt::format_to(out, "{}", sv.substr(0, pos));
             }
-            out = fmt::format_to(out, "\\x27");
+            if (sv[pos] == '\'') {
+                out = fmt::format_to(out, "''");
+            }
+            else {
+                out = fmt::format_to(out, "\\x5c");
+            }
             sv.remove_prefix(pos + 1);
         }
 
@@ -115,6 +116,11 @@ namespace irods::experimental::filesystem::NAMESPACE_IMPL
             return sql_escaped_view{_sv};
         }
 
+        constexpr auto sql_escape(const std::string& _s) noexcept -> sql_escaped_view
+        {
+            return sql_escaped_view{_s};
+        }
+
         constexpr auto sql_escape(const path& _p) noexcept -> sql_escaped_view
         {
             return sql_escaped_view{_p.string_view()};
@@ -132,16 +138,88 @@ namespace irods::experimental::filesystem::NAMESPACE_IMPL
             return ec == std::errc{} && ptr == last;
         }
 
-        auto apply_zone_hint(irods::experimental::query_builder& _qb, const path& _p) -> void
+        auto execute_genquery2(rxComm& _comm,
+                               const path& _p,
+                               std::string& _query_string,
+                               nlohmann::json& _rows,
+                               std::error_code& _ec) noexcept -> bool
         {
-            if (const auto zv = zone_name_view(_p); zv && !zv->empty()) {
-                _qb.zone_hint(std::string{*zv});
+            _ec.clear();
+
+            Genquery2Input input{};
+            input.query_string = _query_string.data();
+
+            char zone_buf[NAME_LEN]{};
+            if (const auto zv = zone_name_view(_p); zv && !zv->empty() && zv->size() < NAME_LEN) {
+                std::memcpy(zone_buf, zv->data(), zv->size());
+                zone_buf[zv->size()] = '\0';
+                input.zone = zone_buf;
             }
+
+            char* output{};
+            irods::at_scope_exit free_output{[&output] {
+                if (output) {
+                    std::free(output);
+                }
+            }};
+
+            if (const auto ec = rxGenQuery2(&_comm, &input, &output); ec < 0) {
+                _ec = make_error_code(ec);
+                return false;
+            }
+
+            if (!output) {
+                _ec = make_error_code(SYS_INTERNAL_ERR);
+                return false;
+            }
+
+            _rows = nlohmann::json::parse(output, nullptr, false);
+            if (_rows.is_discarded() || !_rows.is_array()) {
+                _ec = make_error_code(SYS_INTERNAL_ERR);
+                return false;
+            }
+
+            return true;
         }
 
-        auto extract_irods_error(const irods::exception& _e) noexcept -> std::error_code
+        template <typename RowCallback>
+        auto execute_genquery2_paged(rxComm& _comm,
+                                     const path& _p,
+                                     std::string_view _base_query,
+                                     std::error_code& _ec,
+                                     RowCallback&& _on_row) -> bool
         {
-            return make_error_code(static_cast<int>(_e.code()));
+            constexpr std::size_t page_size = 256;
+            std::size_t offset = 0;
+
+            while (true) {
+                std::string paged_query = (offset == 0)
+                    ? fmt::format("{} fetch first {} rows only", _base_query, page_size)
+                    : fmt::format("{} offset {} fetch first {} rows only", _base_query, offset, page_size);
+
+                nlohmann::json rows;
+                if (!execute_genquery2(_comm, _p, paged_query, rows, _ec)) {
+                    return false;
+                }
+
+                for (const auto& row : rows) {
+                    if (!row.is_array()) {
+                        _ec = make_error_code(SYS_INTERNAL_ERR);
+                        return false;
+                    }
+                    if (!_on_row(row)) {
+                        return false;
+                    }
+                }
+
+                if (rows.size() < page_size) {
+                    break;
+                }
+
+                offset += rows.size();
+            }
+
+            return true;
         }
 
 #ifdef IRODS_FILESYSTEM_ENABLE_SERVER_SIDE_API
@@ -271,63 +349,103 @@ namespace irods::experimental::filesystem::NAMESPACE_IMPL
         {
             _ec.clear();
 
-            try {
-                if (DATA_OBJ_T == _s.type) {
-                    const auto sql = fmt::format(
-                        "select USER_NAME, USER_ZONE, DATA_ACCESS_NAME, USER_TYPE "
-                        "where DATA_ACCESS_DATA_ID = '{}' and DATA_TOKEN_NAMESPACE = 'access_type'",
-                        _s.id);
-
-                    irods::experimental::query_builder qb;
-                    apply_zone_hint(qb, _p);
-
-                    for (const auto& row : qb.build(_comm, sql)) {
-                        const auto p = to_permission_enum(row[2], _ec);
-                        if (_ec) {
-                            return;
-                        }
-                        _out_prms.push_back({row[0], row[1], p, row[3]});
-                    }
-                }
-                else if (COLL_OBJ_T == _s.type) {
-                    irods::experimental::query_builder qb;
-                    apply_zone_hint(qb, _p);
-
-                    try {
-                        std::vector<std::string> args{_p.string()};
-                        qb.type(irods::query_type::specific).bind_arguments(args);
-
-                        for (const auto& row : qb.build(_comm, "ShowCollAcls")) {
-                            const auto p = to_permission_enum(row[2], _ec);
-                            if (_ec) {
-                                return;
-                            }
-                            _out_prms.push_back({row[0], row[1], p, row[3]});
-                        }
-                    }
-                    catch (...) {
-                        qb.type(irods::query_type::general);
-
-                        const auto sql = fmt::format(
-                            "select COLL_USER_NAME, COLL_ZONE_NAME, COLL_ACCESS_NAME, USER_TYPE "
-                            "where COLL_TOKEN_NAMESPACE = 'access_type' and COLL_NAME = '{}'",
-                            sql_escape(_p));
-
-                        for (const auto& row : qb.build(_comm, sql)) {
-                            const auto p = to_permission_enum(row[2], _ec);
-                            if (_ec) {
-                                return;
-                            }
-                            _out_prms.push_back({row[0], row[1], p, row[3]});
-                        }
-                    }
-                }
+            std::string acl_query;
+            if (DATA_OBJ_T == _s.type) {
+                acl_query = fmt::format(
+                    "select DATA_ACCESS_USER_ID, DATA_ACCESS_PERM_NAME "
+                    "where DATA_ID = '{}' and DATA_ACCESS_USER_ID is not null",
+                    _s.id);
             }
-            catch (const irods::exception& e) {
-                _ec = extract_irods_error(e);
+            else if (COLL_OBJ_T == _s.type) {
+                acl_query = fmt::format(
+                    "select COLL_ACCESS_USER_ID, COLL_ACCESS_PERM_NAME "
+                    "where COLL_ID = '{}' and COLL_ACCESS_USER_ID is not null",
+                    _s.id);
             }
-            catch (...) {
-                _ec = make_error_code(SYS_INTERNAL_ERR);
+            else {
+                return;
+            }
+
+            struct raw_acl_entry
+            {
+                std::string user_id;
+                perms prms;
+            };
+            std::vector<raw_acl_entry> raw_acls;
+
+            if (!execute_genquery2_paged(_comm, _p, acl_query, _ec, [&](const nlohmann::json& _row) {
+                    if (_row.size() < 2 || !_row[0].is_string() || !_row[1].is_string()) {
+                        return true;
+                    }
+                    const auto& user_id = _row[0].get_ref<const std::string&>();
+                    const auto& perm_str = _row[1].get_ref<const std::string&>();
+                    if (user_id.empty()) {
+                        return true;
+                    }
+                    const auto p = to_permission_enum(perm_str, _ec);
+                    if (_ec) {
+                        return false;
+                    }
+                    raw_acls.push_back({user_id, p});
+                    return true;
+                }))
+            {
+                return;
+            }
+
+            if (raw_acls.empty()) {
+                return;
+            }
+
+            std::string user_in_clause;
+            for (std::size_t i = 0; i < raw_acls.size(); ++i) {
+                if (i > 0) {
+                    user_in_clause += ", ";
+                }
+                fmt::format_to(std::back_inserter(user_in_clause), "'{}'", sql_escape(raw_acls[i].user_id));
+            }
+
+            const std::string user_query = fmt::format(
+                "select USER_ID, USER_NAME, USER_ZONE, USER_TYPE where USER_ID in ({})",
+                user_in_clause);
+
+            struct user_details
+            {
+                std::string id;
+                std::string name;
+                std::string zone;
+                std::string type;
+            };
+            std::vector<user_details> users;
+            users.reserve(raw_acls.size());
+
+            if (!execute_genquery2_paged(_comm, _p, user_query, _ec, [&](const nlohmann::json& _row) {
+                    if (_row.size() < 4 || !_row[0].is_string() || !_row[1].is_string() ||
+                        !_row[2].is_string() || !_row[3].is_string())
+                    {
+                        _ec = make_error_code(SYS_INTERNAL_ERR);
+                        return false;
+                    }
+                    users.push_back({
+                        _row[0].get<std::string>(),
+                        _row[1].get<std::string>(),
+                        _row[2].get<std::string>(),
+                        _row[3].get<std::string>()
+                    });
+                    return true;
+                }))
+            {
+                return;
+            }
+
+            _out_prms.reserve(_out_prms.size() + raw_acls.size());
+            for (const auto& acl : raw_acls) {
+                const auto it = std::find_if(users.begin(), users.end(), [&](const user_details& _u) {
+                    return _u.id == acl.user_id;
+                });
+                if (it != users.end()) {
+                    _out_prms.push_back({it->name, it->zone, acl.prms, it->type});
+                }
             }
         }
 
@@ -339,26 +457,22 @@ namespace irods::experimental::filesystem::NAMESPACE_IMPL
                 return false;
             }
 
-            try {
-                irods::experimental::query_builder qb;
-                apply_zone_hint(qb, _p);
-                qb.type(irods::query_type::general);
+            std::string gql = fmt::format(
+                "select COLL_INHERITANCE where COLL_NAME = '{}' fetch first 1 rows only",
+                sql_escape(_p));
 
-                const auto gql = fmt::format("select COLL_INHERITANCE where COLL_NAME = '{}'", sql_escape(_p));
+            nlohmann::json rows;
+            if (!execute_genquery2(_comm, _p, gql, rows, _ec)) {
+                return false;
+            }
 
-                for (const auto& row : qb.build(_comm, gql)) {
-                    int val = 0;
-                    if (parse_int(row[0], val)) {
-                        return val != 0;
-                    }
-                    return std::atoi(row[0].c_str()) != 0;
+            if (!rows.empty() && rows[0].is_array() && !rows[0].empty() && rows[0][0].is_string()) {
+                const auto& val_str = rows[0][0].get_ref<const std::string&>();
+                int val = 0;
+                if (parse_int(val_str, val)) {
+                    return val != 0;
                 }
-            }
-            catch (const irods::exception& e) {
-                _ec = extract_irods_error(e);
-            }
-            catch (...) {
-                _ec = make_error_code(SYS_INTERNAL_ERR);
+                return std::atoi(val_str.c_str()) != 0;
             }
 
             return false;
@@ -487,38 +601,30 @@ namespace irods::experimental::filesystem::NAMESPACE_IMPL
 
             std::uintmax_t count = 1; // The collection _p itself.
 
-            try {
-                irods::experimental::query_builder qb;
-                apply_zone_hint(qb, _p);
+            std::string data_sql = (p_view == "/")
+                ? std::string{"select count(distinct DATA_ID) where COLL_NAME = '/' or COLL_NAME like '/%'"}
+                : fmt::format("select count(distinct DATA_ID) where COLL_NAME = '{}' or COLL_NAME like '{}/%'",
+                              sql_escape(p_view),
+                              sql_escape(p_view));
 
-                const auto direct_data_sql = fmt::format(
-                    "select count(DATA_ID) where COLL_NAME = '{}'",
-                    sql_escape(p_view));
+            std::string sub_colls_sql = (p_view == "/")
+                ? std::string{"select count(COLL_ID) where COLL_NAME != '/' and COLL_NAME like '/%'"}
+                : fmt::format("select count(COLL_ID) where COLL_NAME like '{}/%'", sql_escape(p_view));
 
-                const auto sub_data_sql = (p_view == "/")
-                    ? std::string{"select count(DATA_ID) where COLL_NAME like '/%'"}
-                    : fmt::format("select count(DATA_ID) where COLL_NAME like '{}/%'", sql_escape(p_view));
+            for (auto* sql_ptr : {&data_sql, &sub_colls_sql}) {
+                nlohmann::json rows;
+                if (!execute_genquery2(_comm, _p, *sql_ptr, rows, _ec)) {
+                    return static_cast<std::uintmax_t>(-1);
+                }
 
-                const auto sub_colls_sql = (p_view == "/")
-                    ? std::string{"select count(COLL_ID) where COLL_NAME like '/%'"}
-                    : fmt::format("select count(COLL_ID) where COLL_NAME like '{}/%'", sql_escape(p_view));
-
-                for (const auto& sql : {direct_data_sql, sub_data_sql, sub_colls_sql}) {
-                    for (const auto& row : qb.build(_comm, sql)) {
+                for (const auto& row : rows) {
+                    if (row.is_array() && !row.empty() && row[0].is_string()) {
                         std::uint64_t sub_count = 0;
-                        if (parse_int(row[0], sub_count)) {
+                        if (parse_int(row[0].get_ref<const std::string&>(), sub_count)) {
                             count += sub_count;
                         }
                     }
                 }
-            }
-            catch (const irods::exception& e) {
-                _ec = extract_irods_error(e);
-                return static_cast<std::uintmax_t>(-1);
-            }
-            catch (...) {
-                _ec = make_error_code(SYS_INTERNAL_ERR);
-                return static_cast<std::uintmax_t>(-1);
             }
 
             _opts.recursive = true;
@@ -716,33 +822,24 @@ namespace irods::experimental::filesystem::NAMESPACE_IMPL
                                   sql_escape(_p.object_name_view()));
             }
             else if (COLL_OBJ_T == _obj_type) {
-                gql = fmt::format("select COLL_MODIFY_TIME where COLL_NAME = '{}'", sql_escape(_p));
+                gql = fmt::format("select COLL_MODIFY_TIME where COLL_NAME = '{}' fetch first 1 rows only",
+                                  sql_escape(_p));
             }
             else {
                 _ec = make_error_code(INVALID_OBJECT_TYPE);
                 return object_time_type::min();
             }
 
-            try {
-                irods::experimental::query_builder qb;
-                apply_zone_hint(qb, _p);
+            nlohmann::json rows;
+            if (!execute_genquery2(_comm, _p, gql, rows, _ec)) {
+                return object_time_type::min();
+            }
 
-                for (auto&& row : qb.build(_comm, gql)) {
-                    std::uint64_t secs = 0;
-                    if (parse_int(row[0], secs)) {
-                        return object_time_type{std::chrono::seconds{secs}};
-                    }
-                    _ec = make_error_code(CAT_NO_ROWS_FOUND);
-                    return object_time_type::min();
+            if (!rows.empty() && rows[0].is_array() && !rows[0].empty() && rows[0][0].is_string()) {
+                std::uint64_t secs = 0;
+                if (parse_int(rows[0][0].get_ref<const std::string&>(), secs)) {
+                    return object_time_type{std::chrono::seconds{secs}};
                 }
-            }
-            catch (const irods::exception& e) {
-                _ec = extract_irods_error(e);
-                return object_time_type::min();
-            }
-            catch (...) {
-                _ec = make_error_code(SYS_INTERNAL_ERR);
-                return object_time_type::min();
             }
 
             _ec = make_error_code(CAT_NO_ROWS_FOUND);
@@ -1122,21 +1219,16 @@ namespace irods::experimental::filesystem::NAMESPACE_IMPL
             return false;
         }
 
-        try {
-            irods::experimental::query_builder qb;
-            apply_zone_hint(qb, _p);
+        std::string gql = fmt::format(
+            "select COLL_ID where COLL_NAME = '{}' fetch first 1 rows only",
+            sql_escape(_p));
 
-            const auto gql = fmt::format("select COLL_ID where COLL_NAME = '{}'", sql_escape(_p));
-            return qb.build(_comm, gql).size() > 0;
-        }
-        catch (const irods::exception& e) {
-            _ec = extract_irods_error(e);
+        nlohmann::json rows;
+        if (!execute_genquery2(_comm, _p, gql, rows, _ec)) {
             return false;
         }
-        catch (...) {
-            _ec = make_error_code(SYS_INTERNAL_ERR);
-            return false;
-        }
+
+        return !rows.empty();
     }
 
     auto is_collection_registered(rxComm& _comm, const path& _p) -> bool
@@ -1155,24 +1247,17 @@ namespace irods::experimental::filesystem::NAMESPACE_IMPL
             return false;
         }
 
-        try {
-            irods::experimental::query_builder qb;
-            apply_zone_hint(qb, _p);
+        std::string gql = fmt::format(
+            "select DATA_ID where COLL_NAME = '{}' and DATA_NAME = '{}' fetch first 1 rows only",
+            sql_escape(_p.parent_path_view()),
+            sql_escape(_p.object_name_view()));
 
-            const auto gql = fmt::format("select DATA_ID where COLL_NAME = '{}' and DATA_NAME = '{}'",
-                                         sql_escape(_p.parent_path_view()),
-                                         sql_escape(_p.object_name_view()));
-
-            return qb.build(_comm, gql).size() > 0;
-        }
-        catch (const irods::exception& e) {
-            _ec = extract_irods_error(e);
+        nlohmann::json rows;
+        if (!execute_genquery2(_comm, _p, gql, rows, _ec)) {
             return false;
         }
-        catch (...) {
-            _ec = make_error_code(SYS_INTERNAL_ERR);
-            return false;
-        }
+
+        return !rows.empty();
     }
 
     auto is_data_object_registered(rxComm& _comm, const path& _p) -> bool
@@ -1230,49 +1315,30 @@ namespace irods::experimental::filesystem::NAMESPACE_IMPL
             return static_cast<std::uintmax_t>(-1);
         }
 
-        const auto gql = fmt::format("select DATA_SIZE, DATA_MODIFY_TIME "
-                                     "where"
-                                     " COLL_NAME = '{}' and"
-                                     " DATA_NAME = '{}' and"
-                                     " DATA_REPL_STATUS = '1'",
-                                     sql_escape(_p.parent_path_view()),
-                                     sql_escape(_p.object_name_view()));
+        std::string gql = fmt::format(
+            "select DATA_SIZE, DATA_MODIFY_TIME "
+            "where COLL_NAME = '{}' and DATA_NAME = '{}' and DATA_REPL_STATUS = '1' "
+            "order by DATA_MODIFY_TIME desc fetch first 1 rows only",
+            sql_escape(_p.parent_path_view()),
+            sql_escape(_p.object_name_view()));
 
-        try {
-            irods::experimental::query_builder qb;
-            apply_zone_hint(qb, _p);
-
-            auto query = qb.build(_comm, gql);
-
-            if (query.size() == 0) {
-                _ec = make_error_code(SYS_NO_GOOD_REPLICA);
-                return static_cast<std::uintmax_t>(-1);
-            }
-
-            std::uint64_t latest_mtime = 0;
-            std::uintmax_t size = 0;
-
-            for (auto&& row : query) {
-                std::uint64_t current_mtime = 0;
-                std::uint64_t row_size = 0;
-                if (parse_int(row[1], current_mtime) && parse_int(row[0], row_size)) {
-                    if (current_mtime > latest_mtime) {
-                        latest_mtime = current_mtime;
-                        size = row_size;
-                    }
-                }
-            }
-
-            return size;
-        }
-        catch (const irods::exception& e) {
-            _ec = extract_irods_error(e);
+        nlohmann::json rows;
+        if (!execute_genquery2(_comm, _p, gql, rows, _ec)) {
             return static_cast<std::uintmax_t>(-1);
         }
-        catch (...) {
-            _ec = make_error_code(SYS_INTERNAL_ERR);
+
+        if (rows.empty() || !rows[0].is_array() || rows[0].empty() || !rows[0][0].is_string()) {
+            _ec = make_error_code(SYS_NO_GOOD_REPLICA);
             return static_cast<std::uintmax_t>(-1);
         }
+
+        std::uint64_t row_size = 0;
+        if (parse_int(rows[0][0].get_ref<const std::string&>(), row_size)) {
+            return row_size;
+        }
+
+        _ec = make_error_code(SYS_INTERNAL_ERR);
+        return static_cast<std::uintmax_t>(-1);
     }
 
     auto data_object_size(rxComm& _comm, const path& _p) -> std::uintmax_t
@@ -1315,25 +1381,22 @@ namespace irods::experimental::filesystem::NAMESPACE_IMPL
             return false;
         }
 
-        const auto gql = fmt::format("select COLL_TYPE, COLL_INFO_1, COLL_INFO_2 "
-                                     "where COLL_NAME = '{}'",
-                                     sql_escape(_p));
+        std::string gql = fmt::format(
+            "select COLL_TYPE, COLL_INFO1, COLL_INFO2 where COLL_NAME = '{}' fetch first 1 rows only",
+            sql_escape(_p));
 
-        try {
-            irods::experimental::query_builder qb;
-            apply_zone_hint(qb, _p);
-
-            for (auto&& row : qb.build(_comm, gql)) {
-                return !row[0].empty() && (!row[1].empty() || !row[2].empty());
-            }
-        }
-        catch (const irods::exception& e) {
-            _ec = extract_irods_error(e);
+        nlohmann::json rows;
+        if (!execute_genquery2(_comm, _p, gql, rows, _ec)) {
             return false;
         }
-        catch (...) {
-            _ec = make_error_code(SYS_INTERNAL_ERR);
-            return false;
+
+        if (!rows.empty() && rows[0].is_array() && rows[0].size() >= 3 &&
+            rows[0][0].is_string() && rows[0][1].is_string() && rows[0][2].is_string())
+        {
+            const auto& ctype = rows[0][0].get_ref<const std::string&>();
+            const auto& info1 = rows[0][1].get_ref<const std::string&>();
+            const auto& info2 = rows[0][2].get_ref<const std::string&>();
+            return !ctype.empty() && (!info1.empty() || !info2.empty());
         }
 
         return false;
@@ -1738,39 +1801,23 @@ namespace irods::experimental::filesystem::NAMESPACE_IMPL
             return {};
         }
 
-        const auto gql = fmt::format("select DATA_CHECKSUM, DATA_MODIFY_TIME "
-                                     "where"
-                                     " COLL_NAME = '{}' and"
-                                     " DATA_NAME = '{}' and"
-                                     " DATA_REPL_STATUS = '1'",
-                                     sql_escape(_p.parent_path_view()),
-                                     sql_escape(_p.object_name_view()));
+        std::string gql = fmt::format(
+            "select DATA_CHECKSUM, DATA_MODIFY_TIME "
+            "where COLL_NAME = '{}' and DATA_NAME = '{}' and DATA_REPL_STATUS = '1' "
+            "order by DATA_MODIFY_TIME desc fetch first 1 rows only",
+            sql_escape(_p.parent_path_view()),
+            sql_escape(_p.object_name_view()));
 
-        try {
-            irods::experimental::query_builder qb;
-            apply_zone_hint(qb, _p);
-
-            std::uint64_t latest_mtime = 0;
-            std::string checksum;
-
-            for (const auto& row : qb.build(_comm, gql)) {
-                std::uint64_t current_mtime = 0;
-                if (parse_int(row[1], current_mtime) && current_mtime > latest_mtime) {
-                    latest_mtime = current_mtime;
-                    checksum = row[0];
-                }
-            }
-
-            return checksum;
-        }
-        catch (const irods::exception& e) {
-            _ec = extract_irods_error(e);
+        nlohmann::json rows;
+        if (!execute_genquery2(_comm, _p, gql, rows, _ec)) {
             return {};
         }
-        catch (...) {
-            _ec = make_error_code(SYS_INTERNAL_ERR);
-            return {};
+
+        if (!rows.empty() && rows[0].is_array() && !rows[0].empty() && rows[0][0].is_string()) {
+            return rows[0][0].get<std::string>();
         }
+
+        return {};
     }
 
     auto data_object_checksum(rxComm& _comm, const path& _p) -> std::string
@@ -1851,14 +1898,14 @@ namespace irods::experimental::filesystem::NAMESPACE_IMPL
         if (DATA_OBJ_T == st.type) {
             sql = fmt::format(
                 "select META_DATA_ATTR_NAME, META_DATA_ATTR_VALUE, META_DATA_ATTR_UNITS "
-                "where DATA_NAME = '{}' and COLL_NAME = '{}'",
+                "where DATA_NAME = '{}' and COLL_NAME = '{}' and META_DATA_ATTR_NAME is not null",
                 sql_escape(_p.object_name_view()),
                 sql_escape(_p.parent_path_view()));
         }
         else if (COLL_OBJ_T == st.type) {
             sql = fmt::format(
                 "select META_COLL_ATTR_NAME, META_COLL_ATTR_VALUE, META_COLL_ATTR_UNITS "
-                "where COLL_NAME = '{}'",
+                "where COLL_NAME = '{}' and META_COLL_ATTR_NAME is not null",
                 sql_escape(_p));
         }
         else {
@@ -1866,24 +1913,26 @@ namespace irods::experimental::filesystem::NAMESPACE_IMPL
             return {};
         }
 
-        try {
-            irods::experimental::query_builder qb;
-            apply_zone_hint(qb, _p);
+        std::vector<metadata> results;
+        if (!execute_genquery2_paged(_comm, _p, sql, _ec, [&](const nlohmann::json& _row) {
+                if (_row.size() < 3 || !_row[0].is_string() || !_row[1].is_string() || !_row[2].is_string()) {
+                    _ec = make_error_code(SYS_INTERNAL_ERR);
+                    return false;
+                }
+                const auto& attr = _row[0].get_ref<const std::string&>();
+                const auto& val = _row[1].get_ref<const std::string&>();
+                const auto& units = _row[2].get_ref<const std::string&>();
+                if (attr.empty() && val.empty() && units.empty()) {
+                    return true;
+                }
+                results.push_back({attr, val, units});
+                return true;
+            }))
+        {
+            return {};
+        }
 
-            std::vector<metadata> results;
-            for (const auto& row : qb.build(_comm, sql)) {
-                results.push_back({row[0], row[1], row[2]});
-            }
-            return results;
-        }
-        catch (const irods::exception& e) {
-            _ec = extract_irods_error(e);
-            return {};
-        }
-        catch (...) {
-            _ec = make_error_code(SYS_INTERNAL_ERR);
-            return {};
-        }
+        return results;
     }
 
     auto get_metadata(rxComm& _comm, const path& _p) -> std::vector<metadata>

@@ -14,6 +14,7 @@
 
 #undef NAMESPACE_IMPL
 #undef rxComm
+#undef rxGenQuery2
 #undef rxSpecificQuery
 #undef rxOpenCollection
 #undef rxReadCollection
@@ -37,6 +38,7 @@
 
 #  define rxComm                                  RsComm
 
+#  define rxGenQuery2                             rs_genquery2
 #  define rxSpecificQuery                         rsSpecificQuery
 #  define rxOpenCollection                        rsOpenCollection
 #  define rxReadCollection                        rsReadCollection
@@ -61,6 +63,7 @@ struct RsComm;
 
 #  define rxComm                                  RcComm
 
+#  define rxGenQuery2                             rc_genquery2
 #  define rxSpecificQuery                         rcSpecificQuery
 #  define rxOpenCollection                        rclOpenCollection
 #  define rxReadCollection                        rclReadCollection
