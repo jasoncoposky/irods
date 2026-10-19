@@ -425,3 +425,257 @@ auto create_resource_vault(const std::string& _vault_name) -> boost::filesystem:
 
     return vault;
 }
+
+namespace
+{
+    class memory_transport final : public io::transport<char>
+    {
+    public:
+        std::string data;
+        pos_type pos{0};
+        bool open_state = false;
+        io::root_resource_name root_resc{"demoResc"};
+        io::leaf_resource_name leaf_resc{"demoResc"};
+        io::replica_number repl_num{0};
+        io::replica_token repl_tok{"tok"};
+        int err = 0;
+
+        bool open(const fs::path&, std::ios_base::openmode) override
+        {
+            if (open_state) {
+                err = SYS_NOT_ALLOWED;
+                return false;
+            }
+            open_state = true;
+            pos = 0;
+            return true;
+        }
+
+        bool open(const fs::path&, const io::replica_number&, std::ios_base::openmode) override
+        {
+            return open_state ? false : (open_state = true);
+        }
+
+        bool open(const fs::path&, const io::root_resource_name&, std::ios_base::openmode) override
+        {
+            return open_state ? false : (open_state = true);
+        }
+
+        bool open(const fs::path&, const io::leaf_resource_name&, std::ios_base::openmode) override
+        {
+            return open_state ? false : (open_state = true);
+        }
+
+        bool open(const io::replica_token&, const fs::path&, const io::replica_number&, std::ios_base::openmode) override
+        {
+            return open_state ? false : (open_state = true);
+        }
+
+        bool open(const io::replica_token&, const fs::path&, const io::leaf_resource_name&, std::ios_base::openmode) override
+        {
+            return open_state ? false : (open_state = true);
+        }
+
+        bool close(const io::on_close_success* = nullptr) override
+        {
+            if (!open_state) {
+                return false;
+            }
+            open_state = false;
+            return true;
+        }
+
+        std::streamsize receive(char_type* _buf, std::streamsize _size) override
+        {
+            const auto cur = static_cast<std::size_t>(pos);
+            if (cur >= data.size()) {
+                return 0;
+            }
+            const auto n = std::min<std::size_t>(static_cast<std::size_t>(_size), data.size() - cur);
+            std::memcpy(_buf, data.data() + cur, n);
+            pos += static_cast<off_type>(n);
+            return static_cast<std::streamsize>(n);
+        }
+
+        std::streamsize send(const char_type* _buf, std::streamsize _size) override
+        {
+            const auto cur = static_cast<std::size_t>(pos);
+            const auto n = static_cast<std::size_t>(_size);
+            if (cur + n > data.size()) {
+                data.resize(cur + n);
+            }
+            std::memcpy(data.data() + cur, _buf, n);
+            pos += static_cast<off_type>(n);
+            return _size;
+        }
+
+        pos_type seekpos(off_type _off, std::ios_base::seekdir _dir) override
+        {
+            off_type base = 0;
+            if (_dir == std::ios_base::beg) {
+                base = 0;
+            }
+            else if (_dir == std::ios_base::cur) {
+                base = static_cast<off_type>(pos);
+            }
+            else if (_dir == std::ios_base::end) {
+                base = static_cast<off_type>(data.size());
+            }
+            else {
+                return pos_type{off_type{-1}};
+            }
+
+            if (base + _off < 0) {
+                return pos_type{off_type{-1}};
+            }
+            pos = base + _off;
+            return pos;
+        }
+
+        bool is_open() const noexcept override
+        {
+            return open_state;
+        }
+
+        int file_descriptor() const noexcept override
+        {
+            return open_state ? 3 : -1;
+        }
+
+        const io::root_resource_name& root_resource_name() const override
+        {
+            return root_resc;
+        }
+
+        const io::leaf_resource_name& leaf_resource_name() const override
+        {
+            return leaf_resc;
+        }
+
+        const io::replica_number& replica_number() const override
+        {
+            return repl_num;
+        }
+
+        const io::replica_token& replica_token() const override
+        {
+            return repl_tok;
+        }
+
+        int last_error() const noexcept override
+        {
+            return err;
+        }
+    };
+} // anonymous namespace
+
+TEST_CASE("dstream offline buffer and transport semantics", "[offline]")
+{
+    SECTION("default constructed dstream has null-safe accessors")
+    {
+        io::dstream ds;
+        CHECK_FALSE(ds.is_open());
+        CHECK(ds.file_descriptor() == -1);
+        CHECK(ds.last_error() == 0);
+    }
+
+    SECTION("move construction preserves buffered get/put pointers without dangling")
+    {
+        memory_transport tp;
+        tp.data = "0123456789abcdef";
+
+        std::string tail;
+        {
+            io::idstream in1{tp, "/tempZone/home/rods/obj"};
+            REQUIRE(in1.is_open());
+            // Prime the internal Get buffer via peek()/get().
+            CHECK(in1.get() == '0');
+            CHECK(in1.peek() == '1');
+
+            auto in2 = std::move(in1);
+            CHECK_FALSE(in1.is_open());
+            REQUIRE(in2.is_open());
+
+            // Reading from in2 after in1's buffer was moved must read from in2's own buffer.
+            std::getline(in2, tail);
+        }
+        CHECK(tail == "123456789abcdef");
+    }
+
+    SECTION("xsgetn does not overflow buffer when Get area has more bytes than requested")
+    {
+        memory_transport tp;
+        tp.data = "abcdefghijklmnopqrstuvwxyz";
+
+        io::idstream in{tp, "/tempZone/home/rods/obj"};
+        REQUIRE(in.is_open());
+
+        // Trigger underflow() so all 26 bytes are in the internal Get buffer.
+        CHECK(in.peek() == 'a');
+
+        char small_buf[5]{};
+        in.read(small_buf, 5);
+        CHECK(in.gcount() == 5);
+        CHECK(std::string_view{small_buf, 5} == "abcde");
+
+        // Now read 10 more bytes (from the remaining 21 buffered bytes).
+        char next_buf[10]{};
+        in.read(next_buf, 10);
+        CHECK(in.gcount() == 10);
+        CHECK(std::string_view{next_buf, 10} == "fghijklmno");
+    }
+
+    SECTION("xsgetn combines buffered bytes and transport bytes accurately")
+    {
+        memory_transport tp;
+        tp.data.resize(5000, 'X');
+        std::memcpy(tp.data.data(), "HELLO", 5);
+        std::memcpy(tp.data.data() + 4096, "WORLD", 5);
+
+        io::idstream in{tp, "/tempZone/home/rods/obj"};
+        REQUIRE(in.is_open());
+
+        // Trigger underflow() to load the first 4096 bytes into buf_.
+        CHECK(in.peek() == 'H');
+
+        std::string out(4101, '\0');
+        in.read(out.data(), static_cast<std::streamsize>(out.size()));
+        CHECK(in.gcount() == 4101);
+        CHECK(out.substr(0, 5) == "HELLO");
+        CHECK(out.substr(4096, 5) == "WORLD");
+    }
+
+    SECTION("seekg and tellg account for unconsumed read-ahead bytes in Get area")
+    {
+        memory_transport tp;
+        tp.data = "0123456789abcdef";
+
+        io::idstream in{tp, "/tempZone/home/rods/obj"};
+        REQUIRE(in.is_open());
+
+        // Read 4 characters via get() so underflow() buffers all 16 bytes and advances gptr() by 4.
+        CHECK(in.get() == '0');
+        CHECK(in.get() == '1');
+        CHECK(in.get() == '2');
+        CHECK(in.get() == '3');
+
+        // Logical position must be 4 even though the transport read ahead to 16.
+        CHECK(in.tellg() == std::streampos{4});
+
+        // Relative seek back by 2 from logical pos 4 -> pos 2.
+        REQUIRE(in.seekg(-2, std::ios::cur));
+        CHECK(in.tellg() == std::streampos{2});
+        CHECK(in.get() == '2');
+    }
+
+    SECTION("double open on already-open stream fails cleanly")
+    {
+        memory_transport tp;
+        io::odstream out{tp, "/tempZone/home/rods/obj"};
+        REQUIRE(out.is_open());
+
+        out.open(tp, "/tempZone/home/rods/obj2");
+        CHECK(out.fail());
+    }
+}
+

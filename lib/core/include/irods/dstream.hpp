@@ -6,7 +6,7 @@
 
 #include <streambuf>
 #include <type_traits>
-#include <array>
+#include <vector>
 #include <string>
 #include <stdexcept>
 #include <algorithm>
@@ -40,7 +40,7 @@ namespace irods::experimental::io
         using base_type = std::basic_streambuf<CharT, Traits>;
 
         // clang-format off
-        inline static constexpr auto buffer_size          = 4096;
+        inline static constexpr std::size_t buffer_size   = 4096;
 
         // Errors
         inline static constexpr auto external_write_error = -1;
@@ -55,25 +55,30 @@ namespace irods::experimental::io
         {
         }
 
-        basic_data_object_buf(basic_data_object_buf&& _other)
+        basic_data_object_buf(basic_data_object_buf&& _other) noexcept
             : basic_data_object_buf{}
         {
             swap(_other);
         }
 
-        basic_data_object_buf& operator=(basic_data_object_buf&& _other)
+        basic_data_object_buf& operator=(basic_data_object_buf&& _other) noexcept
         {
-            close();
-            swap(_other);
+            if (this != &_other) {
+                close();
+                transport_ = nullptr;
+                this->setg(nullptr, nullptr, nullptr);
+                this->setp(nullptr, nullptr);
+                swap(_other);
+            }
             return *this;
         }
 
-        ~basic_data_object_buf()
+        ~basic_data_object_buf() override
         {
             close();
         }
 
-        void swap(basic_data_object_buf& _other)
+        void swap(basic_data_object_buf& _other) noexcept
         {
             using std::swap;
 
@@ -82,7 +87,7 @@ namespace irods::experimental::io
             swap(buf_, _other.buf_);
         }
 
-        friend void swap(basic_data_object_buf& _lhs, basic_data_object_buf& _rhs)
+        friend void swap(basic_data_object_buf& _lhs, basic_data_object_buf& _rhs) noexcept
         {
             _lhs.swap(_rhs);
         }
@@ -91,20 +96,14 @@ namespace irods::experimental::io
         {
             return transport_ && transport_->is_open();
         }
-	
+
         basic_data_object_buf* open(transport<char_type>& _transport,
                                     const filesystem::path& _path,
                                     std::ios_base::openmode _mode)
         {
-            transport_ = &_transport;
-
-            if (!transport_->open(_path, _mode)) {
-                return nullptr;
-            }
-
-            init_get_or_put_area(_mode);
-
-            return this;
+            return open_impl(_transport, _mode, [&] {
+                return _transport.open(_path, _mode);
+            });
         }
 
         basic_data_object_buf* open(transport<char_type>& _transport,
@@ -112,15 +111,9 @@ namespace irods::experimental::io
                                     const replica_number& _replica_number,
                                     std::ios_base::openmode _mode)
         {
-            transport_ = &_transport;
-
-            if (!transport_->open(_path, _replica_number, _mode)) {
-                return nullptr;
-            }
-
-            init_get_or_put_area(_mode);
-
-            return this;
+            return open_impl(_transport, _mode, [&] {
+                return _transport.open(_path, _replica_number, _mode);
+            });
         }
 
         basic_data_object_buf* open(transport<char_type>& _transport,
@@ -128,15 +121,9 @@ namespace irods::experimental::io
                                     const root_resource_name& _root_resource_name,
                                     std::ios_base::openmode _mode)
         {
-            transport_ = &_transport;
-
-            if (!transport_->open(_path, _root_resource_name, _mode)) {
-                return nullptr;
-            }
-
-            init_get_or_put_area(_mode);
-
-            return this;
+            return open_impl(_transport, _mode, [&] {
+                return _transport.open(_path, _root_resource_name, _mode);
+            });
         }
 
         basic_data_object_buf* open(transport<char_type>& _transport,
@@ -144,15 +131,9 @@ namespace irods::experimental::io
                                     const leaf_resource_name& _leaf_resource_name,
                                     std::ios_base::openmode _mode)
         {
-            transport_ = &_transport;
-
-            if (!transport_->open(_path, _leaf_resource_name, _mode)) {
-                return nullptr;
-            }
-
-            init_get_or_put_area(_mode);
-
-            return this;
+            return open_impl(_transport, _mode, [&] {
+                return _transport.open(_path, _leaf_resource_name, _mode);
+            });
         }
 
         basic_data_object_buf* open(transport<char_type>& _transport,
@@ -161,15 +142,9 @@ namespace irods::experimental::io
                                     const replica_number& _replica_number,
                                     std::ios_base::openmode _mode)
         {
-            transport_ = &_transport;
-
-            if (!transport_->open(_replica_token, _path, _replica_number, _mode)) {
-                return nullptr;
-            }
-
-            init_get_or_put_area(_mode);
-
-            return this;
+            return open_impl(_transport, _mode, [&] {
+                return _transport.open(_replica_token, _path, _replica_number, _mode);
+            });
         }
 
         basic_data_object_buf* open(transport<char_type>& _transport,
@@ -178,20 +153,14 @@ namespace irods::experimental::io
                                     const leaf_resource_name& _leaf_resource_name,
                                     std::ios_base::openmode _mode)
         {
-            transport_ = &_transport;
-
-            if (!transport_->open(_replica_token, _path, _leaf_resource_name, _mode)) {
-                return nullptr;
-            }
-
-            init_get_or_put_area(_mode);
-
-            return this;
+            return open_impl(_transport, _mode, [&] {
+                return _transport.open(_replica_token, _path, _leaf_resource_name, _mode);
+            });
         }
 
         basic_data_object_buf* close(const on_close_success* _on_close_success = nullptr)
         {
-            if (!transport_ || !transport_->is_open()) {
+            if (!is_open()) {
                 return nullptr;
             }
 
@@ -205,12 +174,15 @@ namespace irods::experimental::io
                 sb = nullptr;
             }
 
+            this->setg(nullptr, nullptr, nullptr);
+            this->setp(nullptr, nullptr);
+
             return sb;
         }
 
         int file_descriptor() const noexcept
         {
-            return transport_->file_descriptor();;
+            return transport_ ? transport_->file_descriptor() : -1;
         }
 
         const root_resource_name& root_resource_name() const
@@ -235,12 +207,16 @@ namespace irods::experimental::io
 
         [[nodiscard]] int last_error() const noexcept
         {
-            return transport_->last_error();
+            return transport_ ? transport_->last_error() : 0;
         }
 
     protected:
         int_type underflow() override
         {
+            if (!is_open()) {
+                return traits_type::eof();
+            }
+
             prepare_for_input();
 
             // If the "Get" area has not been fully consumed, then return the
@@ -252,7 +228,9 @@ namespace irods::experimental::io
             // The "Get" area has been consumed. Fill the internal buffer with
             // new data from the data object.
 
-            const auto bytes_read = transport_->receive(buf_.data(), buf_.size() * sizeof(char_type));
+            const auto bytes_read = transport_->receive(
+                buf_.data(),
+                static_cast<std::streamsize>(buf_.size() * sizeof(char_type)));
 
             if (bytes_read <= 0) {
                 return traits_type::eof();
@@ -266,6 +244,10 @@ namespace irods::experimental::io
 
         int_type overflow(int_type _c = traits_type::eof()) override
         {
+            if (!is_open()) {
+                return traits_type::eof();
+            }
+
             prepare_for_output();
 
             if (flush_buffer() == external_write_error) {
@@ -273,7 +255,7 @@ namespace irods::experimental::io
             }
 
             if (!traits_type::eq_int_type(_c, traits_type::eof())) {
-                return this->sputc(_c);
+                return this->sputc(traits_type::to_char_type(_c));
             }
 
             return traits_type::not_eof(_c);
@@ -281,29 +263,75 @@ namespace irods::experimental::io
 
         std::streamsize xsgetn(char_type* _buffer, std::streamsize _buffer_size) override
         {
-            prepare_for_input();
-
-            const auto bytes_to_copy = this->egptr() - this->gptr(); 
-
-            // If there are bytes in the internal buffer that haven't been consumed,
-            // then copy those bytes from the internal buffer into "_buffer".
-            if (bytes_to_copy > 0) {
-                std::memcpy(_buffer, this->gptr(), bytes_to_copy * sizeof(char_type));
-                this->gbump(bytes_to_copy);
+            if (!is_open() || _buffer_size <= 0) {
+                return 0;
             }
 
-            return transport_->receive(_buffer + bytes_to_copy, (_buffer_size - bytes_to_copy) * sizeof(char_type));
+            prepare_for_input();
+
+            const auto avail = static_cast<std::streamsize>(this->egptr() - this->gptr());
+            const auto bytes_to_copy = std::min(avail, _buffer_size);
+
+            // If there are bytes in the internal buffer that haven't been consumed,
+            // then copy up to "_buffer_size" bytes from the internal buffer into "_buffer".
+            if (bytes_to_copy > 0) {
+                std::memcpy(_buffer, this->gptr(), static_cast<std::size_t>(bytes_to_copy) * sizeof(char_type));
+                this->gbump(static_cast<int>(bytes_to_copy));
+            }
+
+            const auto remaining = _buffer_size - bytes_to_copy;
+            if (remaining == 0) {
+                return bytes_to_copy;
+            }
+
+            // Zero-copy fast path when the remaining request is at least as large as the internal buffer.
+            if (remaining >= static_cast<std::streamsize>(buf_.size())) {
+                const auto bytes_read = transport_->receive(
+                    _buffer + bytes_to_copy,
+                    remaining * static_cast<std::streamsize>(sizeof(char_type)));
+                if (bytes_read <= 0) {
+                    return bytes_to_copy;
+                }
+
+                return bytes_to_copy + bytes_read;
+            }
+
+            // Buffered path for small reads to avoid issuing an RPC on every small read.
+            const auto bytes_read = transport_->receive(
+                buf_.data(),
+                static_cast<std::streamsize>(buf_.size() * sizeof(char_type)));
+            if (bytes_read <= 0) {
+                return bytes_to_copy;
+            }
+
+            auto* pbase = buf_.data();
+            const auto chunk = std::min(remaining, bytes_read);
+            std::memcpy(_buffer + bytes_to_copy, pbase, static_cast<std::size_t>(chunk) * sizeof(char_type));
+            this->setg(pbase, pbase + chunk, pbase + bytes_read);
+
+            return bytes_to_copy + chunk;
         }
 
         std::streamsize xsputn(const char_type* _buffer, std::streamsize _buffer_size) override
         {
+            if (!is_open() || _buffer_size <= 0) {
+                return 0;
+            }
+
             prepare_for_output();
 
             if (flush_buffer() == external_write_error) {
-                return external_write_error;
+                return 0;
             }
 
-            return transport_->send(_buffer, _buffer_size * sizeof(char_type));
+            const auto bytes_written = transport_->send(
+                _buffer,
+                _buffer_size * static_cast<std::streamsize>(sizeof(char_type)));
+            if (bytes_written <= 0) {
+                return 0;
+            }
+
+            return bytes_written;
         }
 
         int sync() override
@@ -319,7 +347,7 @@ namespace irods::experimental::io
         {
             // If the "next" pointer of the "Get" area points to the beginning of the
             // "Get" area, then return immediately.
-            if (this->gptr() == this->eback()) {
+            if (!this->gptr() || this->gptr() == this->eback()) {
                 return traits_type::eof();
             }
 
@@ -339,23 +367,61 @@ namespace irods::experimental::io
                          std::ios_base::seekdir _dir,
                          std::ios_base::openmode _which = std::ios_base::in | std::ios_base::out) override
         {
+            (void) _which;
+
+            if (!is_open()) {
+                return seek_error;
+            }
+
             if (this->sync() != 0) {
                 return seek_error;
             }
 
-            return transport_->seekpos(_off, _dir);
+            if (this->gptr() < this->egptr() && _dir == std::ios_base::cur) {
+                _off -= static_cast<off_type>(this->egptr() - this->gptr());
+            }
+
+            const auto pos = transport_->seekpos(_off, _dir);
+            if (pos != seek_error && this->gptr()) {
+                auto* pbase = buf_.data();
+                this->setg(pbase, pbase, pbase);
+            }
+
+            return pos;
         }
 
         pos_type seekpos(pos_type _pos, std::ios_base::openmode _which = std::ios_base::in | std::ios_base::out) override
         {
-            if (this->sync() != 0) {
-                return seek_error;
-            }
-
-            return transport_->seekpos(_pos, std::ios_base::beg);
+            return seekoff(off_type{_pos}, std::ios_base::beg, _which);
         }
 
     private:
+        template <typename OpenFunc>
+        basic_data_object_buf* open_impl(transport<char_type>& _transport,
+                                         std::ios_base::openmode _mode,
+                                         OpenFunc&& _open_func)
+        {
+            if (is_open()) {
+                return nullptr;
+            }
+
+            transport_ = &_transport;
+
+            if (!_open_func()) {
+                return nullptr;
+            }
+
+            if (buf_.empty()) {
+                buf_.resize(buffer_size);
+            }
+
+            this->setg(nullptr, nullptr, nullptr);
+            this->setp(nullptr, nullptr);
+            init_get_or_put_area(_mode);
+
+            return this;
+        }
+
         void prepare_for_input()
         {
             // Return if the pointers of "Get" area have already been set up.
@@ -405,22 +471,34 @@ namespace irods::experimental::io
         {
             const auto bytes_to_send = this->pptr() - this->pbase();
 
-            if (bytes_to_send == 0) {
+            if (bytes_to_send <= 0) {
                 return 0;
             }
 
-            const auto bytes_written = transport_->send(buf_.data(), bytes_to_send * sizeof(char_type));
+            const auto bytes_written = transport_->send(
+                this->pbase(),
+                bytes_to_send * static_cast<std::streamsize>(sizeof(char_type)));
 
-            if (bytes_written < 0) {
+            if (bytes_written <= 0) {
                 return external_write_error;
             }
 
-            this->pbump(-bytes_written);
+            if (bytes_written < bytes_to_send) {
+                const auto remaining = bytes_to_send - bytes_written;
+                std::memmove(
+                    buf_.data(),
+                    this->pbase() + bytes_written,
+                    static_cast<std::size_t>(remaining) * sizeof(char_type));
+                this->pbump(-static_cast<int>(bytes_written));
+                return external_write_error;
+            }
+
+            this->pbump(-static_cast<int>(bytes_written));
 
             return 0;
         }
 
-        std::array<char_type, buffer_size> buf_;
+        std::vector<char_type> buf_;
         transport<char_type>* transport_;
     }; // basic_data_object_buf
 

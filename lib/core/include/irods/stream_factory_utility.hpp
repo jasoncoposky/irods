@@ -53,28 +53,30 @@ namespace irods::experimental::io
         /// Move constructor.
         ///
         /// \param[in] _other The stream to move from.
-        managed_dstream(managed_dstream&& _other)
+        managed_dstream(managed_dstream&& _other) noexcept
             : std::iostream{std::move(_other)}
             , conn{std::move(_other.conn)}
             , transport{std::move(_other.transport)}
             , stream{std::move(_other.stream)}
         {
             this->set_rdbuf(stream.rdbuf());
-            this->setstate(_other.rdstate());
+            this->clear(stream.rdstate());
         }
 
         /// Move assignment operator.
         ///
         /// \param[in] _other The stream to move from.
-        auto operator=(managed_dstream&& _other) -> managed_dstream&
+        auto operator=(managed_dstream&& _other) noexcept -> managed_dstream&
         {
-            std::iostream::operator=(std::move(_other));
-            conn = std::move(_other.conn);
-            transport = std::move(_other.transport);
-            stream = std::move(_other.stream);
+            if (this != &_other) {
+                std::iostream::operator=(std::move(_other));
+                conn = std::move(_other.conn);
+                transport = std::move(_other.transport);
+                stream = std::move(_other.stream);
 
-            this->set_rdbuf(stream.rdbuf());
-            this->setstate(_other.rdstate());
+                this->set_rdbuf(stream.rdbuf());
+                this->clear(stream.rdstate());
+            }
 
             return *this;
         }
@@ -88,6 +90,7 @@ namespace irods::experimental::io
         auto close(io::on_close_success* _on_close_success = nullptr) -> void
         {
             stream.close(_on_close_success);
+            this->clear(stream.rdstate());
         }
 
         irods::connection_pool::connection_proxy conn;
@@ -107,7 +110,8 @@ namespace irods::experimental::io
     /// \return A new factory function.
     ///
     /// \since 4.2.9
-    auto make_dstream_factory(irods::connection_pool& _conn_pool, std::string _logical_path)
+    inline auto make_dstream_factory(irods::connection_pool& _conn_pool,
+                                     irods::experimental::filesystem::path _logical_path)
     {
         using openmode = std::ios_base::openmode;
 
@@ -127,6 +131,7 @@ namespace irods::experimental::io
             }
 
             d.rdbuf(d.stream.rdbuf());
+            d.clear(d.stream.rdstate());
 
             return d;
         };
@@ -154,7 +159,7 @@ namespace irods::experimental::io
     /// \since 4.2.11
     template <typename ReplicaIdentifier>
     auto make_dstream_factory(irods::connection_pool& _conn_pool,
-                              std::string _logical_path,
+                              irods::experimental::filesystem::path _logical_path,
                               ReplicaIdentifier&& _replica_id)
     {
         using openmode = std::ios_base::openmode;
@@ -182,6 +187,7 @@ namespace irods::experimental::io
             }
 
             d.rdbuf(d.stream.rdbuf());
+            d.clear(d.stream.rdstate());
 
             return d;
         };
