@@ -101,29 +101,24 @@ namespace
         -> id_type;
 
     auto entity_has_acls_set_on_object(nanodbc::connection& _db_conn,
-                                       const std::string_view _db_instance_name,
                                        id_type _object_id,
                                        id_type _entity_id) -> bool;
 
     auto insert_acl(nanodbc::connection& _db_conn,
-                    const std::string_view _db_instance_name,
                     id_type _object_id,
                     id_type _entity_id,
                     std::string_view acl) -> void;
 
     auto update_acl(nanodbc::connection& _db_conn,
-                    const std::string_view _db_instance_name,
                     id_type _object_id,
                     id_type _entity_id,
                     std::string_view new_acl) -> void;
 
     auto remove_acl(nanodbc::connection& _db_conn,
-                    const std::string_view _db_instance_name,
                     id_type _object_id,
                     id_type _entity_id) -> void;
 
     auto execute_acl_operation(nanodbc::connection& _db_conn,
-                               const std::string_view _db_instance_name,
                                id_type _object_id,
                                const json& _operation,
                                int _op_index) -> std::tuple<int, bytesBuf_t*>;
@@ -224,7 +219,6 @@ namespace
     }
 
     auto entity_has_acls_set_on_object(nanodbc::connection& _db_conn,
-                                       std::string_view _db_instance_name,
                                        id_type _object_id,
                                        id_type _entity_id) -> bool
     {
@@ -232,31 +226,20 @@ namespace
 
         prepare(stmt, "select count(*) from R_OBJT_ACCESS where object_id = ? and user_id = ?");
 
-        if ("oracle" == _db_instance_name) {
-            const auto object_id_string = std::to_string(_object_id);
-            const auto entity_id_string = std::to_string(_entity_id);
+        const auto object_id_string = std::to_string(_object_id);
+        const auto entity_id_string = std::to_string(_entity_id);
 
-            stmt.bind(0, object_id_string.data());
-            stmt.bind(1, entity_id_string.data());
+        stmt.bind(0, object_id_string.data());
+        stmt.bind(1, entity_id_string.data());
 
-            if (auto row = execute(stmt); row.next()) {
-                return row.get<std::uint64_t>(0) > 0;
-            }
-        }
-        else {
-            stmt.bind(0, &_object_id);
-            stmt.bind(1, &_entity_id);
-
-            if (auto row = execute(stmt); row.next()) {
-                return row.get<std::uint64_t>(0) > 0;
-            }
+        if (auto row = execute(stmt); row.next()) {
+            return row.get<std::uint64_t>(0) > 0;
         }
 
         return false;
     }
 
     auto insert_acl(nanodbc::connection& _db_conn,
-                    const std::string_view _db_instance_name,
                     id_type _object_id,
                     id_type _entity_id,
                     std::string_view _new_acl) -> void
@@ -273,29 +256,19 @@ namespace
         const auto timestamp = fmt::format("{:011}", duration_cast<seconds>(system_clock::now().time_since_epoch()).count());
         const auto access_type_id = to_access_type_id(_new_acl);
 
+        const auto object_id_string = std::to_string(_object_id);
+        const auto entity_id_string = std::to_string(_entity_id);
+
+        stmt.bind(0, object_id_string.data());
+        stmt.bind(1, entity_id_string.data());
         stmt.bind(2, &access_type_id);
         stmt.bind(3, timestamp.c_str());
         stmt.bind(4, timestamp.c_str());
 
-        if ("oracle" == _db_instance_name) {
-            const auto object_id_string = std::to_string(_object_id);
-            const auto entity_id_string = std::to_string(_entity_id);
-
-            stmt.bind(0, object_id_string.data());
-            stmt.bind(1, entity_id_string.data());
-
-            execute(stmt);
-        }
-        else {
-            stmt.bind(0, &_object_id);
-            stmt.bind(1, &_entity_id);
-
-            execute(stmt);
-        }
+        execute(stmt);
     }
 
     auto update_acl(nanodbc::connection& _db_conn,
-                    const std::string_view _db_instance_name,
                     id_type _object_id,
                     id_type _entity_id,
                     std::string_view _new_acl) -> void
@@ -311,28 +284,18 @@ namespace
         const auto timestamp = fmt::format("{:011}", duration_cast<seconds>(system_clock::now().time_since_epoch()).count());
         const auto access_type_id = to_access_type_id(_new_acl);
 
+        const auto object_id_string = std::to_string(_object_id);
+        const auto entity_id_string = std::to_string(_entity_id);
+
         stmt.bind(0, &access_type_id);
         stmt.bind(1, timestamp.c_str());
+        stmt.bind(2, object_id_string.data());
+        stmt.bind(3, entity_id_string.data());
 
-        if ("oracle" == _db_instance_name) {
-            const auto object_id_string = std::to_string(_object_id);
-            const auto entity_id_string = std::to_string(_entity_id);
-
-            stmt.bind(2, object_id_string.data());
-            stmt.bind(3, entity_id_string.data());
-
-            execute(stmt);
-        }
-        else {
-            stmt.bind(2, &_object_id);
-            stmt.bind(3, &_entity_id);
-
-            execute(stmt);
-        }
+        execute(stmt);
     }
 
     auto remove_acl(nanodbc::connection& _db_conn,
-                    const std::string_view _db_instance_name,
                     id_type _object_id,
                     id_type _entity_id) -> void
     {
@@ -340,21 +303,13 @@ namespace
 
         prepare(stmt, "delete from R_OBJT_ACCESS where object_id = ? and user_id = ?");
 
-        if ("oracle" == _db_instance_name) {
-            const auto object_id_string = std::to_string(_object_id);
-            const auto entity_id_string = std::to_string(_entity_id);
+        const auto object_id_string = std::to_string(_object_id);
+        const auto entity_id_string = std::to_string(_entity_id);
 
-            stmt.bind(0, object_id_string.data());
-            stmt.bind(1, entity_id_string.data());
+        stmt.bind(0, object_id_string.data());
+        stmt.bind(1, entity_id_string.data());
 
-            execute(stmt);
-        }
-        else {
-            stmt.bind(0, &_object_id);
-            stmt.bind(1, &_entity_id);
-
-            execute(stmt);
-        }
+        execute(stmt);
     }
 
     auto get_entity_id(nanodbc::connection& _db_conn, std::string_view _entity_name, std::string_view _entity_zone)
@@ -375,7 +330,6 @@ namespace
     }
 
     auto execute_acl_operation(nanodbc::connection& _db_conn,
-                               const std::string_view _db_instance_name,
                                id_type _object_id,
                                const json& _op,
                                int _op_index) -> std::tuple<int, bytesBuf_t*>
@@ -395,13 +349,13 @@ namespace
             throw_if_invalid_entity_id(entity_id);
 
             if (acl == "null") {
-                remove_acl(_db_conn, _db_instance_name, _object_id, entity_id);
+                remove_acl(_db_conn, _object_id, entity_id);
             }
-            else if (entity_has_acls_set_on_object(_db_conn, _db_instance_name, _object_id, entity_id)) {
-                update_acl(_db_conn, _db_instance_name, _object_id, entity_id, acl);
+            else if (entity_has_acls_set_on_object(_db_conn, _object_id, entity_id)) {
+                update_acl(_db_conn, _object_id, entity_id, acl);
             }
             else {
-                insert_acl(_db_conn, _db_instance_name, _object_id, entity_id, acl);
+                insert_acl(_db_conn, _object_id, entity_id, acl);
             }
 
             return {0, nullptr};
@@ -552,7 +506,6 @@ namespace
 
                 for (json::size_type i = 0; i < operations.size(); ++i) {
                     const auto [ec, bbuf] = execute_acl_operation(_trans.connection(),
-                                                                  db_instance_name,
                                                                   object_id,
                                                                   operations[i],
                                                                   i);

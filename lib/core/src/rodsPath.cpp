@@ -10,6 +10,7 @@
 #include <map>
 #include <string>
 #include <string_view>
+#include <unordered_set>
 
 #include <boost/filesystem/operations.hpp>
 #include <boost/filesystem/convenience.hpp>
@@ -557,13 +558,34 @@ auto freeRodsPathInpMembers(rodsPathInp_t* path) -> void
         return;
     }
 
-    for (int i{}; i < path->numSrc; i++) {
-        // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic)
-        clearRodsPath(&path->srcPath[i]);
-        // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic)
-        clearRodsPath(&path->targPath[i]);
+    std::unordered_set<rodsObjStat_t*> freed_obj_stats;
+
+    auto safe_clear = [&freed_obj_stats](rodsPath_t* rp) {
+        if (!rp) {
+            return;
+        }
+        if (rp->rodsObjStat) {
+            if (freed_obj_stats.insert(rp->rodsObjStat).second) {
+                freeRodsObjStat(rp->rodsObjStat);
+            }
+            rp->rodsObjStat = nullptr;
+        }
+        std::memset(rp, 0, sizeof(rodsPath_t));
+    };
+
+    if (path->srcPath) {
+        for (int i{}; i < path->numSrc; i++) {
+            // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic)
+            safe_clear(&path->srcPath[i]);
+        }
     }
-    clearRodsPath(path->destPath);
+    if (path->targPath) {
+        for (int i{}; i < path->numSrc; i++) {
+            // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic)
+            safe_clear(&path->targPath[i]);
+        }
+    }
+    safe_clear(path->destPath);
 
     // NOLINTNEXTLINE(cppcoreguidelines-no-malloc,cppcoreguidelines-owning-memory)
     std::free(path->srcPath);

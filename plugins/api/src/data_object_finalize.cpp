@@ -48,7 +48,6 @@
 
 #include <nlohmann/json.hpp>
 #include <fmt/format.h>
-#include <nanodbc/nanodbc.h>
 
 #include <cstdlib>
 #include <string>
@@ -222,25 +221,6 @@ namespace
         const bool _admin_operation,
         BytesBuf** _output) -> int
     {
-        // Establish connection with the database for use with nanodbc.
-        // A connection with the database is already established via the
-        // RsComm, but this allows us to atomically update the database
-        // without the complicated machinery of the existing database plugin.
-        std::string db_instance_name;
-        nanodbc::connection db_conn;
-        try {
-            std::tie(db_instance_name, db_conn) = ic::new_database_connection();
-        }
-        catch (const std::exception& e) {
-            const auto msg = e.what();
-
-            irods::log(LOG_ERROR, fmt::format("[{}:{}] - [{}]", __FUNCTION__, __LINE__, msg));
-
-            *_output = irods::to_bytes_buffer(make_error_object(msg).dump());
-
-            return SYS_CONFIG_FILE_ERR;
-        }
-
         try {
             // This section will perform permissions checks and update ticket information
             // only if not running in privileged mode. This matches the behavior of

@@ -26,8 +26,11 @@
 #include "irods/rodsClient.h"
 #include "irods/icatHighLevelRoutines.hpp"
 #include "irods/irods_logger.hpp"
-#include "irods/private/mid_level.hpp"
+#include "irods/catalog.hpp"
+#include "irods/private/nanodbc_executor.hpp"
+#include "irods/private/catalog_access_control.hpp"
 #include "irods/private/low_level.hpp"
+#include "irods/private/database_session.hpp"
 #include "irods/irods_virtual_path.hpp"
 #include "irods/stringOpr.h"
 
@@ -36,11 +39,114 @@
 #include <string>
 #include <algorithm>
 
+namespace {
+
+int get_active_db_type()
+{
+    icatSessionStruct* icss = nullptr;
+    if (chlGetRcs(&icss) == 0 && icss != nullptr) {
+        return icss->databaseType;
+    }
+    return DB_TYPE_POSTGRES;
+}
+
+int gq_free_statement(int statementNumber, icatSessionStruct* icss)
+{
+    return cllFreeStatement(icss, statementNumber);
+}
+
+int gq_get_first_row_from_sql(const char* sql, int* statement, int skipCount,
+                              std::vector<std::string>& bind_vars, icatSessionStruct* icss)
+{
+    int i = cllExecSqlWithResultBV(icss, statement, sql, bind_vars);
+    if (i != 0) {
+        cllFreeStatement(icss, *statement);
+        *statement = UNINITIALIZED_STATEMENT_NUMBER;
+        if (i <= CAT_ENV_ERR) {
+            return i;
+        }
+        return CAT_SQL_ERR;
+    }
+
+    const auto& flavor = irods::experimental::catalog::get_db_flavor(icss->databaseType);
+    if (flavor.row_offset_requires_cursor_skip && skipCount > 0) {
+        for (int j = 0; j < skipCount; ++j) {
+            i = cllGetRow(icss, *statement);
+            if (i != 0) {
+                cllFreeStatement(icss, *statement);
+                *statement = UNINITIALIZED_STATEMENT_NUMBER;
+                return CAT_GET_ROW_ERR;
+            }
+            if (icss->stmtPtr[*statement]->numOfCols == 0) {
+                cllFreeStatement(icss, *statement);
+                *statement = UNINITIALIZED_STATEMENT_NUMBER;
+                return CAT_NO_ROWS_FOUND;
+            }
+        }
+    }
+
+    i = cllGetRow(icss, *statement);
+    if (i != 0) {
+        cllFreeStatement(icss, *statement);
+        *statement = UNINITIALIZED_STATEMENT_NUMBER;
+        return CAT_GET_ROW_ERR;
+    }
+    if (icss->stmtPtr[*statement]->numOfCols == 0) {
+        cllFreeStatement(icss, *statement);
+        *statement = UNINITIALIZED_STATEMENT_NUMBER;
+        return CAT_NO_ROWS_FOUND;
+    }
+
+    return 0;
+}
+
+int gq_get_next_row_from_statement(int stmtNum, icatSessionStruct* icss)
+{
+    if (0 != cllGetRow(icss, stmtNum)) {
+        cllFreeStatement(icss, stmtNum);
+        return CAT_GET_ROW_ERR;
+    }
+    if (icss->stmtPtr[stmtNum]->numOfCols == 0) {
+        cllFreeStatement(icss, stmtNum);
+        return CAT_NO_ROWS_FOUND;
+    }
+    return 0;
+}
+
+int gq_get_integer_value_from_sql_v3(const char* sql, rodsLong_t* iVal,
+                                     std::vector<std::string>& bind_vars, icatSessionStruct* icss)
+{
+    int stmtNum = UNINITIALIZED_STATEMENT_NUMBER;
+    int i = cllExecSqlWithResultBV(icss, &stmtNum, sql, bind_vars);
+    if (i != 0) {
+        cllFreeStatement(icss, stmtNum);
+        return i <= CAT_ENV_ERR ? i : CAT_SQL_ERR;
+    }
+    i = cllGetRow(icss, stmtNum);
+    if (i != 0) {
+        cllFreeStatement(icss, stmtNum);
+        return CAT_GET_ROW_ERR;
+    }
+    if (icss->stmtPtr[stmtNum]->numOfCols == 0) {
+        cllFreeStatement(icss, stmtNum);
+        return CAT_NO_ROWS_FOUND;
+    }
+    if (icss->stmtPtr[stmtNum]->resultValue[0] == nullptr || icss->stmtPtr[stmtNum]->resultValue[0][0] == '\0') {
+        cllFreeStatement(icss, stmtNum);
+        return CAT_NO_ROWS_FOUND;
+    }
+    *iVal = strtoll(icss->stmtPtr[stmtNum]->resultValue[0], nullptr, 10);
+    cllFreeStatement(icss, stmtNum);
+    return 0;
+}
+
+} // anonymous namespace
+
 using log_db = irods::experimental::log::database;
 using log_gq = irods::experimental::log::genquery1;
 
 void icatGeneralQuerySetup();
-int insertWhere( char *condition, int option );
+int insertWhere( char *condition, int option, std::vector<std::string>& bind_vars );
 
 /* use a column size of at least this many characters: */
 #define MINIMUM_COL_SIZE 50
@@ -728,11 +834,9 @@ int setTable( int column, int sel, int selectOption, int castOption ) {
                     /* For PostgreSQL and MySQL, 'decimal' seems to work
                        fine but for Oracle 'number' is needed to handle
                        both integer and floating point. */
-#if ORA_ICAT
-                    if ( !rstrcat( whereSQL, " as number)", MAX_SQL_SIZE_GQ ) ) { return USER_STRLEN_TOOLONG; }
-#else
-                    if ( !rstrcat( whereSQL, " as decimal)", MAX_SQL_SIZE_GQ ) ) { return USER_STRLEN_TOOLONG; }
-#endif
+                    const auto& flavor = irods::experimental::catalog::get_db_flavor(get_active_db_type());
+                    const std::string cast_str{flavor.cast_decimal_or_number};
+                    if ( !rstrcat( whereSQL, cast_str.c_str(), MAX_SQL_SIZE_GQ ) ) { return USER_STRLEN_TOOLONG; }
                 }
             }
 
@@ -940,7 +1044,7 @@ compoundConditionSpecified( char *condition ) {
    Uses and updates whereSQL in addition to the arguments.
 */
 int
-handleCompoundCondition( char *condition, int prevWhereLen ) {
+handleCompoundCondition( char *condition, int prevWhereLen, std::vector<std::string>& bind_vars ) {
     char tabAndColumn[MAX_SQL_SIZE_GQ];
     char condPart1[MAX_NAME_LEN * 2];
     static char condPart2[MAX_NAME_LEN * 2];
@@ -1023,7 +1127,7 @@ handleCompoundCondition( char *condition, int prevWhereLen ) {
                        ( MAX_SQL_SIZE_GQ * 2 ) - conditionsForBindIx ) ) {
             return USER_STRLEN_TOOLONG;
         }
-        status = insertWhere( ( char* )&conditionsForBind[conditionsForBindIx], 0 );
+        status = insertWhere( ( char* )&conditionsForBind[conditionsForBindIx], 0, bind_vars );
         if ( status ) {
             return status;
         }
@@ -1038,7 +1142,7 @@ handleCompoundCondition( char *condition, int prevWhereLen ) {
     }
 
     if ( !rstrcat( whereSQL, tabAndColumn, MAX_SQL_SIZE_GQ ) ) { return USER_STRLEN_TOOLONG; }
-    status = insertWhere( condPart2, 0 );
+    status = insertWhere( condPart2, 0, bind_vars );
     if ( status ) {
         return status;
     }
@@ -1204,20 +1308,13 @@ checkCondition( char *condition ) {
 add an IN clause to the whereSQL string for the Parent_Of option
  */
 int
-addInClauseToWhereForParentOf( char *inArg )
+addInClauseToWhereForParentOf( char *inArg, std::vector<std::string>& bind_vars )
 {
     // This vector holds all of the components of the path
     // in the parameter inArg, with no slashes.
     std::vector<std::string> paths;
 
-    // The purpose of this vector of strings is to stick around until all
-    // references to the strings included are gone -- the cllBindVars[] array
-    // of pointers to null terminated strings is filled with these strings
-    // which cannot be removed until the next call to this function.
-    static std::vector<std::string> inStringVec;
-    static bool reset_vector = false;
-
-    // Save the current separator -- it's used in more than on place below
+    // Save the current separator -- it's used in more than one place below
     std::string separator(irods::get_virtual_path_separator());
 
     // Making sure that the separator has a single char
@@ -1241,27 +1338,7 @@ addInClauseToWhereForParentOf( char *inArg )
         return BAD_FUNCTION_CALL;
     }
 
-    // Collect all the parameter path components in order
-    // from left to right.  Starting from the second call to
-    // this function, the vector is cleared as explained above.
-    if (reset_vector)
-    {
-        inStringVec.clear();
-    }
-    reset_vector = true;
-
-    // Put together all the paths included in the parameter path
-    // and save them in the static vector.  These strings will
-    // be assigned to the global bind variable array used
-    // in the WHERE clause.
-    //
-    // Thusly, the path "/tempZone/trash/home/public" for example, will become:
-    //
-    //           inStringVec[0] = /
-    //           inStringVec[1] = /tempZone
-    //           inStringVec[2] = /tempZone/trash
-    //           inStringVec[3] = /tempZone/trash/home
-    //           inStringVec[4] = /tempZone/trash/home/public
+    std::vector<std::string> inStringVec;
     for (size_t si = 0; si < paths.size(); si++)
     {
         std::string path;
@@ -1280,12 +1357,10 @@ addInClauseToWhereForParentOf( char *inArg )
                 need_slash = true;
             }
         }
-        inStringVec.push_back(path);
+        inStringVec.push_back(std::move(path));
     }
 
     // Assemble the IN clause segment. Every path in inStringVec gets a '?'.
-    // This string ends up looking like this: "IN (?, ?, ?, ?, ?)" where
-    // the number of '?'s is equal to the number of paths in inStringVec.
     std::string whereString(" IN (");
     for (size_t si = 0; si < inStringVec.size(); si++)
     {
@@ -1299,14 +1374,9 @@ addInClauseToWhereForParentOf( char *inArg )
 
     if ( !rstrcat( whereSQL, whereString.c_str(), MAX_SQL_SIZE_GQ) ) { return USER_STRLEN_TOOLONG; }
 
-    if ( cllBindVarCount + inStringVec.size() >= MAX_BIND_VARS ) {
-        return CAT_BIND_VARIABLE_LIMIT_EXCEEDED;
-    }
-
-    // This assigns the static strings to the global bind variable array.
     for (size_t si = 0; si < inStringVec.size(); si++)
     {
-        cllBindVars[cllBindVarCount++] = inStringVec[si].c_str();
+        bind_vars.push_back(std::move(inStringVec[si]));
     }
     return 0;
 }
@@ -1315,18 +1385,15 @@ addInClauseToWhereForParentOf( char *inArg )
 add an IN clause to the whereSQL string for a client IN request
  */
 int
-addInClauseToWhereForIn( char *inArg, int option ) {
+addInClauseToWhereForIn( char *inArg, int option, std::vector<std::string>& bind_vars ) {
     int i, len;
     int startIx, endIx;
     int nput = 0;
     int quoteState = 0;
     char tmpStr[MAX_SQL_SIZE_GQ];
-    static char inStrings[MAX_SQL_SIZE_GQ * 2];
-    static int inStrIx;
     int ncopy;
 
     if ( option == 1 ) {
-        inStrIx = 0;
         return 0;
     }
     if ( !rstrcat( whereSQL, " IN (", MAX_SQL_SIZE_GQ ) ) { return USER_STRLEN_TOOLONG; }
@@ -1353,17 +1420,7 @@ addInClauseToWhereForIn( char *inArg, int option ) {
                 tmpStr[0] = '\0';
                 ncopy = endIx - startIx + 1;
                 rstrncat( tmpStr, ( char * )&inArg[startIx], ncopy, MAX_SQL_SIZE_GQ );
-                if ( !rstrcpy( ( char * )&inStrings[inStrIx], tmpStr,
-                               ( MAX_SQL_SIZE_GQ * 2 ) - inStrIx ) ) {
-                    return USER_STRLEN_TOOLONG;
-                }
-                inStrings[inStrIx + ncopy] = '\0';
-                if ( cllBindVarCount + 1 >= MAX_BIND_VARS ) { // JMC - backport 4848
-                    return CAT_BIND_VARIABLE_LIMIT_EXCEEDED;
-                }
-
-                cllBindVars[cllBindVarCount++] = ( char * )&inStrings[inStrIx];
-                inStrIx = inStrIx + ncopy + 1;
+                bind_vars.emplace_back( tmpStr );
             }
         }
     }
@@ -1378,14 +1435,12 @@ addInClauseToWhereForIn( char *inArg, int option ) {
 add a BETWEEN clause to the whereSQL string
  */
 int
-addBetweenClauseToWhere( char *inArg ) {
+addBetweenClauseToWhere( char *inArg, std::vector<std::string>& bind_vars ) {
     int i, len;
     int startIx, endIx;
     int nput = 0;
     int quoteState = 0;
     char tmpStr[MAX_SQL_SIZE_GQ];
-    static char inStrings[MAX_SQL_SIZE_GQ];
-    int inStrIx = 0;
     int ncopy;
     if ( !rstrcat( whereSQL, " BETWEEN ", MAX_SQL_SIZE_GQ ) ) { return USER_STRLEN_TOOLONG; }
     len = strlen( inArg );
@@ -1411,17 +1466,7 @@ addBetweenClauseToWhere( char *inArg ) {
                 tmpStr[0] = '\0';
                 ncopy = endIx - startIx + 1;
                 rstrncat( tmpStr, ( char * )&inArg[startIx], ncopy, MAX_SQL_SIZE_GQ );
-                if ( !rstrcpy( ( char * )&inStrings[inStrIx], tmpStr,
-                               MAX_SQL_SIZE_GQ - inStrIx ) ) {
-                    return USER_STRLEN_TOOLONG;
-                }
-                inStrings[inStrIx + ncopy] = '\0';
-                if ( cllBindVarCount + 1 >= MAX_BIND_VARS ) { // JMC - backport 4848
-                    return CAT_BIND_VARIABLE_LIMIT_EXCEEDED;
-                }
-
-                cllBindVars[cllBindVarCount++] = ( char * )&inStrings[inStrIx];
-                inStrIx = inStrIx + ncopy + 1;
+                bind_vars.emplace_back( tmpStr );
             }
         }
     }
@@ -1435,20 +1480,16 @@ addBetweenClauseToWhere( char *inArg ) {
 insert a new where clause using bind-variables
  */
 int
-insertWhere( char *condition, int option ) {
-    static int bindIx = 0;
-    static char bindVars[MAX_SQL_SIZE_GQ + 100];
+insertWhere( char *condition, int option, std::vector<std::string>& bind_vars ) {
     char *cp1, *cpFirstQuote, *cpSecondQuote;
     char *cp;
     int i;
-    char *thisBindVar;
     char tmpStr[20];
     char myCondition[20];
     char *condStart;
 
     if ( option == 1 ) { /* reinitialize */
-        bindIx = 0;
-        addInClauseToWhereForIn( condition, option );
+        addInClauseToWhereForIn( condition, option, bind_vars );
         return 0;
     }
 
@@ -1462,7 +1503,7 @@ insertWhere( char *condition, int option ) {
         cp = strstr( condition, "IN" );
     }
     if ( cp != NULL && cp == condStart ) {
-        return addInClauseToWhereForIn( condition, 0 );
+        return addInClauseToWhereForIn( condition, 0, bind_vars );
     }
 
     cp = strstr( condition, "between" );
@@ -1470,7 +1511,7 @@ insertWhere( char *condition, int option ) {
         cp = strstr( condition, "BETWEEN" );
     }
     if ( cp != NULL && cp == condStart ) {
-        return addBetweenClauseToWhere( condition );
+        return addBetweenClauseToWhere( condition, bind_vars );
     }
 
     cpFirstQuote = 0;
@@ -1497,24 +1538,12 @@ insertWhere( char *condition, int option ) {
         if ( !rstrcat( whereSQL, " ", MAX_SQL_SIZE_GQ ) ) { return USER_STRLEN_TOOLONG; }
         return 0;
     }
-    bindIx++;
-    thisBindVar = ( char* )&bindVars[bindIx];
     if ( cpFirstQuote == 0 || cpSecondQuote == 0 ) {
         return CAT_INVALID_ARGUMENT;
     }
-    if ( ( cpSecondQuote - cpFirstQuote ) + bindIx > MAX_SQL_SIZE_GQ + 90 ) {
-        return CAT_INVALID_ARGUMENT;
-    }
 
-    for ( cp1 = cpFirstQuote + 1; cp1 < cpSecondQuote; cp1++ ) {
-        bindVars[bindIx++] = *cp1;
-    }
-    bindVars[bindIx++] = '\0';
-    if ( cllBindVarCount + 1 >= MAX_BIND_VARS ) { // JMC - backport 4848
-        return CAT_BIND_VARIABLE_LIMIT_EXCEEDED;
-    }
-
-    cllBindVars[cllBindVarCount++] = thisBindVar;
+    std::string thisBindVar( cpFirstQuote + 1, cpSecondQuote - ( cpFirstQuote + 1 ) );
+    bind_vars.push_back( thisBindVar );
 
     /* basic legality check on the condition */
     if ( ( cpFirstQuote - condition ) > 10 ) {
@@ -1545,17 +1574,14 @@ insertWhere( char *condition, int option ) {
         if ( !rstrcpy( tmpStr2, cp1, MAX_SQL_SIZE_GQ ) ) {
             return USER_STRLEN_TOOLONG;
         } /*use table/column name just added*/
-#if ORA_ICAT
-        if ( !rstrcat( whereSQL, "=substr(?,1,length(", MAX_SQL_SIZE_GQ ) ) { return USER_STRLEN_TOOLONG; }
+        const auto& flavor = irods::experimental::catalog::get_db_flavor(get_active_db_type());
+        const std::string length_fn_str{flavor.length_fn};
+        if ( !rstrcat( whereSQL, "=substr(?,1,", MAX_SQL_SIZE_GQ ) ) { return USER_STRLEN_TOOLONG; }
+        if ( !rstrcat( whereSQL, length_fn_str.c_str(), MAX_SQL_SIZE_GQ ) ) { return USER_STRLEN_TOOLONG; }
         if ( !rstrcat( whereSQL, tmpStr2, MAX_SQL_SIZE_GQ ) ) { return USER_STRLEN_TOOLONG; }
         if ( !rstrcat( whereSQL, "))", MAX_SQL_SIZE_GQ ) ) { return USER_STRLEN_TOOLONG; }
-        if ( !rstrcat( whereSQL, " AND length(", MAX_SQL_SIZE_GQ ) ) { return USER_STRLEN_TOOLONG; }
-#else
-        if ( !rstrcat( whereSQL, "=substr(?,1,char_length(", MAX_SQL_SIZE_GQ ) ) { return USER_STRLEN_TOOLONG; }
-        if ( !rstrcat( whereSQL, tmpStr2, MAX_SQL_SIZE_GQ ) ) { return USER_STRLEN_TOOLONG; }
-        if ( !rstrcat( whereSQL, "))", MAX_SQL_SIZE_GQ ) ) { return USER_STRLEN_TOOLONG; }
-        if ( !rstrcat( whereSQL, " AND char_length(", MAX_SQL_SIZE_GQ ) ) { return USER_STRLEN_TOOLONG; }
-#endif
+        if ( !rstrcat( whereSQL, " AND ", MAX_SQL_SIZE_GQ ) ) { return USER_STRLEN_TOOLONG; }
+        if ( !rstrcat( whereSQL, length_fn_str.c_str(), MAX_SQL_SIZE_GQ ) ) { return USER_STRLEN_TOOLONG; }
         if ( !rstrcat( whereSQL, tmpStr2, MAX_SQL_SIZE_GQ ) ) { return USER_STRLEN_TOOLONG; }
         if ( !rstrcat( whereSQL, ")>0", MAX_SQL_SIZE_GQ ) ) { return USER_STRLEN_TOOLONG; }
     }
@@ -1566,10 +1592,10 @@ insertWhere( char *condition, int option ) {
                    rsObjStat.c, as suggested by Andy Salnikov; add an IN
                    clause with each of the possible parent collection names;
                    this is faster, sometimes very much faster. */
-            cllBindVarCount--; /* undo bind-var as it is not included now */
-            int status = addInClauseToWhereForParentOf( thisBindVar ); // JMC - backport 4848
+            bind_vars.pop_back(); /* undo bind-var as it is not included now */
+            int status = addInClauseToWhereForParentOf( const_cast<char*>( thisBindVar.c_str() ), bind_vars );
             if ( status < 0 ) {
-                return ( status );   // JMC - backport 4848
+                return ( status );
             }
         }
         else {
@@ -1588,7 +1614,7 @@ insertWhere( char *condition, int option ) {
  If client user is the local admin, do not restrict.
  */
 int
-genqAppendAccessCheck() {
+genqAppendAccessCheck( std::vector<std::string>& bind_vars ) {
     int doCheck = 0;
     int ticketAlreadyChecked = 0;
 
@@ -1606,11 +1632,6 @@ genqAppendAccessCheck() {
         }
     }
 
-    if ( cllBindVarCount + 6 >= MAX_BIND_VARS ) {
-        /* too close, should normally have plenty of slots */
-        return CAT_BIND_VARIABLE_LIMIT_EXCEEDED;
-    }
-
     /* First, in all cases (non-admin), check on ticket_string
        and, if present, restrict to the owner */
     if ( strstr( selectSQL, "ticket_string" ) != NULL &&
@@ -1618,8 +1639,8 @@ genqAppendAccessCheck() {
         if ( strlen( whereSQL ) > 6 ) {
             if ( !rstrcat( whereSQL, " AND ", MAX_SQL_SIZE_GQ ) ) { return USER_STRLEN_TOOLONG; }
         }
-        cllBindVars[cllBindVarCount++] = accessControlUserName;
-        cllBindVars[cllBindVarCount++] = accessControlZone;
+        bind_vars.emplace_back( accessControlUserName );
+        bind_vars.emplace_back( accessControlZone );
         if ( !rstrcat( whereSQL, "R_TICKET_MAIN.user_id in (select user_id from R_USER_MAIN UM where UM.user_name = ? AND UM.zone_name=?)", MAX_SQL_SIZE_GQ ) ) { return USER_STRLEN_TOOLONG; }
     }
 
@@ -1636,8 +1657,8 @@ genqAppendAccessCheck() {
                 if ( !rstrcat( whereSQL, " AND ", MAX_SQL_SIZE_GQ ) ) { return USER_STRLEN_TOOLONG; }
             }
 
-            cllBindVars[cllBindVarCount++] = accessControlUserName;
-            cllBindVars[cllBindVarCount++] = accessControlZone;
+            bind_vars.emplace_back( accessControlUserName );
+            bind_vars.emplace_back( accessControlZone );
             if (!rstrcat(whereSQL,
                          "R_DATA_MAIN.data_id in (select object_id from R_OBJT_ACCESS OA, R_USER_GROUP UG, R_USER_MAIN "
                          "UM, R_TOKN_MAIN TM where UM.user_name=? and UM.zone_name=? and "
@@ -1656,8 +1677,8 @@ genqAppendAccessCheck() {
                 if ( !rstrcat( whereSQL, " AND ", MAX_SQL_SIZE_GQ ) ) { return USER_STRLEN_TOOLONG; }
             }
 
-            cllBindVars[cllBindVarCount++] = accessControlUserName;
-            cllBindVars[cllBindVarCount++] = accessControlZone;
+            bind_vars.emplace_back( accessControlUserName );
+            bind_vars.emplace_back( accessControlZone );
             if (!rstrcat(whereSQL,
                          "R_COLL_MAIN.coll_id in (select object_id from R_OBJT_ACCESS OA, R_USER_GROUP UG, R_USER_MAIN "
                          "UM, R_TOKN_MAIN TM where UM.user_name=? and UM.zone_name=? and "
@@ -1679,9 +1700,9 @@ genqAppendAccessCheck() {
                 if ( !rstrcat( whereSQL, " AND ", MAX_SQL_SIZE_GQ ) ) { return USER_STRLEN_TOOLONG; }
             }
 
-            cllBindVars[cllBindVarCount++] = sessionTicket;
-            cllBindVars[cllBindVarCount++] = sessionTicket;
-            cllBindVars[cllBindVarCount++] = sessionTicket;
+            bind_vars.emplace_back( sessionTicket );
+            bind_vars.emplace_back( sessionTicket );
+            bind_vars.emplace_back( sessionTicket );
             if ( !rstrcat( whereSQL, "( R_DATA_MAIN.data_id in (select object_id from R_TICKET_MAIN TICK where TICK.ticket_string=?) OR R_COLL_MAIN.coll_id in (select object_id from R_TICKET_MAIN TICK where TICK.ticket_string=?) OR R_COLL_MAIN.coll_name LIKE (select (coll_name || '/%') from R_COLL_MAIN where coll_id in (select object_id from R_TICKET_MAIN TICK where TICK.ticket_string=?)))", MAX_SQL_SIZE_GQ ) ) { return USER_STRLEN_TOOLONG; }
             ticketAlreadyChecked = 1;
         }
@@ -1693,8 +1714,8 @@ genqAppendAccessCheck() {
                     if ( !rstrcat( whereSQL, " AND ", MAX_SQL_SIZE_GQ ) ) { return USER_STRLEN_TOOLONG; }
                 }
 
-                cllBindVars[cllBindVarCount++] = sessionTicket;
-                cllBindVars[cllBindVarCount++] = sessionTicket;
+                bind_vars.emplace_back( sessionTicket );
+                bind_vars.emplace_back( sessionTicket );
                 if ( !rstrcat( whereSQL, "( R_COLL_MAIN.coll_id in (select object_id from R_TICKET_MAIN TICK where TICK.ticket_string=?) OR R_COLL_MAIN.coll_name LIKE (select (coll_name || '/%') from R_COLL_MAIN where coll_id in (select object_id from R_TICKET_MAIN TICK where TICK.ticket_string=?)))", MAX_SQL_SIZE_GQ ) ) { return USER_STRLEN_TOOLONG; }
             }
         }
@@ -1745,7 +1766,7 @@ int specialQueryIx( int ix ) {
  more details.
  */
 int
-generateSpecialQuery( genQueryInp_t genQueryInp, char *resultingSQL ) {
+generateSpecialQuery( genQueryInp_t genQueryInp, char *resultingSQL, std::vector<std::string>& bind_vars ) {
     static char rescName[LONG_NAME_LEN];
     static char userName[NAME_LEN] = "";
     static char userZone[NAME_LEN] = "";
@@ -1865,7 +1886,7 @@ generateSpecialQuery( genQueryInp_t genQueryInp, char *resultingSQL ) {
         "ORDER BY quota_over ASC";
     // clang-format on
     int i, valid = 0;
-    int cllCounter = cllBindVarCount;
+    const auto initial_bind_count = bind_vars.size();
 
     for ( i = 0; i < genQueryInp.sqlCondInp.len; i++ ) {
         if ( genQueryInp.sqlCondInp.inx[i] == COL_USER_NAME ) {
@@ -1890,12 +1911,10 @@ generateSpecialQuery( genQueryInp_t genQueryInp, char *resultingSQL ) {
             log_gq::debug("{}: spQuery(1) userZone2=[{}]", __func__, userZone);
             log_gq::debug("{}: spQuery(1) userName=[{}]", __func__, userName);
             log_gq::debug("{}: spQuery(1) in=[{}]", __func__, genQueryInp.sqlCondInp.value[i]);
-            cllBindVars[cllBindVarCount++] = userName;
-            cllBindVars[cllBindVarCount++] = userZone;
-            cllBindVars[cllBindVarCount++] = userName;
-            cllBindVars[cllBindVarCount++] = userZone;
-            cllBindVars[cllBindVarCount++] = userName;
-            cllBindVars[cllBindVarCount++] = userZone;
+            for ( int k = 0; k < 3; ++k ) {
+                bind_vars.emplace_back( userName );
+                bind_vars.emplace_back( userZone );
+            }
             strncpy( resultingSQL, quotaQuery1, MAX_SQL_SIZE_GQ );
             valid = 1;
         }
@@ -1909,18 +1928,14 @@ generateSpecialQuery( genQueryInp_t genQueryInp, char *resultingSQL ) {
             log_gq::debug("{}: spQuery(2) userName=[{}]", __func__, userName);
             log_gq::debug("{}: spQuery(2) in=[{}]", __func__, genQueryInp.sqlCondInp.value[i]);
             snprintf( rescName, sizeof( rescName ), "%s", genQueryInp.sqlCondInp.value[i] );
-            cllBindVars[cllCounter++] = rescName;
-            cllBindVars[cllCounter++] = userName;
-            cllBindVars[cllCounter++] = userZone;
-            cllBindVars[cllCounter++] = rescName;
-            cllBindVars[cllCounter++] = userName;
-            cllBindVars[cllCounter++] = userZone;
-            cllBindVars[cllCounter++] = rescName;
-            cllBindVars[cllCounter++] = userName;
-            cllBindVars[cllCounter++] = userZone;
+            bind_vars.resize( initial_bind_count );
+            for ( int k = 0; k < 3; ++k ) {
+                bind_vars.emplace_back( rescName );
+                bind_vars.emplace_back( userName );
+                bind_vars.emplace_back( userZone );
+            }
 
             strncpy( resultingSQL, quotaQuery2, MAX_SQL_SIZE_GQ );
-            cllBindVarCount = cllCounter;
         }
     }
     return 0;
@@ -1931,7 +1946,7 @@ Called by chlGenQuery to generate the SQL.
 */
 int
 generateSQL( genQueryInp_t genQueryInp, char *resultingSQL,
-             char *resultingCountSQL ) {
+             char *resultingCountSQL, std::vector<std::string>& bind_vars ) {
     int i, table, startingTable = 0;
     int keepVal;
     char *condition;
@@ -1944,11 +1959,7 @@ generateSQL( genQueryInp_t genQueryInp, char *resultingSQL,
     int N_col_meta_resc_group_attr_name = 0;
 
     char combinedSQL[MAX_SQL_SIZE_GQ];
-#if ORA_ICAT
     char countSQL[MAX_SQL_SIZE_GQ];
-#else
-    static char offsetStr[20];
-#endif
 
     if ( firstCall ) {
         icatGeneralQuerySetup(); /* initialize */
@@ -1960,7 +1971,7 @@ generateSQL( genQueryInp_t genQueryInp, char *resultingSQL,
         Tables[i].flag = 0;
     }
 
-    insertWhere( "", 1 ); /* initialize */
+    insertWhere( "", 1, bind_vars ); /* initialize */
 
     if ( genQueryInp.options & NO_DISTINCT ) {
         if ( !rstrcpy( selectSQL, "select ", MAX_SQL_SIZE_GQ ) ) {
@@ -2006,7 +2017,7 @@ generateSQL( genQueryInp_t genQueryInp, char *resultingSQL,
         }
     }
 
-    handleCompoundCondition( "", -1 ); /* reinitialize */
+    handleCompoundCondition( "", -1, bind_vars ); /* reinitialize */
     for ( i = 0; i < genQueryInp.sqlCondInp.len; i++ ) {
         int prevWhereLen;
         int castOption;
@@ -2056,13 +2067,13 @@ generateSQL( genQueryInp_t genQueryInp, char *resultingSQL,
         }
         condition = genQueryInp.sqlCondInp.value[i];
         if ( compoundConditionSpecified( condition ) ) {
-            status = handleCompoundCondition( condition, prevWhereLen );
+            status = handleCompoundCondition( condition, prevWhereLen, bind_vars );
             if ( status ) {
                 return status;
             }
         }
         else {
-            status = insertWhere( condition, 0 );
+            status = insertWhere( condition, 0, bind_vars );
             if ( status ) {
                 return status;
             }
@@ -2120,7 +2131,7 @@ generateSQL( genQueryInp_t genQueryInp, char *resultingSQL,
     if ( !rstrcat( combinedSQL, " " , MAX_SQL_SIZE_GQ ) ) { return USER_STRLEN_TOOLONG; }
     if ( !rstrcat( combinedSQL, fromSQL, MAX_SQL_SIZE_GQ ) ) { return USER_STRLEN_TOOLONG; }
 
-    genqAppendAccessCheck();
+    genqAppendAccessCheck( bind_vars );
 
     if ( strlen( whereSQL ) > 6 ) {
         if ( !rstrcat( combinedSQL, " " , MAX_SQL_SIZE_GQ ) ) { return USER_STRLEN_TOOLONG; }
@@ -2142,44 +2153,41 @@ generateSQL( genQueryInp_t genQueryInp, char *resultingSQL,
     }
 
     if ( genQueryInp.rowOffset > 0 ) {
-#if ORA_ICAT
-        /* For Oracle, it may be possible to do this by surrounding the
-           select with another select and using rownum or row_number(),
-           but there are a number of subtle problems/special cases to
-           deal with.  So instead, we handle this elsewhere by getting
-           and disgarding rows. */
-#elif MY_ICAT
-        /* MySQL/ODBC handles it nicely via just adding limit/offset */
-        snprintf( offsetStr, sizeof offsetStr, "%d", genQueryInp.rowOffset );
-        if ( !rstrcat( combinedSQL, " limit ", MAX_SQL_SIZE_GQ ) ) { return USER_STRLEN_TOOLONG; }
-        if ( !rstrcat( combinedSQL, offsetStr, MAX_SQL_SIZE_GQ ) ) { return USER_STRLEN_TOOLONG; }
-        if ( !rstrcat( combinedSQL, ",18446744073709551615", MAX_SQL_SIZE_GQ ) ) { return USER_STRLEN_TOOLONG; }
-#else
-        /* Postgres/ODBC handles it nicely via just adding offset */
-        snprintf( offsetStr, sizeof offsetStr, "%d", genQueryInp.rowOffset );
-        cllBindVars[cllBindVarCount++] = offsetStr;
-        if ( !rstrcat( combinedSQL, " offset ?", MAX_SQL_SIZE_GQ ) ) { return USER_STRLEN_TOOLONG; }
-#endif
+        int dbType = get_active_db_type();
+        if ( dbType == DB_TYPE_MYSQL ) {
+            /* MySQL/ODBC handles it nicely via just adding limit/offset */
+            char offsetStr[20];
+            snprintf( offsetStr, sizeof offsetStr, "%d", genQueryInp.rowOffset );
+            if ( !rstrcat( combinedSQL, " limit ", MAX_SQL_SIZE_GQ ) ) { return USER_STRLEN_TOOLONG; }
+            if ( !rstrcat( combinedSQL, offsetStr, MAX_SQL_SIZE_GQ ) ) { return USER_STRLEN_TOOLONG; }
+            if ( !rstrcat( combinedSQL, ",18446744073709551615", MAX_SQL_SIZE_GQ ) ) { return USER_STRLEN_TOOLONG; }
+        }
+        else if ( dbType == DB_TYPE_POSTGRES ) {
+            /* Postgres/ODBC handles it nicely via just adding offset */
+            bind_vars.push_back( std::to_string( genQueryInp.rowOffset ) );
+            if ( !rstrcat( combinedSQL, " offset ?", MAX_SQL_SIZE_GQ ) ) { return USER_STRLEN_TOOLONG; }
+        }
+        /* For Oracle, handled at cursor fetch time */
     }
 
     log_gq::debug("{}: combinedSQL=[{}]", __func__, combinedSQL);
 
     strncpy( resultingSQL, combinedSQL, MAX_SQL_SIZE_GQ );
 
-#if ORA_ICAT
-    countSQL[0] = '\0';
-    if ( !rstrcat( countSQL, "select distinct count(*) ", MAX_SQL_SIZE_GQ ) ) { return USER_STRLEN_TOOLONG; }
-    if ( !rstrcat( countSQL, fromSQL, MAX_SQL_SIZE_GQ ) ) { return USER_STRLEN_TOOLONG; }
+    if ( get_active_db_type() == DB_TYPE_ORACLE ) {
+        countSQL[0] = '\0';
+        if ( !rstrcat( countSQL, "select distinct count(*) ", MAX_SQL_SIZE_GQ ) ) { return USER_STRLEN_TOOLONG; }
+        if ( !rstrcat( countSQL, fromSQL, MAX_SQL_SIZE_GQ ) ) { return USER_STRLEN_TOOLONG; }
 
-    if ( strlen( whereSQL ) > 6 ) {
-        if ( !rstrcat( countSQL, " " , MAX_SQL_SIZE_GQ ) ) { return USER_STRLEN_TOOLONG; }
-        if ( !rstrcat( countSQL, whereSQL, MAX_SQL_SIZE_GQ ) ) { return USER_STRLEN_TOOLONG; }
+        if ( strlen( whereSQL ) > 6 ) {
+            if ( !rstrcat( countSQL, " " , MAX_SQL_SIZE_GQ ) ) { return USER_STRLEN_TOOLONG; }
+            if ( !rstrcat( countSQL, whereSQL, MAX_SQL_SIZE_GQ ) ) { return USER_STRLEN_TOOLONG; }
+        }
+
+        log_gq::debug("{}: countSQL=[{}]", __func__, countSQL);
+
+        strncpy( resultingCountSQL, countSQL, MAX_SQL_SIZE_GQ );
     }
-
-    log_gq::debug("{}: countSQL=[{}]", __func__, countSQL);
-
-    strncpy( resultingCountSQL, countSQL, MAX_SQL_SIZE_GQ );
-#endif
     return 0;
 }
 
@@ -2289,27 +2297,25 @@ checkCondInputAccess( genQueryInp_t genQueryInp, int statementNum,
             zoneName = genQueryInp.condInput.value[zoneIx];
         }
 
-        status = cmlCheckDataObjId(
-                     icss->stmtPtr[statementNum]->resultValue[dataIx],
-                     genQueryInp.condInput.value[userIx],
-                     ( char* )zoneName.c_str(),
-                     genQueryInp.condInput.value[accessIx],
-                     /*                  sessionTicket, accessControlHost, icss); */
-                     sessionTicket, sessionClientAddr, icss );
-
-        if (is_non_empty_string(sessionTicket, sizeof(sessionTicket)) == 1) {
-            if (status < 0) {
-                log_db::error("{}: cmlCheckDataObjId error [{}]. Rolling back database updates.", __func__, status);
-
-                if (const auto ec = cmlExecuteNoAnswerSql("rollback", icss); ec < 0) {
-                    log_db::error("{}: Database rollback error [{}].", __func__, ec);
-                }
-            }
-            else {
-                if (const auto ec = cmlExecuteNoAnswerSql("commit", icss); ec < 0) {
-                    log_db::error("{}: Database commit error [{}].", __func__, ec);
-                }
-            }
+        try {
+            auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
+            status = irods::experimental::catalog::access_control::check_data_object_id(
+                executor,
+                db_conn,
+                icss->stmtPtr[statementNum]->resultValue[dataIx],
+                genQueryInp.condInput.value[userIx],
+                zoneName,
+                genQueryInp.condInput.value[accessIx],
+                sessionTicket,
+                sessionClientAddr);
+        }
+        catch (const nanodbc::database_error& e) {
+            log_db::error("{}: database error in check_data_object_id: {}", __func__, e.what());
+            status = CAT_SQL_ERR;
+        }
+        catch (const std::exception& e) {
+            log_db::error("{}: exception in check_data_object_id: {}", __func__, e.what());
+            status = SYS_INTERNAL_ERR;
         }
 
         return prevStatus = status;
@@ -2323,11 +2329,25 @@ checkCondInputAccess( genQueryInp_t genQueryInp, int statementNum,
         else {
             zoneName = genQueryInp.condInput.value[zoneIx];
         }
-        status = cmlCheckDirId(
-            icss->stmtPtr[statementNum]->resultValue[collIx],
-            genQueryInp.condInput.value[userIx],
-            ( char* )zoneName.c_str(),
-            genQueryInp.condInput.value[accessIx], icss );
+        try {
+            auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
+            const auto res = irods::experimental::catalog::access_control::check_collection_id(
+                executor,
+                db_conn,
+                icss->stmtPtr[statementNum]->resultValue[collIx],
+                genQueryInp.condInput.value[userIx],
+                zoneName,
+                genQueryInp.condInput.value[accessIx]);
+            status = res < 0 ? static_cast<int>(res) : 0;
+        }
+        catch (const nanodbc::database_error& e) {
+            log_db::error("{}: database error in check_collection_id: {}", __func__, e.what());
+            status = CAT_SQL_ERR;
+        }
+        catch (const std::exception& e) {
+            log_db::error("{}: exception in check_collection_id: {}", __func__, e.what());
+            status = SYS_INTERNAL_ERR;
+        }
         prevStatus = status;
     }
     return status;
@@ -2400,10 +2420,7 @@ int chl_gen_query_access_control_setup_impl(
     int maxColSize;
     int currentMaxColSize;
     char *tResult, *tResult2;
-#if ORA_ICAT
-#else
     static int recursiveCall = 0;
-#endif
 
     icatSessionStruct *icss = 0;
 
@@ -2420,52 +2437,48 @@ int chl_gen_query_access_control_setup_impl(
 
     log_gq::debug("{}: icss=[{}]", __func__, (uintmax_t) icss);
 
+    std::vector<std::string> bind_vars;
+
     if ( genQueryInp.continueInx == 0 ) {
         if ( genQueryInp.options & QUOTA_QUERY ) {
             countSQL[0] = '\0';
-            status = generateSpecialQuery( genQueryInp, combinedSQL );
+            status = generateSpecialQuery( genQueryInp, combinedSQL, bind_vars );
         }
         else {
-            status = generateSQL( genQueryInp, combinedSQL, countSQL );
+            status = generateSQL( genQueryInp, combinedSQL, countSQL, bind_vars );
         }
         if ( status != 0 ) {
             return status;
         }
 
-        /* For Oracle, done just below, for Postgres a little later */
-#if ORA_ICAT
-        if ( genQueryInp.options & RETURN_TOTAL_ROW_COUNT ) {
-            int cllBindVarCountSave;
-            rodsLong_t iVal;
-            cllBindVarCountSave = cllBindVarCount;
-            status = cmlGetIntegerValueFromSqlV3( countSQL, &iVal,
-                                                  icss );
-            if ( status < 0 ) {
-                if ( status != CAT_NO_ROWS_FOUND ) {
-                    log_gq::error("{}: chlGenQuery cmlGetIntegerValueFromSqlV3 failure [{}]", __func__, status);
+        /* For Oracle, done just below, for Postgres/MySQL a little later */
+        if ( icss->databaseType == DB_TYPE_ORACLE ) {
+            if ( genQueryInp.options & RETURN_TOTAL_ROW_COUNT ) {
+                rodsLong_t iVal;
+                status = gq_get_integer_value_from_sql_v3( countSQL, &iVal, bind_vars, icss );
+                if ( status < 0 ) {
+                    if ( status != CAT_NO_ROWS_FOUND ) {
+                        log_gq::error("{}: chlGenQuery gq_get_integer_value_from_sql_v3 failure [{}]", __func__, status);
+                    }
+                    return status;
                 }
-                return status;
+                if ( iVal >= 0 ) {
+                    result->totalRowCount = iVal;
+                }
             }
-            if ( iVal >= 0 ) {
-                result->totalRowCount = iVal;
-            }
-            cllBindVarCount = cllBindVarCountSave;
         }
-#endif
 
-        status = cmlGetFirstRowFromSql( combinedSQL, &statementNum,
-                                        genQueryInp.rowOffset, icss );
+        status = gq_get_first_row_from_sql( combinedSQL, &statementNum,
+                                            genQueryInp.rowOffset, bind_vars, icss );
         if ( status < 0 ) {
             if ( status != CAT_NO_ROWS_FOUND ) {
-                log_gq::error("{}: chlGenQuery cmlGetFirstRowFromSql failure [{}]", __func__, status);
+                log_gq::error("{}: chlGenQuery gq_get_first_row_from_sql failure [{}]", __func__, status);
             }
-#if ORA_ICAT
-#else
-            else {
+            else if ( icss->databaseType != DB_TYPE_ORACLE ) {
                 int saveStatus;
                 if ( genQueryInp.options & RETURN_TOTAL_ROW_COUNT  &&
                         genQueryInp.rowOffset > 0 ) {
-                    /* For Postgres in this  case, need to query again to determine total rows */
+                    /* For Postgres/MySQL in this case, need to query again to determine total rows */
                     saveStatus = status;
                     recursiveCall = 1;
                     genQueryInp.rowOffset = 0;
@@ -2473,23 +2486,21 @@ int chl_gen_query_access_control_setup_impl(
                     return saveStatus;
                 }
             }
-#endif
             return status;
         }
 
-#if ORA_ICAT
-#else
-        if ( genQueryInp.options & RETURN_TOTAL_ROW_COUNT ) {
-            i = cllGetRowCount( icss, statementNum );
-            if ( i >= 0 ) {
-                result->totalRowCount = i + genQueryInp.rowOffset;
-            }
-            if ( recursiveCall == 1 ) {
-                recursiveCall = 0;
-                return status;
+        if ( icss->databaseType != DB_TYPE_ORACLE ) {
+            if ( genQueryInp.options & RETURN_TOTAL_ROW_COUNT ) {
+                i = cllGetRowCount( icss, statementNum );
+                if ( i >= 0 ) {
+                    result->totalRowCount = i + genQueryInp.rowOffset;
+                }
+                if ( recursiveCall == 1 ) {
+                    recursiveCall = 0;
+                    return status;
+                }
             }
         }
-#endif
 
         if ( genQueryInp.condInput.len > 0 ) {
             status = checkCondInputAccess( genQueryInp, statementNum, icss, 0 );
@@ -2508,15 +2519,15 @@ int chl_gen_query_access_control_setup_impl(
         statementNum = genQueryInp.continueInx - 1;
         needToGetNextRow = 1;
         if ( genQueryInp.maxRows <= 0 ) { /* caller is closing out the query */
-            status = cmlFreeStatement( statementNum, icss );
+            status = gq_free_statement( statementNum, icss );
             return status;
         }
     }
     for ( i = 0; i < genQueryInp.maxRows; i++ ) {
         if ( needToGetNextRow ) {
-            status = cmlGetNextRowFromStatement( statementNum, icss );
+            status = gq_get_next_row_from_statement( statementNum, icss );
             if ( status == CAT_NO_ROWS_FOUND ) {
-                cmlFreeStatement( statementNum, icss );
+                gq_free_statement( statementNum, icss );
                 result->continueInx = 0;
                 if ( result->rowCnt == 0 ) {
                     return status;
@@ -2638,7 +2649,7 @@ int chl_gen_query_access_control_setup_impl(
     if ( genQueryInp.options & AUTO_CLOSE ) {
         int status2;
         result->continueInx = -1; // Indicate more rows might have been available
-        status2 = cmlFreeStatement( statementNum, icss );
+        status2 = gq_free_statement( statementNum, icss );
         return status2;
     }
     return 0;

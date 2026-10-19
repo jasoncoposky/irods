@@ -136,6 +136,19 @@ auto rs_genquery2(RsComm* _comm, Genquery2Input* _input, char** _output) -> int
             return SYS_LIBRARY_ERROR;
         }
 
+        // Tier 1 Gate: Guard against unprivileged DML modification execution.
+        // Rejects non-administrative clients attempting modification queries early.
+        const auto is_modification_statement = []() noexcept -> bool {
+            // Reserved for when parser grammar is widened to INSERT/UPDATE/DELETE AST variants
+            return false;
+        };
+
+        if (is_modification_statement() && !opts.admin_mode) {
+            log_api::error("{}: Client [{}] lacks administrative privileges for GenQuery2 modification operations.",
+                           __func__, _comm->clientUser.userName);
+            return CAT_INSUFFICIENT_PRIVILEGE_LEVEL;
+        }
+
         const auto [sql, values] = gq::to_sql(driver.select, opts);
 
         log_api::trace("{}: GenQuery2 SQL: [{}]", __func__, sql);

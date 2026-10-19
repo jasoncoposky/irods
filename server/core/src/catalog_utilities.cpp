@@ -37,33 +37,17 @@ namespace irods::experimental::catalog
 
     auto bind_bigint_to_statement(bind_parameters& _bp) -> void
     {
-        // The Oracle ODBC driver will fail on execution of the prepared statement if
-        // a 64-bit integer is bound. To get around this limitation, Oracle allows the
-        // integer to be bound as a string. See the following thread for a little more
-        // information:
-        //
-        //   https://stackoverflow.com/questions/338609/binding-int64-sql-bigint-as-query-parameter-causes-error-during-execution-in-o
-        //
-        if ("oracle" == _bp.db_instance_name) {
-            std::string v = _bp.json_input.at(_bp.column_name.data()).get<std::string>();
-            _bp.bind_values.push_back(std::move(v));
+        // 64-bit integers are bound as strings across all database backends to ensure
+        // consistent behavior across ODBC drivers (notably Oracle ODBC driver which fails
+        // on execution if int64 is bound directly).
+        std::string v = _bp.json_input.at(_bp.column_name.data()).get<std::string>();
+        _bp.bind_values.push_back(std::move(v));
 
-            const auto& value = std::get<std::string>(_bp.bind_values.back());
-            log_db::trace(
-                "[{}:{}] - binding [{}] to [{}] at [{}]", __FUNCTION__, __LINE__, _bp.column_name, value, _bp.index);
+        const auto& value = std::get<std::string>(_bp.bind_values.back());
+        log_db::trace(
+            "[{}:{}] - binding [{}] to [{}] at [{}]", __FUNCTION__, __LINE__, _bp.column_name, value, _bp.index);
 
-            _bp.statement.bind(_bp.index, value.c_str());
-        }
-        else {
-            const std::uint64_t v = std::stoull(_bp.json_input.at(_bp.column_name.data()).get<std::string>());
-            _bp.bind_values.push_back(v);
-
-            const std::uint64_t& value = std::get<std::uint64_t>(_bp.bind_values.back());
-            log_db::trace(
-                "[{}:{}] - binding [{}] to [{}] at [{}]", __FUNCTION__, __LINE__, _bp.column_name, value, _bp.index);
-
-            _bp.statement.bind(_bp.index, &value);
-        }
+        _bp.statement.bind(_bp.index, value.c_str());
     } // bind_bigint_to_statement
 
     auto bind_integer_to_statement(bind_parameters& _bp) -> void
@@ -80,7 +64,7 @@ namespace irods::experimental::catalog
 
     auto user_has_permission_to_modify_entity(RsComm& _comm,
                                               nanodbc::connection& _db_conn,
-                                              const std::string_view _db_instance_name,
+                                              [[maybe_unused]] const std::string_view _db_instance_name,
                                               std::int64_t _object_id,
                                               const entity_type _entity_type) -> bool
     {
@@ -100,20 +84,11 @@ namespace irods::experimental::catalog
                           "a.object_id = ? and "
                           "a.access_type_id >= {}",
                     static_cast<int_type>(access_type::modify_object)));
-                
-                if ("oracle" == _db_instance_name) {
-                    const auto object_id_string = std::to_string(_object_id);
 
-                    stmt.bind(0, _comm.clientUser.userName);
-                    stmt.bind(1, object_id_string.data());
-
-                    auto row = execute(stmt);
-
-                    return row.next();
-                }
+                const auto object_id_string = std::to_string(_object_id);
 
                 stmt.bind(0, _comm.clientUser.userName);
-                stmt.bind(1, &_object_id);
+                stmt.bind(1, object_id_string.data());
 
                 auto row = execute(stmt);
 
@@ -145,7 +120,7 @@ namespace irods::experimental::catalog
 
     auto user_has_permission_to_modify_acls(RsComm& _comm,
                                             nanodbc::connection& _db_conn,
-                                            const std::string_view _db_instance_name,
+                                            [[maybe_unused]] const std::string_view _db_instance_name,
                                             std::int64_t _object_id) -> bool
     {
         nanodbc::statement stmt{_db_conn};
@@ -160,23 +135,14 @@ namespace irods::experimental::catalog
                   "a.object_id = ? and "
                   "a.access_type_id = {}",
             static_cast<int_type>(access_type::own)));
-        
-        if ("oracle" == _db_instance_name) {
-            const auto object_id_string = std::to_string(_object_id);
 
-            stmt.bind(0, _comm.clientUser.userName);
-            stmt.bind(1, object_id_string.data());
-
-            auto row = execute(stmt);
-            
-            return row.next();
-        }
+        const auto object_id_string = std::to_string(_object_id);
 
         stmt.bind(0, _comm.clientUser.userName);
-        stmt.bind(1, &_object_id);
+        stmt.bind(1, object_id_string.data());
 
         auto row = execute(stmt);
-        
+
         return row.next();
     } // user_has_permission_to_modify_acls
 
