@@ -6,7 +6,6 @@
 #include "irods/rsObjStat.hpp"
 #include "irods/objStat.h"
 #include "irods/rcMisc.h"
-#include "irods/genQuery.h"
 #include "irods/querySpecColl.h"
 #include "irods/objMetaOpr.hpp"
 #include "irods/collection.hpp"
@@ -18,10 +17,17 @@
 #include "irods/dataObjClose.h"
 #include "irods/miscServerFunct.hpp"
 #include "irods/irods_configuration_keywords.hpp"
-#include "irods/rsGenQuery.hpp"
+#include "irods/filesystem/path.hpp"
+#include "irods/genquery2_builder.hpp"
+#include "irods/rs_genquery2.hpp"
 #include "irods/irods_resource_backport.hpp"
 #include "irods/rsSubStructFileStat.hpp"
 #include "irods/rsFileStat.hpp"
+
+#include <charconv>
+#include <cstdlib>
+#include <cstring>
+#include <string>
 
 int rsObjStat(rsComm_t *rsComm,
               dataObjInp_t *dataObjInp,
@@ -154,171 +160,87 @@ _rsObjStat( rsComm_t *rsComm, dataObjInp_t *dataObjInp,
 int
 dataObjStat( rsComm_t *rsComm, dataObjInp_t *dataObjInp,
              rodsObjStat_t **rodsObjStatOut ) {
-    genQueryInp_t genQueryInp;
-    genQueryOut_t *genQueryOut = NULL;
-    int status;
-    char myColl[MAX_NAME_LEN], myData[MAX_NAME_LEN];
-    char condStr[MAX_NAME_LEN];
-    sqlResult_t *dataSize;
-    sqlResult_t *dataMode;
-    sqlResult_t *replStatus;
-    sqlResult_t *dataId;
-    sqlResult_t *chksum;
-    sqlResult_t *ownerName;
-    sqlResult_t *ownerZone;
-    sqlResult_t *createTime;
-    sqlResult_t *modifyTime;
-    sqlResult_t *rescHier;
+    namespace fs = irods::experimental::filesystem;
+    namespace gq2 = irods::experimental::genquery2;
 
-    /* see if objPath is a dataObj */
+    if (!rsComm || !dataObjInp || !rodsObjStatOut) {
+        return USER__NULL_INPUT_ERR;
+    }
 
-    memset( myColl, 0, MAX_NAME_LEN );
-    memset( myData, 0, MAX_NAME_LEN );
-
-    if ( ( status = splitPathByKey(
-                        dataObjInp->objPath, myColl, MAX_NAME_LEN, myData, MAX_NAME_LEN, '/' ) ) < 0 ) {
+    const fs::path p{dataObjInp->objPath};
+    const auto coll_view = p.parent_path_view();
+    const auto data_view = p.object_name_view();
+    if (coll_view.empty() || data_view.empty()) {
         return OBJ_PATH_DOES_NOT_EXIST;
     }
 
-    memset( &genQueryInp, 0, sizeof( genQueryInp ) );
+    using gq2::builder::col;
+    const auto q = gq2::builder::select({"DATA_ID",
+                                         "DATA_SIZE",
+                                         "DATA_MODE",
+                                         "DATA_REPL_STATUS",
+                                         "DATA_CHECKSUM",
+                                         "DATA_OWNER_NAME",
+                                         "DATA_OWNER_ZONE",
+                                         "DATA_CREATE_TIME",
+                                         "DATA_MODIFY_TIME",
+                                         "DATA_RESC_HIER"})
+                       .where(col("COLL_NAME") == coll_view && col("DATA_NAME") == data_view)
+                       .limit(MAX_SQL_ROWS)
+                       .build();
 
-    snprintf( condStr, MAX_NAME_LEN, "='%s'", myColl );
-    addInxVal( &genQueryInp.sqlCondInp, COL_COLL_NAME, condStr );
-    snprintf( condStr, MAX_NAME_LEN, "='%s'", myData );
-    addInxVal( &genQueryInp.sqlCondInp, COL_DATA_NAME, condStr );
+    nlohmann::json rows;
+    if (const int ec = gq2::try_execute(*rsComm, q, rows); ec < 0) {
+        return ec;
+    }
 
-    addInxIval( &genQueryInp.selectInp, COL_D_DATA_ID, 1 );
-    addInxIval( &genQueryInp.selectInp, COL_DATA_SIZE, 1 );
-    addInxIval( &genQueryInp.selectInp, COL_DATA_MODE, 1 );
-    addInxIval( &genQueryInp.selectInp, COL_D_REPL_STATUS, 1 );
-    addInxIval( &genQueryInp.selectInp, COL_D_DATA_CHECKSUM, 1 );
-    addInxIval( &genQueryInp.selectInp, COL_D_OWNER_NAME, 1 );
-    addInxIval( &genQueryInp.selectInp, COL_D_OWNER_ZONE, 1 );
-    addInxIval( &genQueryInp.selectInp, COL_D_CREATE_TIME, 1 );
-    addInxIval( &genQueryInp.selectInp, COL_D_MODIFY_TIME, 1 );
-    addInxIval( &genQueryInp.selectInp, COL_D_RESC_HIER, 1 );
+    if (rows.empty()) {
+        return CAT_NO_ROWS_FOUND;
+    }
 
-    genQueryInp.maxRows = MAX_SQL_ROWS;
-    status =  rsGenQuery( rsComm, &genQueryInp, &genQueryOut );
+    *rodsObjStatOut = static_cast<rodsObjStat_t*>(std::malloc(sizeof(rodsObjStat_t)));
+    std::memset(*rodsObjStatOut, 0, sizeof(rodsObjStat_t));
+    (*rodsObjStatOut)->objType = DATA_OBJ_T;
 
-    clearGenQueryInp( &genQueryInp );
+    const auto populate_stat = [](rodsObjStat_t& _stat, const nlohmann::json& _row, const bool _include_mode) {
+        const auto& data_id = _row[0].get_ref<const std::string&>();
+        const auto& data_size = _row[1].get_ref<const std::string&>();
+        const auto& data_mode = _row[2].get_ref<const std::string&>();
+        const auto& chksum = _row[4].get_ref<const std::string&>();
+        const auto& owner_name = _row[5].get_ref<const std::string&>();
+        const auto& owner_zone = _row[6].get_ref<const std::string&>();
+        const auto& create_time = _row[7].get_ref<const std::string&>();
+        const auto& modify_time = _row[8].get_ref<const std::string&>();
+        const auto& resc_hier = _row[9].get_ref<const std::string&>();
 
-    if ( status >= 0 ) {
-        if ( ( dataSize = getSqlResultByInx( genQueryOut, COL_DATA_SIZE ) )
-                == NULL ) {
-            rodsLog( LOG_ERROR,
-                     "_rsObjStat: getSqlResultByInx for COL_DATA_SIZE failed" );
-            return UNMATCHED_KEY_OR_INDEX;
+        rstrcpy(_stat.dataId, data_id.c_str(), NAME_LEN);
+        std::from_chars(data_size.data(), data_size.data() + data_size.size(), _stat.objSize);
+        if (_include_mode) {
+            std::from_chars(data_mode.data(), data_mode.data() + data_mode.size(), _stat.dataMode);
         }
-        else if ( ( dataMode = getSqlResultByInx( genQueryOut,
-                               COL_DATA_MODE ) ) == NULL ) {
-            rodsLog( LOG_ERROR,
-                     "_rsObjStat: getSqlResultByInx for COL_DATA_MODE failed" );
-            return UNMATCHED_KEY_OR_INDEX;
-        }
-        else if ( ( replStatus = getSqlResultByInx( genQueryOut,
-                                 COL_D_REPL_STATUS ) ) == NULL ) {
-            rodsLog( LOG_ERROR,
-                     "_rsObjStat: getSqlResultByInx for COL_D_REPL_STATUS failed" );
-            return UNMATCHED_KEY_OR_INDEX;
-        }
-        else if ( ( dataId = getSqlResultByInx( genQueryOut,
-                                                COL_D_DATA_ID ) ) == NULL ) {
-            rodsLog( LOG_ERROR,
-                     "_rsObjStat: getSqlResultByInx for COL_D_DATA_ID failed" );
-            return UNMATCHED_KEY_OR_INDEX;
-        }
-        else if ( ( chksum = getSqlResultByInx( genQueryOut,
-                                                COL_D_DATA_CHECKSUM ) ) == NULL ) {
-            rodsLog( LOG_ERROR,
-                     "_rsObjStat:getSqlResultByInx for COL_D_DATA_CHECKSUM failed" );
-            return UNMATCHED_KEY_OR_INDEX;
-        }
-        else if ( ( ownerName = getSqlResultByInx( genQueryOut,
-                                COL_D_OWNER_NAME ) ) == NULL ) {
-            rodsLog( LOG_ERROR,
-                     "_rsObjStat:getSqlResultByInx for COL_D_OWNER_NAME failed" );
-            return UNMATCHED_KEY_OR_INDEX;
-        }
-        else if ( ( ownerZone = getSqlResultByInx( genQueryOut,
-                                COL_D_OWNER_ZONE ) ) == NULL ) {
-            rodsLog( LOG_ERROR,
-                     "_rsObjStat:getSqlResultByInx for COL_D_OWNER_ZONE failed" );
-            return UNMATCHED_KEY_OR_INDEX;
-        }
-        else if ( ( createTime = getSqlResultByInx( genQueryOut,
-                                 COL_D_CREATE_TIME ) ) == NULL ) {
-            rodsLog( LOG_ERROR,
-                     "_rsObjStat:getSqlResultByInx for COL_D_CREATE_TIME failed" );
-            return UNMATCHED_KEY_OR_INDEX;
-        }
-        else if ( ( modifyTime = getSqlResultByInx( genQueryOut,
-                                 COL_D_MODIFY_TIME ) ) == NULL ) {
-            rodsLog( LOG_ERROR,
-                     "_rsObjStat:getSqlResultByInx for COL_D_MODIFY_TIME failed" );
-            return UNMATCHED_KEY_OR_INDEX;
-        }
-        else if ( ( rescHier = getSqlResultByInx( genQueryOut,
-                                                COL_D_RESC_HIER ) ) == NULL ) {
-            rodsLog( LOG_ERROR,
-                     "_rsObjStat:getSqlResultByInx for COL_D_RESC_HIER failed" );
-            return UNMATCHED_KEY_OR_INDEX;
-        }
-        else {
-            int i;
+        rstrcpy(_stat.chksum, chksum.c_str(), CHKSUM_LEN);
+        rstrcpy(_stat.ownerName, owner_name.c_str(), NAME_LEN);
+        rstrcpy(_stat.ownerZone, owner_zone.c_str(), NAME_LEN);
+        rstrcpy(_stat.createTime, create_time.c_str(), TIME_LEN);
+        rstrcpy(_stat.modifyTime, modify_time.c_str(), TIME_LEN);
+        rstrcpy(_stat.rescHier, resc_hier.c_str(), MAX_NAME_LEN);
+    };
 
-            *rodsObjStatOut = ( rodsObjStat_t * ) malloc( sizeof( rodsObjStat_t ) );
-            memset( *rodsObjStatOut, 0, sizeof( rodsObjStat_t ) );
-            ( *rodsObjStatOut )->objType = DATA_OBJ_T;
-            status = ( int )DATA_OBJ_T;
-            /* XXXXXX . dont have numCopies anymore. Replaced by dataMode
-             * (*rodsObjStatOut)->numCopies = genQueryOut->rowCnt; */
-
-            for ( i = 0; i < genQueryOut->rowCnt; i++ ) {
-                if (atoi(&replStatus->value[replStatus->len * i]) == 1) {
-                    rstrcpy( ( *rodsObjStatOut )->dataId,
-                             &dataId->value[dataId->len * i], NAME_LEN );
-                    ( *rodsObjStatOut )->objSize =
-                        strtoll( &dataSize->value[dataSize->len * i], 0, 0 );
-                    ( *rodsObjStatOut )->dataMode =
-                        atoi( &dataMode->value[dataMode->len * i] );
-                    rstrcpy((*rodsObjStatOut)->chksum, &chksum->value[chksum->len * i], CHKSUM_LEN);
-                    rstrcpy( ( *rodsObjStatOut )->ownerName,
-                             &ownerName->value[ownerName->len * i], NAME_LEN );
-                    rstrcpy( ( *rodsObjStatOut )->ownerZone,
-                             &ownerZone->value[ownerZone->len * i], NAME_LEN );
-                    rstrcpy( ( *rodsObjStatOut )->createTime,
-                             &createTime->value[createTime->len * i], TIME_LEN );
-                    rstrcpy( ( *rodsObjStatOut )->modifyTime,
-                             &modifyTime->value[modifyTime->len * i], TIME_LEN );
-                    rstrcpy( ( *rodsObjStatOut )->rescHier,
-                             &rescHier->value[rescHier->len * i], MAX_NAME_LEN );
-                    break;
-                }
-            }
-
-            if ( strlen( ( *rodsObjStatOut )->dataId ) == 0 ) {
-                /* just use the first one */
-                rstrcpy( ( *rodsObjStatOut )->dataId, dataId->value, NAME_LEN );
-                ( *rodsObjStatOut )->objSize = strtoll( dataSize->value, 0, 0 );
-                rstrcpy((*rodsObjStatOut)->chksum, chksum->value, CHKSUM_LEN);
-                rstrcpy( ( *rodsObjStatOut )->ownerName, ownerName->value,
-                         NAME_LEN );
-                rstrcpy( ( *rodsObjStatOut )->ownerZone, ownerZone->value,
-                         NAME_LEN );
-                rstrcpy( ( *rodsObjStatOut )->createTime, createTime->value,
-                         TIME_LEN );
-                rstrcpy( ( *rodsObjStatOut )->modifyTime, modifyTime->value,
-                         TIME_LEN );
-                rstrcpy( ( *rodsObjStatOut )->rescHier, rescHier->value,
-                         MAX_NAME_LEN );
-            }
+    for (const auto& row : rows) {
+        const auto& repl_status_str = row[3].get_ref<const std::string&>();
+        int repl_status = 0;
+        std::from_chars(repl_status_str.data(), repl_status_str.data() + repl_status_str.size(), repl_status);
+        if (repl_status == 1) {
+            populate_stat(**rodsObjStatOut, row, true);
+            break;
         }
     }
 
-    freeGenQueryOut( &genQueryOut );
+    if (std::strlen((*rodsObjStatOut)->dataId) == 0) {
+        populate_stat(**rodsObjStatOut, rows[0], false);
+    }
 
-    return status;
+    return static_cast<int>(DATA_OBJ_T);
 }
 
 int l3Stat(

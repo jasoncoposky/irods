@@ -20,7 +20,8 @@
 #include "irods/rcMisc.h"
 #include "irods/rodsConnect.h"
 #include "irods/rodsErrorTable.h"
-#include "irods/rsGenQuery.hpp"
+#include "irods/genquery2_builder.hpp"
+#include "irods/rs_genquery2.hpp"
 #include "irods/rsModAVUMetadata.hpp"
 #include "irods/rsZoneReport.hpp"
 #include "irods/rs_set_delay_server_migration_info.hpp"
@@ -273,46 +274,33 @@ namespace
 int _check_rebalance_timestamp_avu_on_resource(
     rsComm_t* _rsComm,
     const std::string& _resource_name) {
+    namespace gq2 = irods::experimental::genquery2;
 
-    // build genquery to find active or stale "rebalance operation" entries for this resource
-    genQueryOut_t* gen_out = nullptr;
-    char tmp_str[MAX_NAME_LEN];
-    genQueryInp_t gen_inp{};
+    if (!_rsComm) {
+        return USER__NULL_INPUT_ERR;
+    }
 
-    snprintf( tmp_str, MAX_NAME_LEN, "='%s'", _resource_name.c_str() );
-    addInxVal( &gen_inp.sqlCondInp, COL_R_RESC_NAME, tmp_str );
-    snprintf( tmp_str, MAX_NAME_LEN, "='rebalance_operation'" );
-    addInxVal( &gen_inp.sqlCondInp, COL_META_RESC_ATTR_NAME, tmp_str );
-    addInxIval( &gen_inp.selectInp, COL_META_RESC_ATTR_VALUE, 1 );
-    addInxIval( &gen_inp.selectInp, COL_META_RESC_ATTR_UNITS, 1 );
-    gen_inp.maxRows = 1;
-    int status = rsGenQuery( _rsComm, &gen_inp, &gen_out );
-    // if existing entry found, report and exit
-    if ( status >= 0 ) {
-        sqlResult_t* hostname_and_pid;
-        sqlResult_t* timestamp;
-        if ( ( hostname_and_pid = getSqlResultByInx( gen_out, COL_META_RESC_ATTR_VALUE ) ) == nullptr ) {
-            log_api::error("{}: getSqlResultByInx for COL_META_RESC_ATTR_VALUE failed", __FUNCTION__);
-            return UNMATCHED_KEY_OR_INDEX;
-        }
-        if ( ( timestamp = getSqlResultByInx( gen_out, COL_META_RESC_ATTR_UNITS ) ) == nullptr ) {
-            log_api::error("{}: getSqlResultByInx for COL_META_RESC_ATTR_UNITS failed", __FUNCTION__);
-            return UNMATCHED_KEY_OR_INDEX;
-        }
-        std::stringstream msg;
-        msg << "A rebalance_operation on resource [";
-        msg << _resource_name.c_str();
-        msg << "] is still active (or stale) [";
-        msg << &hostname_and_pid->value[0];
-        msg << "] [";
-        msg << &timestamp->value[0];
-        msg << "]";
-        log_api::error("{}", __FUNCTION__, msg.str().c_str());
-        addRErrorMsg( &_rsComm->rError, REBALANCE_ALREADY_ACTIVE_ON_RESOURCE, msg.str().c_str() );
+    // Build GenQuery2 AST to find active or stale "rebalance_operation" entries for this resource.
+    using gq2::builder::col;
+    const auto q = gq2::builder::select({"META_RESC_ATTR_VALUE", "META_RESC_ATTR_UNITS"})
+                       .where(col("RESC_NAME") == _resource_name && col("META_RESC_ATTR_NAME") == "rebalance_operation")
+                       .limit(1)
+                       .build();
+
+    nlohmann::json rows;
+    if (gq2::try_execute(*_rsComm, q, rows) >= 0 && !rows.empty()) {
+        const auto& hostname_and_pid = rows[0][0].get_ref<const std::string&>();
+        const auto& timestamp = rows[0][1].get_ref<const std::string&>();
+        const auto msg = fmt::format(
+            "A rebalance_operation on resource [{}] is still active (or stale) [{}] [{}]",
+            _resource_name,
+            hostname_and_pid,
+            timestamp);
+        log_api::error("{}: {}", __func__, msg);
+        addRErrorMsg(&_rsComm->rError, REBALANCE_ALREADY_ACTIVE_ON_RESOURCE, msg.c_str());
         return REBALANCE_ALREADY_ACTIVE_ON_RESOURCE;
     }
-    freeGenQueryOut( &gen_out );
-    clearGenQueryInp( &gen_inp );
+
     return 0;
 }
 
@@ -322,23 +310,13 @@ int _set_rebalance_timestamp_avu_on_resource(rsComm_t* _rsComm,
                                              const std::string& _unit)
 {
     modAVUMetadataInp_t modAVUMetadataInp{};
-    irods::at_scope_exit<std::function<void()>> at_scope_exit{[&] {
-        free( modAVUMetadataInp.arg0 );
-        free( modAVUMetadataInp.arg1 );
-        free( modAVUMetadataInp.arg2 );
-        free( modAVUMetadataInp.arg3 );
-        free( modAVUMetadataInp.arg4 );
-        free( modAVUMetadataInp.arg5 );
-    }};
-    // add AVU to resource
-    modAVUMetadataInp.arg0 = strdup( "set" );
-    modAVUMetadataInp.arg1 = strdup( "-R" );
-    modAVUMetadataInp.arg2 = strdup( _resource_name.c_str() );
-    modAVUMetadataInp.arg3 = strdup( "rebalance_operation" );
-    modAVUMetadataInp.arg4 = strdup(_value.c_str());
-    modAVUMetadataInp.arg5 = strdup(_unit.c_str());
-    // do it
-    return rsModAVUMetadata( _rsComm, &modAVUMetadataInp );
+    modAVUMetadataInp.arg0 = const_cast<char*>("set");
+    modAVUMetadataInp.arg1 = const_cast<char*>("-R");
+    modAVUMetadataInp.arg2 = const_cast<char*>(_resource_name.c_str());
+    modAVUMetadataInp.arg3 = const_cast<char*>("rebalance_operation");
+    modAVUMetadataInp.arg4 = const_cast<char*>(_value.c_str());
+    modAVUMetadataInp.arg5 = const_cast<char*>(_unit.c_str());
+    return rsModAVUMetadata(_rsComm, &modAVUMetadataInp);
 }
 
 int _check_and_set_rebalance_timestamp_avu_on_resource(rsComm_t* _rsComm,
@@ -362,52 +340,32 @@ int _remove_rebalance_timestamp_avu_from_resource(rsComm_t* _rsComm,
                                                   const std::string& _value,
                                                   const std::string& _unit)
 {
-    // build genquery to find active or stale "rebalance operation" entries for this resource
+    namespace gq2 = irods::experimental::genquery2;
 
-    genQueryInp_t gen_inp{};
-    irods::at_scope_exit clear_gen_inp{[&gen_inp] { clearGenQueryInp(&gen_inp); }};
+    if (!_rsComm) {
+        return USER__NULL_INPUT_ERR;
+    }
 
-    char tmp_str[MAX_NAME_LEN]; // NOLINT(cppcoreguidelines-avoid-c-arrays, modernize-avoid-c-arrays)
-    snprintf( tmp_str, MAX_NAME_LEN, "='%s'", _resource_name.c_str() );
-    addInxVal( &gen_inp.sqlCondInp, COL_R_RESC_NAME, tmp_str );
+    // Build GenQuery2 AST to find active or stale "rebalance_operation" entries for this resource.
+    using gq2::builder::col;
+    const auto q = gq2::builder::select({"META_RESC_ATTR_VALUE", "META_RESC_ATTR_UNITS"})
+                       .where(col("RESC_NAME") == _resource_name && col("META_RESC_ATTR_NAME") == "rebalance_operation")
+                       .limit(1)
+                       .build();
 
-    snprintf( tmp_str, MAX_NAME_LEN, "='rebalance_operation'" );
-    addInxVal( &gen_inp.sqlCondInp, COL_META_RESC_ATTR_NAME, tmp_str );
-
-    addInxIval( &gen_inp.selectInp, COL_META_RESC_ATTR_VALUE, 1 );
-    addInxIval( &gen_inp.selectInp, COL_META_RESC_ATTR_UNITS, 1 );
-
-    gen_inp.maxRows = 1;
-
-    genQueryOut_t* gen_out = nullptr;
-    irods::at_scope_exit free_gen_out{[&gen_out] { freeGenQueryOut(&gen_out); }};
-
-    int status = rsGenQuery(_rsComm, &gen_inp, &gen_out);
-
-    // if existing entry found, remove it
-    if ( status >= 0 ) {
+    nlohmann::json rows;
+    if (gq2::try_execute(*_rsComm, q, rows) >= 0 && !rows.empty()) {
         modAVUMetadataInp_t modAVUMetadataInp{};
-        irods::at_scope_exit<std::function<void()>> at_scope_exit{[&] {
-            free( modAVUMetadataInp.arg0 );
-            free( modAVUMetadataInp.arg1 );
-            free( modAVUMetadataInp.arg2 );
-            free( modAVUMetadataInp.arg3 );
-            free( modAVUMetadataInp.arg4 );
-            free( modAVUMetadataInp.arg5 );
-        }};
-        // remove AVU from resource
-        modAVUMetadataInp.arg0 = strdup("rm");
-        modAVUMetadataInp.arg1 = strdup( "-R" );
-        modAVUMetadataInp.arg2 = strdup( _resource_name.c_str() );
-        modAVUMetadataInp.arg3 = strdup( "rebalance_operation" );
-        modAVUMetadataInp.arg4 = strdup(_value.c_str());
-        modAVUMetadataInp.arg5 = strdup(_unit.c_str());
-        // do it
-        return rsModAVUMetadata( _rsComm, &modAVUMetadataInp );
+        modAVUMetadataInp.arg0 = const_cast<char*>("rm");
+        modAVUMetadataInp.arg1 = const_cast<char*>("-R");
+        modAVUMetadataInp.arg2 = const_cast<char*>(_resource_name.c_str());
+        modAVUMetadataInp.arg3 = const_cast<char*>("rebalance_operation");
+        modAVUMetadataInp.arg4 = const_cast<char*>(_value.c_str());
+        modAVUMetadataInp.arg5 = const_cast<char*>(_unit.c_str());
+        return rsModAVUMetadata(_rsComm, &modAVUMetadataInp);
     }
-    else {
-        return 0;
-    }
+
+    return 0;
 }
 
 int
