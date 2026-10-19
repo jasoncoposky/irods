@@ -1,4 +1,5 @@
 #include "utility.hpp"
+#include <irods/genquery2_builder.hpp>
 #include <irods/irods_at_scope_exit.hpp>
 #include <irods/irods_client_api_table.hpp>
 #include <irods/irods_pack_table.hpp>
@@ -10,13 +11,16 @@
 #include <irods/rodsPath.h>
 
 #include <boost/date_time.hpp>
+#include <nlohmann/json.hpp>
 
+#include <charconv>
 #include <cstdio>
 #include <locale>
 #include <optional>
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #define MAX_SQL 300
 #define BIG_STR 3000
@@ -40,12 +44,17 @@ bool run_as_admin = false;
 
 int usage( char *subOpt );
 
-void showRestrictions( char *inColumn );
+void showRestrictions( const char *inColumn );
 
 std::string to_utc_timestamp(const std::string_view _seconds)
 {
     try {
-        const auto tt = std::stoll(_seconds.data());
+        std::time_t tt = 0;
+        const auto [ptr, ec] = std::from_chars(_seconds.data(), _seconds.data() + _seconds.size(), tt);
+        if (ec != std::errc{}) {
+            std::cerr << "Timestamp conversion error: invalid integer\n";
+            return "?";
+        }
         const auto pt = boost::posix_time::from_time_t(tt);
 
         std::ostringstream ss;
@@ -64,36 +73,38 @@ std::string to_utc_timestamp(const std::string_view _seconds)
  print the results of a general query.
  */
 void
-printResultsAndSubQuery( rcComm_t *Conn, int status, genQueryOut_t *genQueryOut,
+printResultsAndSubQuery( rcComm_t *Conn, int status, const nlohmann::json& rows,
                          char *descriptions[], int subColumn, int dashOpt ) {
-    int i, j;
     lastCommandStatus = status;
     if ( status == CAT_NO_ROWS_FOUND ) {
         lastCommandStatus = 0;
     }
 
     if ( status != 0 && status != CAT_NO_ROWS_FOUND ) {
-        printError( Conn, status, "rcGenQuery" );
+        printError( Conn, status, "rc_genquery2" );
     }
     else {
-        if ( status == CAT_NO_ROWS_FOUND ) {
+        if ( status == CAT_NO_ROWS_FOUND || rows.empty() ) {
             if ( printCount == 0 ) {
                 printf( "No rows found\n" );
             }
         }
         else {
-            for ( i = 0; i < genQueryOut->rowCnt; i++ ) {
+            for ( std::size_t i = 0; i < rows.size(); i++ ) {
+                const auto& row = rows[i];
+                if ( !row.is_array() ) {
+                    continue;
+                }
                 printedRows++;
-                char *subCol = "";
+                const char *subCol = "";
                 if ( i > 0 && dashOpt > 0 ) {
                     printf( "----\n" );
                 }
 
-                for ( j = 0; j < genQueryOut->attriCnt; j++ ) {
-                    char *tResult;
-                    tResult = genQueryOut->sqlResult[j].value;
-                    tResult += i * genQueryOut->sqlResult[j].len;
-                    if ( subColumn == j ) {
+                for ( std::size_t j = 0; j < row.size(); j++ ) {
+                    const auto& val = row[j].get_ref<const std::string&>();
+                    const char *tResult = val.c_str();
+                    if ( subColumn >= 0 && static_cast<std::size_t>(subColumn) == j ) {
                         subCol = tResult;
                     }
 
@@ -105,7 +116,7 @@ printResultsAndSubQuery( rcComm_t *Conn, int status, genQueryOut_t *genQueryOut,
                                 strcpy(localTime, "none");
                             }
                             else {
-                                const auto ts = to_utc_timestamp(tResult);
+                                const auto ts = to_utc_timestamp(val);
                                 strcpy(localTime, ts.data());
                             }
 
@@ -127,224 +138,118 @@ printResultsAndSubQuery( rcComm_t *Conn, int status, genQueryOut_t *genQueryOut,
 }
 
 void
-showRestrictionsByHost( char *inColumn ) {
-    genQueryInp_t genQueryInp;
-    genQueryOut_t *genQueryOut{};
-
-    irods::at_scope_exit cleanup{[&genQueryInp, &genQueryOut] {
-        clearKeyVal(&genQueryInp.condInput);
-        freeGenQueryOut(&genQueryOut);
-    }};
-
-    int i1a[10];
-    int i1b[10];
-    int i2a[10];
-    int i;
-    char v1[MAX_NAME_LEN];
-    char *condVal[10];
-    int status;
+showRestrictionsByHost( const char *inColumn ) {
+    namespace gq2 = irods::experimental::genquery2;
     char *columnNames[] = {"restricted-to host"};
-
-
-    memset( &genQueryInp, 0, sizeof( genQueryInp_t ) );
-
     printCount = 0;
 
-    i = 0;
-    i1a[i] = COL_TICKET_ALLOWED_HOST;
-    i1b[i++] = 0;
+    constexpr std::size_t maxRows = 10;
+    std::size_t offset = 0;
 
-    genQueryInp.selectInp.inx = i1a;
-    genQueryInp.selectInp.value = i1b;
-    genQueryInp.selectInp.len = i;
+    while ( true ) {
+        const auto q = gq2::builder::select({"TICKET_ALLOWED_HOST"})
+            .where(gq2::builder::col("TICKET_ALLOWED_HOST_TICKET_ID") == inColumn)
+            .limit(maxRows, offset)
+            .build();
 
-    i2a[0] = COL_TICKET_ALLOWED_HOST_TICKET_ID;
-    snprintf( v1, sizeof( v1 ), "='%s'", inColumn );
-    condVal[0] = v1;
-    genQueryInp.sqlCondInp.inx = i2a;
-    genQueryInp.sqlCondInp.value = condVal;
-    genQueryInp.sqlCondInp.len = 1;
-
-    genQueryInp.maxRows = 10;
-    genQueryInp.continueInx = 0;
-    genQueryInp.condInput.len = 0;
-
-    status = rcGenQuery( Conn, &genQueryInp, &genQueryOut );
-    if ( status == CAT_NO_ROWS_FOUND ) {
-        i1a[0] = COL_USER_COMMENT;
-        genQueryInp.selectInp.len = 1;
-        freeGenQueryOut(&genQueryOut);
-        status = rcGenQuery( Conn, &genQueryInp, &genQueryOut );
-        if ( status == 0 ) {
-            printf( "No host restrictions (1)\n" );
-            return;
-        }
-        if ( status == CAT_NO_ROWS_FOUND ) {
+        nlohmann::json rows;
+        const int status = gq2::try_execute(*Conn, q, rows);
+        if ( offset == 0 && (status == CAT_NO_ROWS_FOUND || (status == 0 && rows.empty())) ) {
             printf( "No host restrictions\n" );
             return;
         }
-    }
+        if ( status < 0 || rows.empty() ) {
+            if ( status < 0 && status != CAT_NO_ROWS_FOUND ) {
+                printResultsAndSubQuery( Conn, status, rows, columnNames, -1, 0 );
+            }
+            break;
+        }
 
-    printResultsAndSubQuery( Conn, status, genQueryOut, columnNames, -1, 0 );
-
-    while ( status == 0 && genQueryOut->continueInx > 0 ) {
-        genQueryInp.continueInx = genQueryOut->continueInx;
-        freeGenQueryOut(&genQueryOut);
-        status = rcGenQuery( Conn, &genQueryInp, &genQueryOut );
-        printResultsAndSubQuery( Conn, status, genQueryOut,
-                                 columnNames, 0, 0 );
+        printResultsAndSubQuery( Conn, status, rows, columnNames, -1, 0 );
+        if ( rows.size() < maxRows ) {
+            break;
+        }
+        offset += rows.size();
     }
-    return;
 }
 
 void
-showRestrictionsByUser( char *inColumn ) {
-    genQueryInp_t genQueryInp;
-    genQueryOut_t *genQueryOut{};
-
-    irods::at_scope_exit cleanup{[&genQueryInp, &genQueryOut] {
-        clearKeyVal(&genQueryInp.condInput);
-        freeGenQueryOut(&genQueryOut);
-    }};
-
-    int i1a[10];
-    int i1b[10];
-    int i2a[10];
-    int i;
-    char v1[MAX_NAME_LEN];
-    char *condVal[10];
-    int status;
+showRestrictionsByUser( const char *inColumn ) {
+    namespace gq2 = irods::experimental::genquery2;
     char *columnNames[] = {"restricted-to user"};
-
-
-    memset( &genQueryInp, 0, sizeof( genQueryInp_t ) );
-
     printCount = 0;
 
-    i = 0;
-    i1a[i] = COL_TICKET_ALLOWED_USER_NAME;
-    i1b[i++] = 0;
+    constexpr std::size_t maxRows = 10;
+    std::size_t offset = 0;
 
-    genQueryInp.selectInp.inx = i1a;
-    genQueryInp.selectInp.value = i1b;
-    genQueryInp.selectInp.len = i;
+    while ( true ) {
+        const auto q = gq2::builder::select({"TICKET_ALLOWED_USER_NAME"})
+            .where(gq2::builder::col("TICKET_ALLOWED_USER_TICKET_ID") == inColumn)
+            .limit(maxRows, offset)
+            .build();
 
-    i2a[0] = COL_TICKET_ALLOWED_USER_TICKET_ID;
-    snprintf( v1, sizeof( v1 ), "='%s'", inColumn );
-    condVal[0] = v1;
-    genQueryInp.sqlCondInp.inx = i2a;
-    genQueryInp.sqlCondInp.value = condVal;
-    genQueryInp.sqlCondInp.len = 1;
-
-    genQueryInp.maxRows = 10;
-    genQueryInp.continueInx = 0;
-    genQueryInp.condInput.len = 0;
-
-    status = rcGenQuery( Conn, &genQueryInp, &genQueryOut );
-    if ( status == CAT_NO_ROWS_FOUND ) {
-        i1a[0] = COL_USER_COMMENT;
-        genQueryInp.selectInp.len = 1;
-        freeGenQueryOut(&genQueryOut);
-        status = rcGenQuery( Conn, &genQueryInp, &genQueryOut );
-        if ( status == 0 ) {
-            printf( "No user restrictions (1)\n" );
-            return;
-        }
-        if ( status == CAT_NO_ROWS_FOUND ) {
+        nlohmann::json rows;
+        const int status = gq2::try_execute(*Conn, q, rows);
+        if ( offset == 0 && (status == CAT_NO_ROWS_FOUND || (status == 0 && rows.empty())) ) {
             printf( "No user restrictions\n" );
             return;
         }
-    }
+        if ( status < 0 || rows.empty() ) {
+            if ( status < 0 && status != CAT_NO_ROWS_FOUND ) {
+                printResultsAndSubQuery( Conn, status, rows, columnNames, -1, 0 );
+            }
+            break;
+        }
 
-    printResultsAndSubQuery( Conn, status, genQueryOut, columnNames, -1, 0 );
-
-    while ( status == 0 && genQueryOut->continueInx > 0 ) {
-        genQueryInp.continueInx = genQueryOut->continueInx;
-        freeGenQueryOut(&genQueryOut);
-        status = rcGenQuery( Conn, &genQueryInp, &genQueryOut );
-        printResultsAndSubQuery( Conn, status, genQueryOut,
-                                 columnNames, 0, 0 );
+        printResultsAndSubQuery( Conn, status, rows, columnNames, -1, 0 );
+        if ( rows.size() < maxRows ) {
+            break;
+        }
+        offset += rows.size();
     }
-    return;
 }
 
 void
-showRestrictionsByGroup( char *inColumn ) {
-    genQueryInp_t genQueryInp;
-    genQueryOut_t *genQueryOut{};
-
-    irods::at_scope_exit cleanup{[&genQueryInp, &genQueryOut] {
-        clearKeyVal(&genQueryInp.condInput);
-        freeGenQueryOut(&genQueryOut);
-    }};
-
-    int i1a[10];
-    int i1b[10];
-    int i2a[10];
-    int i;
-    char v1[MAX_NAME_LEN];
-    char *condVal[10];
-    int status;
+showRestrictionsByGroup( const char *inColumn ) {
+    namespace gq2 = irods::experimental::genquery2;
     char *columnNames[] = {"restricted-to group"};
-
-
-    memset( &genQueryInp, 0, sizeof( genQueryInp_t ) );
-
     printCount = 0;
 
-    i = 0;
-    i1a[i] = COL_TICKET_ALLOWED_GROUP_NAME;
-    i1b[i++] = 0;
+    constexpr std::size_t maxRows = 10;
+    std::size_t offset = 0;
 
-    genQueryInp.selectInp.inx = i1a;
-    genQueryInp.selectInp.value = i1b;
-    genQueryInp.selectInp.len = i;
+    while ( true ) {
+        const auto q = gq2::builder::select({"TICKET_ALLOWED_GROUP_NAME"})
+            .where(gq2::builder::col("TICKET_ALLOWED_GROUP_TICKET_ID") == inColumn)
+            .limit(maxRows, offset)
+            .build();
 
-    i2a[0] = COL_TICKET_ALLOWED_GROUP_TICKET_ID;
-    snprintf( v1, sizeof( v1 ), "='%s'", inColumn );
-    condVal[0] = v1;
-    genQueryInp.sqlCondInp.inx = i2a;
-    genQueryInp.sqlCondInp.value = condVal;
-    genQueryInp.sqlCondInp.len = 1;
-
-    genQueryInp.maxRows = 10;
-    genQueryInp.continueInx = 0;
-    genQueryInp.condInput.len = 0;
-
-    status = rcGenQuery( Conn, &genQueryInp, &genQueryOut );
-    if ( status == CAT_NO_ROWS_FOUND ) {
-        i1a[0] = COL_USER_COMMENT;
-        genQueryInp.selectInp.len = 1;
-        freeGenQueryOut(&genQueryOut);
-        status = rcGenQuery( Conn, &genQueryInp, &genQueryOut );
-        if ( status == 0 ) {
-            printf( "No group restrictions (1)\n" );
-            return;
-        }
-        if ( status == CAT_NO_ROWS_FOUND ) {
+        nlohmann::json rows;
+        const int status = gq2::try_execute(*Conn, q, rows);
+        if ( offset == 0 && (status == CAT_NO_ROWS_FOUND || (status == 0 && rows.empty())) ) {
             printf( "No group restrictions\n" );
             return;
         }
-    }
+        if ( status < 0 || rows.empty() ) {
+            if ( status < 0 && status != CAT_NO_ROWS_FOUND ) {
+                printResultsAndSubQuery( Conn, status, rows, columnNames, -1, 0 );
+            }
+            break;
+        }
 
-    printResultsAndSubQuery( Conn, status, genQueryOut, columnNames, -1, 0 );
-
-    while ( status == 0 && genQueryOut->continueInx > 0 ) {
-        genQueryInp.continueInx = genQueryOut->continueInx;
-        freeGenQueryOut(&genQueryOut);
-        status = rcGenQuery( Conn, &genQueryInp, &genQueryOut );
-        printResultsAndSubQuery( Conn, status, genQueryOut,
-                                 columnNames, 0, 0 );
+        printResultsAndSubQuery( Conn, status, rows, columnNames, -1, 0 );
+        if ( rows.size() < maxRows ) {
+            break;
+        }
+        offset += rows.size();
     }
-    return;
 }
 
 void
-showRestrictions( char *inColumn ) {
+showRestrictions( const char *inColumn ) {
     showRestrictionsByHost( inColumn );
     showRestrictionsByUser( inColumn );
     showRestrictionsByGroup( inColumn );
-    return;
 }
 
 
@@ -353,124 +258,61 @@ Via a general query, show the Tickets for this user
 */
 int
 showTickets1( char *inOption, char *inName ) {
-    genQueryInp_t genQueryInp;
-    genQueryOut_t *genQueryOut{};
+    namespace gq2 = irods::experimental::genquery2;
 
-    irods::at_scope_exit cleanup{[&genQueryInp, &genQueryOut] {
-        clearKeyVal(&genQueryInp.condInput);
-        freeGenQueryOut(&genQueryOut);
-    }};
-
-    int i1a[20];
-    int i1b[20];
-    int i2a[20];
-    int i;
-    char v1[MAX_NAME_LEN];
-    char *condVal[20];
-    int status;
     char *columnNames[] = {"id", "string", "ticket type", "obj type", "owner name", "owner zone", "uses count", "uses limit", "write file count", "write file limit", "write byte count", "write byte limit", "expire time", "collection name", "data collection"};
-
-
-    memset( &genQueryInp, 0, sizeof( genQueryInp_t ) );
 
     printCount = 0;
 
-    i = 0;
-    i1a[i] = COL_TICKET_ID;
-    i1b[i++] = 0;
-    i1a[i] = COL_TICKET_STRING;
-    i1b[i++] = 0;
-    i1a[i] = COL_TICKET_TYPE;
-    i1b[i++] = 0;
-    i1a[i] = COL_TICKET_OBJECT_TYPE;
-    i1b[i++] = 0;
-    i1a[i] = COL_TICKET_OWNER_NAME;
-    i1b[i++] = 0;
-    i1a[i] = COL_TICKET_OWNER_ZONE;
-    i1b[i++] = 0;
-    i1a[i] = COL_TICKET_USES_COUNT;
-    i1b[i++] = 0;
-    i1a[i] = COL_TICKET_USES_LIMIT;
-    i1b[i++] = 0;
-    i1a[i] = COL_TICKET_WRITE_FILE_COUNT;
-    i1b[i++] = 0;
-    i1a[i] = COL_TICKET_WRITE_FILE_LIMIT;
-    i1b[i++] = 0;
-    i1a[i] = COL_TICKET_WRITE_BYTE_COUNT;
-    i1b[i++] = 0;
-    i1a[i] = COL_TICKET_WRITE_BYTE_LIMIT;
-    i1b[i++] = 0;
-    i1a[i] = COL_TICKET_EXPIRY_TS;
-    i1b[i++] = 0;
-    i1a[i] = COL_TICKET_COLL_NAME;
-    i1b[i++] = 0;
+    std::vector<std::string> select_cols{
+        "TICKET_ID", "TICKET_STRING", "TICKET_TYPE", "TICKET_OBJECT_TYPE",
+        "TICKET_OWNER_NAME", "TICKET_OWNER_ZONE", "TICKET_USES_COUNT", "TICKET_USES_LIMIT",
+        "TICKET_WRITE_FILE_COUNT", "TICKET_WRITE_FILE_LIMIT",
+        "TICKET_WRITE_BYTE_COUNT", "TICKET_WRITE_BYTE_LIMIT",
+        "TICKET_EXPIRY_TS"
+    };
+
     if ( strstr( inOption, "data" ) != 0 ) {
-        i--;
-        i1a[i] = COL_TICKET_DATA_NAME;
-        columnNames[i] = "data-object name";
-        i1b[i++] = 0;
-        i1a[i] = COL_TICKET_DATA_COLL_NAME;
-        i1b[i++] = 0;
+        columnNames[13] = "data-object name";
+        select_cols.push_back("TICKET_DATA_NAME");
+        select_cols.push_back("TICKET_DATA_COLL_NAME");
     }
-    if ( strstr( inOption, "basic" ) != 0 ) {
-        /* skip the COLL or DATA_NAME so it's just a query on the ticket tables */
-        i--;
+    else if ( strstr( inOption, "basic" ) == 0 ) {
+        select_cols.push_back("TICKET_COLL_NAME");
     }
 
-    genQueryInp.selectInp.inx = i1a;
-    genQueryInp.selectInp.value = i1b;
-    genQueryInp.selectInp.len = i;
+    const std::string_view zone_sv = (zoneArgument[0] != '\0') ? zoneArgument : "";
+    constexpr std::size_t maxRows = 10;
+    std::size_t offset = 0;
 
-    genQueryInp.condInput.len = 0;
-
-    if ( inName != NULL && *inName != '\0' ) {
-        if ( isInteger( inName ) == 1 ) {
-            /* Could have an all-integer ticket but in most cases this is a good
-            guess */
-            i2a[0] = COL_TICKET_ID;
+    while ( true ) {
+        auto qb = gq2::builder::select(select_cols);
+        if ( inName != NULL && *inName != '\0' ) {
+            const auto col_name = (isInteger( inName ) == 1) ? "TICKET_ID" : "TICKET_STRING";
+            qb.where(gq2::builder::col(col_name) == inName);
         }
-        else {
-            i2a[0] = COL_TICKET_STRING;
-        }
-        snprintf( v1, sizeof( v1 ), "='%s'", inName );
-        condVal[0] = v1;
-        genQueryInp.sqlCondInp.inx = i2a;
-        genQueryInp.sqlCondInp.value = condVal;
-        genQueryInp.sqlCondInp.len = 1;
-    }
+        qb.limit(maxRows, offset);
 
-    genQueryInp.maxRows = 10;
-    genQueryInp.continueInx = 0;
-
-    if ( zoneArgument[0] != '\0' ) {
-        addKeyVal( &genQueryInp.condInput, ZONE_KW, zoneArgument );
-    }
-
-    status = rcGenQuery( Conn, &genQueryInp, &genQueryOut );
-    if ( status == CAT_NO_ROWS_FOUND ) {
-        i1a[0] = COL_USER_COMMENT;
-        genQueryInp.selectInp.len = 1;
-        freeGenQueryOut(&genQueryOut);
-        status = rcGenQuery( Conn, &genQueryInp, &genQueryOut );
-        if ( status == 0 ) {
+        nlohmann::json rows;
+        const int status = gq2::try_execute(*Conn, qb.build(), rows, zone_sv);
+        if ( offset == 0 && (status == CAT_NO_ROWS_FOUND || (status == 0 && rows.empty())) ) {
+            lastCommandStatus = 0;
             return 0;
         }
-        if ( status == CAT_NO_ROWS_FOUND ) {
-            return 0;
+        if ( status < 0 || rows.empty() ) {
+            if ( status < 0 && status != CAT_NO_ROWS_FOUND ) {
+                printResultsAndSubQuery( Conn, status, rows, columnNames, 0, 1 );
+            }
+            break;
         }
-    }
-
-    printResultsAndSubQuery( Conn, status, genQueryOut, columnNames, 0, 1 );
-
-    while ( status == 0 && genQueryOut->continueInx > 0 ) {
-        genQueryInp.continueInx = genQueryOut->continueInx;
-        freeGenQueryOut(&genQueryOut);
-        status = rcGenQuery( Conn, &genQueryInp, &genQueryOut );
-        if ( genQueryOut->rowCnt > 0 ) {
+        if ( offset > 0 ) {
             printf( "----\n" );
         }
-        printResultsAndSubQuery( Conn, status, genQueryOut,
-                                 columnNames, 0, 1 );
+        printResultsAndSubQuery( Conn, status, rows, columnNames, 0, 1 );
+        if ( rows.size() < maxRows ) {
+            break;
+        }
+        offset += rows.size();
     }
 
     return 0;

@@ -1,11 +1,17 @@
 #include "utility.hpp"
+#include <irods/genquery2_builder.hpp>
 #include <irods/irods_client_api_table.hpp>
 #include <irods/irods_pack_table.hpp>
 #include <irods/rods.h>
 #include <irods/rodsClient.h>
 #include <irods/rodsError.h>
 
+#include <nlohmann/json.hpp>
+
+#include <charconv>
 #include <cstdio>
+#include <string>
+#include <vector>
 
 #define BIG_STR 200
 #define QUOTA_APPROACH_WARNING_SIZE -10000000000LL
@@ -23,12 +29,12 @@ void usage();
  print a number nicely, that is with commas and summary magnitude
  */
 int
-printNice( char *inArg, int minLen, char *Units ) {
+printNice( const char *inArg, int minLen, const char *Units ) {
     int i, n, k, len;
     int nextComma, firstComma, commaCount;
     char niceString[40];
     char firstPart[10];
-    char *numberName;
+    const char *numberName;
     char blanks[] = "                                        ";
     len = strlen( inArg );
     nextComma = len % 3;
@@ -111,54 +117,34 @@ printNice( char *inArg, int minLen, char *Units ) {
 */
 int
 showQuotas( char *userName, int userOrGroup, int rescOrGlobal ) {
-    genQueryInp_t genQueryInp;
-    genQueryOut_t *genQueryOut;
-    int inputInx[20];
-    int inputVal[20] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
-    int inputCond[20];
-    char *condVal[10];
-    char v1[BIG_STR];
-    char v1b[BIG_STR];
-    char v2[BIG_STR];
-    char v3[BIG_STR];
-    int i, j, status;
-    int  localiTime = 0;
-    static int printedTime = 0;
-    char *colName[10];
+    namespace gq2 = irods::experimental::genquery2;
 
-    memset( &genQueryInp, 0, sizeof( genQueryInp_t ) );
-    i = 0;
-    if ( rescOrGlobal == 0 ) {
-        colName[i] = "Resource: ";
-        inputInx[i++] = COL_QUOTA_RESC_NAME;
-    }
-    else {
-        colName[i] = "Resource: ";
-        inputInx[i++] = COL_QUOTA_RESC_ID;
-    }
-    if ( userOrGroup == 0 ) {
-        colName[i] = "User:  ";
-    }
-    else {
-        colName[i] = "Group:  ";
-    }
-    inputInx[i++] = COL_QUOTA_USER_NAME;
-    colName[i] = "Zone:  ";
-    inputInx[i++] = COL_QUOTA_USER_ZONE;
-    colName[i] = "Quota: ";
-    inputInx[i++] = COL_QUOTA_LIMIT;
-    colName[i] = "Over:  ";
-    inputInx[i++] = COL_QUOTA_OVER;
-    colName[i] = "Time";
-    inputInx[i++] = COL_QUOTA_MODIFY_TIME;
+    int status;
+    long long localiTime = 0;
+    const char *colName[6];
 
-    genQueryInp.selectInp.inx = inputInx;
-    genQueryInp.selectInp.value = inputVal;
-    genQueryInp.selectInp.len = i;
+    colName[0] = "Resource: ";
+    colName[1] = ( userOrGroup == 0 ) ? "User:  " : "Group:  ";
+    colName[2] = "Zone:  ";
+    colName[3] = "Quota: ";
+    colName[4] = "Over:  ";
+    colName[5] = "Time";
+
+    std::vector<std::string> select_cols{
+        ( rescOrGlobal == 0 ) ? "QUOTA_RESC_NAME" : "QUOTA_RESC_ID",
+        "QUOTA_USER_NAME",
+        "QUOTA_USER_ZONE",
+        "QUOTA_LIMIT",
+        "QUOTA_OVER",
+        "QUOTA_MODIFY_TIME"
+    };
+
+    auto cond = ( userOrGroup == 0 )
+        ? ( gq2::builder::col("QUOTA_USER_TYPE") != "rodsgroup" )
+        : ( gq2::builder::col("QUOTA_USER_TYPE") == "rodsgroup" );
 
     char userName2[NAME_LEN];
     char userZone[NAME_LEN];
-    genQueryInp.sqlCondInp.len = 0;
     if ( userName[0] != '\0' ) {
         status = parseUserName( userName, userName2, userZone );
         if ( status < 0 ) {
@@ -166,84 +152,44 @@ showQuotas( char *userName, int userOrGroup, int rescOrGlobal ) {
             return status;
         }
         if ( userZone[0] == '\0' ) {
-            inputCond[0] = COL_QUOTA_USER_NAME;
-            sprintf( v1, "='%s'", userName );
-            condVal[0] = v1;
-            genQueryInp.sqlCondInp.len++;
+            cond = cond && ( gq2::builder::col("QUOTA_USER_NAME") == userName );
         }
         else {
-            inputCond[0] = COL_QUOTA_USER_NAME;
-            sprintf( v1, "='%s'", userName2 );
-            condVal[0] = v1;
-            genQueryInp.sqlCondInp.len++;
-            inputCond[1] = COL_QUOTA_USER_ZONE;
-            sprintf( v1b, "='%s'", userZone );
-            condVal[1] = v1b;
-            genQueryInp.sqlCondInp.len++;
+            cond = cond && ( gq2::builder::col("QUOTA_USER_NAME") == userName2 ) &&
+                   ( gq2::builder::col("QUOTA_USER_ZONE") == userZone );
         }
     }
-    inputCond[genQueryInp.sqlCondInp.len] = COL_QUOTA_USER_TYPE;
-    if ( userOrGroup == 0 ) {
-        sprintf( v2, "!='%s'", "rodsgroup" );
-    }
-    else {
-        sprintf( v2, "='%s'", "rodsgroup" );
-    }
-    condVal[genQueryInp.sqlCondInp.len] = v2;
-    genQueryInp.sqlCondInp.len++;
 
     if ( rescOrGlobal == 1 ) {
-        inputCond[genQueryInp.sqlCondInp.len] = COL_QUOTA_RESC_ID;
-        sprintf( v3, "='%s'", "0" );
-        condVal[genQueryInp.sqlCondInp.len] = v3;
-        genQueryInp.sqlCondInp.len++;
+        cond = cond && ( gq2::builder::col("QUOTA_RESC_ID") == "0" );
     }
 
+    const auto q = gq2::builder::select(std::move(select_cols))
+        .where(std::move(cond))
+        .limit(MAX_SQL_ROWS)
+        .build();
 
-    genQueryInp.sqlCondInp.inx = inputCond;
-    genQueryInp.sqlCondInp.value = condVal;
-
-    genQueryInp.condInput.len = 0;
-
-    genQueryInp.maxRows = MAX_SQL_ROWS;
-
-    genQueryInp.continueInx = 0;
-    status = rcGenQuery( Conn, &genQueryInp, &genQueryOut );
-    if ( status == CAT_NO_ROWS_FOUND ) {
+    nlohmann::json rows;
+    status = gq2::try_execute(*Conn, q, rows);
+    if ( status == CAT_NO_ROWS_FOUND || (status == 0 && rows.empty()) ) {
         printf( "None\n\n" );
         return 0;
     }
     if ( status != 0 ) {
-        printError( Conn, status, "rcGenQuery" );
+        printError( Conn, status, "rc_genquery2" );
         return status;
     }
 
-    if ( genQueryOut->rowCnt > 0 && printedTime == 0 ) {
-        for ( i = 0; i < 1; i++ ) {
-            for ( j = 0; j < genQueryOut->attriCnt; j++ ) {
-                char *tResult;
-                long itime;
-
-                tResult = genQueryOut->sqlResult[j].value;
-                tResult += i * genQueryOut->sqlResult[j].len;
-                if ( j == 5 ) {
-                    itime = atoll( tResult );
-                    if ( itime > localiTime ) {
-                        localiTime = itime;
-                        getLocalTimeFromRodsTime( tResult, quotaTime );
-                    }
-                }
-            }
+    for ( const auto& row : rows ) {
+        if ( !row.is_array() || row.size() < 6 ) {
+            continue;
         }
-    }
-    for ( i = 0; i < genQueryOut->rowCnt; i++ ) {
-        for ( j = 0; j < genQueryOut->attriCnt; j++ ) {
-            char *tResult;
-            long itime;
-            tResult = genQueryOut->sqlResult[j].value;
-            tResult += i * genQueryOut->sqlResult[j].len;
+        for ( std::size_t j = 0; j < 6; j++ ) {
+            const auto& val = row[j].get_ref<const std::string&>();
+            const char *tResult = val.c_str();
             if ( j == 5 ) {
-                itime = atoll( tResult );
+                long long itime = 0;
+                std::from_chars( val.data(), val.data() + val.size(), itime );
                 if ( itime > localiTime ) {
                     localiTime = itime;
                     getLocalTimeFromRodsTime( tResult, quotaTime );
@@ -257,8 +203,8 @@ showQuotas( char *userName, int userOrGroup, int rescOrGlobal ) {
                 if ( j == 4 || j == 3 ) {
                     printNice( tResult, 0, "bytes" );
                     if ( strncmp( colName[j], "Over:", 5 ) == 0 ) {
-                        rodsLong_t ival;
-                        ival = atoll( tResult );
+                        rodsLong_t ival = 0;
+                        std::from_chars( val.data(), val.data() + val.size(), ival );
                         if ( ival > 0 ) {
                             printf( " OVER QUOTA" );
                         }
@@ -289,117 +235,92 @@ showQuotas( char *userName, int userOrGroup, int rescOrGlobal ) {
 */
 int
 showUserUsage( char *userName, char *usersZone ) {
-    genQueryInp_t genQueryInp;
-    genQueryOut_t *genQueryOut;
-    int inputInx[20];
-    int inputVal[20] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
-    int inputCond[20];
-    char *condVal[10];
-    char v1[BIG_STR];
-    int i, j, k, status;
+    namespace gq2 = irods::experimental::genquery2;
+
+    std::size_t k = 0;
     char header[] =
         "Resource      User            Data-stored (bytes)";
-    char *pad[14] = {"             ",
-                     "            ",
-                     "           ",
-                     "          ",
-                     "         ",
-                     "        ",
-                     "       ",
-                     "      ",
-                     "     ",
-                     "    ",
-                     "   ",
-                     "  ",
-                     " ",
-                     ""
-                    };
+    const char *pad[14] = {"             ",
+                           "            ",
+                           "           ",
+                           "          ",
+                           "         ",
+                           "        ",
+                           "       ",
+                           "      ",
+                           "     ",
+                           "    ",
+                           "   ",
+                           "  ",
+                           " ",
+                           ""
+                          };
 
-    memset( &genQueryInp, 0, sizeof( genQueryInp_t ) );
-    i = 0;
-    inputInx[i++] = COL_QUOTA_USAGE_MODIFY_TIME;
-    inputInx[i++] = COL_QUOTA_RESC_NAME;
-    inputInx[i++] = COL_QUOTA_USER_NAME;
-    inputInx[i++] = COL_QUOTA_USER_ZONE;
-    inputInx[i++] = COL_QUOTA_USAGE;
-
-    genQueryInp.selectInp.inx = inputInx;
-    genQueryInp.selectInp.value = inputVal;
-    genQueryInp.selectInp.len = i;
-
-    genQueryInp.sqlCondInp.len = 0;
+    auto qb = gq2::builder::select({
+        "QUOTA_USAGE_MODIFY_TIME",
+        "QUOTA_RESC_NAME",
+        "QUOTA_USER_NAME",
+        "QUOTA_USER_ZONE",
+        "QUOTA_USAGE"
+    });
     if ( userName[0] != '\0' ) {
-        inputCond[0] = COL_QUOTA_USER_NAME;
-        sprintf( v1, "='%s'", userName );
-        condVal[0] = v1;
-
-        genQueryInp.sqlCondInp.inx = inputCond;
-        genQueryInp.sqlCondInp.value = condVal;
-        genQueryInp.sqlCondInp.len++;
+        qb.where(gq2::builder::col("QUOTA_USER_NAME") == userName);
     }
+    qb.limit(MAX_SQL_ROWS);
 
-    genQueryInp.condInput.len = 0;
-
-    genQueryInp.maxRows = MAX_SQL_ROWS;
-    genQueryInp.continueInx = 0;
-    status = rcGenQuery( Conn, &genQueryInp, &genQueryOut );
-    if ( status == CAT_NO_ROWS_FOUND ) {
+    nlohmann::json rows;
+    const int status = gq2::try_execute(*Conn, qb.build(), rows);
+    if ( status == CAT_NO_ROWS_FOUND || (status == 0 && rows.empty()) ) {
         printf( "No records found, run 'iadmin cu' to calculate usage\n" );
         return 0;
     }
     if ( status != 0 ) {
-        printError( Conn, status, "rcGenQuery" );
+        printError( Conn, status, "rc_genquery2" );
         return status;
     }
 
     printf( "%s\n", header );
-    k = 0;
-    for ( i = 0; i < genQueryOut->rowCnt; i++ ) {
-        for ( j = 1; j < genQueryOut->attriCnt; j++ ) {
-            char *tResult;
-            char *tResult2;
-            tResult = genQueryOut->sqlResult[j].value;
-            tResult += i * genQueryOut->sqlResult[j].len;
+    long long localiTime = 0;
+    for ( const auto& row : rows ) {
+        if ( !row.is_array() || row.size() < 5 ) {
+            continue;
+        }
+        for ( std::size_t j = 1; j < 5; j++ ) {
+            const auto& val = row[j].get_ref<const std::string&>();
+            const char *tResult = val.c_str();
             if ( j == 1 ) {
                 printf( "%s ", tResult );
-                k = strlen( tResult );
+                k = val.size();
             }
             if ( j == 2 ) {
                 j++;
-                tResult2 = genQueryOut->sqlResult[j].value;
-                tResult2 += i * genQueryOut->sqlResult[j].len;
+                const auto& val2 = row[j].get_ref<const std::string&>();
+                const char *tResult2 = val2.c_str();
                 if ( strncmp( tResult2, usersZone, NAME_LEN ) == 0 ) {
                     printf( "%s", tResult );
-                    k = strlen( tResult );
+                    k = val.size();
                 }
                 else {
                     printf( "%s#%s", tResult, tResult2 );
-                    k = strlen( tResult ) + 1 + strlen( tResult2 );
+                    k = val.size() + 1 + val2.size();
                 }
             }
             if ( j == 4 ) {
                 printNice( tResult, 14, "" );
-                k = strlen( tResult );
+                k = val.size();
             }
             if ( k < 14 ) {
                 printf( "%s", pad[k] );
             }
         }
         printf( "\n" );
-    }
 
-    const sqlResult_t *quota_usage_modify_time_result = getSqlResultByInx( genQueryOut, COL_QUOTA_USAGE_MODIFY_TIME );
-    if ( quota_usage_modify_time_result == NULL ) {
-        printf( "Error getting quota usage modify times.\n" );
-        return SYS_NULL_INPUT;
-    }
-    long long localiTime = 0;
-    for ( i = 0; i < genQueryOut->rowCnt; i++ ) {
-        const char *tResult = quota_usage_modify_time_result->value + i * quota_usage_modify_time_result->len;
-        const long long itime = atoll( tResult );
+        const auto& time_val = row[0].get_ref<const std::string&>();
+        long long itime = 0;
+        std::from_chars( time_val.data(), time_val.data() + time_val.size(), itime );
         if ( itime > localiTime ) {
             localiTime = itime;
-            getLocalTimeFromRodsTime( tResult, quotaTime );
+            getLocalTimeFromRodsTime( time_val.c_str(), quotaTime );
         }
     }
     return 0;
@@ -410,21 +331,13 @@ showUserUsage( char *userName, char *usersZone ) {
 */
 int
 showUserGroupMembership( char *userNameIn, char *usersZone ) {
-    genQueryInp_t genQueryInp;
-    genQueryOut_t *genQueryOut;
-    int i1a[20];
-    int i1b[20] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
-    int i2a[20];
-    char *condVal[10];
-    char v1[BIG_STR];
-    char v2[BIG_STR];
-    int i, j, status;
-    int printCount;
+    namespace gq2 = irods::experimental::genquery2;
+
     char userName[NAME_LEN];
     char zoneName[NAME_LEN];
     int showUserZone = 1;
 
-    status = parseUserName( userNameIn, userName, zoneName );
+    int status = parseUserName( userNameIn, userName, zoneName );
     if ( status ) {
         return status;
     }
@@ -433,56 +346,41 @@ showUserGroupMembership( char *userNameIn, char *usersZone ) {
         showUserZone = 0;
     }
 
-    memset( &genQueryInp, 0, sizeof( genQueryInp_t ) );
+    const auto q = gq2::builder::select({"USER_GROUP_NAME"})
+        .where(gq2::builder::col("USER_NAME") == userName &&
+               gq2::builder::col("USER_ZONE") == zoneName)
+        .limit(MAX_SQL_ROWS)
+        .build();
 
-    i1a[0] = COL_USER_GROUP_NAME;
-    genQueryInp.selectInp.inx = i1a;
-    genQueryInp.selectInp.value = i1b;
-    genQueryInp.selectInp.len = 1;
-
-    i2a[0] = COL_USER_NAME;
-    snprintf( v1, sizeof v1, "='%s'", userName );
-    condVal[0] = v1;
-
-    i2a[1] = COL_USER_ZONE;
-    snprintf( v2, sizeof v2, "='%s'", zoneName );
-    condVal[1] = v2;
-
-    genQueryInp.sqlCondInp.inx = i2a;
-    genQueryInp.sqlCondInp.value = condVal;
-    genQueryInp.sqlCondInp.len = 2;
-
-    genQueryInp.condInput.len = 0;
-
-    genQueryInp.maxRows = MAX_SQL_ROWS;
-    genQueryInp.continueInx = 0;
-    status = rcGenQuery( Conn, &genQueryInp, &genQueryOut );
-    if ( status == CAT_NO_ROWS_FOUND ) {
+    nlohmann::json rows;
+    status = gq2::try_execute(*Conn, q, rows);
+    if ( status == CAT_NO_ROWS_FOUND || (status == 0 && rows.empty()) ) {
         printf( "Not a member of any group\n" );
         return 0;
     }
     if ( status != 0 ) {
-        printError( Conn, status, "rcGenQuery" );
+        printError( Conn, status, "rc_genquery2" );
         return status;
     }
 
-    printCount = 0;
+    int printCount = 0;
     if ( showUserZone ) {
         printf( "User %s#%s is a member of groups: ", userName, zoneName );
     }
     else {
         printf( "User %s is a member of groups: ", userName );
     }
-    for ( i = 0; i < genQueryOut->rowCnt; i++ ) {
-        for ( j = 0; j < genQueryOut->attriCnt; j++ ) {
-            char *tResult;
-            tResult = genQueryOut->sqlResult[j].value;
-            tResult += i * genQueryOut->sqlResult[j].len;
+    for ( const auto& row : rows ) {
+        if ( !row.is_array() ) {
+            continue;
+        }
+        for ( const auto& cell : row ) {
+            const auto& val = cell.get_ref<const std::string&>();
             if ( printCount > 0 ) {
-                printf( ", %s", tResult );
+                printf( ", %s", val.c_str() );
             }
             else {
-                printf( "%s", tResult );
+                printf( "%s", val.c_str() );
             }
             printCount++;
         }

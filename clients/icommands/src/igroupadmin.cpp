@@ -1,11 +1,15 @@
 #include "utility.hpp"
+#include <irods/genquery2_builder.hpp>
 #include <irods/rods.h>
 #include <irods/rodsClient.h>
 #include <irods/rodsError.h>
 #include <irods/irods_client_api_table.hpp>
 #include <irods/irods_pack_table.hpp>
 
+#include <nlohmann/json.hpp>
+
 #include <cstdio>
+#include <string>
 
 rcComm_t *Conn;
 
@@ -20,18 +24,18 @@ void usage( char *subOpt );
  print the results of a general query for the showGroup function below
  */
 void
-printGenQueryResultsForGroup( genQueryOut_t *genQueryOut ) {
-    int i, j;
-    for ( i = 0; i < genQueryOut->rowCnt; i++ ) {
-        char *tResult;
-        for ( j = 0; j < genQueryOut->attriCnt; j++ ) {
-            tResult = genQueryOut->sqlResult[j].value;
-            tResult += i * genQueryOut->sqlResult[j].len;
+printGenQueryResultsForGroup( const nlohmann::json& _rows ) {
+    for ( const auto& row : _rows ) {
+        if ( !row.is_array() || row.empty() ) {
+            continue;
+        }
+        for ( std::size_t j = 0; j < row.size(); ++j ) {
+            const auto& tResult = row[j].get_ref<const std::string&>();
             if ( j > 0 ) {
-                printf( "#%s", tResult );
+                printf( "#%s", tResult.c_str() );
             }
             else {
-                printf( "%s", tResult );
+                printf( "%s", tResult.c_str() );
             }
         }
         printf( "\n" );
@@ -44,73 +48,43 @@ printGenQueryResultsForGroup( genQueryOut_t *genQueryOut ) {
  */
 void
 showGroup( char *groupName ) {
-    genQueryInp_t genQueryInp;
-    genQueryOut_t *genQueryOut;
-    int selectIndexes[10];
-    int selectValues[10];
-    int conditionIndexes[10];
-    char *conditionValues[10];
-    char conditionString1[200];
-    char conditionString2[200];
-    int status;
+    namespace gq2 = irods::experimental::genquery2;
 
-    memset( &genQueryInp, 0, sizeof( genQueryInp_t ) );
-
-    if ( groupName != NULL && *groupName != '\0' ) {
+    const bool hasGroup = (groupName != NULL && *groupName != '\0');
+    if ( hasGroup ) {
         printf( "Members of group %s:\n", groupName );
     }
-    selectIndexes[0] = COL_USER_NAME;
-    selectValues[0] = 0;
-    selectIndexes[1] = COL_USER_ZONE;
-    selectValues[1] = 0;
-    genQueryInp.selectInp.inx = selectIndexes;
-    genQueryInp.selectInp.value = selectValues;
-    if ( groupName != NULL && *groupName != '\0' ) {
-        genQueryInp.selectInp.len = 2;
-    }
-    else {
-        genQueryInp.selectInp.len = 1;
-    }
 
-    conditionIndexes[0] = COL_USER_TYPE;
-    snprintf( conditionString1, sizeof( conditionString1 ), "='rodsgroup'" );
-    conditionValues[0] = conditionString1;
+    constexpr std::size_t maxRows = 50;
+    std::size_t offset = 0;
+    bool printedAny = false;
 
-    genQueryInp.sqlCondInp.inx = conditionIndexes;
-    genQueryInp.sqlCondInp.value = conditionValues;
-    genQueryInp.sqlCondInp.len = 1;
+    while ( true ) {
+        auto qb = hasGroup
+            ? gq2::builder::select({"USER_NAME", "USER_ZONE"})
+                  .where(gq2::builder::col("USER_TYPE") != "rodsgroup" &&
+                         gq2::builder::col("USER_GROUP_NAME") == groupName)
+            : gq2::builder::select({"USER_NAME"})
+                  .where(gq2::builder::col("USER_TYPE") == "rodsgroup");
+        qb.limit(maxRows, offset);
 
-    if ( groupName != NULL && *groupName != '\0' ) {
-
-        snprintf( conditionString1, sizeof( conditionString1 ), "!='rodsgroup'" );
-
-        conditionIndexes[1] = COL_USER_GROUP_NAME;
-        snprintf( conditionString2, sizeof( conditionString2 ), "='%s'", groupName );
-        conditionValues[1] = conditionString2;
-        genQueryInp.sqlCondInp.len = 2;
-    }
-
-    genQueryInp.maxRows = 50;
-    genQueryInp.continueInx = 0;
-    genQueryInp.condInput.len = 0;
-
-    status = rcGenQuery( Conn, &genQueryInp, &genQueryOut );
-    if ( status == CAT_NO_ROWS_FOUND ) {
-        printf( "No rows found\n" );
-        return;
-    }
-    else {
-        printGenQueryResultsForGroup( genQueryOut );
-    }
-
-    while ( status == 0 && genQueryOut->continueInx > 0 ) {
-        genQueryInp.continueInx = genQueryOut->continueInx;
-        status = rcGenQuery( Conn, &genQueryInp, &genQueryOut );
-        if ( status == 0 ) {
-            printGenQueryResultsForGroup( genQueryOut );
+        nlohmann::json rows;
+        const int status = gq2::try_execute(*Conn, qb.build(), rows);
+        if ( status < 0 || rows.empty() ) {
+            if ( !printedAny ) {
+                printf( "No rows found\n" );
+            }
+            return;
         }
+
+        printGenQueryResultsForGroup( rows );
+        printedAny = true;
+
+        if ( rows.size() < maxRows ) {
+            break;
+        }
+        offset += rows.size();
     }
-    return;
 }
 
 /*

@@ -1,11 +1,15 @@
 #include "utility.hpp"
+#include <irods/genquery2_builder.hpp>
 #include <irods/irods_client_api_table.hpp>
 #include <irods/irods_pack_table.hpp>
 #include <irods/parseCommandLine.h>
 #include <irods/rodsClient.h>
 #include <irods/rodsError.h>
 
+#include <nlohmann/json.hpp>
+
 #include <cstdio>
+#include <string>
 
 #define MAX_SQL 300
 #define BIG_STR 200
@@ -130,60 +134,58 @@ main( int argc, char **argv ) {
 int
 qdelUtil( rcComm_t *conn, char *userName, int allFlag,
           rodsArguments_t *myRodsArgs ) {
-    genQueryInp_t genQueryInp;
-    int status, i, continueInx;
-    char tmpStr[MAX_NAME_LEN];
-    sqlResult_t *execId;
-    char *execIdStr;
-    genQueryOut_t *genQueryOut = NULL;
-    int savedStatus = 0;
-
     if ( allFlag == 1 && userName != NULL ) {
         rodsLog( LOG_ERROR,
                  "qdelUtil: all(-a) and  user(-u) cannot be used together" );
         return USER_INPUT_OPTION_ERR;
     }
-    memset( &genQueryInp, 0, sizeof( genQueryInp_t ) );
-    if ( userName != NULL ) {
-        snprintf( tmpStr, MAX_NAME_LEN, " = '%s'", userName );
-        addInxVal( &genQueryInp.sqlCondInp, COL_RULE_EXEC_USER_NAME, tmpStr );
-    }
-    addInxIval( &genQueryInp.selectInp, COL_RULE_EXEC_ID, 1 );
-    genQueryInp.maxRows = MAX_SQL_ROWS;
 
-    continueInx = 1;    /* a fake one so it will do the first query */
-    while ( continueInx > 0 ) {
-        status =  rcGenQuery( conn, &genQueryInp, &genQueryOut );
+    namespace gq2 = irods::experimental::genquery2;
+    int savedStatus = 0;
+
+    while ( true ) {
+        auto qb = gq2::builder::select({"RULE_EXEC_ID"});
+        if ( userName != NULL ) {
+            qb.where(gq2::builder::col("RULE_EXEC_USER_NAME") == userName);
+        }
+        qb.limit(MAX_SQL_ROWS);
+
+        nlohmann::json rows;
+        const int status = gq2::try_execute(*conn, qb.build(), rows);
         if ( status < 0 ) {
             if ( status != CAT_NO_ROWS_FOUND ) {
                 savedStatus = status;
             }
             break;
         }
-
-        if ( ( execId = getSqlResultByInx( genQueryOut, COL_RULE_EXEC_ID ) ) ==
-                NULL ) {
-            rodsLog( LOG_ERROR,
-                     "qdelUtil: getSqlResultByInx for COL_RULE_EXEC_ID failed" );
-            return UNMATCHED_KEY_OR_INDEX;
+        if ( rows.empty() ) {
+            break;
         }
-        for ( i = 0; i < genQueryOut->rowCnt; i++ ) {
-            execIdStr = &execId->value[execId->len * i];
-            if ( myRodsArgs->verbose ) {
-                printf( "Deleting %s\n", execIdStr );
+
+        bool any_deleted = false;
+        for ( const auto& row : rows ) {
+            if ( !row.is_array() || row.empty() || !row[0].is_string() ) {
+                continue;
             }
-            status = rmDelayedRule( execIdStr );
-            if ( status < 0 ) {
+            std::string execIdStr = row[0].get<std::string>();
+            if ( myRodsArgs->verbose ) {
+                printf( "Deleting %s\n", execIdStr.c_str() );
+            }
+            const int delStatus = rmDelayedRule( execIdStr.data() );
+            if ( delStatus < 0 ) {
                 rodsLog( LOG_ERROR,
                          "qdelUtil: rmDelayedRule %s error. status = %d",
-                         execIdStr, status );
-                savedStatus = status;
+                         execIdStr.c_str(), delStatus );
+                savedStatus = delStatus;
+            }
+            else {
+                any_deleted = true;
             }
         }
-        continueInx = genQueryInp.continueInx = genQueryOut->continueInx;
-        freeGenQueryOut( &genQueryOut );
+        if ( rows.size() < MAX_SQL_ROWS || !any_deleted ) {
+            break;
+        }
     }
-    clearGenQueryInp( &genQueryInp );
     return savedStatus;
 }
 

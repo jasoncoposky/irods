@@ -1,4 +1,5 @@
 #include "utility.hpp"
+#include <irods/genquery2_builder.hpp>
 #include <irods/irods_at_scope_exit.hpp>
 #include <irods/irods_children_parser.hpp>
 #include <irods/irods_client_api_table.hpp>
@@ -11,8 +12,12 @@
 #include <irods/rodsError.h>
 #include <irods/rodsErrorTable.h>
 
+#include <nlohmann/json.hpp>
+
 #include <cstdio>
 #include <iostream>
+#include <string>
+#include <string_view>
 #include <vector>
 
 #define BIG_STR 200
@@ -31,29 +36,30 @@ const std::string indent = "    ";
 void usage();
 
 int
-printGenQueryResults( rcComm_t *Conn, int status, genQueryOut_t *genQueryOut,
+printGenQueryResults( rcComm_t *Conn, int status, const nlohmann::json& rows,
                       char *descriptions[], int doDashes ) {
     int printCount = 0;
 
     if (0 != status) {
-        // This check guards against the possibility of CAT_NO_ROWS_FOUND being printed
-        // to the terminal at page boundaries. This occurs on query resultsets that are
-        // a multiple of the page size (i.e. 50 rows).
         if (CAT_NO_ROWS_FOUND != status) {
-            printError(Conn, status, "rcGenQuery");
+            printError(Conn, status, "rc_genquery2");
         }
     }
-    else if (CAT_NO_ROWS_FOUND != status) {
+    else {
         char localTime[TIME_LEN];
 
-        for (int i = 0; i < genQueryOut->rowCnt; i++ ) {
+        for (std::size_t i = 0; i < rows.size(); i++ ) {
+            const auto& row = rows[i];
+            if (!row.is_array()) {
+                continue;
+            }
             if ( i > 0 && doDashes ) {
                 printf( "----\n" );
             }
 
-            for (int j = 0; j < genQueryOut->attriCnt; j++ ) {
-                char *tResult = genQueryOut->sqlResult[j].value;
-                tResult += i * genQueryOut->sqlResult[j].len;
+            for (std::size_t j = 0; j < row.size(); j++ ) {
+                const auto& val = row[j].get_ref<const std::string&>();
+                const char *tResult = val.c_str();
 
                 if ( *descriptions[j] != '\0' ) {
                     if ( strstr( descriptions[j], "time" ) != 0 ) {
@@ -80,15 +86,9 @@ printGenQueryResults( rcComm_t *Conn, int status, genQueryOut_t *genQueryOut,
 // Via a general query, show a resource
 int
 showResc( char *name, int longOption, const char* zoneArgument, rcComm_t *Conn ) {
-    genQueryInp_t genQueryInp;
-    genQueryOut_t *genQueryOut;
-    int i1a[20];
-    int i1b[20] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
-    int i2a[20];
-    char *condVal[10];
-    char v1[BIG_STR];
-    int i, status;
-    int printCount;
+    namespace gq2 = irods::experimental::genquery2;
+
+    int printCount = 0;
     char *columnNames[] = {
         "resource name", "id", "zone", "type",
         "location",  "vault", "free space", "free space time", "status",
@@ -96,38 +96,19 @@ showResc( char *name, int longOption, const char* zoneArgument, rcComm_t *Conn )
         "context", "parent", "parent context"
     };
 
-    memset( &genQueryInp, 0, sizeof( genQueryInp_t ) );
-    printCount = 0;
-
-    i = 0;
-    i1a[i++] = COL_R_RESC_NAME;
+    std::vector<std::string> select_cols{"RESC_NAME"};
     if ( longOption ) {
-        i1a[i++] = COL_R_RESC_ID;
-        i1a[i++] = COL_R_ZONE_NAME;
-        i1a[i++] = COL_R_TYPE_NAME;
-        i1a[i++] = COL_R_LOC;
-        i1a[i++] = COL_R_VAULT_PATH;
-        i1a[i++] = COL_R_FREE_SPACE;
-        i1a[i++] = COL_R_FREE_SPACE_TIME;
-        i1a[i++] = COL_R_RESC_STATUS;
-        i1a[i++] = COL_R_RESC_INFO;
-        i1a[i++] = COL_R_RESC_COMMENT;
-        i1a[i++] = COL_R_CREATE_TIME;
-        i1a[i++] = COL_R_MODIFY_TIME;
-        i1a[i++] = COL_R_RESC_CONTEXT;
-        i1a[i++] = COL_R_RESC_PARENT;
-        i1a[i++] = COL_R_RESC_PARENT_CONTEXT;
+        select_cols.insert(select_cols.end(), {
+            "RESC_ID", "RESC_ZONE_NAME", "RESC_TYPE_NAME",
+            "RESC_LOC", "RESC_VAULT_PATH", "RESC_FREE_SPACE",
+            "RESC_FREE_SPACE_TIME", "RESC_STATUS", "RESC_INFO",
+            "RESC_COMMENT", "RESC_CREATE_TIME", "RESC_MODIFY_TIME",
+            "RESC_CONTEXT", "RESC_PARENT", "RESC_PARENT_CONTEXT"
+        });
     }
     else {
         columnNames[0] = "";
     }
-
-    genQueryInp.selectInp.inx = i1a;
-    genQueryInp.selectInp.value = i1b;
-    genQueryInp.selectInp.len = i;
-
-    genQueryInp.sqlCondInp.inx = i2a;
-    genQueryInp.sqlCondInp.value = condVal;
 
     // The user targeted a specific resource.
     if (name && *name != '\0') {
@@ -136,74 +117,54 @@ showResc( char *name, int longOption, const char* zoneArgument, rcComm_t *Conn )
             printf( "%s is a pseudo resource for system use only.\n", BUNDLE_RESC );
             return 0;
         }
-
-        // Set the condition: RESC_NAME = '<param: name>'.
-        // The user is targeting a specific resource.
-        i2a[0] = COL_R_RESC_NAME;
-        snprintf(v1, BIG_STR, "= '%s'", name);
-        condVal[0] = v1;
-        genQueryInp.sqlCondInp.len = 1;
-    }
-    else {
-        // The user did not target a specific resource.
-        // Exclude the bundle resource.
-        i2a[0] = COL_R_RESC_NAME;
-        sprintf(v1, "!= '%s'", BUNDLE_RESC);
-        condVal[0] = v1;
-        genQueryInp.sqlCondInp.len = 1;
     }
 
-    if (zoneArgument && *zoneArgument) {
-        addKeyVal(&genQueryInp.condInput, ZONE_KW, zoneArgument);
-    }
+    const std::string_view zone_sv = (zoneArgument && *zoneArgument) ? zoneArgument : "";
+    constexpr std::size_t maxRows = 50;
+    std::size_t offset = 0;
 
-    genQueryInp.maxRows = 50;
-    genQueryInp.continueInx = 0;
-    status = rcGenQuery( Conn, &genQueryInp, &genQueryOut );
-
-    if (CAT_NO_ROWS_FOUND == status) {
-        i1a[0] = COL_R_RESC_INFO;
-        genQueryInp.selectInp.len = 1;
-        status = rcGenQuery(Conn, &genQueryInp, &genQueryOut);
-
-        if (0 == status) {
-            printf("None\n");
-            return 0;
+    while (true) {
+        auto qb = gq2::builder::select(select_cols);
+        if (name && *name != '\0') {
+            qb.where(gq2::builder::col("RESC_NAME") == name);
         }
+        else {
+            qb.where(gq2::builder::col("RESC_NAME") != BUNDLE_RESC);
+        }
+        qb.limit(maxRows, offset);
 
-        if (CAT_NO_ROWS_FOUND == status) {
+        nlohmann::json rows;
+        const int status = gq2::try_execute(*Conn, qb.build(), rows, zone_sv);
+
+        if (offset == 0 && (CAT_NO_ROWS_FOUND == status || (0 == status && rows.empty()))) {
             if (name && name[0] != '\0') {
                 printf("Resource %s does not exist.\n", name);
             }
             else {
                 printf("Resource does not exist.\n");
             }
-
-            return status;
+            return CAT_NO_ROWS_FOUND;
         }
-
         if (status < 0) {
-            printError(Conn, status, "rcGenQuery");
-            return status;
+            if (CAT_NO_ROWS_FOUND != status) {
+                printError(Conn, status, "rc_genquery2");
+                return status;
+            }
+            break;
         }
-    }
-    else if (status < 0) {
-        printError(Conn, status, "rcGenQuery");
-        return status;
-    }
+        if (rows.empty()) {
+            break;
+        }
 
-    printCount += printGenQueryResults(Conn, status, genQueryOut, columnNames, longOption);
-
-    while (0 == status && genQueryOut->continueInx > 0) {
-        genQueryInp.continueInx = genQueryOut->continueInx;
-        status = rcGenQuery(Conn, &genQueryInp, &genQueryOut);
-
-        if (genQueryOut->rowCnt > 0 && longOption) {
+        if (offset > 0 && longOption) {
             printf("----\n");
         }
 
-        // Handles the error case.
-        printCount += printGenQueryResults(Conn, status, genQueryOut, columnNames, longOption);
+        printCount += printGenQueryResults(Conn, status, rows, columnNames, longOption);
+        if (rows.size() < maxRows) {
+            break;
+        }
+        offset += rows.size();
     }
 
     static_cast<void>(printCount);
@@ -269,7 +230,7 @@ void printRescTree(
 int
 parseGenQueryOut(
     int                         offset,
-    genQueryOut_t*              genQueryOut,
+    const nlohmann::json&       rows,
     std::vector<std::string>&   resc_names,
     std::vector<std::string>&   resc_indices,
     std::vector<std::string>&   resc_types,
@@ -278,38 +239,36 @@ parseGenQueryOut(
     std::vector<std::string>&   roots ) {
 
     // loop over rows (i.e. for each resource)
-    for ( int i=0; i<genQueryOut->rowCnt; ++i ) {
+    for ( std::size_t i = 0; i < rows.size(); ++i ) {
+        const auto& row = rows[i];
+        if ( !row.is_array() || row.size() < 4 ) {
+            return SYS_INTERNAL_NULL_INPUT_ERR;
+        }
         // get resource name
-        char *t_res = genQueryOut->sqlResult[0].value + i * genQueryOut->sqlResult[0].len;
-        if ( !t_res || !strlen( t_res ) ) {
+        const auto& name_str = row[0].get_ref<const std::string&>();
+        if ( name_str.empty() ) {
             // parsing error
             return SYS_INTERNAL_NULL_INPUT_ERR;
         }
-        resc_names.push_back( std::string( t_res ) );
+        resc_names.push_back( name_str );
 
         // map resource name to row index
-        resc_map[resc_names.back()] = i + offset;
+        resc_map[resc_names.back()] = static_cast<int>(i) + offset;
 
         // get resource type
-        t_res = genQueryOut->sqlResult[1].value + i * genQueryOut->sqlResult[1].len;
-        resc_types.push_back( std::string( t_res ) );
+        resc_types.push_back( row[1].get_ref<const std::string&>() );
 
         // get resource indicies
-        t_res = genQueryOut->sqlResult[2].value + i * genQueryOut->sqlResult[2].len;
-        if (t_res) {
-            resc_indices.push_back( std::string( t_res ) );
-        } else {
-            resc_indices.push_back( "" );
-        }
+        resc_indices.push_back( row[2].get_ref<const std::string&>() );
 
         // check if has parent
-        t_res = genQueryOut->sqlResult[3].value + i * genQueryOut->sqlResult[3].len;
-        if ( !t_res || !strlen( t_res ) ) {
+        const auto& parent_str = row[3].get_ref<const std::string&>();
+        if ( parent_str.empty() ) {
             // another root node
             roots.push_back( resc_names.back() );
             resc_parents.push_back( "" ); // parents must line up with resources
         } else {
-            resc_parents.push_back( std::string( t_res ) );
+            resc_parents.push_back( parent_str );
         }
     }
 
@@ -366,39 +325,7 @@ int build_child_list(
 
 
 int showRescTree( const char *name, const char *zoneArgument, rcComm_t *Conn , DrawingStyle drawing_style) {
-    genQueryInp_t genQueryInp;
-    memset( &genQueryInp, 0, sizeof( genQueryInp ) );
-    genQueryOut_t *genQueryOut = NULL;
-
-    irods::at_scope_exit cleanup{[&genQueryInp, &genQueryOut] {
-        clearGenQueryInp(&genQueryInp);
-        freeGenQueryOut(&genQueryOut);
-    }};
-
-    // set up query columns
-    addInxIval( &genQueryInp.selectInp, COL_R_RESC_NAME, ORDER_BY );
-    addInxIval( &genQueryInp.selectInp, COL_R_TYPE_NAME, 1 );
-    addInxIval( &genQueryInp.selectInp, COL_R_RESC_ID, 1 );
-    addInxIval( &genQueryInp.selectInp, COL_R_RESC_PARENT, 1 );
-
-    if ( zoneArgument && *zoneArgument ) {
-        addKeyVal( &genQueryInp.condInput, ZONE_KW, zoneArgument );
-    }
-
-    // set up query condition (resc_name != 'bundleResc')
-    char collQCond[MAX_NAME_LEN];
-    snprintf( collQCond, MAX_NAME_LEN, "!='%s'", BUNDLE_RESC );
-    addInxVal( &genQueryInp.sqlCondInp, COL_R_RESC_NAME, collQCond );
-
-    // query for resources
-    genQueryInp.maxRows = MAX_SQL_ROWS;
-    int status = rcGenQuery( Conn, &genQueryInp, &genQueryOut );
-
-    // query fail?
-    if ( status < 0 ) {
-        printError( Conn, status, "rcGenQuery" );
-        return status;
-    }
+    namespace gq2 = irods::experimental::genquery2;
 
     // containers for storing query results
     // one vector per attribute
@@ -414,20 +341,42 @@ int showRescTree( const char *name, const char *zoneArgument, rcComm_t *Conn , D
     // list of root resources
     std::vector<std::string> roots;
 
-    // parse results
+    const std::string_view zone_sv = (zoneArgument && *zoneArgument) ? zoneArgument : "";
     int offset = 0;
-    status = parseGenQueryOut( offset, genQueryOut, resc_names, resc_indices, resc_types, resc_parents, resc_map, roots );
-    while ( !status && genQueryOut->continueInx > 0 ) {
-        genQueryInp.continueInx = genQueryOut->continueInx;
-        offset += genQueryOut->rowCnt;
-        status = rcGenQuery( Conn, &genQueryInp, &genQueryOut );
+    int status = 0;
 
+    while (true) {
+        const auto q = gq2::builder::select({"RESC_NAME", "RESC_TYPE_NAME", "RESC_ID", "RESC_PARENT"})
+            .where(gq2::builder::col("RESC_NAME") != BUNDLE_RESC)
+            .order_by("RESC_NAME")
+            .limit(MAX_SQL_ROWS, static_cast<std::size_t>(offset))
+            .build();
+
+        nlohmann::json rows;
+        status = gq2::try_execute(*Conn, q, rows, zone_sv);
         if (status < 0) {
-            printError(Conn, status, "rcGenQuery");
-            return status;
+            if (offset == 0 || status != CAT_NO_ROWS_FOUND) {
+                printError(Conn, status, "rc_genquery2");
+                return status;
+            }
+            status = 0;
+            break;
+        }
+        if (rows.empty()) {
+            if (offset == 0) {
+                return CAT_NO_ROWS_FOUND;
+            }
+            break;
         }
 
-        status = parseGenQueryOut( offset, genQueryOut, resc_names, resc_indices, resc_types, resc_parents, resc_map, roots );
+        status = parseGenQueryOut(offset, rows, resc_names, resc_indices, resc_types, resc_parents, resc_map, roots);
+        if (status < 0) {
+            return status;
+        }
+        if (rows.size() < MAX_SQL_ROWS) {
+            break;
+        }
+        offset += static_cast<int>(rows.size());
     }
 
     // child strings assumed to be initialized by printRescTree

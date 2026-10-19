@@ -1,4 +1,6 @@
 #include "utility.hpp"
+#include <irods/filesystem/path.hpp>
+#include <irods/genquery2_builder.hpp>
 #include <irods/irods_at_scope_exit.hpp>
 #include <irods/rcMisc.h>
 #include <unistd.h>
@@ -10,10 +12,9 @@
 #include <irods/irods_pack_table.hpp>
 #include <irods/rodsPath.h>
 
-#include "utility.hpp"
-
 #include <fmt/core.h>
 #include <fmt/format.h>
+#include <nlohmann/json.hpp>
 
 #include <cstdio>
 #include <sstream>
@@ -88,10 +89,9 @@ std::tuple<int, std::string> prepare_name(std::string_view object_type, std::str
 // print the results of a general query.
 void printGenQueryResults(rcComm_t *Conn,
                           int status,
-                          genQueryOut_t *genQueryOut,
+                          const nlohmann::json& rows,
                           char *descriptions[])
 {
-    int i, j;
     char localTime[TIME_LEN];
     lastCommandStatus = status;
 
@@ -100,24 +100,27 @@ void printGenQueryResults(rcComm_t *Conn,
     }
 
     if ( status != 0 && status != CAT_NO_ROWS_FOUND ) {
-        printError( Conn, status, "rcGenQuery" );
+        printError( Conn, status, "rc_genquery2" );
     }
     else {
-        if ( status == CAT_NO_ROWS_FOUND ) {
+        if ( status == CAT_NO_ROWS_FOUND || rows.empty() ) {
             if ( printCount == 0 ) {
                 printf( "No rows found\n" );
             }
         }
         else {
-            for ( i = 0; i < genQueryOut->rowCnt; i++ ) {
+            for ( std::size_t i = 0; i < rows.size(); i++ ) {
+                const auto& row = rows[i];
+                if ( !row.is_array() ) {
+                    continue;
+                }
                 if ( i > 0 ) {
                     printf( "----\n" );
                 }
 
-                for ( j = 0; j < genQueryOut->attriCnt; j++ ) {
-                    char *tResult;
-                    tResult = genQueryOut->sqlResult[j].value;
-                    tResult += i * genQueryOut->sqlResult[j].len;
+                for ( std::size_t j = 0; j < row.size(); j++ ) {
+                    const auto& val = row[j].get_ref<const std::string&>();
+                    const char *tResult = val.c_str();
                     if ( *descriptions[j] != '\0' ) {
                         if ( strstr( descriptions[j], "time" ) != 0 ) {
                             getLocalTimeFromRodsTime( tResult, localTime );
@@ -139,57 +142,24 @@ void printGenQueryResults(rcComm_t *Conn,
  */
 int showDataObj(char* name, char* attrName)
 {
-    genQueryOut_t *genQueryOut;
-    int i1a[10];
-    int i1b[10];
-    int i2a[10];
-    char *condVal[10];
+    namespace gq2 = irods::experimental::genquery2;
+    namespace fs = irods::experimental::filesystem;
 
     char fullName[MAX_NAME_LEN];
-    char myDirName[MAX_NAME_LEN];
-    char myFileName[MAX_NAME_LEN];
     /* Fourth 'time set' column is only used in longMode */
     char *columnNames[] = { "attribute", "value", "units", "time set" };
 
-    genQueryInp_t genQueryInp;
-
-    irods::at_scope_exit cleanup{[&genQueryInp, &genQueryOut] {
-        clearKeyVal(&genQueryInp.condInput);
-        freeGenQueryOut(&genQueryOut);
-    }};
-
-    memset( &genQueryInp, 0, sizeof( genQueryInp ) );
-
     printf( "AVUs defined for dataObj %s:\n", name );
     printCount = 0;
-    i1a[0] = COL_META_DATA_ATTR_NAME;
-    i1b[0] = 0;
-    i1a[1] = COL_META_DATA_ATTR_VALUE;
-    i1b[1] = 0;
-    i1a[2] = COL_META_DATA_ATTR_UNITS;
-    i1b[2] = 0;
-    if ( longMode ) {
-        i1a[3] = COL_META_DATA_MODIFY_TIME;
-        i1b[3] = 0;
-    }
-    genQueryInp.selectInp.inx = i1a;
-    genQueryInp.selectInp.value = i1b;
-    genQueryInp.selectInp.len = 3;
-    if ( longMode ) {
-        genQueryInp.selectInp.len = 4;
-    }
 
-    i2a[0] = COL_COLL_NAME;
-    std::string v1;
-    v1 = "='";
-    v1 += cwd;
-    v1 += "'";
-
-    i2a[1] = COL_DATA_NAME;
-    std::string v2;
-    v2 = "='";
-    v2 += name;
-    v2 += "'";
+    std::vector<std::string> select_cols{
+        "META_DATA_ATTR_NAME",
+        "META_DATA_ATTR_VALUE",
+        "META_DATA_ATTR_UNITS"
+    };
+    if ( longMode ) {
+        select_cols.push_back("META_DATA_MODIFY_TIME");
+    }
 
     if ( *name == '/' ) {
         snprintf( fullName, sizeof( fullName ), "%s", name );
@@ -198,82 +168,73 @@ int showDataObj(char* name, char* attrName)
         snprintf( fullName, sizeof( fullName ), "%s/%s", cwd, name );
     }
 
-    if ( strstr( name, "/" ) != NULL ) {
-        /* reset v1 and v2 for when full path or relative path entered */
-        if ( int status = splitPathByKey( fullName, myDirName,
-                                          MAX_NAME_LEN, myFileName, MAX_NAME_LEN, '/' ) ) {
-            rodsLog( LOG_ERROR, "splitPathByKey failed in showDataObj with status %d", status );
+    const fs::path full_p{fullName};
+    const std::string_view coll_sv = (strstr( name, "/" ) != NULL)
+        ? full_p.parent_path_view()
+        : std::string_view{cwd};
+    const std::string_view data_sv = (strstr( name, "/" ) != NULL)
+        ? full_p.object_name_view()
+        : std::string_view{name};
+
+    const std::string_view zone_sv = (zoneArgument[0] != '\0') ? zoneArgument : "";
+    constexpr std::size_t maxRows = 10;
+    std::size_t offset = 0;
+
+    while ( true ) {
+        auto cond = (gq2::builder::col("COLL_NAME") == coll_sv) &&
+                    (gq2::builder::col("DATA_NAME") == data_sv);
+        if ( attrName != NULL && *attrName != '\0' ) {
+            cond = cond && (gq2::builder::col("META_DATA_ATTR_NAME") == attrName);
+        }
+        else {
+            cond = cond && gq2::builder::col("META_DATA_ATTR_ID").is_not_null();
         }
 
-        v1 = "='";
-        v1 += myDirName;
-        v1 += "'";
+        const auto q = gq2::builder::select(select_cols)
+            .where(std::move(cond))
+            .limit(maxRows, offset)
+            .build();
 
-        v2 = "='";
-        v2 += myFileName;
-        v2 += "'";
-    }
-
-    genQueryInp.sqlCondInp.inx = i2a;
-    genQueryInp.sqlCondInp.value = condVal;
-    genQueryInp.sqlCondInp.len = 2;
-
-    std::string v3;
-    if ( attrName != NULL && *attrName != '\0' ) {
-        i2a[2] = COL_META_DATA_ATTR_NAME;
-        v3 = "='";
-        v3 += attrName;
-        v3 += "'";
-        condVal[2] = const_cast<char*>( v3.c_str() );
-        genQueryInp.sqlCondInp.len++;
-    }
-
-    condVal[0] = const_cast<char*>( v1.c_str() );
-    condVal[1] = const_cast<char*>( v2.c_str() );
-
-    genQueryInp.maxRows = 10;
-    genQueryInp.continueInx = 0;
-    genQueryInp.condInput.len = 0;
-
-    if ( zoneArgument[0] != '\0' ) {
-        addKeyVal( &genQueryInp.condInput, ZONE_KW, zoneArgument );
-    }
-
-    int status = rcGenQuery( Conn, &genQueryInp, &genQueryOut );
-    if ( status == CAT_NO_ROWS_FOUND ) {
-        i1a[0] = COL_D_DATA_PATH;
-        genQueryInp.selectInp.len = 1;
-        genQueryInp.sqlCondInp.len = 2;
-        freeGenQueryOut(&genQueryOut);
-        status = rcGenQuery( Conn, &genQueryInp, &genQueryOut );
-        if ( status == 0 ) {
-            printf( "None\n" );
+        nlohmann::json rows;
+        int status = gq2::try_execute(*Conn, q, rows, zone_sv);
+        if ( offset == 0 && (status == CAT_NO_ROWS_FOUND || (status == 0 && rows.empty())) ) {
+            const auto check_q = gq2::builder::select({"DATA_PATH"})
+                .where(gq2::builder::col("COLL_NAME") == coll_sv &&
+                       gq2::builder::col("DATA_NAME") == data_sv)
+                .limit(1)
+                .build();
+            nlohmann::json check_rows;
+            status = gq2::try_execute(*Conn, check_q, check_rows, zone_sv);
+            if ( status == 0 && !check_rows.empty() ) {
+                printf( "None\n" );
+                return 0;
+            }
+            if ( status == CAT_NO_ROWS_FOUND || (status == 0 && check_rows.empty()) ) {
+                lastCommandStatus = CAT_NO_ROWS_FOUND;
+                std::cerr << "Error: "
+                          << "Dataobject " << name << " does not exist,"
+                          << std::endl
+                          << "or, if 'strict' access control is enabled, you may not have access."
+                          << std::endl;
+                return CAT_NO_ROWS_FOUND;
+            }
+            printGenQueryResults( Conn, status, check_rows, columnNames );
             return 0;
         }
-        if ( status == CAT_NO_ROWS_FOUND ) {
-            lastCommandStatus = status;
-            std::cerr << "Error: "
-                      << "Dataobject " << name << " does not exist,"
-                      << std::endl
-                      << "or, if 'strict' access control is enabled, you may not have access."
-                      << std::endl;
-            return status;
+        if ( status < 0 || rows.empty() ) {
+            if ( status < 0 && status != CAT_NO_ROWS_FOUND ) {
+                printGenQueryResults( Conn, status, rows, columnNames );
+            }
+            break;
         }
-        printGenQueryResults( Conn, status, genQueryOut, columnNames );
-    }
-    else {
-        printGenQueryResults( Conn, status, genQueryOut, columnNames );
-    }
-
-    while ( status == 0 && genQueryOut->continueInx > 0 ) {
-        genQueryInp.continueInx = genQueryOut->continueInx;
-        freeGenQueryOut(&genQueryOut);
-        status = rcGenQuery( Conn, &genQueryInp, &genQueryOut );
-        if ( genQueryOut->rowCnt > 0 ) {
+        if ( offset > 0 ) {
             printf( "----\n" );
         }
-        printGenQueryResults( Conn, status, genQueryOut,
-                              columnNames );
+        printGenQueryResults( Conn, status, rows, columnNames );
+        if ( rows.size() < maxRows ) {
+            break;
+        }
+        offset += rows.size();
     }
 
     return 0;
@@ -284,41 +245,21 @@ Via a general query, show the AVUs for a collection
 */
 int showColl(char* name, char* attrName)
 {
-    genQueryOut_t *genQueryOut{};
-    int i1a[10];
-    int i1b[10];
-    int i2a[10];
-    char *condVal[10];
+    namespace gq2 = irods::experimental::genquery2;
 
     /* Fourth 'time set' column is only used in longMode */
     char *columnNames[] = { "attribute", "value", "units", "time set" };
 
-    genQueryInp_t genQueryInp;
-
-    irods::at_scope_exit cleanup{[&genQueryInp, &genQueryOut] {
-        clearKeyVal(&genQueryInp.condInput);
-        freeGenQueryOut(&genQueryOut);
-    }};
-
-    memset( &genQueryInp, 0, sizeof( genQueryInp ) );
-
     printf( "AVUs defined for collection %s:\n", name );
     printCount = 0;
-    i1a[0] = COL_META_COLL_ATTR_NAME;
-    i1b[0] = 0; /* currently unused */
-    i1a[1] = COL_META_COLL_ATTR_VALUE;
-    i1b[1] = 0;
-    i1a[2] = COL_META_COLL_ATTR_UNITS;
-    i1b[2] = 0;
+
+    std::vector<std::string> select_cols{
+        "META_COLL_ATTR_NAME",
+        "META_COLL_ATTR_VALUE",
+        "META_COLL_ATTR_UNITS"
+    };
     if ( longMode ) {
-        i1a[3] = COL_META_COLL_MODIFY_TIME;
-        i1b[3] = 0;
-    }
-    genQueryInp.selectInp.inx = i1a;
-    genQueryInp.selectInp.value = i1b;
-    genQueryInp.selectInp.len = 3;
-    if ( longMode ) {
-        genQueryInp.selectInp.len = 4;
+        select_cols.push_back("META_COLL_MODIFY_TIME");
     }
 
     std::string coll_name = cwd;
@@ -336,67 +277,61 @@ int showColl(char* name, char* attrName)
         fmt::print(stderr, "Error: Path length [{}] exceeds max length [{}].\n", coll_name.size(), MAX_NAME_LEN);
     }
 
-    i2a[0] = COL_COLL_NAME;
-    std::string v1;
-    v1 =  "='";
-    v1 += coll_name;
-    v1 += "'";
+    const std::string_view zone_sv = (zoneArgument[0] != '\0') ? zoneArgument : "";
+    constexpr std::size_t maxRows = 10;
+    std::size_t offset = 0;
 
-    condVal[0] = const_cast<char*>( v1.c_str() );
+    while ( true ) {
+        auto cond = (gq2::builder::col("COLL_NAME") == coll_name);
+        if ( attrName != NULL && *attrName != '\0' ) {
+            cond = cond && (gq2::builder::col("META_COLL_ATTR_NAME") == attrName);
+        }
+        else {
+            cond = cond && gq2::builder::col("META_COLL_ATTR_ID").is_not_null();
+        }
 
-    genQueryInp.sqlCondInp.inx = i2a;
-    genQueryInp.sqlCondInp.value = condVal;
-    genQueryInp.sqlCondInp.len = 1;
+        const auto q = gq2::builder::select(select_cols)
+            .where(std::move(cond))
+            .limit(maxRows, offset)
+            .build();
 
-    std::string v2;
-    if ( attrName != NULL && *attrName != '\0' ) {
-        i2a[1] = COL_META_COLL_ATTR_NAME;
-        v2 = "= '";
-        v2 += attrName;
-        v2 += "'";
-        condVal[1] = const_cast<char*>( v2.c_str() );
-        genQueryInp.sqlCondInp.len++;
-    }
-
-    genQueryInp.maxRows = 10;
-    genQueryInp.continueInx = 0;
-    genQueryInp.condInput.len = 0;
-
-    if ( zoneArgument[0] != '\0' ) {
-        addKeyVal( &genQueryInp.condInput, ZONE_KW, zoneArgument );
-    }
-
-    int status = rcGenQuery( Conn, &genQueryInp, &genQueryOut );
-    if ( status == CAT_NO_ROWS_FOUND ) {
-        i1a[0] = COL_COLL_COMMENTS;
-        genQueryInp.selectInp.len = 1;
-        genQueryInp.sqlCondInp.len = 1;
-        freeGenQueryOut(&genQueryOut);
-        status = rcGenQuery( Conn, &genQueryInp, &genQueryOut );
-        if ( status == 0 ) {
-            printf( "None\n" );
+        nlohmann::json rows;
+        int status = gq2::try_execute(*Conn, q, rows, zone_sv);
+        if ( offset == 0 && (status == CAT_NO_ROWS_FOUND || (status == 0 && rows.empty())) ) {
+            const auto check_q = gq2::builder::select({"COLL_COMMENTS"})
+                .where(gq2::builder::col("COLL_NAME") == coll_name)
+                .limit(1)
+                .build();
+            nlohmann::json check_rows;
+            status = gq2::try_execute(*Conn, check_q, check_rows, zone_sv);
+            if ( status == 0 && !check_rows.empty() ) {
+                printf( "None\n" );
+                return 0;
+            }
+            if ( status == CAT_NO_ROWS_FOUND || (status == 0 && check_rows.empty()) ) {
+                lastCommandStatus = CAT_NO_ROWS_FOUND;
+                std::cerr << "Error: "
+                          << "Collection " << name << " does not exist."
+                          << std::endl;
+                return CAT_NO_ROWS_FOUND;
+            }
+            printGenQueryResults( Conn, status, check_rows, columnNames );
             return 0;
         }
-        if ( status == CAT_NO_ROWS_FOUND ) {
-            lastCommandStatus = status;
-            std::cerr << "Error: "
-                      << "Collection " << name << " does not exist."
-                      << std::endl;
-            return status;
+        if ( status < 0 || rows.empty() ) {
+            if ( status < 0 && status != CAT_NO_ROWS_FOUND ) {
+                printGenQueryResults( Conn, status, rows, columnNames );
+            }
+            break;
         }
-    }
-
-    printGenQueryResults( Conn, status, genQueryOut, columnNames );
-
-    while ( status == 0 && genQueryOut->continueInx > 0 ) {
-        genQueryInp.continueInx = genQueryOut->continueInx;
-        freeGenQueryOut(&genQueryOut);
-        status = rcGenQuery( Conn, &genQueryInp, &genQueryOut );
-        if ( genQueryOut->rowCnt > 0 ) {
+        if ( offset > 0 ) {
             printf( "----\n" );
         }
-        printGenQueryResults( Conn, status, genQueryOut,
-                              columnNames );
+        printGenQueryResults( Conn, status, rows, columnNames );
+        if ( rows.size() < maxRows ) {
+            break;
+        }
+        offset += rows.size();
     }
 
     return 0;
@@ -407,103 +342,78 @@ Via a general query, show the AVUs for a resource
 */
 int showResc(char* name, char* attrName)
 {
-    genQueryOut_t *genQueryOut;
-    int i1a[10];
-    int i1b[10];
-    int i2a[10];
-    char *condVal[10];
+    namespace gq2 = irods::experimental::genquery2;
 
     /* Fourth 'time set' column is only used in longMode */
     char *columnNames[] = { "attribute", "value", "units", "time set" };
 
-    genQueryInp_t genQueryInp;
-
-    irods::at_scope_exit cleanup{[&genQueryInp, &genQueryOut] {
-        clearKeyVal(&genQueryInp.condInput);
-        freeGenQueryOut(&genQueryOut);
-    }};
-
-    memset( &genQueryInp, 0, sizeof( genQueryInp ) );
-
     printf( "AVUs defined for resource %s:\n", name );
     printCount = 0;
-    i1a[0] = COL_META_RESC_ATTR_NAME;
-    i1b[0] = 0; /* currently unused */
-    i1a[1] = COL_META_RESC_ATTR_VALUE;
-    i1b[1] = 0;
-    i1a[2] = COL_META_RESC_ATTR_UNITS;
-    i1b[2] = 0;
+
+    std::vector<std::string> select_cols{
+        "META_RESC_ATTR_NAME",
+        "META_RESC_ATTR_VALUE",
+        "META_RESC_ATTR_UNITS"
+    };
     if ( longMode ) {
-        i1a[3] = COL_META_RESC_MODIFY_TIME;
-        i1b[3] = 0;
-    }
-    genQueryInp.selectInp.inx = i1a;
-    genQueryInp.selectInp.value = i1b;
-    genQueryInp.selectInp.len = 3;
-    if ( longMode ) {
-        genQueryInp.selectInp.len = 4;
+        select_cols.push_back("META_RESC_MODIFY_TIME");
     }
 
-    i2a[0] = COL_R_RESC_NAME;
-    std::string v1;
-    v1 =  "='";
-    v1 += name;
-    v1 += "'";
-    condVal[0] = const_cast<char*>( v1.c_str() );
+    const std::string_view zone_sv = (zoneArgument[0] != '\0') ? zoneArgument : "";
+    constexpr std::size_t maxRows = 10;
+    std::size_t offset = 0;
 
-    genQueryInp.sqlCondInp.inx = i2a;
-    genQueryInp.sqlCondInp.value = condVal;
-    genQueryInp.sqlCondInp.len = 1;
+    while ( true ) {
+        auto cond = (gq2::builder::col("RESC_NAME") == name);
+        if ( attrName != NULL && *attrName != '\0' ) {
+            cond = cond && (gq2::builder::col("META_RESC_ATTR_NAME") == attrName);
+        }
+        else {
+            cond = cond && gq2::builder::col("META_RESC_ATTR_ID").is_not_null();
+        }
 
-    std::string v2;
-    if ( attrName != NULL && *attrName != '\0' ) {
-        i2a[1] = COL_META_RESC_ATTR_NAME;
-        v2 = "= '";
-        v2 += attrName;
-        v2 += "'";
-        condVal[1] = const_cast<char*>( v2.c_str() );
-        genQueryInp.sqlCondInp.len++;
-    }
+        const auto q = gq2::builder::select(select_cols)
+            .where(std::move(cond))
+            .limit(maxRows, offset)
+            .build();
 
-    genQueryInp.maxRows = 10;
-    genQueryInp.continueInx = 0;
-    genQueryInp.condInput.len = 0;
-
-    if ( zoneArgument[0] != '\0' ) {
-        addKeyVal( &genQueryInp.condInput, ZONE_KW, zoneArgument );
-    }
-
-    int status = rcGenQuery( Conn, &genQueryInp, &genQueryOut );
-    if ( status == CAT_NO_ROWS_FOUND ) {
-        i1a[0] = COL_R_RESC_INFO;
-        genQueryInp.selectInp.len = 1;
-        genQueryInp.sqlCondInp.len = 1;
-        freeGenQueryOut(&genQueryOut);
-        status = rcGenQuery( Conn, &genQueryInp, &genQueryOut );
-        if ( status == 0 ) {
-            printf( "None\n" );
+        nlohmann::json rows;
+        int status = gq2::try_execute(*Conn, q, rows, zone_sv);
+        if ( offset == 0 && (status == CAT_NO_ROWS_FOUND || (status == 0 && rows.empty())) ) {
+            const auto check_q = gq2::builder::select({"RESC_INFO"})
+                .where(gq2::builder::col("RESC_NAME") == name)
+                .limit(1)
+                .build();
+            nlohmann::json check_rows;
+            status = gq2::try_execute(*Conn, check_q, check_rows, zone_sv);
+            if ( status == 0 && !check_rows.empty() ) {
+                printf( "None\n" );
+                return 0;
+            }
+            if ( status == CAT_NO_ROWS_FOUND || (status == 0 && check_rows.empty()) ) {
+                lastCommandStatus = CAT_NO_ROWS_FOUND;
+                std::cerr << "Error: "
+                          << "Resource " << name << " does not exist."
+                          << std::endl;
+                return CAT_NO_ROWS_FOUND;
+            }
+            printGenQueryResults( Conn, status, check_rows, columnNames );
             return 0;
         }
-        if ( status == CAT_NO_ROWS_FOUND ) {
-            lastCommandStatus = status;
-            std::cerr << "Error: "
-                      << "Resource " << name << " does not exist."
-                      << std::endl;
-            return status;
+        if ( status < 0 || rows.empty() ) {
+            if ( status < 0 && status != CAT_NO_ROWS_FOUND ) {
+                printGenQueryResults( Conn, status, rows, columnNames );
+            }
+            break;
         }
-    }
-
-    printGenQueryResults( Conn, status, genQueryOut, columnNames );
-
-    while ( status == 0 && genQueryOut->continueInx > 0 ) {
-        genQueryInp.continueInx = genQueryOut->continueInx;
-        freeGenQueryOut(&genQueryOut);
-        status = rcGenQuery( Conn, &genQueryInp, &genQueryOut );
-        if ( genQueryOut->rowCnt > 0 ) {
+        if ( offset > 0 ) {
             printf( "----\n" );
         }
-        printGenQueryResults( Conn, status, genQueryOut,
-                              columnNames );
+        printGenQueryResults( Conn, status, rows, columnNames );
+        if ( rows.size() < maxRows ) {
+            break;
+        }
+        offset += rows.size();
     }
 
     return 0;
@@ -514,11 +424,8 @@ Via a general query, show the AVUs for a user
 */
 int showUser(char* name, char* attrName)
 {
-    genQueryOut_t *genQueryOut;
-    int i1a[10];
-    int i1b[10];
-    int i2a[10];
-    char *condVal[10];
+    namespace gq2 = irods::experimental::genquery2;
+
     /* Fourth 'time set' column is only used in longMode */
     char *columnNames[] = { "attribute", "value", "units", "time set" };
 
@@ -535,102 +442,74 @@ int showUser(char* name, char* attrName)
         snprintf( userZone, sizeof( userZone ), "%s", myEnv.rodsZone );
     }
 
-    genQueryInp_t genQueryInp;
-
-    irods::at_scope_exit cleanup{[&genQueryInp, &genQueryOut] {
-        clearKeyVal(&genQueryInp.condInput);
-        freeGenQueryOut(&genQueryOut);
-    }};
-
-    memset( &genQueryInp, 0, sizeof( genQueryInp ) );
-
     printf( "AVUs defined for user %s#%s:\n", userName, userZone );
     printCount = 0;
-    i1a[0] = COL_META_USER_ATTR_NAME;
-    i1b[0] = 0; /* currently unused */
-    i1a[1] = COL_META_USER_ATTR_VALUE;
-    i1b[1] = 0;
-    i1a[2] = COL_META_USER_ATTR_UNITS;
-    i1b[2] = 0;
+
+    std::vector<std::string> select_cols{
+        "META_USER_ATTR_NAME",
+        "META_USER_ATTR_VALUE",
+        "META_USER_ATTR_UNITS"
+    };
     if ( longMode ) {
-        i1a[3] = COL_META_USER_MODIFY_TIME;
-        i1b[3] = 0;
-    }
-    genQueryInp.selectInp.inx = i1a;
-    genQueryInp.selectInp.value = i1b;
-    genQueryInp.selectInp.len = 3;
-    if ( longMode ) {
-        genQueryInp.selectInp.len = 4;
+        select_cols.push_back("META_USER_MODIFY_TIME");
     }
 
-    i2a[0] = COL_USER_NAME;
-    std::string v1;
-    v1 =  "='";
-    v1 += userName;
-    v1 += "'";
+    const std::string_view zone_sv = (zoneArgument[0] != '\0') ? zoneArgument : "";
+    constexpr std::size_t maxRows = 10;
+    std::size_t offset = 0;
 
-    i2a[1] = COL_USER_ZONE;
-    std::string v2;
-    v2 =  "='";
-    v2 += userZone;
-    v2 += "'";
+    while ( true ) {
+        auto cond = (gq2::builder::col("USER_NAME") == userName) &&
+                    (gq2::builder::col("USER_ZONE") == userZone);
+        if ( attrName != NULL && *attrName != '\0' ) {
+            cond = cond && (gq2::builder::col("META_USER_ATTR_NAME") == attrName);
+        }
+        else {
+            cond = cond && gq2::builder::col("META_USER_ATTR_ID").is_not_null();
+        }
 
-    genQueryInp.sqlCondInp.inx = i2a;
-    genQueryInp.sqlCondInp.value = condVal;
-    genQueryInp.sqlCondInp.len = 2;
+        const auto q = gq2::builder::select(select_cols)
+            .where(std::move(cond))
+            .limit(maxRows, offset)
+            .build();
 
-    std::string v3;
-    if ( attrName != NULL && *attrName != '\0' ) {
-        i2a[2] = COL_META_USER_ATTR_NAME;
-        v3 = "= '";
-        v3 += attrName;
-        v3 += "'";
-        condVal[2] = const_cast<char*>( v3.c_str() );
-        genQueryInp.sqlCondInp.len++;
-    }
-
-    condVal[0] = const_cast<char*>( v1.c_str() );
-    condVal[1] = const_cast<char*>( v2.c_str() );
-
-    genQueryInp.maxRows = 10;
-    genQueryInp.continueInx = 0;
-    genQueryInp.condInput.len = 0;
-
-    if ( zoneArgument[0] != '\0' ) {
-        addKeyVal( &genQueryInp.condInput, ZONE_KW, zoneArgument );
-    }
-
-    int status = rcGenQuery( Conn, &genQueryInp, &genQueryOut );
-    if ( status == CAT_NO_ROWS_FOUND ) {
-        i1a[0] = COL_USER_COMMENT;
-        genQueryInp.selectInp.len = 1;
-        genQueryInp.sqlCondInp.len = 1;
-        freeGenQueryOut(&genQueryOut);
-        status = rcGenQuery( Conn, &genQueryInp, &genQueryOut );
-        if ( status == 0 ) {
-            printf( "None\n" );
+        nlohmann::json rows;
+        int status = gq2::try_execute(*Conn, q, rows, zone_sv);
+        if ( offset == 0 && (status == CAT_NO_ROWS_FOUND || (status == 0 && rows.empty())) ) {
+            const auto check_q = gq2::builder::select({"USER_COMMENT"})
+                .where(gq2::builder::col("USER_NAME") == userName)
+                .limit(1)
+                .build();
+            nlohmann::json check_rows;
+            status = gq2::try_execute(*Conn, check_q, check_rows, zone_sv);
+            if ( status == 0 && !check_rows.empty() ) {
+                printf( "None\n" );
+                return 0;
+            }
+            if ( status == CAT_NO_ROWS_FOUND || (status == 0 && check_rows.empty()) ) {
+                lastCommandStatus = CAT_NO_ROWS_FOUND;
+                std::cerr << "Error: "
+                          << "User " << name << " does not exist."
+                          << std::endl;
+                return CAT_NO_ROWS_FOUND;
+            }
+            printGenQueryResults( Conn, status, check_rows, columnNames );
             return 0;
         }
-        if ( status == CAT_NO_ROWS_FOUND ) {
-            lastCommandStatus = status;
-            std::cerr << "Error: "
-                      << "User " << name << " does not exist."
-                      << std::endl;
-            return status;
+        if ( status < 0 || rows.empty() ) {
+            if ( status < 0 && status != CAT_NO_ROWS_FOUND ) {
+                printGenQueryResults( Conn, status, rows, columnNames );
+            }
+            break;
         }
-    }
-
-    printGenQueryResults( Conn, status, genQueryOut, columnNames );
-
-    while ( status == 0 && genQueryOut->continueInx > 0 ) {
-        genQueryInp.continueInx = genQueryOut->continueInx;
-        freeGenQueryOut(&genQueryOut);
-        status = rcGenQuery( Conn, &genQueryInp, &genQueryOut );
-        if ( genQueryOut->rowCnt > 0 ) {
+        if ( offset > 0 ) {
             printf( "----\n" );
         }
-        printGenQueryResults( Conn, status, genQueryOut,
-                              columnNames );
+        printGenQueryResults( Conn, status, rows, columnNames );
+        if ( rows.size() < maxRows ) {
+            break;
+        }
+        offset += rows.size();
     }
 
     return 0;
@@ -642,76 +521,71 @@ enum class object_type
     collection
 };
 
+auto make_meta_op_cond(std::string_view _col_name, std::string_view _op, std::string_view _val)
+    -> irods::experimental::genquery2::builder::condition_builder
+{
+    namespace gq2 = irods::experimental::genquery2;
+    const gq2::builder::col c{_col_name};
+    if (_op == "=") {
+        return c == _val;
+    }
+    if (_op == "!=" || _op == "<>") {
+        return c != _val;
+    }
+    if (_op == "<" || _op == "n<") {
+        return c < _val;
+    }
+    if (_op == "<=" || _op == "n<=") {
+        return c <= _val;
+    }
+    if (_op == ">" || _op == "n>") {
+        return c > _val;
+    }
+    if (_op == ">=" || _op == "n>=") {
+        return c >= _val;
+    }
+    if (_op == "like") {
+        return c.like(_val);
+    }
+    if (_op == "not like") {
+        return !c.like(_val);
+    }
+    return c == _val;
+}
+
 int find_objects_by_metadata(const char* _cmd_tokens[], object_type _object_type)
 {
-    genQueryInp_t genQueryInp{};
+    namespace gq2 = irods::experimental::genquery2;
 
     printCount = 0;
 
-    int column_ids[20];
-    int sort_options_per_column[20];
-    int condition_ids[20];
-    char *condVal[20];
-
-    // The column_ids for the SELECT clause.
-    column_ids[0] = COL_COLL_NAME;
-    sort_options_per_column[0] = 0; // Unused
-    ++genQueryInp.selectInp.len;
-
+    std::vector<std::string> select_cols{"COLL_NAME"};
     if (object_type::data_object == _object_type) {
-        column_ids[1] = COL_DATA_NAME;
-        sort_options_per_column[1] = 0;
-        ++genQueryInp.selectInp.len;
+        select_cols.push_back("DATA_NAME");
     }
 
-    genQueryInp.selectInp.inx = column_ids;
-    genQueryInp.selectInp.value = sort_options_per_column;
+    const std::string_view attr_col = (object_type::data_object == _object_type)
+        ? "META_DATA_ATTR_NAME"
+        : "META_COLL_ATTR_NAME";
+    const std::string_view val_col = (object_type::data_object == _object_type)
+        ? "META_DATA_ATTR_VALUE"
+        : "META_COLL_ATTR_VALUE";
 
-    std::vector<std::string> condition_values;
-    condition_values.reserve(MAX_CMD_TOKENS);
-
-    // The attribute name condition (e.g. META_COLL_ATTR_NAME = <value>).
-    condition_ids[0] = (object_type::data_object == _object_type)
-        ? COL_META_DATA_ATTR_NAME
-        : COL_META_COLL_ATTR_NAME;
-    condition_values.push_back(fmt::format("= '{}'", _cmd_tokens[2]));
-    condVal[0] = &condition_values.back()[0];
-
-    // The attribute value condition (e.g. META_COLL_ATTR_VALUE <op> <value>).
-    condition_ids[1] = (object_type::data_object == _object_type)
-        ? COL_META_DATA_ATTR_VALUE
-        : COL_META_COLL_ATTR_VALUE;
-    condition_values.push_back(fmt::format("{} '{}'", _cmd_tokens[3], _cmd_tokens[4]));
-    condVal[1] = &condition_values.back()[0];
-
-    genQueryInp.sqlCondInp.inx = condition_ids;
-    genQueryInp.sqlCondInp.value = condVal;
-    genQueryInp.sqlCondInp.len = condition_values.size();
+    auto cond = (gq2::builder::col(attr_col) == _cmd_tokens[2]);
+    auto val_cond = make_meta_op_cond(val_col, _cmd_tokens[3], _cmd_tokens[4]);
 
     int token_index = 5;
-    int condIx = 2;
 
     while (true) {
         if (std::strcmp(_cmd_tokens[token_index], "and") == 0) {
+            cond = cond && val_cond.group();
+
             const auto* avu_name = _cmd_tokens[++token_index];
             const auto* avu_op = _cmd_tokens[++token_index];
             const auto* avu_value = _cmd_tokens[++token_index];
 
-            // Add a new condition: META_COLL_ATTR_NAME = <value>
-            condition_ids[condIx] = (object_type::data_object == _object_type)
-                ? COL_META_DATA_ATTR_NAME
-                : COL_META_COLL_ATTR_NAME;
-            condition_values.push_back(fmt::format("= '{}'", avu_name));
-            condVal[condIx++] = &condition_values.back()[0];
-            ++genQueryInp.sqlCondInp.len;
-
-            // Add a new condition: META_COLL_ATTR_VALUE <op> <value>
-            condition_ids[condIx] = (object_type::data_object == _object_type)
-                ? COL_META_DATA_ATTR_VALUE
-                : COL_META_COLL_ATTR_VALUE;
-            condition_values.push_back(fmt::format("{} '{}'", avu_op, avu_value));
-            condVal[condIx++] = &condition_values.back()[0];
-            ++genQueryInp.sqlCondInp.len;
+            cond = cond && (gq2::builder::col(attr_col) == avu_name);
+            val_cond = make_meta_op_cond(val_col, avu_op, avu_value);
 
             ++token_index;
         }
@@ -719,10 +593,7 @@ int find_objects_by_metadata(const char* _cmd_tokens[], object_type _object_type
             const auto* avu_op = _cmd_tokens[++token_index];
             const auto* avu_value = _cmd_tokens[++token_index];
 
-            // Append the OR condition to the previous condition value.
-            auto*& prev_condition = condVal[condIx - 1];
-            condition_values.back() = fmt::format("{} || {} '{}'", prev_condition, avu_op, avu_value);
-            prev_condition = &condition_values.back()[0];
+            val_cond = val_cond || make_meta_op_cond(val_col, avu_op, avu_value);
 
             ++token_index;
         }
@@ -731,41 +602,49 @@ int find_objects_by_metadata(const char* _cmd_tokens[], object_type _object_type
         }
     }
 
-    // If there is more unprocessed input, either something went wrong or the
-    // user provided bad input.
+    cond = cond && val_cond.group();
+
     if (*_cmd_tokens[token_index] != '\0') {
         std::cerr << "Error: Unrecognized input\n";
         return -2;
     }
 
-    genQueryInp.maxRows = 10;
-    genQueryInp.continueInx = 0;
-    genQueryInp.condInput.len = 0;
-
-    if (zoneArgument[0] != '\0') {
-        addKeyVal(&genQueryInp.condInput, ZONE_KW, zoneArgument);
-    }
-
-    genQueryOut_t *genQueryOut{};
-    int status = rcGenQuery( Conn, &genQueryInp, &genQueryOut );
-
     std::vector<char*> column_names{"collection"};
-
     if (object_type::data_object == _object_type) {
         column_names.push_back("dataObj");
     }
 
-    printGenQueryResults(Conn, status, genQueryOut, column_names.data());
+    const std::string_view zone_sv = (zoneArgument[0] != '\0') ? zoneArgument : "";
+    constexpr std::size_t maxRows = 10;
+    std::size_t offset = 0;
+    int status = 0;
 
-    while (status == 0 && genQueryOut->continueInx > 0) {
-        genQueryInp.continueInx = genQueryOut->continueInx;
-        status = rcGenQuery(Conn, &genQueryInp, &genQueryOut);
+    while (true) {
+        const auto q = gq2::builder::select(select_cols)
+            .where(cond)
+            .limit(maxRows, offset)
+            .build();
 
-        if (genQueryOut->rowCnt > 0) {
+        nlohmann::json rows;
+        status = gq2::try_execute(*Conn, q, rows, zone_sv);
+        if (offset == 0 && (status == CAT_NO_ROWS_FOUND || (status == 0 && rows.empty()))) {
+            printGenQueryResults(Conn, CAT_NO_ROWS_FOUND, rows, column_names.data());
+            return 0;
+        }
+        if (status < 0 || rows.empty()) {
+            if (status < 0 && status != CAT_NO_ROWS_FOUND) {
+                printGenQueryResults(Conn, status, rows, column_names.data());
+            }
+            break;
+        }
+        if (offset > 0) {
             printf("----\n");
         }
-
-        printGenQueryResults(Conn, status, genQueryOut, column_names.data());
+        printGenQueryResults(Conn, status, rows, column_names.data());
+        if (rows.size() < maxRows) {
+            break;
+        }
+        offset += rows.size();
     }
 
     return status == CAT_NO_ROWS_FOUND ? 0 : status;
@@ -788,64 +667,42 @@ int queryCollection(const char *cmdToken[])
 Do a query on AVUs for resources and show the results
  */
 int queryResc( char *attribute, char *op, char *value ) {
-    genQueryOut_t *genQueryOut;
-    int i1a[10];
-    int i1b[10];
-    int i2a[10];
-    char *condVal[10];
-
+    namespace gq2 = irods::experimental::genquery2;
     char *columnNames[] = {"resource"};
-
-    genQueryInp_t genQueryInp;
-    memset( &genQueryInp, 0, sizeof( genQueryInp ) );
-
     printCount = 0;
-    i1a[0] = COL_R_RESC_NAME;
-    i1b[0] = 0; /* (unused) */
-    genQueryInp.selectInp.inx = i1a;
-    genQueryInp.selectInp.value = i1b;
-    genQueryInp.selectInp.len = 1;
 
-    i2a[0] = COL_META_RESC_ATTR_NAME;
-    std::string v1;
-    v1 =  "='";
-    v1 += attribute;
-    v1 += "'";
+    const std::string_view zone_sv = (zoneArgument[0] != '\0') ? zoneArgument : "";
+    constexpr std::size_t maxRows = 10;
+    std::size_t offset = 0;
+    int status = 0;
 
-    i2a[1] = COL_META_RESC_ATTR_VALUE;
-    std::string v2;
-    v2 =  op;
-    v2 += " '";
-    v2 += value;
-    v2 += "'";
+    while ( true ) {
+        const auto q = gq2::builder::select({"RESC_NAME"})
+            .where((gq2::builder::col("META_RESC_ATTR_NAME") == attribute) &&
+                   make_meta_op_cond("META_RESC_ATTR_VALUE", op, value))
+            .limit(maxRows, offset)
+            .build();
 
-    condVal[0] = const_cast<char*>( v1.c_str() );
-    condVal[1] = const_cast<char*>( v2.c_str() );
-
-    genQueryInp.sqlCondInp.inx = i2a;
-    genQueryInp.sqlCondInp.value = condVal;
-    genQueryInp.sqlCondInp.len = 2;
-
-    genQueryInp.maxRows = 10;
-    genQueryInp.continueInx = 0;
-    genQueryInp.condInput.len = 0;
-
-    if ( zoneArgument[0] != '\0' ) {
-        addKeyVal( &genQueryInp.condInput, ZONE_KW, zoneArgument );
-    }
-
-    int status = rcGenQuery( Conn, &genQueryInp, &genQueryOut );
-
-    printGenQueryResults( Conn, status, genQueryOut, columnNames );
-
-    while ( status == 0 && genQueryOut->continueInx > 0 ) {
-        genQueryInp.continueInx = genQueryOut->continueInx;
-        status = rcGenQuery( Conn, &genQueryInp, &genQueryOut );
-        if ( genQueryOut->rowCnt > 0 ) {
+        nlohmann::json rows;
+        status = gq2::try_execute(*Conn, q, rows, zone_sv);
+        if ( offset == 0 && (status == CAT_NO_ROWS_FOUND || (status == 0 && rows.empty())) ) {
+            printGenQueryResults( Conn, CAT_NO_ROWS_FOUND, rows, columnNames );
+            return 0;
+        }
+        if ( status < 0 || rows.empty() ) {
+            if ( status < 0 && status != CAT_NO_ROWS_FOUND ) {
+                printGenQueryResults( Conn, status, rows, columnNames );
+            }
+            break;
+        }
+        if ( offset > 0 ) {
             printf( "----\n" );
         }
-        printGenQueryResults( Conn, status, genQueryOut,
-                              columnNames );
+        printGenQueryResults( Conn, status, rows, columnNames );
+        if ( rows.size() < maxRows ) {
+            break;
+        }
+        offset += rows.size();
     }
 
     return status == CAT_NO_ROWS_FOUND ? 0 : status;
@@ -855,65 +712,42 @@ int queryResc( char *attribute, char *op, char *value ) {
 Do a query on AVUs for users and show the results
  */
 int queryUser( char *attribute, char *op, char *value ) {
-    genQueryOut_t *genQueryOut;
-    int i1a[10];
-    int i1b[10];
-    int i2a[10];
-    char *condVal[10];
+    namespace gq2 = irods::experimental::genquery2;
     char *columnNames[] = {"user", "zone"};
-
     printCount = 0;
-    genQueryInp_t genQueryInp;
-    memset( &genQueryInp, 0, sizeof( genQueryInp ) );
 
-    i1a[0] = COL_USER_NAME;
-    i1b[0] = 0; /* (unused) */
-    i1a[1] = COL_USER_ZONE;
-    i1b[1] = 0; /* (unused) */
-    genQueryInp.selectInp.inx = i1a;
-    genQueryInp.selectInp.value = i1b;
-    genQueryInp.selectInp.len = 2;
+    const std::string_view zone_sv = (zoneArgument[0] != '\0') ? zoneArgument : "";
+    constexpr std::size_t maxRows = 10;
+    std::size_t offset = 0;
+    int status = 0;
 
-    i2a[0] = COL_META_USER_ATTR_NAME;
-    std::string v1;
-    v1 =  "='";
-    v1 += attribute;
-    v1 += "'";
+    while ( true ) {
+        const auto q = gq2::builder::select({"USER_NAME", "USER_ZONE"})
+            .where((gq2::builder::col("META_USER_ATTR_NAME") == attribute) &&
+                   make_meta_op_cond("META_USER_ATTR_VALUE", op, value))
+            .limit(maxRows, offset)
+            .build();
 
-    i2a[1] = COL_META_USER_ATTR_VALUE;
-    std::string v2;
-    v2 =  op;
-    v2 += " '";
-    v2 += value;
-    v2 += "'";
-
-    condVal[0] = const_cast<char*>( v1.c_str() );
-    condVal[1] = const_cast<char*>( v2.c_str() );
-
-    genQueryInp.sqlCondInp.inx = i2a;
-    genQueryInp.sqlCondInp.value = condVal;
-    genQueryInp.sqlCondInp.len = 2;
-
-    genQueryInp.maxRows = 10;
-    genQueryInp.continueInx = 0;
-    genQueryInp.condInput.len = 0;
-
-    if ( zoneArgument[0] != '\0' ) {
-        addKeyVal( &genQueryInp.condInput, ZONE_KW, zoneArgument );
-    }
-
-    int status = rcGenQuery( Conn, &genQueryInp, &genQueryOut );
-
-    printGenQueryResults( Conn, status, genQueryOut, columnNames );
-
-    while ( status == 0 && genQueryOut->continueInx > 0 ) {
-        genQueryInp.continueInx = genQueryOut->continueInx;
-        status = rcGenQuery( Conn, &genQueryInp, &genQueryOut );
-        if ( genQueryOut->rowCnt > 0 ) {
+        nlohmann::json rows;
+        status = gq2::try_execute(*Conn, q, rows, zone_sv);
+        if ( offset == 0 && (status == CAT_NO_ROWS_FOUND || (status == 0 && rows.empty())) ) {
+            printGenQueryResults( Conn, CAT_NO_ROWS_FOUND, rows, columnNames );
+            return 0;
+        }
+        if ( status < 0 || rows.empty() ) {
+            if ( status < 0 && status != CAT_NO_ROWS_FOUND ) {
+                printGenQueryResults( Conn, status, rows, columnNames );
+            }
+            break;
+        }
+        if ( offset > 0 ) {
             printf( "----\n" );
         }
-        printGenQueryResults( Conn, status, genQueryOut,
-                              columnNames );
+        printGenQueryResults( Conn, status, rows, columnNames );
+        if ( rows.size() < maxRows ) {
+            break;
+        }
+        offset += rows.size();
     }
 
     return status == CAT_NO_ROWS_FOUND ? 0 : status;

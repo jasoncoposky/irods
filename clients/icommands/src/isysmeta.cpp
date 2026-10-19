@@ -1,11 +1,18 @@
 #include "utility.hpp"
+#include <irods/filesystem/path.hpp>
+#include <irods/genquery2_builder.hpp>
 #include <irods/rodsClient.h>
 #include <irods/rodsError.h>
 #include <irods/irods_client_api_table.hpp>
 #include <irods/irods_pack_table.hpp>
 #include <irods/data_object_modify_info.h>
 
+#include <nlohmann/json.hpp>
+
+#include <charconv>
 #include <cstdio>
+#include <string>
+#include <vector>
 
 void usage();
 
@@ -13,46 +20,49 @@ void usage();
  print the results of a general query.
  */
 int
-printGenQueryResults( rcComm_t *Conn, int status, genQueryOut_t *genQueryOut,
+printGenQueryResults( rcComm_t *Conn, int status, const nlohmann::json& rows,
                       char *descriptions[], int doDashes ) {
-    int printCount;
-    int i, j;
+    int printCount = 0;
     char localTime[TIME_LEN];
-    printCount = 0;
-    if ( status != 0 ) {
-        printError( Conn, status, "rcGenQuery" );
+    if ( status < 0 ) {
+        if ( status != CAT_NO_ROWS_FOUND ) {
+            printError( Conn, status, "rc_genquery2" );
+        }
     }
     else {
-        if ( status != CAT_NO_ROWS_FOUND ) {
-            for ( i = 0; i < genQueryOut->rowCnt; i++ ) {
-                if ( i > 0 && doDashes ) {
-                    printf( "----\n" );
-                }
-                for ( j = 0; j < genQueryOut->attriCnt; j++ ) {
-                    char *tResult;
-                    tResult = genQueryOut->sqlResult[j].value;
-                    tResult += i * genQueryOut->sqlResult[j].len;
-                    if ( descriptions != 0 && *descriptions[j] != '\0' ) {
-                        if ( strstr( descriptions[j], "_ts" ) != 0 ) {
-                            getLocalTimeFromRodsTime( tResult, localTime );
-                            if ( atoll( tResult ) == 0 ) {
-                                rstrcpy( localTime, "None", 20 );
-                            }
-                            printf( "%s: %s: %s\n", descriptions[j], tResult,
-                                    localTime );
+        for ( std::size_t i = 0; i < rows.size(); i++ ) {
+            const auto& row = rows[i];
+            if ( !row.is_array() ) {
+                continue;
+            }
+            if ( i > 0 && doDashes ) {
+                printf( "----\n" );
+            }
+            for ( std::size_t j = 0; j < row.size(); j++ ) {
+                const auto& val = row[j].get_ref<const std::string&>();
+                const char* tResult = val.c_str();
+                if ( descriptions != 0 && *descriptions[j] != '\0' ) {
+                    if ( strstr( descriptions[j], "_ts" ) != 0 ) {
+                        getLocalTimeFromRodsTime( tResult, localTime );
+                        long long ts_val = 0;
+                        std::from_chars( val.data(), val.data() + val.size(), ts_val );
+                        if ( ts_val == 0 ) {
+                            rstrcpy( localTime, "None", 20 );
                         }
-                        else if ( strstr( descriptions[j], "resc_group_name" ) != 0 ) {
-                            // skip resource group
-                        }
-                        else {
-                            printf( "%s: %s\n", descriptions[j], tResult );
-                        }
+                        printf( "%s: %s: %s\n", descriptions[j], tResult,
+                                localTime );
+                    }
+                    else if ( strstr( descriptions[j], "resc_group_name" ) != 0 ) {
+                        // skip resource group
                     }
                     else {
-                        printf( "%s\n", tResult );
+                        printf( "%s: %s\n", descriptions[j], tResult );
                     }
-                    printCount++;
                 }
+                else {
+                    printf( "%s\n", tResult );
+                }
+                printCount++;
             }
         }
     }
@@ -63,17 +73,8 @@ printGenQueryResults( rcComm_t *Conn, int status, genQueryOut_t *genQueryOut,
 /* perform the ls command */
 int
 doLs( rcComm_t *Conn, char *objPath, int longOption ) {
-
-    genQueryInp_t genQueryInp;
-    genQueryOut_t *genQueryOut;
-    int i1a[30];
-    int i1b[30] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
-    int i2a[30];
-    char *condVal[10];
-    char v1[MAX_NAME_LEN + 10];
-    char v2[MAX_NAME_LEN + 10];
-    int i, status;
-    int printCount;
+    namespace gq2 = irods::experimental::genquery2;
+    namespace fs = irods::experimental::filesystem;
 
     char *columnNames[] = {
         "data_name",
@@ -85,85 +86,60 @@ doLs( rcComm_t *Conn, char *objPath, int longOption ) {
         "data_map_id", "r_comment", "create_ts", "modify_ts"
     };
 
-    char logicalEndName[MAX_NAME_LEN];
-    char logicalParentDirName[MAX_NAME_LEN];
-
-    memset( &genQueryInp, 0, sizeof( genQueryInp_t ) );
-    printCount = 0;
+    int printCount = 0;
 
     printf( "doing ls of %s\n", objPath );
 
-    status = splitPathByKey( objPath,
-                             logicalParentDirName, MAX_NAME_LEN, logicalEndName, MAX_NAME_LEN, '/' );
+    const fs::path p{objPath ? objPath : ""};
+    const auto parent_sv = p.parent_path_view();
+    const auto obj_sv = p.object_name_view();
 
-    i = 0;
-    i1a[i++] = COL_DATA_NAME;
+    std::vector<std::string> select_cols{"DATA_NAME"};
     if ( longOption ) {
-        i1a[i++] = COL_D_DATA_ID;
-        i1a[i++] = COL_D_COLL_ID;
-        i1a[i++] = COL_DATA_REPL_NUM;
-        i1a[i++] = COL_DATA_VERSION;
-        i1a[i++] = COL_DATA_TYPE_NAME;
-        i1a[i++] = COL_DATA_SIZE;
-        i1a[i++] = COL_D_RESC_NAME;
-        i1a[i++] = COL_D_DATA_PATH;
-        i1a[i++] = COL_D_OWNER_NAME;
-        i1a[i++] = COL_D_OWNER_ZONE;
-        i1a[i++] = COL_D_REPL_STATUS;
-        i1a[i++] = COL_D_DATA_STATUS;
-        i1a[i++] = COL_D_DATA_CHECKSUM;
-        i1a[i++] = COL_D_EXPIRY;
-        i1a[i++] = COL_D_MAP_ID;
-        i1a[i++] = COL_D_COMMENTS;
-        i1a[i++] = COL_D_CREATE_TIME;
-        i1a[i++] = COL_D_MODIFY_TIME;
+        select_cols.insert(select_cols.end(), {
+            "DATA_ID", "DATA_COLL_ID", "DATA_REPL_NUM", "DATA_VERSION",
+            "DATA_TYPE_NAME", "DATA_SIZE", "DATA_RESC_NAME",
+            "DATA_PATH", "DATA_OWNER_NAME", "DATA_OWNER_ZONE",
+            "DATA_REPL_STATUS", "DATA_STATUS",
+            "DATA_CHECKSUM", "DATA_EXPIRY",
+            "DATA_MAP_ID", "DATA_COMMENTS", "DATA_CREATE_TIME", "DATA_MODIFY_TIME"
+        });
     }
     else {
         columnNames[1] = "data_expiry_ts (expire time)";
-        i1a[i++] = COL_D_EXPIRY;
+        select_cols.push_back("DATA_EXPIRY");
     }
 
-    genQueryInp.selectInp.inx = i1a;
-    genQueryInp.selectInp.value = i1b;
-    genQueryInp.selectInp.len = i;
+    constexpr std::size_t maxRows = 50;
+    std::size_t offset = 0;
 
-    genQueryInp.sqlCondInp.inx = i2a;
-    genQueryInp.sqlCondInp.value = condVal;
-    i2a[0] = COL_COLL_NAME;
-    sprintf( v1, "='%s'", logicalParentDirName );
-    condVal[0] = v1;
-    i2a[1] = COL_DATA_NAME;
-    sprintf( v2, "='%s'", logicalEndName );
-    condVal[1] = v2;
-    genQueryInp.sqlCondInp.len = 2;
+    while ( true ) {
+        const auto q = gq2::builder::select(select_cols)
+            .where(gq2::builder::col("COLL_NAME") == parent_sv &&
+                   gq2::builder::col("DATA_NAME") == obj_sv)
+            .limit(maxRows, offset)
+            .build();
 
-    genQueryInp.maxRows = 50;
-    genQueryInp.continueInx = 0;
-    status = rcGenQuery( Conn, &genQueryInp, &genQueryOut );
-    if ( status == CAT_NO_ROWS_FOUND ) {
-        i1a[0] = COL_R_RESC_INFO;
-        genQueryInp.selectInp.len = 1;
-        status = rcGenQuery( Conn, &genQueryInp, &genQueryOut );
-        if ( status == 0 ) {
-            printf( "None\n" );
-            return 0;
-        }
-        if ( status == CAT_NO_ROWS_FOUND ) {
+        nlohmann::json rows;
+        const int status = gq2::try_execute(*Conn, q, rows);
+        if ( offset == 0 && (status == CAT_NO_ROWS_FOUND || (status == 0 && rows.empty())) ) {
             printf( "DataObject %s does not exist.\n", objPath );
             return 0;
         }
-    }
-
-    printCount += printGenQueryResults( Conn, status, genQueryOut, columnNames,
-                                        longOption );
-    while ( status == 0 && genQueryOut->continueInx > 0 ) {
-        genQueryInp.continueInx = genQueryOut->continueInx;
-        status = rcGenQuery( Conn, &genQueryInp, &genQueryOut );
-        if ( genQueryOut->rowCnt > 0 && longOption ) {
+        if ( status < 0 || rows.empty() ) {
+            if ( status < 0 && status != CAT_NO_ROWS_FOUND ) {
+                printGenQueryResults( Conn, status, rows, columnNames, longOption );
+            }
+            break;
+        }
+        if ( offset > 0 && longOption ) {
             printf( "----\n" );
         }
-        printCount += printGenQueryResults( Conn, status, genQueryOut,
-                                            columnNames, longOption );
+        printCount += printGenQueryResults( Conn, status, rows, columnNames, longOption );
+        if ( rows.size() < maxRows ) {
+            break;
+        }
+        offset += rows.size();
     }
 
     static_cast<void>(printCount);
@@ -174,50 +150,38 @@ doLs( rcComm_t *Conn, char *objPath, int longOption ) {
 /* perform the list data-types command */
 int
 doListDataTypes( rcComm_t *Conn ) {
+    namespace gq2 = irods::experimental::genquery2;
 
-    genQueryInp_t genQueryInp;
-    genQueryOut_t *genQueryOut;
-    int select_inx[3];
-    int select_value[3] = {0, 0, 0};
-    int condition_inx[3];
-    char *condition_value[10];
-    char value1[MAX_NAME_LEN + 10] = "='data_type'";
-    int i, status;
-    int printCount;
-
-    memset( &genQueryInp, 0, sizeof( genQueryInp_t ) );
-    printCount = 0;
+    int printCount = 0;
 
     printf( "Defined data-types:\n" );
 
-    i = 0;
-    select_inx[i++] = COL_TOKEN_NAME;
+    constexpr std::size_t maxRows = 50;
+    std::size_t offset = 0;
 
-    genQueryInp.selectInp.inx = select_inx;
-    genQueryInp.selectInp.value = select_value;
-    genQueryInp.selectInp.len = i;
+    while ( true ) {
+        const auto q = gq2::builder::select({"TOKEN_NAME"})
+            .where(gq2::builder::col("TOKEN_NAMESPACE") == "data_type")
+            .limit(maxRows, offset)
+            .build();
 
-    genQueryInp.sqlCondInp.inx = condition_inx;
-    genQueryInp.sqlCondInp.value = condition_value;
-    condition_inx[0] = COL_TOKEN_NAMESPACE;
-    condition_value[0] = value1;
-    genQueryInp.sqlCondInp.len = 1;
-
-    genQueryInp.maxRows = 50;
-    genQueryInp.continueInx = 0;
-    status = rcGenQuery( Conn, &genQueryInp, &genQueryOut );
-    if ( status == CAT_NO_ROWS_FOUND ) {
-        printf( "None exist.\n" );
-        return 0;
-    }
-
-    printCount += printGenQueryResults( Conn, status, genQueryOut, 0,
-                                        0 );
-    while ( status == 0 && genQueryOut->continueInx > 0 ) {
-        genQueryInp.continueInx = genQueryOut->continueInx;
-        status = rcGenQuery( Conn, &genQueryInp, &genQueryOut );
-        printCount += printGenQueryResults( Conn, status, genQueryOut,
-                                            0, 0 );
+        nlohmann::json rows;
+        const int status = gq2::try_execute(*Conn, q, rows);
+        if ( offset == 0 && (status == CAT_NO_ROWS_FOUND || (status == 0 && rows.empty())) ) {
+            printf( "None exist.\n" );
+            return 0;
+        }
+        if ( status < 0 || rows.empty() ) {
+            if ( status < 0 && status != CAT_NO_ROWS_FOUND ) {
+                printGenQueryResults( Conn, status, rows, 0, 0 );
+            }
+            break;
+        }
+        printCount += printGenQueryResults( Conn, status, rows, 0, 0 );
+        if ( rows.size() < maxRows ) {
+            break;
+        }
+        offset += rows.size();
     }
 
     static_cast<void>(printCount);
