@@ -30,6 +30,7 @@
 #include "irods/genquery2_builder.hpp"
 #include "irods/rs_genquery2.hpp"
 #include "irods/scoped_privileged_client.hpp"
+#include "irods/filesystem/path.hpp"
 
 #include <boost/filesystem/operations.hpp>
 #include <boost/filesystem/convenience.hpp>
@@ -731,29 +732,26 @@ matchAndTrimRescGrp( dataObjInfo_t **dataObjInfoHead,
 int
 initDataObjInfoQuery( dataObjInp_t *dataObjInp, genQueryInp_t *genQueryInp,
                       int ignoreCondInput ) {
-    char myColl[MAX_NAME_LEN], myData[MAX_NAME_LEN];
     char condStr[MAX_NAME_LEN];
     char *tmpStr;
-    int status;
     int qcondCnt = 0;
 
     memset( genQueryInp, 0, sizeof( genQueryInp_t ) );
 
     if ( ( tmpStr = getValByKey( &dataObjInp->condInput, QUERY_BY_DATA_ID_KW ) )
             == NULL ) {
-        memset( myColl, 0, MAX_NAME_LEN );
-        memset( myData, 0, MAX_NAME_LEN );
-
-        if ( ( status = splitPathByKey(
-                            dataObjInp->objPath, myColl, MAX_NAME_LEN, myData, MAX_NAME_LEN, '/' ) ) < 0 ) {
+        const irods::experimental::filesystem::path p{dataObjInp->objPath};
+        if (p.string_view().find('/') == std::string_view::npos) {
             rodsLog( LOG_NOTICE,
-                     "initDataObjInfoQuery: splitPathByKey for %s error, status = %d",
-                     dataObjInp->objPath, status );
-            return status;
+                     "initDataObjInfoQuery: invalid path for %s, status = %d",
+                     dataObjInp->objPath, SYS_INVALID_FILE_PATH );
+            return SYS_INVALID_FILE_PATH;
         }
-        snprintf( condStr, MAX_NAME_LEN, "='%s'", myColl );
+        const auto myColl = p.parent_path_view();
+        const auto myData = p.object_name_view();
+        snprintf( condStr, MAX_NAME_LEN, "='%.*s'", static_cast<int>(myColl.size()), myColl.data() );
         addInxVal( &genQueryInp->sqlCondInp, COL_COLL_NAME, condStr );
-        snprintf( condStr, MAX_NAME_LEN, "='%s'", myData );
+        snprintf( condStr, MAX_NAME_LEN, "='%.*s'", static_cast<int>(myData.size()), myData.data() );
         addInxVal( &genQueryInp->sqlCondInp, COL_DATA_NAME, condStr );
     }
     else {

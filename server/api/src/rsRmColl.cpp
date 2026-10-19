@@ -532,7 +532,6 @@ rsMkTrashPath( rsComm_t *rsComm, char *objPath, char *trashPath ) {
     int status;
     char *tmpStr;
     char startTrashPath[MAX_NAME_LEN];
-    char destTrashColl[MAX_NAME_LEN], myFile[MAX_NAME_LEN];
     char *trashPathPtr;
 
     trashPathPtr = trashPath;
@@ -587,18 +586,20 @@ rsMkTrashPath( rsComm_t *rsComm, char *objPath, char *trashPath ) {
                   rsComm->clientUser.userName, tmpStr );
     }
 
-    if ( ( status = splitPathByKey( trashPath, destTrashColl, MAX_NAME_LEN, myFile, MAX_NAME_LEN, '/' ) ) < 0 ) {
+    const ix::filesystem::path trash_p{trashPath};
+    if (trash_p.string_view().find('/') == std::string_view::npos) {
         rodsLog( LOG_ERROR,
-                 "rsMkTrashPath: splitPathByKey error for %s ", trashPath );
+                 "rsMkTrashPath: invalid trash path %s ", trashPath );
         return USER_INPUT_PATH_ERR;
     }
+    const auto dest_trash_coll = trash_p.parent_path();
 
-    status = rsMkCollR( rsComm, startTrashPath, destTrashColl );
+    status = rsMkCollR( rsComm, startTrashPath, dest_trash_coll.c_str() );
 
     if ( status < 0 ) {
         rodsLog( LOG_ERROR,
                  "rsMkTrashPath: rsMkCollR error for startPath %s, destPath %s ",
-                 startTrashPath, destTrashColl );
+                 startTrashPath, dest_trash_coll.c_str() );
     }
 
     return status;

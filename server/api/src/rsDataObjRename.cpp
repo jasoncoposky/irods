@@ -79,8 +79,6 @@ namespace
             return SYS_INTERNAL_NULL_INPUT_ERR;
         }
         int status;
-        char srcColl[MAX_NAME_LEN], srcObj[MAX_NAME_LEN];
-        char destColl[MAX_NAME_LEN], destObj[MAX_NAME_LEN];
         dataObjInp_t *srcDataObjInp, *destDataObjInp;
         rodsLong_t srcId, destId;
         int acPreProcFromRenameFlag = 0;
@@ -99,16 +97,22 @@ namespace
         auto destination_cond_input = irods::experimental::make_key_value_proxy(destDataObjInp->condInput);
 
         // Separate source collection/object names and destination collection/object names
-        if ( ( status = splitPathByKey(
-                        srcDataObjInp->objPath, srcColl, MAX_NAME_LEN, srcObj, MAX_NAME_LEN, '/' ) ) < 0 ) {
+        const fs::path src_path{srcDataObjInp->objPath};
+        const auto srcColl = src_path.parent_path_view();
+        const auto srcObj = src_path.object_name_view();
+        if (src_path.string_view().find('/') == std::string_view::npos) {
+            status = SYS_INVALID_FILE_PATH;
             log_api::error(
-                "{}: splitPathByKey for {} error, status = {}", __FUNCTION__, srcDataObjInp->objPath, status);
+                "{}: invalid source path {}, status = {}", __FUNCTION__, srcDataObjInp->objPath, status);
             return status;
         }
-        if ( ( status = splitPathByKey(
-                        destDataObjInp->objPath, destColl, MAX_NAME_LEN, destObj, MAX_NAME_LEN, '/' ) ) < 0 ) {
+        const fs::path dest_path{destDataObjInp->objPath};
+        const auto destColl = dest_path.parent_path_view();
+        const auto destObj = dest_path.object_name_view();
+        if (dest_path.string_view().find('/') == std::string_view::npos) {
+            status = SYS_INVALID_FILE_PATH;
             log_api::error(
-                "{}: splitPathByKey for {} error, status = {}", __FUNCTION__, destDataObjInp->objPath, status);
+                "{}: invalid destination path {}, status = {}", __FUNCTION__, destDataObjInp->objPath, status);
             return status;
         }
 
@@ -214,7 +218,7 @@ namespace
         }
 
         // If srcObj is different from destObj, this is a data obj rename...
-        if ( strcmp( srcObj, destObj ) != 0 ) {
+        if ( srcObj != destObj ) {
             if ( srcId < 0 ) {
                 status = srcId;
                 return status;
@@ -240,7 +244,8 @@ namespace
             }
             /**  June 1 2009 for pre-post processing rule hooks **/
 
-            status = chlRenameObject( rsComm, srcId, destObj );
+            const std::string dest_obj_str{destObj};
+            status = chlRenameObject( rsComm, srcId, dest_obj_str.c_str() );
         }
 
         if ( status < 0 ) {
@@ -248,8 +253,9 @@ namespace
         }
 
         // If srcColl is different from destColl, this is a collection rename...
-        if ( strcmp( srcColl, destColl ) != 0 ) {
-            status = isColl( rsComm, destColl, &destId );
+        if ( srcColl != destColl ) {
+            std::string dest_coll_str{destColl};
+            status = isColl( rsComm, dest_coll_str.data(), &destId );
             if (status < 0) {
                 log_api::error(
                     "{}: Destination collection does not exist [collection = {}, error_code = {}]",

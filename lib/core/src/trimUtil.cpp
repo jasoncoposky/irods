@@ -10,6 +10,7 @@
 #include "irods/trimUtil.h"
 #include "irods/rcGlobalExtern.h"
 #include "irods/irods_at_scope_exit.hpp"
+#include "irods/filesystem/path.hpp"
 
 rodsLong_t TotalSizeTrimmed = 0;
 int TotalTrimmed = 0;
@@ -107,13 +108,13 @@ trimDataObjUtil( rcComm_t *conn, char *srcPath,
         return status;
     }
     if ( status >= 0 && rodsArgs->verbose == True ) {
-        char myDir[MAX_NAME_LEN], myFile[MAX_NAME_LEN];
-        splitPathByKey( srcPath, myDir, MAX_NAME_LEN, myFile, MAX_NAME_LEN, '/' );
+        const irods::experimental::filesystem::path p{srcPath};
+        const auto myFile = p.object_name_view();
         if ( status > 0 ) {
-            printf( "%s - a copy trimmed\n", myFile );
+            printf( "%.*s - a copy trimmed\n", static_cast<int>(myFile.size()), myFile.data() );
         }
         else {
-            printf( "%s - No copy trimmed\n", myFile );
+            printf( "%.*s - No copy trimmed\n", static_cast<int>(myFile.size()), myFile.data() );
         }
     }
 

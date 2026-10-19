@@ -6,6 +6,7 @@
 #include "irods/chksumUtil.h"
 #include "irods/rcGlobalExtern.h"
 #include "irods/irods_at_scope_exit.hpp"
+#include "irods/filesystem/path.hpp"
 
 #include <sys/time.h>
 
@@ -116,13 +117,13 @@ int chksumDataObjUtil(rcComm_t* conn,
         return status;
     }
 
-    char myDir[MAX_NAME_LEN];
-    char myFile[MAX_NAME_LEN];
-    status = splitPathByKey(dataObjInp->objPath, myDir, MAX_NAME_LEN, myFile, MAX_NAME_LEN, '/');
+    const irods::experimental::filesystem::path p{dataObjInp->objPath};
+    const auto myFile = p.object_name_view();
+    status = (p.string_view().find('/') == std::string_view::npos) ? SYS_INVALID_FILE_PATH : 0;
 
     if (0 == status && rodsArgs->silent == False) {
         if (chksumStr) {
-            printf("    %s    %s\n", myFile, chksumStr);
+            printf("    %.*s    %s\n", static_cast<int>(myFile.size()), myFile.data(), chksumStr);
             free(chksumStr);
         }
 

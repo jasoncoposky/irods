@@ -5,12 +5,15 @@
 #include "irods/rodsLog.h"
 #include "irods/miscUtil.h"
 #include "irods/genquery2_builder.hpp"
+#include "irods/filesystem/path.hpp"
 #include "irods/rcGlobalExtern.h"
 #include "irods/rcMisc.h"
 
 #include <boost/filesystem/operations.hpp>
 #include <boost/filesystem/convenience.hpp>
 #include <fmt/format.h>
+
+#include <charconv>
 
 using namespace boost::filesystem;
 
@@ -118,84 +121,87 @@ int scanObjDir(rcComm_t* conn,
 
 int
 scanObjCol( rcComm_t *conn, rodsArguments_t *myRodsArgs, const char *inpPath ) {
-    int isColl, status;
-    genQueryInp_t genQueryInp1, genQueryInp2;
-    genQueryOut_t *genQueryOut1 = NULL, *genQueryOut2 = NULL;
-    char condStr1[MAX_NAME_LEN], condStr2[MAX_NAME_LEN];
-    char firstPart[MAX_NAME_LEN] = "";
+    namespace gq2 = irods::experimental::genquery2;
+    namespace ifs = irods::experimental::filesystem;
+    using gq2::builder::col;
 
-    /* check if inpPath is a file or a collection */
-    const char *lastPart = strrchr( inpPath, '/' ) + 1;
-    strncpy( firstPart, inpPath, strlen( inpPath ) - strlen( lastPart ) - 1 );
-    memset( &genQueryInp1, 0, sizeof( genQueryInp1 ) );
-    addInxIval( &genQueryInp1.selectInp, COL_COLL_ID, 1 );
-    genQueryInp1.maxRows = MAX_SQL_ROWS;
+    const ifs::path logical_path{inpPath ? inpPath : ""};
+    const auto firstPart = logical_path.parent_path_view();
+    const auto lastPart = logical_path.object_name_view();
 
-    snprintf( condStr1, MAX_NAME_LEN, "='%s'", firstPart );
-    addInxVal( &genQueryInp1.sqlCondInp, COL_COLL_NAME, condStr1 );
-    snprintf( condStr1, MAX_NAME_LEN, "='%s'", lastPart );
-    addInxVal( &genQueryInp1.sqlCondInp, COL_DATA_NAME, condStr1 );
+    const auto q1 = gq2::builder::select({"COLL_ID"})
+                        .where(col("COLL_NAME") == firstPart && col("DATA_NAME") == lastPart)
+                        .limit(1)
+                        .build();
 
-    status =  rcGenQuery( conn, &genQueryInp1, &genQueryOut1 );
-    if ( status == CAT_NO_ROWS_FOUND ) {
-        isColl = 1;
-    }
-    else {
-        isColl = 0;
-    }
+    nlohmann::json rows1;
+    const int status1 = gq2::try_execute(*conn, q1, rows1);
+    const bool isColl = (status1 == CAT_NO_ROWS_FOUND || (status1 == 0 && rows1.empty()));
 
-    /* for each files check if the physical file associated to it exists on the
-       physical resource */
-    memset( &genQueryInp2, 0, sizeof( genQueryInp2 ) );
-    addInxIval( &genQueryInp2.selectInp, COL_D_DATA_PATH, 1 );
-    addInxIval( &genQueryInp2.selectInp, COL_DATA_SIZE, 1 );
-    addInxIval( &genQueryInp2.selectInp, COL_R_LOC, 1 );
-    addInxIval( &genQueryInp2.selectInp, COL_R_ZONE_NAME, 1 );
-    addInxIval( &genQueryInp2.selectInp, COL_DATA_NAME, 1 );
-    addInxIval( &genQueryInp2.selectInp, COL_COLL_NAME, 1 );
-    addInxIval( &genQueryInp2.selectInp, COL_D_RESC_ID, 1 );
-    genQueryInp2.maxRows = MAX_SQL_ROWS;
+    auto cond2 = isColl
+        ? ((myRodsArgs && myRodsArgs->recursive == True)
+               ? col("COLL_NAME").like(fmt::format("{}%", inpPath))
+               : (col("COLL_NAME") == inpPath))
+        : (col("COLL_NAME") == firstPart && col("DATA_NAME") == lastPart);
 
-    if ( isColl ) {
-        if ( myRodsArgs->recursive == True ) {
-            snprintf( condStr2, MAX_NAME_LEN, "like '%s%s'", inpPath, "%" );
-        }
-        else {
-            snprintf( condStr2, MAX_NAME_LEN, "='%s'", inpPath );
-        }
-        addInxVal( &genQueryInp2.sqlCondInp, COL_COLL_NAME, condStr2 );
-    }
-    else {
-        snprintf( condStr2, MAX_NAME_LEN, "='%s'", firstPart );
-        addInxVal( &genQueryInp2.sqlCondInp, COL_COLL_NAME, condStr2 );
-        snprintf( condStr2, MAX_NAME_LEN, "='%s'", lastPart );
-        addInxVal( &genQueryInp2.sqlCondInp, COL_DATA_NAME, condStr2 );
-    }
+    const auto q2 = gq2::builder::select({"DATA_PATH",
+                                          "DATA_SIZE",
+                                          "RESC_LOC",
+                                          "RESC_ZONE_NAME",
+                                          "DATA_NAME",
+                                          "COLL_NAME",
+                                          "DATA_RESC_ID"})
+                        .where(std::move(cond2))
+                        .build();
 
-    /* check if the physical file corresponding to the iRODS object does exist */
-    status =  rcGenQuery( conn, &genQueryInp2, &genQueryOut2 );
-    if (0 == status) {
-        status = statPhysFile( conn, genQueryOut2 );
-    }
-    else {
+    nlohmann::json rows2;
+    const int status2 = gq2::try_execute(*conn, q2, rows2);
+    if (status2 < 0 || rows2.empty()) {
         printf( "Could not find the requested data object or collection in iRODS.\n" );
+        return (status2 < 0) ? status2 : CAT_NO_ROWS_FOUND;
     }
 
-    while ( (0 == status || getIrodsErrno(status) == UNIX_FILE_STAT_ERR)
-             && genQueryOut2->continueInx > 0)
-    {
-        genQueryInp2.continueInx = genQueryOut2->continueInx;
-        status = rcGenQuery( conn, &genQueryInp2, &genQueryOut2 );
-        if ( 0 == status ) {
-            status = statPhysFile( conn, genQueryOut2 );
+    int rcPriv = 0, rcStat = 0, rcOther = 0;
+
+    for (const auto& row : rows2) {
+        const auto& dataPath = row.at(0).get_ref<const std::string&>();
+        const auto& loc = row.at(2).get_ref<const std::string&>();
+        const auto& zone = row.at(3).get_ref<const std::string&>();
+        const auto& dataName = row.at(4).get_ref<const std::string&>();
+        const auto& collName = row.at(5).get_ref<const std::string&>();
+        const auto& rescID = row.at(6).get_ref<const std::string&>();
+
+        fileStatInp_t fileStatInp{};
+        rstrcpy( fileStatInp.addr.hostAddr, loc.c_str(), sizeof( fileStatInp.addr.hostAddr ) );
+        rstrcpy( fileStatInp.addr.zoneName, zone.c_str(), sizeof( fileStatInp.addr.zoneName ) );
+        rstrcpy( fileStatInp.fileName, dataPath.c_str(), sizeof( fileStatInp.fileName ) );
+        std::from_chars(rescID.data(), rescID.data() + rescID.size(), fileStatInp.rescId);
+        snprintf( fileStatInp.objPath, sizeof( fileStatInp.objPath ), "%s/%s", collName.c_str(), dataName.c_str() );
+
+        rodsStat_t *fileStatOut = nullptr;
+        const int status = rcFileStat( conn, &fileStatInp, &fileStatOut );
+        free( fileStatOut );
+        if ( SYS_NO_API_PRIV == status ) {
+            printf( "User must be a rodsadmin to scan iRODS data objects.\n" );
+            rcPriv = status;
+        }
+        else if ( status < 0 ) {
+            if (getIrodsErrno(status) == UNIX_FILE_STAT_ERR) {
+                printf( "Physical file %s on server %s is missing, corresponding to "
+                        "iRODS object %s/%s\n", dataPath.c_str(), loc.c_str(), collName.c_str(), dataName.c_str() );
+                rcStat = status;
+            }
+            else {
+                rcOther = status;
+            }
         }
     }
 
-    freeGenQueryOut( &genQueryOut1 );
-    freeGenQueryOut( &genQueryOut2 );
+    if (rcPriv != 0) { return rcPriv; }
+    if (rcStat != 0) { return rcStat; }
+    if (rcOther != 0) { return rcOther; }
 
-    return status;
-
+    return 0;
 }
 
 int

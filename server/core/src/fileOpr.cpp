@@ -190,18 +190,15 @@ mkDirForFilePath(
     const std::string&  filePath,
     const std::string&  hier,
     int                 mode ) {
-    int status;
-
-    char myDir[MAX_NAME_LEN], myFile[MAX_NAME_LEN];
-
-    if ( ( status = splitPathByKey( filePath.c_str(), myDir, MAX_NAME_LEN, myFile, MAX_NAME_LEN, '/' ) ) < 0 ) {
+    const irods::experimental::filesystem::path p{filePath};
+    if (p.string_view().find('/') == std::string_view::npos) {
         rodsLog( LOG_NOTICE,
-                 "mkDirForFilePath: splitPathByKey for %s error, status = %d",
-                 filePath.c_str(), status );
-        return status;
+                 "mkDirForFilePath: invalid path for %s, status = %d",
+                 filePath.c_str(), SYS_INVALID_FILE_PATH );
+        return SYS_INVALID_FILE_PATH;
     }
 
-    status = mkFileDirR( rsComm, startDirLen, myDir, hier, mode );
+    const int status = mkFileDirR( rsComm, startDirLen, p.parent_path().string(), hier, mode );
     if ( status < 0 ) {
         rodsLog( LOG_ERROR, "mkFileDirR failed in mkDirForFilePath with status %d", status );
     }

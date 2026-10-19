@@ -6,16 +6,21 @@
 #include "irods/miscUtil.h"
 #include "irods/scanUtil.h"
 #include "irods/checksum.h"
+#include "irods/genquery2_builder.hpp"
 #include "irods/rcGlobalExtern.h"
 
 #include <boost/filesystem/operations.hpp>
 #include <boost/filesystem/convenience.hpp>
+#include <fmt/format.h>
 
+#include <charconv>
 #include <cstring>
 #include <iostream>
 #include <string>
 
 namespace fs = boost::filesystem;
+namespace gq2 = irods::experimental::genquery2;
+using gq2::builder::col;
 
 int fsckObj(rcComm_t* conn,
             rodsArguments_t* myRodsArgs,
@@ -133,63 +138,82 @@ int chkObjConsistency(rcComm_t* conn,
         return 0;
     }
 
-    genQueryInp_t genQueryInp;
-    strategy(&genQueryInp, inpPath, argument_for_SetGenQueryInpFromPhysicalPath);
+    genQueryInp_t genQueryInp{};
+    if (strategy) {
+        strategy(&genQueryInp, inpPath, argument_for_SetGenQueryInpFromPhysicalPath);
+    }
 
-    genQueryOut_t* genQueryOut = nullptr;
-    int status = rcGenQuery(conn, &genQueryInp, &genQueryOut);
+    bool use_resc_hier = (myRodsArgs && myRodsArgs->resource);
+    for (int i = 0; i < genQueryInp.sqlCondInp.len; ++i) {
+        if (genQueryInp.sqlCondInp.inx[i] == COL_D_RESC_HIER) {
+            use_resc_hier = true;
+        }
+    }
+    clearGenQueryInp(&genQueryInp);
 
-    if (status == 0 && genQueryOut) {
-        const char* objName = genQueryOut->sqlResult[0].value;
-        const char* objPath = genQueryOut->sqlResult[1].value;
+    const std::string_view arg = argument_for_SetGenQueryInpFromPhysicalPath
+                                     ? argument_for_SetGenQueryInpFromPhysicalPath
+                                     : "";
+
+    auto cond = (col("DATA_PATH") == inpPath);
+    if (use_resc_hier) {
+        cond = std::move(cond) && (col("DATA_RESC_HIER") == arg);
+    }
+    else {
+        cond = std::move(cond) && (col("RESC_LOC").like(fmt::format("{}%", arg)) || col("RESC_LOC") == arg);
+    }
+
+    const auto q = gq2::builder::select({"DATA_NAME", "COLL_NAME", "DATA_SIZE", "DATA_CHECKSUM"})
+                       .where(std::move(cond))
+                       .build();
+
+    nlohmann::json rows;
+    int status = gq2::try_execute(*conn, q, rows);
+
+    if (status == 0 && !rows.empty()) {
+        const auto& row = rows.front();
+        const auto& objName = row.at(0).get_ref<const std::string&>();
+        const auto& objPath = row.at(1).get_ref<const std::string&>();
+        const auto& sizeStr = row.at(2).get_ref<const std::string&>();
+        const auto& objChksum = row.at(3).get_ref<const std::string&>();
 
         intmax_t objSize = 0;
-
-        try {
-            objSize = std::stoll(genQueryOut->sqlResult[2].value);
-        }
-        catch (const std::invalid_argument& e) {
-            std::cerr << "ERROR: could not parse object size into integer [exception => " << e.what() << ", path => " << inpPath << "].\n";
-            return SYS_INTERNAL_ERR;
-        }
-        catch (const std::out_of_range& e) {
-            std::cerr << "ERROR: could not parse object size into integer [exception => " << e.what() << ", path => " << inpPath << "].\n";
+        const auto [ptr, ec] = std::from_chars(sizeStr.data(), sizeStr.data() + sizeStr.size(), objSize);
+        if (ec != std::errc{}) {
+            std::cerr << "ERROR: could not parse object size into integer [size => " << sizeStr << ", path => " << inpPath << "].\n";
             return SYS_INTERNAL_ERR;
         }
 
-        const char* objChksum = genQueryOut->sqlResult[3].value;
         const intmax_t srcSize = fs::file_size(p);
 
         if (srcSize == objSize) {
             if (myRodsArgs->verifyChecksum == True) {
-                if (std::strcmp(objChksum, "") != 0) {
-                    status = verifyChksumLocFile(inpPath, objChksum, nullptr);
+                if (!objChksum.empty()) {
+                    status = verifyChksumLocFile(inpPath, objChksum.c_str(), nullptr);
                     if (status == USER_CHKSUM_MISMATCH) {
-                        std::printf("CORRUPTION: local file [%s] checksum not consistent with iRODS object [%s/%s] checksum.\n", inpPath, objPath, objName);
+                        std::printf("CORRUPTION: local file [%s] checksum not consistent with iRODS object [%s/%s] checksum.\n", inpPath, objPath.c_str(), objName.c_str());
                     }
                     else if (status != 0) {
-                        std::printf("ERROR chkObjConsistency: verifyChksumLocFile failed: status [%d] file [%s] objPath [%s] objName [%s] objChksum [%s]\n", status, inpPath, objPath, objName, objChksum);
+                        std::printf("ERROR chkObjConsistency: verifyChksumLocFile failed: status [%d] file [%s] objPath [%s] objName [%s] objChksum [%s]\n", status, inpPath, objPath.c_str(), objName.c_str(), objChksum.c_str());
                     }
                 }
                 else {
-                    std::printf("WARNING: checksum not available for iRODS object [%s/%s], no checksum comparison possible with local file [%s] .\n", objPath, objName, inpPath);
+                    std::printf("WARNING: checksum not available for iRODS object [%s/%s], no checksum comparison possible with local file [%s] .\n", objPath.c_str(), objName.c_str(), inpPath);
                 }
             }
         }
         else {
-            std::printf("CORRUPTION: local file [%s] size [%ji] not consistent with iRODS object [%s/%s] size [%ji].\n", inpPath, srcSize, objPath, objName, objSize);
+            std::printf("CORRUPTION: local file [%s] size [%ji] not consistent with iRODS object [%s/%s] size [%ji].\n", inpPath, srcSize, objPath.c_str(), objName.c_str(), objSize);
             status = SYS_INTERNAL_ERR;
         }
     }
-    else if (status == CAT_NO_ROWS_FOUND) {
+    else if (status == CAT_NO_ROWS_FOUND || (status == 0 && rows.empty())) {
+        status = CAT_NO_ROWS_FOUND;
         std::printf("WARNING: local file [%s] is not registered in iRODS.\n", inpPath);
     }
     else {
-        std::printf("ERROR chkObjConsistency: rcGenQuery failed: status [%d] genQueryOut [%p] file [%s]\n", status, genQueryOut, inpPath);
+        std::printf("ERROR chkObjConsistency: GenQuery2 failed: status [%d] file [%s]\n", status, inpPath);
     }
-
-    clearGenQueryInp(&genQueryInp);
-    freeGenQueryOut(&genQueryOut);
 
     return status;
 }

@@ -36,6 +36,7 @@
 #include "irods/rsModDataObjMeta.hpp"
 #include "irods/rsObjStat.hpp"
 #include "irods/vault_path_policy.hpp"
+#include "irods/filesystem/path.hpp"
 
 #include <fmt/format.h>
 
@@ -353,23 +354,19 @@ int
 setPathForRandomScheme( char *objPath, const char *vaultPath, char *userName,
                         char *outPath ) {
     int dir1, dir2;
-    char logicalCollName[MAX_NAME_LEN];
-    char logicalFileName[MAX_NAME_LEN];
-    int status;
 
     unsigned int myRandom = irods::getRandom<unsigned int>();
     dir1 = myRandom & 0xf;
     dir2 = ( myRandom >> 4 ) & 0xf;
 
-    status = splitPathByKey( objPath,
-                             logicalCollName, MAX_NAME_LEN, logicalFileName, MAX_NAME_LEN, '/' );
-
-    if ( status < 0 ) {
+    const irods::experimental::filesystem::path p{objPath ? objPath : ""};
+    if (!objPath || p.string_view().find('/') == std::string_view::npos) {
         rodsLog( LOG_ERROR,
-                 "setPathForRandomScheme: splitPathByKey error for %s, status = %d",
-                 outPath, status );
-        return status;
+                 "setPathForRandomScheme: invalid path for %s, status = %d",
+                 outPath, SYS_INVALID_FILE_PATH );
+        return SYS_INVALID_FILE_PATH;
     }
+    const auto logicalFileName = p.object_name_view();
 
     log_agent::debug("{}: Random scheme: style=[{}], suffix length=[{}]",
                      __func__,
@@ -381,12 +378,13 @@ setPathForRandomScheme( char *objPath, const char *vaultPath, char *userName,
             irods::generate_random_alphanumeric_string(static_cast<std::int16_t>(detail::random_scheme_suffix_length));
         std::snprintf(outPath,
                       MAX_NAME_LEN,
-                      "%s/%s/%d/%d/%s.%d.%s",
+                      "%s/%s/%d/%d/%.*s.%d.%s",
                       vaultPath,
                       userName,
                       dir1,
                       dir2,
-                      logicalFileName,
+                      static_cast<int>(logicalFileName.size()),
+                      logicalFileName.data(),
                       static_cast<unsigned int>(std::time(nullptr)),
                       rnd_str.c_str());
     }
@@ -406,12 +404,13 @@ setPathForRandomScheme( char *objPath, const char *vaultPath, char *userName,
     else {
         std::snprintf(outPath,
                       MAX_NAME_LEN,
-                      "%s/%s/%d/%d/%s.%d",
+                      "%s/%s/%d/%d/%.*s.%d",
                       vaultPath,
                       userName,
                       dir1,
                       dir2,
-                      logicalFileName,
+                      static_cast<int>(logicalFileName.size()),
+                      logicalFileName.data(),
                       static_cast<unsigned int>(std::time(nullptr)));
     }
 
@@ -1250,17 +1249,16 @@ rsMkOrphanPath( rsComm_t *rsComm, char *objPath, char *orphanPath ) {
     char *tmpStr;
     char *orphanPathPtr;
     int len = 0;
-    char parentColl[MAX_NAME_LEN], childName[MAX_NAME_LEN];
     collInp_t collCreateInp;
 
-    status = splitPathByKey( objPath, parentColl, MAX_NAME_LEN, childName, MAX_NAME_LEN, '/' );
-
-    if ( status < 0 ) {
+    const irods::experimental::filesystem::path p{objPath ? objPath : ""};
+    if (!objPath || p.string_view().find('/') == std::string_view::npos) {
         rodsLog( LOG_ERROR,
-                 "rsMkOrphanPath: splitPathByKey error for %s, status = %d",
-                 objPath, status );
-        return status;
+                 "rsMkOrphanPath: invalid path for %s, status = %d",
+                 objPath, SYS_INVALID_FILE_PATH );
+        return SYS_INVALID_FILE_PATH;
     }
+    const auto childName = p.object_name_view();
     orphanPathPtr = orphanPath;
     *orphanPathPtr = '/';
     orphanPathPtr++;
@@ -1294,8 +1292,8 @@ rsMkOrphanPath( rsComm_t *rsComm, char *objPath, char *orphanPath ) {
     }
     orphanPathPtr = orphanPath + strlen( orphanPath );
 
-    snprintf( orphanPathPtr, strlen( childName ) + 20, "/%s.%-u",
-              childName, irods::getRandom<unsigned int>() );
+    snprintf( orphanPathPtr, childName.size() + 20, "/%.*s.%-u",
+              static_cast<int>(childName.size()), childName.data(), irods::getRandom<unsigned int>() );
 
     return 0;
 }

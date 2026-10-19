@@ -12,6 +12,7 @@
 #include "irods/rcGlobalExtern.h"
 #include "irods/irods_virtual_path.hpp"
 #include "irods/collection_entry_validation.hpp"
+#include "irods/filesystem/path.hpp"
 
 #include <cstring>
 
@@ -248,7 +249,6 @@ cpCollUtil( rcComm_t *conn, char *srcColl, char *targColl,
             dataObjCopyInp_t *dataObjCopyInp, rodsRestart_t *rodsRestart ) {
     int status = 0;
     int savedStatus = 0;
-    char parPath[MAX_NAME_LEN], childPath[MAX_NAME_LEN];
     collHandle_t collHandle;
     collEnt_t collEnt;
     char srcChildPath[MAX_NAME_LEN], targChildPath[MAX_NAME_LEN];
@@ -352,16 +352,18 @@ cpCollUtil( rcComm_t *conn, char *srcColl, char *targColl,
             }
         }
         else if ( collEnt.objType == COLL_OBJ_T ) {
-            if ( ( status = splitPathByKey(
-                                collEnt.collName, parPath, MAX_NAME_LEN, childPath, MAX_NAME_LEN, separator[0] ) ) < 0 ) {
+            const irods::experimental::filesystem::path coll_p{collEnt.collName};
+            if (coll_p.string_view().find('/') == std::string_view::npos) {
+                status = SYS_INVALID_FILE_PATH;
                 rodsLogError( LOG_ERROR, status,
-                              "cpCollUtil:: splitPathByKey for %s error, status = %d",
+                              "cpCollUtil:: invalid collection path %s, status = %d",
                               collEnt.collName, status );
                 return status;
             }
+            const auto childPath = coll_p.object_name_view();
 
-            snprintf( targChildPath, MAX_NAME_LEN, "%s/%s",
-                      targColl, childPath );
+            snprintf( targChildPath, MAX_NAME_LEN, "%s/%.*s",
+                      targColl, static_cast<int>(childPath.size()), childPath.data() );
             mkCollR( conn, targColl, targChildPath );
 
             if ( rodsArgs->verbose == True ) {

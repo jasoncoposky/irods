@@ -144,9 +144,8 @@ namespace
         int destL1descInx = rsDataObjOpen(rsComm, &inp);
         if ( destL1descInx == CAT_UNKNOWN_COLLECTION ) {
             /* collection does not exist. make one */
-            char parColl[MAX_NAME_LEN], child[MAX_NAME_LEN];
-            splitPathByKey(inp.objPath, parColl, MAX_NAME_LEN, child, MAX_NAME_LEN, '/');
-            rsMkCollR( rsComm, "/", parColl );
+            const auto parColl = fs::path{inp.objPath}.parent_path();
+            rsMkCollR( rsComm, "/", parColl.c_str() );
             destL1descInx = rsDataObjOpen(rsComm, &inp);
         }
 
