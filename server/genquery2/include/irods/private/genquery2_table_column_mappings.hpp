@@ -165,6 +165,22 @@ namespace irods::experimental::genquery2
         {"DELAY_RULE_LOCK_HOST_PID", {"R_RULE_EXEC", "lock_host_pid"}},
         {"DELAY_RULE_LOCK_TIME", {"R_RULE_EXEC", "lock_ts"}},
 
+        {"RULE_EXEC_ID", {"R_RULE_EXEC", "rule_exec_id"}},
+        {"RULE_EXEC_NAME", {"R_RULE_EXEC", "rule_name"}},
+        {"RULE_EXEC_REI_FILE_PATH", {"R_RULE_EXEC", "rei_file_path"}},
+        {"RULE_EXEC_USER_NAME", {"R_RULE_EXEC", "user_name"}},
+        {"RULE_EXEC_ADDRESS", {"R_RULE_EXEC", "exe_address"}},
+        {"RULE_EXEC_TIME", {"R_RULE_EXEC", "exe_time"}},
+        {"RULE_EXEC_FREQUENCY", {"R_RULE_EXEC", "exe_frequency"}},
+        {"RULE_EXEC_PRIORITY", {"R_RULE_EXEC", "priority"}},
+        {"RULE_EXEC_ESTIMATED_EXE_TIME", {"R_RULE_EXEC", "estimated_exe_time"}},
+        {"RULE_EXEC_NOTIFICATION_ADDR", {"R_RULE_EXEC", "notification_addr"}},
+        {"RULE_EXEC_LAST_EXE_TIME", {"R_RULE_EXEC", "last_exe_time"}},
+        {"RULE_EXEC_STATUS", {"R_RULE_EXEC", "exe_status"}},
+        {"RULE_EXEC_LOCK_HOST", {"R_RULE_EXEC", "lock_host"}},
+        {"RULE_EXEC_LOCK_HOST_PID", {"R_RULE_EXEC", "lock_host_pid"}},
+        {"RULE_EXEC_LOCK_TIME", {"R_RULE_EXEC", "lock_ts"}},
+
         {"TOKEN_NAMESPACE", {"R_TOKN_MAIN", "token_namespace"}},
         {"TOKEN_ID", {"R_TOKN_MAIN", "token_id"}},
         {"TOKEN_NAME", {"R_TOKN_MAIN", "token_name"}},
@@ -172,24 +188,37 @@ namespace irods::experimental::genquery2
         {"TOKEN_VALUE2", {"R_TOKN_MAIN", "token_value2"}},
         {"TOKEN_VALUE3", {"R_TOKN_MAIN", "token_value3"}},
         {"TOKEN_COMMENT", {"R_TOKN_MAIN", "r_comment"}},
+        {"TOKEN_CREATE_TIME", {"R_TOKN_MAIN", "create_ts"}},
+        {"TOKEN_MODIFY_TIME", {"R_TOKN_MAIN", "modify_ts"}},
 
-        // Should quota information be handled by a set of specific queries?
-        // Why should GenQuery handle these?
-        // Perhaps we should offload special columns to specific queries? This keeps the
-        // parser's implementation simpler.
-        //{"QUOTA_USER_ID",           {"R_QUOTA_MAIN", "user_id"}},
-        //{"QUOTA_RESC_ID",           {"R_QUOTA_MAIN", "resc_id"}},
-        //{"QUOTA_LIMIT",             {"R_QUOTA_MAIN", "quota_limit"}},
-        //{"QUOTA_OVER",              {"R_QUOTA_MAIN", "quota_over"}},
-        //{"QUOTA_MODIFY_TIME",       {"R_QUOTA_MAIN", "modify_ts"}},
-        //{"QUOTA_USAGE_USER_ID",     {"R_QUOTA_USAGE", "user_id"}},
-        //{"QUOTA_USAGE_RESC_ID",     {"R_QUOTA_USAGE", "resc_id"}},
-        //{"QUOTA_USAGE",             {"R_QUOTA_USAGE", "quota_usage"}},
-        //{"QUOTA_USAGE_MODIFY_TIME", {"R_QUOTA_USAGE", "modify_ts"}},
-        //{"QUOTA_USER_NAME",         {"R_USER_MAIN", "user_name"}}, // special?
-        //{"QUOTA_USER_TYPE",         {"R_USER_MAIN", "user_type_name"}}, // special?
-        //{"QUOTA_USER_ZONE",         {"R_USER_MAIN", "zone_name"}}, // special?
-        //{"QUOTA_RESC_NAME",         {"R_RESC_MAIN", "resc_name"}}, // special?
+        {"SL_HOST_NAME", {"R_SERVER_LOAD", "host_name"}},
+        {"SL_RESC_NAME", {"R_SERVER_LOAD", "resc_name"}},
+        {"SL_CPU_USED", {"R_SERVER_LOAD", "cpu_used"}},
+        {"SL_MEM_USED", {"R_SERVER_LOAD", "mem_used"}},
+        {"SL_SWAP_USED", {"R_SERVER_LOAD", "swap_used"}},
+        {"SL_RUNQ_LOAD", {"R_SERVER_LOAD", "runq_load"}},
+        {"SL_DISK_SPACE", {"R_SERVER_LOAD", "disk_space"}},
+        {"SL_NET_INPUT", {"R_SERVER_LOAD", "net_input"}},
+        {"SL_NET_OUTPUT", {"R_SERVER_LOAD", "net_output"}},
+        {"SL_CREATE_TIME", {"R_SERVER_LOAD", "create_ts"}},
+
+        {"SLD_RESC_NAME", {"R_SERVER_LOAD_DIGEST", "resc_name"}},
+        {"SLD_LOAD_FACTOR", {"R_SERVER_LOAD_DIGEST", "load_factor"}},
+        {"SLD_CREATE_TIME", {"R_SERVER_LOAD_DIGEST", "create_ts"}},
+
+        {"QUOTA_USER_ID", {"R_QUOTA_MAIN", "user_id"}},
+        {"QUOTA_RESC_ID", {"R_QUOTA_MAIN", "resc_id"}},
+        {"QUOTA_LIMIT", {"R_QUOTA_MAIN", "quota_limit"}},
+        {"QUOTA_OVER", {"R_QUOTA_MAIN", "quota_over"}},
+        {"QUOTA_MODIFY_TIME", {"R_QUOTA_MAIN", "modify_ts"}},
+        {"QUOTA_USAGE_USER_ID", {"R_QUOTA_USAGE", "user_id"}},
+        {"QUOTA_USAGE_RESC_ID", {"R_QUOTA_USAGE", "resc_id"}},
+        {"QUOTA_USAGE", {"R_QUOTA_USAGE", "quota_usage"}},
+        {"QUOTA_USAGE_MODIFY_TIME", {"R_QUOTA_USAGE", "modify_ts"}},
+        {"QUOTA_USER_NAME", {"R_USER_MAIN", "user_name"}},
+        {"QUOTA_USER_TYPE", {"R_USER_MAIN", "user_type_name"}},
+        {"QUOTA_USER_ZONE", {"R_USER_MAIN", "zone_name"}},
+        {"QUOTA_RESC_NAME", {"R_RESC_MAIN", "resc_name"}},
 
         {"DATA_ACCESS_PERM_ID", {"R_OBJT_ACCESS", "access_type_id"}},
         {"DATA_ACCESS_TYPE", {"R_OBJT_ACCESS", "access_type_id"}},

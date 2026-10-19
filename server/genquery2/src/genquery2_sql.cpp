@@ -89,6 +89,9 @@ namespace
         "R_USER_SESSION_KEY",           // 17
         "R_ZONE_MAIN",                  // 18
         "R_QUOTA_MAIN",                 // 19
+        "R_QUOTA_USAGE",                // 20
+        "R_SERVER_LOAD",                // 21
+        "R_SERVER_LOAD_DIGEST",         // 22
     }); // table_names
     // clang-format on
 
@@ -133,9 +136,10 @@ namespace
         {to_index("R_USER_MAIN"), to_index("R_USER_PASSWORD")},             // R_USER_MAIN.user_id = R_USER_PASSWORD.user_id
         {to_index("R_USER_MAIN"), to_index("R_USER_SESSION_KEY")},          // R_USER_MAIN.user_id = R_USER_SESSION_KEY.user_id
 
-        // Handle R_USER_GROUP?
-        // Handle R_QUOTA_MAIN
-        // Handle R_QUOTA_USAGE
+        {to_index("R_QUOTA_MAIN"), to_index("R_USER_MAIN")},                // R_QUOTA_MAIN.user_id = R_USER_MAIN.user_id
+        {to_index("R_QUOTA_MAIN"), to_index("R_RESC_MAIN")},                // R_QUOTA_MAIN.resc_id = R_RESC_MAIN.resc_id
+        {to_index("R_QUOTA_USAGE"), to_index("R_USER_MAIN")},               // R_QUOTA_USAGE.user_id = R_USER_MAIN.user_id
+        {to_index("R_QUOTA_USAGE"), to_index("R_RESC_MAIN")},               // R_QUOTA_USAGE.resc_id = R_RESC_MAIN.resc_id
     }); // table_edges
     // clang-format on
 
@@ -168,6 +172,11 @@ namespace
         {"{}.user_id = {}.group_user_id", 17},
         {"{}.user_id = {}.user_id", 18},
         {"{}.user_id = {}.user_id", 19},
+
+        {"{}.user_id = {}.user_id", 20},
+        {"{}.resc_id = {}.resc_id", 21},
+        {"{}.user_id = {}.user_id", 22},
+        {"{}.resc_id = {}.resc_id", 23},
     }); // table_joins
     // clang-format on
 
@@ -264,16 +273,19 @@ namespace
         processed.emplace_back(_tables.front());
         log_gq::debug(fmt::format("processed = [{}]", fmt::join(processed, ", ")));
 
-        for (decltype(_tables.size()) i = 0; i < _tables.size() - 1; ++i) {
-            const auto& last = processed.back();
-
+        for (decltype(_tables.size()) i = 0; i < _tables.size() - 1 && !remaining.empty(); ++i) {
             for (auto iter = std::begin(remaining); iter != std::end(remaining);) {
-                if (auto j = get_table_join(last, *iter); !j.empty()) {
-                    inner_joins.push_back(std::move(j));
-                    processed.emplace_back(*iter);
-                    iter = remaining.erase(iter);
+                bool joined = false;
+                for (auto p_it = std::rbegin(processed); p_it != std::rend(processed); ++p_it) {
+                    if (auto j = get_table_join(*p_it, *iter); !j.empty()) {
+                        inner_joins.push_back(std::move(j));
+                        processed.emplace_back(*iter);
+                        iter = remaining.erase(iter);
+                        joined = true;
+                        break;
+                    }
                 }
-                else {
+                if (!joined) {
                     ++iter;
                 }
             }

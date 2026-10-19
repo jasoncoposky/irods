@@ -321,6 +321,37 @@ TEST_CASE("GenQuery2 SELECT with Explicit From Entity", "[genquery2][select]")
         REQUIRE(sql_resc_acl.find("proa.access_type_id >= ?") != std::string::npos);
         REQUIRE(params_resc_acl.size() == 3);
     }
+
+    SECTION("Select SLD_*, QUOTA_*, TOKEN_*_TIME, and RULE_EXEC_* columns")
+    {
+        auto sel_sld = gq2::builder::select({"SLD_RESC_NAME", "SLD_LOAD_FACTOR"})
+            .project(gq2::builder::max("SLD_CREATE_TIME"))
+            .build();
+        auto [sql_sld, params_sld] = gq2::to_sql(sel_sld, opts);
+        REQUIRE(sql_sld.find("R_SERVER_LOAD_DIGEST") != std::string::npos);
+        REQUIRE(sql_sld.find("load_factor") != std::string::npos);
+        REQUIRE(sql_sld.find("max(") != std::string::npos);
+        REQUIRE(params_sld.empty());
+
+        auto sel_quota = gq2::builder::select({"QUOTA_USER_NAME", "QUOTA_USER_ZONE", "QUOTA_RESC_NAME", "QUOTA_LIMIT", "QUOTA_OVER", "QUOTA_MODIFY_TIME"})
+            .where(col("QUOTA_USER_NAME") == "alice" && col("QUOTA_USER_ZONE") == "tempZone" && col("QUOTA_RESC_ID") != "0")
+            .build();
+        auto [sql_quota, params_quota] = gq2::to_sql(sel_quota, opts);
+        REQUIRE(sql_quota.find("R_USER_MAIN") != std::string::npos);
+        REQUIRE(sql_quota.find("R_QUOTA_MAIN") != std::string::npos);
+        REQUIRE(sql_quota.find("R_RESC_MAIN") != std::string::npos);
+        REQUIRE(sql_quota.find("quota_limit") != std::string::npos);
+        REQUIRE(params_quota.size() == 3);
+
+        auto sel_rule = gq2::builder::select({"RULE_EXEC_ID", "RULE_EXEC_NAME"})
+            .where(col("RULE_EXEC_NAME").like("%abc%"))
+            .build();
+        auto [sql_rule, params_rule] = gq2::to_sql(sel_rule, opts);
+        REQUIRE(sql_rule.find("R_RULE_EXEC") != std::string::npos);
+        REQUIRE(sql_rule.find("rule_exec_id") != std::string::npos);
+        REQUIRE(params_rule.size() == 1);
+        REQUIRE(params_rule[0] == "%abc%");
+    }
 }
 
 
