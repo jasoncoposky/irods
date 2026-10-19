@@ -114,5 +114,35 @@ TEST_CASE("GenQuery2 Fluent Builder API", "[genquery2][builder]")
         REQUIRE(sum_sel.from_entity == "DATA_OBJECT");
         REQUIRE(sum_sel.projections.size() == 1);
     }
+
+    SECTION("Serialize SELECT AST via to_query_string with quote escaping and grouping")
+    {
+        using gq2::builder::col;
+        using gq2::builder::group;
+
+        auto sel = gq2::builder::select({"DATA_ID", "DATA_SIZE"})
+            .where(col("COLL_NAME") == "/tempZone/home/user's_dir" &&
+                   col("DATA_NAME") == "file'1.txt" &&
+                   group(col("DATA_REPL_STATUS") == "1" || col("DATA_REPL_STATUS") == "0") &&
+                   col("META_DATA_ATTR_NAME").is_not_null())
+            .order_by("DATA_REPL_STATUS", false)
+            .order_by("DATA_MODIFY_TIME", false)
+            .limit("1")
+            .build();
+
+        REQUIRE(gq2::to_query_string(sel) ==
+                "select DATA_ID, DATA_SIZE where COLL_NAME = '/tempZone/home/user''s_dir' and "
+                "DATA_NAME = 'file''1.txt' and (DATA_REPL_STATUS = '1' or DATA_REPL_STATUS = '0') and "
+                "META_DATA_ATTR_NAME is not null order by DATA_REPL_STATUS desc, DATA_MODIFY_TIME desc "
+                "fetch first 1 rows only");
+
+        auto count_sel = gq2::builder::select(gq2::builder::count("DATA_ID"))
+            .where(col("COLL_NAME") == "/tempZone/home" || col("COLL_NAME").like("/tempZone/home/%"))
+            .build();
+
+        REQUIRE(gq2::to_query_string(count_sel) ==
+                "select count(DATA_ID) where COLL_NAME = '/tempZone/home' or COLL_NAME like '/tempZone/home/%'");
+    }
 }
+
 

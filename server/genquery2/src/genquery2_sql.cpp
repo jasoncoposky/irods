@@ -63,6 +63,7 @@ namespace
         bool add_joins_for_meta_user = false;
 
         bool add_sql_for_data_resc_hier = false;
+        bool add_joins_for_user_group = false;
         bool in_dml = false;
     }; // struct gq_state
 
@@ -663,6 +664,10 @@ namespace
             return "cte_drh";
         }
 
+        if (_column == "USER_GROUP_ID" || _column == "USER_GROUP_NAME") {
+            return "ug_grp";
+        }
+
         if (_column.starts_with("DATA_ACCESS_") && _column != "DATA_ACCESS_TIME") {
             constexpr auto prefix_length = std::char_traits<char>::length("DATA_ACCESS_");
             const auto tail = _column.substr(prefix_length);
@@ -1036,6 +1041,10 @@ namespace irods::experimental::genquery2
         else if (_column.name == "DATA_RESC_HIER") {
             add_r_resc_main = _state.add_sql_for_data_resc_hier = true;
             table_alias = "cte_drh";
+        }
+        else if (_column.name == "USER_GROUP_ID" || _column.name == "USER_GROUP_NAME") {
+            add_r_user_main = _state.add_joins_for_user_group = true;
+            table_alias = "ug_grp";
         }
         else {
             is_special_column = false;
@@ -1527,6 +1536,14 @@ namespace irods::experimental::genquery2
             if (state.add_sql_for_data_resc_hier) {
                 sql += fmt::format(
                     " inner join cte_drh on cte_drh.resc_id = {}.resc_id", state.table_aliases.at("R_RESC_MAIN"));
+            }
+
+            if (state.add_joins_for_user_group) {
+                sql += fmt::format(
+                    " inner join R_USER_GROUP ug_map on {}.user_id = ug_map.user_id"
+                    " inner join R_USER_MAIN ug_grp on ug_map.group_user_id = ug_grp.user_id"
+                    " and ug_grp.user_type_name = 'rodsgroup'",
+                    state.table_aliases.at("R_USER_MAIN"));
             }
 
             sql += generate_condition_clause(state, _opts, conds);

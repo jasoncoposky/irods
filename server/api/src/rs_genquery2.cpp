@@ -1,5 +1,6 @@
 #include "irods/rs_genquery2.hpp"
 
+#include "irods/genquery2_builder.hpp"
 #include "irods/private/genquery2_driver.hpp"
 #include "irods/private/genquery2_sql.hpp"
 #include "irods/private/genquery2_table_column_mappings.hpp"
@@ -183,3 +184,92 @@ auto rs_genquery2(RsComm* _comm, Genquery2Input* _input, char** _output) -> int
         return SYS_LIBRARY_ERROR;
     }
 } // rs_genquery2
+
+namespace irods::experimental::genquery2
+{
+    auto rs_genquery2(RsComm* _comm,
+                      const select& _select,
+                      const char* _zone,
+                      char** _output) -> int
+    {
+        if (!_comm || !_output) {
+            log_api::error("{}: Invalid input: received null pointer.", __func__);
+            return SYS_INTERNAL_NULL_INPUT_ERR;
+        }
+
+        *_output = nullptr;
+
+        rodsServerHost* host_info{};
+        const char* zone_ptr = (_zone && *_zone != '\0') ? _zone : nullptr;
+
+        try {
+            host_info = irods::experimental::catalog::redirect_to_catalog_provider(*_comm, zone_ptr);
+        }
+        catch (const irods::exception& e) {
+            log_api::error("{}: Catalog provider host resolution error: {}", __func__, e.client_display_what());
+            return e.code(); // NOLINT(bugprone-narrowing-conversions, cppcoreguidelines-narrowing-conversions)
+        }
+
+        if (zone_ptr) {
+            const std::string_view resolved_zone = static_cast<zoneInfo*>(host_info->zoneInfo)->zoneName;
+
+            if (resolved_zone != zone_ptr) {
+                log_api::error("{}: Could not find zone [{}].", __func__, zone_ptr);
+                return SYS_INVALID_ZONE_NAME;
+            }
+        }
+
+        if (host_info->localFlag != LOCAL_HOST) {
+            log_api::trace("{}: Redirecting AST request to server [{}].", __func__, host_info->hostName->name);
+            auto query_str = to_query_string(_select);
+            Genquery2Input input{};
+            input.query_string = query_str.data();
+            input.zone = const_cast<char*>(zone_ptr);
+            const auto ec = rc_genquery2(host_info->conn, &input, _output);
+            replErrorStack(host_info->conn->rError, &_comm->rError);
+            return ec;
+        }
+
+        try {
+            options opts;
+
+            {
+                const auto handle = irods::server_properties::instance().map();
+                const auto& config = handle.get_json();
+                const auto& db = config.at(nlohmann::json::json_pointer{"/plugin_configuration/database/technology"});
+                opts.database = db.get_ref<const std::string&>();
+            }
+
+            opts.user_name = _comm->clientUser.userName;
+            opts.user_zone = _comm->clientUser.rodsZone;
+            opts.admin_mode = irods::is_privileged_client(*_comm);
+            opts.default_number_of_rows = 256;
+
+            const auto [sql, values] = to_sql(_select, opts);
+
+            log_api::trace("{}: GenQuery2 AST SQL: [{}]", __func__, sql);
+
+            if (sql.empty()) {
+                log_api::error("{}: Could not generate SQL from GenQuery2 AST.", __func__);
+                addRErrorMsg(&_comm->rError, SYS_INVALID_INPUT_PARAM, "Could not generate SQL from GenQuery2 AST.");
+                return SYS_INVALID_INPUT_PARAM;
+            }
+
+            return chl_execute_genquery2_sql(*_comm, sql.c_str(), &values, _output);
+        }
+        catch (const irods::exception& e) {
+            log_api::error("{}: GenQuery2 error: {}", __func__, e.client_display_what());
+            return e.code(); // NOLINT(bugprone-narrowing-conversions, cppcoreguidelines-narrowing-conversions)
+        }
+        catch (const std::invalid_argument& e) {
+            log_api::error("{}: GenQuery2 error: {}", __func__, e.what());
+            addRErrorMsg(&_comm->rError, SYS_LIBRARY_ERROR, e.what());
+            return SYS_LIBRARY_ERROR;
+        }
+        catch (const std::exception& e) {
+            log_api::error("{}: GenQuery2 error: {}", __func__, e.what());
+            return SYS_LIBRARY_ERROR;
+        }
+    } // rs_genquery2
+} // namespace irods::experimental::genquery2
+

@@ -44,6 +44,7 @@ namespace irods::experimental::genquery2
         {"RESC_TYPE_NAME", {"R_RESC_MAIN", "resc_type_name"}},
         {"RESC_CLASS_NAME", {"R_RESC_MAIN", "resc_class_name"}},
         {"RESC_HOSTNAME", {"R_RESC_MAIN", "resc_net"}}, // Known as LOC in legacy GenQuery.
+        {"RESC_LOC", {"R_RESC_MAIN", "resc_net"}},
         {"RESC_VAULT_PATH", {"R_RESC_MAIN", "resc_def_path"}},
         {"RESC_FREE_SPACE", {"R_RESC_MAIN", "free_space"}},
         {"RESC_FREE_SPACE_TIME", {"R_RESC_MAIN", "free_space_ts"}},
@@ -56,6 +57,7 @@ namespace irods::experimental::genquery2
         {"RESC_CHILDREN", {"R_RESC_MAIN", "resc_children"}},
         {"RESC_CONTEXT", {"R_RESC_MAIN", "resc_context"}},
         {"RESC_PARENT_ID", {"R_RESC_MAIN", "resc_parent"}},
+        {"RESC_PARENT", {"R_RESC_MAIN", "resc_parent"}},
         {"RESC_PARENT_CONTEXT", {"R_RESC_MAIN", "resc_parent_context"}},
 
         {"DATA_ID", {"R_DATA_MAIN", "data_id"}},
@@ -65,9 +67,10 @@ namespace irods::experimental::genquery2
         {"DATA_VERSION", {"R_DATA_MAIN", "data_version"}},
         {"DATA_TYPE_NAME", {"R_DATA_MAIN", "data_type_name"}},
         {"DATA_SIZE", {"R_DATA_MAIN", "data_size"}},
+        {"DATA_RESC_NAME", {"R_RESC_MAIN", "resc_name"}},
         {"DATA_PATH", {"R_DATA_MAIN", "data_path"}},
-        //{"DATA_OWNER_NAME",     {"R_DATA_MAIN", "data_owner_name"}}, // Misleading. Use DATA_ACCESS_USER_NAME.
-        //{"DATA_OWNER_ZONE",     {"R_DATA_MAIN", "data_owner_zone"}}, // Misleading. Use DATA_ACCESS_USER_ZONE.
+        {"DATA_OWNER_NAME", {"R_DATA_MAIN", "data_owner_name"}},
+        {"DATA_OWNER_ZONE", {"R_DATA_MAIN", "data_owner_zone"}},
         {"DATA_REPL_STATUS", {"R_DATA_MAIN", "data_is_dirty"}},
         {"DATA_STATUS", {"R_DATA_MAIN", "data_status"}},
         {"DATA_CHECKSUM", {"R_DATA_MAIN", "data_checksum"}},
@@ -91,8 +94,8 @@ namespace irods::experimental::genquery2
         {"COLL_ID", {"R_COLL_MAIN", "coll_id"}},
         {"COLL_NAME", {"R_COLL_MAIN", "coll_name"}},
         {"COLL_PARENT_NAME", {"R_COLL_MAIN", "parent_coll_name"}},
-        //{"COLL_OWNER_NAME",  {"R_COLL_MAIN", "coll_owner_name"}}, // Misleading. Use COLL_ACCESS_USER_NAME.
-        //{"COLL_OWNER_ZONE",  {"R_COLL_MAIN", "coll_owner_zone"}}, // Misleading. Use COLL_ACCESS_USER_ZONE.
+        {"COLL_OWNER_NAME", {"R_COLL_MAIN", "coll_owner_name"}},
+        {"COLL_OWNER_ZONE", {"R_COLL_MAIN", "coll_owner_zone"}},
         {"COLL_MAP_ID", {"R_COLL_MAIN", "coll_map_id"}},
         {"COLL_INHERITANCE", {"R_COLL_MAIN", "coll_inheritance"}},
         {"COLL_COMMENTS", {"R_COLL_MAIN", "r_comment"}},
@@ -141,11 +144,10 @@ namespace irods::experimental::genquery2
         {"META_USER_ATTACHED_CREATE_TIME", {"R_OBJT_METAMAP", "create_ts"}},
         {"META_USER_ATTACHED_MODIFY_TIME", {"R_OBJT_METAMAP", "modify_ts"}},
 
-        // These columns require a bit of work.
-        // How should we handle groups?
-        // Is it okay to require multiple calls to GenQuery to resolve IDs to names?
         {"GROUP_ID", {"R_USER_GROUP", "group_user_id"}},
         {"GROUP_MEMBER_ID", {"R_USER_GROUP", "user_id"}},
+        {"USER_GROUP_ID", {"R_USER_MAIN", "user_id"}},
+        {"USER_GROUP_NAME", {"R_USER_MAIN", "user_name"}},
 
         {"DELAY_RULE_ID", {"R_RULE_EXEC", "rule_exec_id"}},
         {"DELAY_RULE_NAME", {"R_RULE_EXEC", "rule_name"}},

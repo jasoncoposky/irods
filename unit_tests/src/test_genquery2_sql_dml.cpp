@@ -255,6 +255,48 @@ TEST_CASE("GenQuery2 SELECT with Explicit From Entity", "[genquery2][select]")
         REQUIRE(params.size() == 1);
         REQUIRE(params[0] == "10001");
     }
+
+    SECTION("Select USER_GROUP_NAME and USER_GROUP_ID joins R_USER_GROUP and R_USER_MAIN")
+    {
+        auto sel = gq2::builder::select({"USER_GROUP_NAME", "USER_GROUP_ID"})
+            .where(col("USER_NAME") == "alice" && col("USER_ZONE") == "tempZone")
+            .build();
+
+        auto [sql, params] = gq2::to_sql(sel, opts);
+        REQUIRE(sql.find("ug_grp.user_name") != std::string::npos);
+        REQUIRE(sql.find("ug_grp.user_id") != std::string::npos);
+        REQUIRE(sql.find("inner join R_USER_GROUP ug_map on") != std::string::npos);
+        REQUIRE(sql.find("inner join R_USER_MAIN ug_grp on ug_map.group_user_id = ug_grp.user_id and ug_grp.user_type_name = 'rodsgroup'") != std::string::npos);
+        REQUIRE(params.size() == 2);
+        REQUIRE(params[0] == "alice");
+        REQUIRE(params[1] == "tempZone");
+    }
+
+    SECTION("Select newly mapped columns DATA_RESC_NAME, DATA_OWNER_NAME, RESC_LOC, RESC_PARENT")
+    {
+        auto sel_data = gq2::builder::select({"DATA_ID", "DATA_RESC_NAME", "DATA_OWNER_NAME", "DATA_OWNER_ZONE", "COLL_OWNER_NAME", "COLL_OWNER_ZONE"})
+            .where(col("COLL_NAME") == "/tempZone/home/alice")
+            .build();
+
+        auto [sql_data, params_data] = gq2::to_sql(sel_data, opts);
+        REQUIRE(sql_data.find("resc_name") != std::string::npos);
+        REQUIRE(sql_data.find("data_owner_name") != std::string::npos);
+        REQUIRE(sql_data.find("data_owner_zone") != std::string::npos);
+        REQUIRE(sql_data.find("coll_owner_name") != std::string::npos);
+        REQUIRE(sql_data.find("coll_owner_zone") != std::string::npos);
+        REQUIRE(params_data.size() == 1);
+        REQUIRE(params_data[0] == "/tempZone/home/alice");
+
+        auto sel_resc = gq2::builder::select({"RESC_ID", "RESC_LOC", "RESC_PARENT"})
+            .where(col("RESC_NAME") == "demoResc")
+            .build();
+
+        auto [sql_resc, params_resc] = gq2::to_sql(sel_resc, opts);
+        REQUIRE(sql_resc.find("resc_net") != std::string::npos);
+        REQUIRE(sql_resc.find("resc_parent") != std::string::npos);
+        REQUIRE(params_resc.size() == 1);
+        REQUIRE(params_resc[0] == "demoResc");
+    }
 }
 
 

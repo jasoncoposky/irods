@@ -85,4 +85,17 @@ struct RsComm;
 /// \since 4.3.2
 int rs_genquery2(RsComm* _comm, Genquery2Input* _input, char** _output);
 
+namespace irods::experimental::genquery2
+{
+    struct select;
+
+    /// Executes a pre-built GenQuery2 \p select AST directly on the catalog provider without
+    /// string serialization or Bison/Flex parsing (falling back to wire serialization only
+    /// when redirecting to a remote catalog service provider or federated zone).
+    int rs_genquery2(RsComm* _comm,
+                     const select& _select,
+                     const char* _zone,
+                     char** _output);
+} // namespace irods::experimental::genquery2
+
 #endif // IRODS_RS_GENQUERY2_HPP
