@@ -412,6 +412,53 @@ namespace irods::experimental::genquery2
                 return condition{make_col(), condition_in{std::move(_values)}};
             }
 
+            /// Builds an `IN (...)` predicate containing all ancestor collection prefixes of \p _path
+            /// (including `"/"` and \p _path itself), matching legacy GenQuery1 `parent_of` semantics.
+            auto parent_of(std::string_view _path) const -> condition_builder
+            {
+                std::vector<std::string> prefixes;
+                if (_path.empty()) {
+                    prefixes.emplace_back();
+                    return in(std::move(prefixes));
+                }
+
+                std::string current;
+                current.reserve(_path.size());
+
+                std::size_t pos = 0;
+                if (_path.front() == '/') {
+                    prefixes.emplace_back("/");
+                    while (pos < _path.size() && _path[pos] == '/') {
+                        ++pos;
+                    }
+                }
+
+                while (pos < _path.size()) {
+                    const auto next_sep = _path.find('/', pos);
+                    const auto segment = (next_sep == std::string_view::npos)
+                        ? _path.substr(pos)
+                        : _path.substr(pos, next_sep - pos);
+
+                    if (!segment.empty()) {
+                        if (_path.front() == '/' || !current.empty()) {
+                            current.push_back('/');
+                        }
+                        current.append(segment);
+                        prefixes.push_back(current);
+                    }
+
+                    if (next_sep == std::string_view::npos) {
+                        break;
+                    }
+                    pos = next_sep + 1;
+                    while (pos < _path.size() && _path[pos] == '/') {
+                        ++pos;
+                    }
+                }
+
+                return in(std::move(prefixes));
+            }
+
             auto between(std::string_view _low, std::string_view _high) const -> condition_builder
             {
                 return condition{make_col(), condition_between{std::string{_low}, std::string{_high}}};
@@ -698,6 +745,12 @@ namespace irods::experimental::genquery2
 #  include "irods/irods_at_scope_exit.hpp"
 #  include "irods/irods_exception.hpp"
 #  include "irods/rodsErrorTable.h"
+#  if __has_include("irods/rodsGenQuery.h")
+#    include "irods/rodsGenQuery.h"
+#  endif
+#  include <algorithm>
+#  include <cstring>
+#  include <initializer_list>
 #  include <nlohmann/json.hpp>
 
 struct RcComm;
@@ -705,6 +758,80 @@ struct RsComm;
 
 namespace irods::experimental::genquery2
 {
+#  if __has_include("irods/rodsGenQuery.h")
+    /// Populates a legacy `GenQueryOut*` C structure from a GenQuery2 JSON row array and a list of
+    /// `COL_*` attribute indices. Returns `CAT_NO_ROWS_FOUND` when \p _rows is empty.
+    inline auto rows_to_genquery_out(const nlohmann::json& _rows,
+                                     std::initializer_list<int> _col_indices,
+                                     GenQueryOut** _out,
+                                     int _continue_inx = 0) -> int
+    {
+        if (!_out) {
+            return USER__NULL_INPUT_ERR;
+        }
+
+        if (*_out) {
+            for (int i = 0; i < (*_out)->attriCnt; ++i) {
+                std::free((*_out)->sqlResult[i].value);
+            }
+            std::free(*_out);
+            *_out = nullptr;
+        }
+
+        if (!_rows.is_array() || _rows.empty()) {
+            return CAT_NO_ROWS_FOUND;
+        }
+
+        const auto num_cols = _col_indices.size();
+        if (num_cols > MAX_SQL_ATTR) {
+            return SYS_INVALID_INPUT_PARAM;
+        }
+
+        auto* res = static_cast<GenQueryOut*>(std::calloc(1, sizeof(GenQueryOut)));
+        if (!res) {
+            return SYS_MALLOC_ERR;
+        }
+
+        res->rowCnt = static_cast<int>(_rows.size());
+        res->attriCnt = static_cast<int>(num_cols);
+        res->continueInx = _continue_inx;
+        res->totalRowCount = res->rowCnt;
+
+        std::size_t col_idx = 0;
+        for (const int attri_inx : _col_indices) {
+            std::size_t max_len = 1;
+            for (const auto& row : _rows) {
+                if (col_idx < row.size() && row[col_idx].is_string()) {
+                    const auto& s = row[col_idx].get_ref<const std::string&>();
+                    max_len = std::max(max_len, s.size() + 1);
+                }
+            }
+
+            res->sqlResult[col_idx].attriInx = attri_inx;
+            res->sqlResult[col_idx].len = static_cast<int>(max_len);
+            res->sqlResult[col_idx].value = static_cast<char*>(std::calloc(_rows.size(), max_len));
+            if (!res->sqlResult[col_idx].value) {
+                for (std::size_t j = 0; j < col_idx; ++j) {
+                    std::free(res->sqlResult[j].value);
+                }
+                std::free(res);
+                return SYS_MALLOC_ERR;
+            }
+
+            for (std::size_t r = 0; r < _rows.size(); ++r) {
+                if (col_idx < _rows[r].size() && _rows[r][col_idx].is_string()) {
+                    const auto& s = _rows[r][col_idx].get_ref<const std::string&>();
+                    std::memcpy(&res->sqlResult[col_idx].value[r * max_len], s.data(), s.size());
+                }
+            }
+
+            ++col_idx;
+        }
+
+        *_out = res;
+        return 0;
+    }
+#  endif
     int rs_genquery2(RsComm* _comm,
                      const select& _select,
                      const char* _zone,

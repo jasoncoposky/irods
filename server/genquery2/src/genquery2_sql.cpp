@@ -94,6 +94,14 @@ namespace
         "R_SERVER_LOAD",                // 21
         "R_SERVER_LOAD_DIGEST",         // 22
         "R_USER_CREDENTIALS",           // 23
+        "R_RULE_MAIN",                  // 24
+        "R_RULE_BASE_MAP",              // 25
+        "R_RULE_DVM",                   // 26
+        "R_RULE_DVM_MAP",               // 27
+        "R_RULE_FNM",                   // 28
+        "R_RULE_FNM_MAP",               // 29
+        "R_MICROSRVC_MAIN",             // 30
+        "R_MICROSRVC_VER",              // 31
     }); // table_names
     // clang-format on
 
@@ -143,6 +151,11 @@ namespace
         {to_index("R_QUOTA_MAIN"), to_index("R_RESC_MAIN")},                // R_QUOTA_MAIN.resc_id = R_RESC_MAIN.resc_id
         {to_index("R_QUOTA_USAGE"), to_index("R_USER_MAIN")},               // R_QUOTA_USAGE.user_id = R_USER_MAIN.user_id
         {to_index("R_QUOTA_USAGE"), to_index("R_RESC_MAIN")},               // R_QUOTA_USAGE.resc_id = R_RESC_MAIN.resc_id
+
+        {to_index("R_RULE_BASE_MAP"), to_index("R_RULE_MAIN")},             // R_RULE_BASE_MAP.rule_id = R_RULE_MAIN.rule_id
+        {to_index("R_RULE_DVM_MAP"), to_index("R_RULE_DVM")},               // R_RULE_DVM_MAP.dvm_id = R_RULE_DVM.dvm_id
+        {to_index("R_RULE_FNM_MAP"), to_index("R_RULE_FNM")},               // R_RULE_FNM_MAP.fnm_id = R_RULE_FNM.fnm_id
+        {to_index("R_MICROSRVC_MAIN"), to_index("R_MICROSRVC_VER")},        // R_MICROSRVC_MAIN.msrvc_id = R_MICROSRVC_VER.msrvc_id
     }); // table_edges
     // clang-format on
 
@@ -181,6 +194,11 @@ namespace
         {"{}.resc_id = {}.resc_id", 22},
         {"{}.user_id = {}.user_id", 23},
         {"{}.resc_id = {}.resc_id", 24},
+
+        {"{}.rule_id = {}.rule_id", 25},
+        {"{}.dvm_id = {}.dvm_id", 26},
+        {"{}.fnm_id = {}.fnm_id", 27},
+        {"{}.msrvc_id = {}.msrvc_id", 28},
     }); // table_joins
     // clang-format on
 

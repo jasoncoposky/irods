@@ -440,6 +440,72 @@ TEST_CASE("GenQuery2 SELECT with Explicit From Entity", "[genquery2][select]")
         auto [sql_sess_denied, _2] = gq2::to_sql(sel_sess, non_admin_opts);
         REQUIRE(sql_sess_denied.empty());
     }
+
+    SECTION("Select RULE_*, DVM_*, FNM_*, MSRVC_* columns and col::parent_of")
+    {
+        auto sel_rules = gq2::builder::select({
+                "RULE_BASE_MAP_BASE_NAME", "RULE_NAME", "RULE_EVENT",
+                "RULE_CONDITION", "RULE_BODY", "RULE_RECOVERY", "RULE_ID"
+            })
+            .where(col("RULE_BASE_MAP_BASE_NAME") == "core" && col("RULE_BASE_MAP_VERSION") == "0")
+            .order_by("RULE_BASE_MAP_PRIORITY", true)
+            .build();
+
+        auto [sql_rules, params_rules] = gq2::to_sql(sel_rules, opts);
+        REQUIRE(sql_rules.find("R_RULE_BASE_MAP") != std::string::npos);
+        REQUIRE(sql_rules.find("R_RULE_MAIN") != std::string::npos);
+        REQUIRE(sql_rules.find("rule_id") != std::string::npos);
+        REQUIRE(params_rules.size() == 2);
+
+        auto sel_dvm = gq2::builder::select({"DVM_EXT_VAR_NAME", "DVM_CONDITION", "DVM_INT_MAP_PATH", "DVM_ID"})
+            .where(col("DVM_BASE_MAP_BASE_NAME") == "core" && col("DVM_BASE_MAP_VERSION") == "0")
+            .order_by("DVM_ID", true)
+            .build();
+
+        auto [sql_dvm, params_dvm] = gq2::to_sql(sel_dvm, opts);
+        REQUIRE(sql_dvm.find("R_RULE_DVM_MAP") != std::string::npos);
+        REQUIRE(sql_dvm.find("R_RULE_DVM") != std::string::npos);
+        REQUIRE(params_dvm.size() == 2);
+
+        auto sel_fnm = gq2::builder::select({"FNM_EXT_FUNC_NAME", "FNM_INT_FUNC_NAME", "FNM_ID"})
+            .where(col("FNM_BASE_MAP_BASE_NAME") == "core" && col("FNM_BASE_MAP_VERSION") == "0")
+            .order_by("FNM_ID", true)
+            .build();
+
+        auto [sql_fnm, params_fnm] = gq2::to_sql(sel_fnm, opts);
+        REQUIRE(sql_fnm.find("R_RULE_FNM_MAP") != std::string::npos);
+        REQUIRE(sql_fnm.find("R_RULE_FNM") != std::string::npos);
+        REQUIRE(params_fnm.size() == 2);
+
+        auto sel_msrvc = gq2::builder::select({
+                "MSRVC_MODULE_NAME", "MSRVC_NAME", "MSRVC_SIGNATURE", "MSRVC_VERSION",
+                "MSRVC_HOST", "MSRVC_LOCATION", "MSRVC_LANGUAGE", "MSRVC_TYPE_NAME",
+                "MSRVC_STATUS", "MSRVC_ID"
+            })
+            .where(col("MSRVC_STATUS") == "1")
+            .order_by("MSRVC_ID", true)
+            .build();
+
+        auto [sql_msrvc, params_msrvc] = gq2::to_sql(sel_msrvc, opts);
+        REQUIRE(sql_msrvc.find("R_MICROSRVC_MAIN") != std::string::npos);
+        REQUIRE(sql_msrvc.find("R_MICROSRVC_VER") != std::string::npos);
+        REQUIRE(params_msrvc.size() == 1);
+
+        auto sel_spec = gq2::builder::select({"COLL_ID", "COLL_NAME", "COLL_TYPE"})
+            .where(col("COLL_NAME").parent_of("/tempZone/home/rods/mount/sub") && col("COLL_TYPE").like("_%"))
+            .build();
+
+        auto [sql_spec, params_spec] = gq2::to_sql(sel_spec, opts);
+        REQUIRE(sql_spec.find("in (?, ?, ?, ?, ?, ?)") != std::string::npos);
+        REQUIRE(params_spec.size() == 7);
+        REQUIRE(params_spec[0] == "/");
+        REQUIRE(params_spec[1] == "/tempZone");
+        REQUIRE(params_spec[2] == "/tempZone/home");
+        REQUIRE(params_spec[3] == "/tempZone/home/rods");
+        REQUIRE(params_spec[4] == "/tempZone/home/rods/mount");
+        REQUIRE(params_spec[5] == "/tempZone/home/rods/mount/sub");
+        REQUIRE(params_spec[6] == "_%");
+    }
 }
 
 

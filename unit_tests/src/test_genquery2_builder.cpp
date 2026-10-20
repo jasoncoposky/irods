@@ -143,6 +143,19 @@ TEST_CASE("GenQuery2 Fluent Builder API", "[genquery2][builder]")
         REQUIRE(gq2::to_query_string(count_sel) ==
                 "select count(DATA_ID) where COLL_NAME = '/tempZone/home' or COLL_NAME like '/tempZone/home/%'");
     }
+
+    SECTION("Build parent_of ancestor path IN predicate")
+    {
+        using gq2::builder::col;
+
+        auto sel = gq2::builder::select({"COLL_ID", "COLL_NAME"})
+            .where(col("COLL_NAME").parent_of("/tempZone/home/alice/sub") && col("COLL_TYPE").like("_%"))
+            .build();
+
+        REQUIRE(gq2::to_query_string(sel) ==
+                "select COLL_ID, COLL_NAME where COLL_NAME in ('/', '/tempZone', '/tempZone/home', "
+                "'/tempZone/home/alice', '/tempZone/home/alice/sub') and COLL_TYPE like '_%'");
+    }
 }
 
 
