@@ -24,6 +24,8 @@
 #include "irods/irods_resource_backport.hpp"
 #include "irods/irods_stacktrace.hpp"
 #include "irods/key_value_proxy.hpp"
+#include "irods/genquery2_builder.hpp"
+#include "irods/rs_genquery2.hpp"
 
 #include <fmt/format.h>
 
@@ -64,37 +66,46 @@ namespace
  */
 int
 querySpecColl( rsComm_t *rsComm, const char *objPath, genQueryOut_t **genQueryOut ) {
-    genQueryInp_t genQueryInp;
-    int status;
-    char condStr[MAX_NAME_LEN];
+    if ( !rsComm || !objPath || !genQueryOut ) {
+        return USER__NULL_INPUT_ERR;
+    }
 
     if ( HaveFailedSpecCollPath && strcmp( objPath, FailedSpecCollPath ) == 0 ) {
         return CAT_NO_ROWS_FOUND;
     }
 
-    /* see if objPath is in the path of a spec collection */
-    memset( &genQueryInp, 0, sizeof( genQueryInp ) );
+    namespace gq2 = irods::experimental::genquery2;
+    using gq2::builder::col;
 
-    snprintf( condStr, MAX_NAME_LEN, "parent_of '%s'", objPath );
-    addInxVal( &genQueryInp.sqlCondInp, COL_COLL_NAME, condStr );
-    rstrcpy( condStr, "like '_%'", MAX_NAME_LEN );
-    addInxVal( &genQueryInp.sqlCondInp, COL_COLL_TYPE, condStr );
+    const auto q = gq2::builder::select({"COLL_ID",
+                                         "COLL_NAME",
+                                         "COLL_OWNER_NAME",
+                                         "COLL_OWNER_ZONE",
+                                         "COLL_CREATE_TIME",
+                                         "COLL_MODIFY_TIME",
+                                         "COLL_TYPE",
+                                         "COLL_INFO1",
+                                         "COLL_INFO2"})
+                       .where(col("COLL_NAME").parent_of(objPath) && col("COLL_TYPE").like("_%"))
+                       .limit(MAX_SQL_ROWS)
+                       .build();
 
-    addInxIval( &genQueryInp.selectInp, COL_COLL_ID, 1 );
-    addInxIval( &genQueryInp.selectInp, COL_COLL_NAME, 1 );
-    addInxIval( &genQueryInp.selectInp, COL_COLL_OWNER_NAME, 1 );
-    addInxIval( &genQueryInp.selectInp, COL_COLL_OWNER_ZONE, 1 );
-    addInxIval( &genQueryInp.selectInp, COL_COLL_CREATE_TIME, 1 );
-    addInxIval( &genQueryInp.selectInp, COL_COLL_MODIFY_TIME, 1 );
-    addInxIval( &genQueryInp.selectInp, COL_COLL_TYPE, 1 );
-    addInxIval( &genQueryInp.selectInp, COL_COLL_INFO1, 1 );
-    addInxIval( &genQueryInp.selectInp, COL_COLL_INFO2, 1 );
-
-    genQueryInp.maxRows = MAX_SQL_ROWS;
-
-    status =  rsGenQuery( rsComm, &genQueryInp, genQueryOut );
-
-    clearGenQueryInp( &genQueryInp );
+    nlohmann::json rows;
+    int status = gq2::try_execute( *rsComm, q, rows );
+    if ( status >= 0 ) {
+        status = gq2::rows_to_genquery_out(
+            rows,
+            {COL_COLL_ID,
+             COL_COLL_NAME,
+             COL_COLL_OWNER_NAME,
+             COL_COLL_OWNER_ZONE,
+             COL_COLL_CREATE_TIME,
+             COL_COLL_MODIFY_TIME,
+             COL_COLL_TYPE,
+             COL_COLL_INFO1,
+             COL_COLL_INFO2},
+            genQueryOut );
+    }
 
     if ( status < 0 ) {
         rstrcpy( FailedSpecCollPath, objPath, MAX_NAME_LEN );

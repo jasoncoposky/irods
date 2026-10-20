@@ -190,10 +190,50 @@ rsQueryDataObjInCollReCur( rsComm_t *rsComm, char *collection,
                 status );
             /* remove the level 0 error msg added by the specific-query failure */
             freeRErrorContent( &rsComm->rError );
-            /* fall back to the general-query call which used before this
-               specific-query was added (post 3.3.1) */
-            genQueryInp->maxRows = MAX_SQL_ROWS;
-            status = rsGenQuery( rsComm, genQueryInp, genQueryOut );
+
+            namespace gq2 = irods::experimental::genquery2;
+            using gq2::builder::col;
+
+            auto cond = (std::strcmp(collection, "/") == 0)
+                ? col("COLL_NAME").like("/%")
+                : (col("COLL_NAME") == collection || col("COLL_NAME").like(fmt::format("{}/%", collection))).group();
+
+            std::vector<std::string> cols{"DATA_ID", "COLL_NAME", "DATA_NAME"};
+            if ( singleFlag == 0 ) {
+                cols.emplace_back("DATA_REPL_NUM");
+                cols.emplace_back("RESC_NAME");
+                cols.emplace_back("DATA_PATH");
+            }
+            cols.emplace_back("DATA_RESC_ID");
+
+            const int offset = genQueryInp->rowOffset > 0 ? genQueryInp->rowOffset : 0;
+            const auto q = gq2::builder::select(std::move(cols))
+                               .where(std::move(cond))
+                               .order_by("COLL_NAME")
+                               .order_by("DATA_NAME")
+                               .offset(offset)
+                               .limit(MAX_SQL_ROWS)
+                               .build();
+
+            nlohmann::json rows;
+            status = gq2::try_execute( *rsComm, q, rows );
+            if ( status >= 0 ) {
+                const int next_inx = (rows.size() == static_cast<std::size_t>(MAX_SQL_ROWS)) ? (offset + MAX_SQL_ROWS) : 0;
+                if ( singleFlag == 0 ) {
+                    status = gq2::rows_to_genquery_out(
+                        rows,
+                        {COL_D_DATA_ID, COL_COLL_NAME, COL_DATA_NAME, COL_DATA_REPL_NUM, COL_D_RESC_NAME, COL_D_DATA_PATH, COL_D_RESC_ID},
+                        genQueryOut,
+                        next_inx );
+                }
+                else {
+                    status = gq2::rows_to_genquery_out(
+                        rows,
+                        {COL_D_DATA_ID, COL_COLL_NAME, COL_DATA_NAME, COL_D_RESC_ID},
+                        genQueryOut,
+                        next_inx );
+                }
+            }
         }
 
     }
@@ -205,24 +245,29 @@ rsQueryDataObjInCollReCur( rsComm_t *rsComm, char *collection,
 int
 rsQueryCollInColl( rsComm_t *rsComm, char *collection,
                    genQueryInp_t *genQueryInp, genQueryOut_t **genQueryOut ) {
-    char collQCond[MAX_NAME_LEN];
-    int status;
-
-    if ( collection == NULL || genQueryOut == NULL ) {
+    if ( rsComm == NULL || collection == NULL || genQueryOut == NULL ) {
         return USER__NULL_INPUT_ERR;
     }
 
-    memset( genQueryInp, 0, sizeof( genQueryInp_t ) );
+    if ( genQueryInp != NULL ) {
+        memset( genQueryInp, 0, sizeof( genQueryInp_t ) );
+    }
 
-    snprintf( collQCond, MAX_NAME_LEN, "='%s'", collection );
+    namespace gq2 = irods::experimental::genquery2;
+    using gq2::builder::col;
 
-    addInxVal( &genQueryInp->sqlCondInp, COL_COLL_PARENT_NAME, collQCond );
+    const auto q = gq2::builder::select({"COLL_NAME"})
+                       .where(col("COLL_PARENT_NAME") == collection)
+                       .order_by("COLL_NAME")
+                       .limit(MAX_SQL_ROWS)
+                       .build();
 
-    addInxIval( &genQueryInp->selectInp, COL_COLL_NAME, 1 );
-
-    genQueryInp->maxRows = MAX_SQL_ROWS;
-
-    status = rsGenQuery( rsComm, genQueryInp, genQueryOut );
+    nlohmann::json rows;
+    int status = gq2::try_execute( *rsComm, q, rows );
+    if ( status >= 0 ) {
+        const int next_inx = (rows.size() == static_cast<std::size_t>(MAX_SQL_ROWS)) ? MAX_SQL_ROWS : 0;
+        status = gq2::rows_to_genquery_out( rows, {COL_COLL_NAME}, genQueryOut, next_inx );
+    }
 
     return status;
 }

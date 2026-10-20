@@ -33,8 +33,12 @@
 
 #define IRODS_FILESYSTEM_ENABLE_SERVER_SIDE_API
 #include "irods/filesystem.hpp"
+#include "irods/genquery2_builder.hpp"
+#include "irods/rs_genquery2.hpp"
 
+#include <fmt/format.h>
 #include <chrono>
+#include <cstring>
 
 namespace ix = irods::experimental;
 
@@ -643,7 +647,6 @@ rsMvCollToTrash( rsComm_t *rsComm, collInp_t *rmCollInp ) {
     char trashPath[MAX_NAME_LEN];
     genQueryInp_t genQueryInp;
     genQueryOut_t *genQueryOut = NULL;
-    int continueInx;
     dataObjInfo_t dataObjInfo;
 
     /* check permission of files */
@@ -656,75 +659,79 @@ rsMvCollToTrash( rsComm_t *rsComm, collInp_t *rmCollInp ) {
 
     irods::at_scope_exit free_genQueryOut{[&genQueryOut] { freeGenQueryOut(&genQueryOut); }};
 
-    memset( &dataObjInfo, 0, sizeof( dataObjInfo ) );
-    while ( status >= 0 ) {
-        sqlResult_t *subColl, *dataObj, *rescName;
-        ruleExecInfo_t rei;
-
-        /* check if allow to delete */
-
-        if ( ( subColl = getSqlResultByInx( genQueryOut, COL_COLL_NAME ) )
-                == NULL ) {
-            rodsLog( LOG_ERROR,
-                     "rsMvCollToTrash: getSqlResultByInx for COL_COLL_NAME failed" );
-            return UNMATCHED_KEY_OR_INDEX;
-        }
-
-        if ( ( dataObj = getSqlResultByInx( genQueryOut, COL_DATA_NAME ) )
-                == NULL ) {
-            rodsLog( LOG_ERROR,
-                     "rsMvCollToTrash: getSqlResultByInx for COL_DATA_NAME failed" );
-            return UNMATCHED_KEY_OR_INDEX;
-        }
-
-        if ( ( rescName = getSqlResultByInx( genQueryOut, COL_D_RESC_NAME ) )
-                == NULL ) {
-            rodsLog( LOG_ERROR,
-                     "rsMvCollToTrash: getSqlResultByInx for COL_D_RESC_NAME failed" );
-            return UNMATCHED_KEY_OR_INDEX;
-        }
-
-        snprintf( dataObjInfo.objPath, MAX_NAME_LEN, "%s/%s",
-                  subColl->value, dataObj->value );
-        rstrcpy( dataObjInfo.rescName, rescName->value, NAME_LEN );
-
-        initReiWithDataObjInp( &rei, rsComm, NULL );
-        rei.doi = &dataObjInfo;
-
-        // make resource properties available as rule session variables
-        irods::get_resc_properties_as_kvp(rei.doi->rescHier, rei.condInputData);
-
-        status = applyRule( "acDataDeletePolicy", NULL, &rei, NO_SAVE_REI );
-
-        clearKeyVal(rei.condInputData);
-        free(rei.condInputData);
-
-        if ( status < 0 && status != NO_MORE_RULES_ERR &&
-                status != SYS_DELETE_DISALLOWED ) {
-            rodsLog( LOG_NOTICE,
-                     "rsMvCollToTrash: acDataDeletePolicy error for %s. status = %d",
-                     dataObjInfo.objPath, status );
-            return status;
-        }
-
-        if ( rei.status == SYS_DELETE_DISALLOWED ) {
-            rodsLog( LOG_NOTICE,
-                     "rsMvCollToTrash:disallowed for %s via DataDeletePolicy,status=%d",
-                     dataObjInfo.objPath, rei.status );
-            return rei.status;
-        }
-
-        continueInx = genQueryOut->continueInx;
-
+    if ( status >= 0 && genQueryOut != NULL ) {
+        svrCloseQueryOut( rsComm, genQueryOut );
         freeGenQueryOut( &genQueryOut );
 
-        if ( continueInx > 0 ) {
-            /* More to come */
-            genQueryInp.continueInx = continueInx;
-            status =  rsGenQuery( rsComm, &genQueryInp, &genQueryOut );
-        }
-        else {
-            break;
+        namespace gq2 = irods::experimental::genquery2;
+        using gq2::builder::col;
+
+        auto cond = (std::strcmp(rmCollInp->collName, "/") == 0)
+            ? col("COLL_NAME").like("/%")
+            : (col("COLL_NAME") == rmCollInp->collName ||
+               col("COLL_NAME").like(fmt::format("{}/%", rmCollInp->collName)))
+                  .group();
+
+        std::size_t offset = 0;
+        memset( &dataObjInfo, 0, sizeof( dataObjInfo ) );
+
+        while ( true ) {
+            const auto q = gq2::builder::select({"COLL_NAME", "DATA_NAME", "RESC_NAME"})
+                               .where(cond)
+                               .order_by("COLL_NAME")
+                               .order_by("DATA_NAME")
+                               .offset(offset)
+                               .limit(MAX_SQL_ROWS)
+                               .build();
+
+            nlohmann::json rows;
+            status = gq2::try_execute( *rsComm, q, rows );
+            if ( status < 0 || rows.empty() ) {
+                break;
+            }
+
+            for ( const auto& row : rows ) {
+                ruleExecInfo_t rei;
+                const auto& sub_coll = row.at(0).get_ref<const std::string&>();
+                const auto& data_obj = row.at(1).get_ref<const std::string&>();
+                const auto& resc_name = row.at(2).get_ref<const std::string&>();
+
+                snprintf( dataObjInfo.objPath, MAX_NAME_LEN, "%s/%s",
+                          sub_coll.c_str(), data_obj.c_str() );
+                rstrcpy( dataObjInfo.rescName, resc_name.c_str(), NAME_LEN );
+
+                initReiWithDataObjInp( &rei, rsComm, NULL );
+                rei.doi = &dataObjInfo;
+
+                // make resource properties available as rule session variables
+                irods::get_resc_properties_as_kvp(rei.doi->rescHier, rei.condInputData);
+
+                status = applyRule( "acDataDeletePolicy", NULL, &rei, NO_SAVE_REI );
+
+                clearKeyVal(rei.condInputData);
+                free(rei.condInputData);
+
+                if ( status < 0 && status != NO_MORE_RULES_ERR &&
+                        status != SYS_DELETE_DISALLOWED ) {
+                    rodsLog( LOG_NOTICE,
+                             "rsMvCollToTrash: acDataDeletePolicy error for %s. status = %d",
+                             dataObjInfo.objPath, status );
+                    return status;
+                }
+
+                if ( rei.status == SYS_DELETE_DISALLOWED ) {
+                    rodsLog( LOG_NOTICE,
+                             "rsMvCollToTrash:disallowed for %s via DataDeletePolicy,status=%d",
+                             dataObjInfo.objPath, rei.status );
+                    return rei.status;
+                }
+            }
+
+            if ( rows.size() < static_cast<std::size_t>(MAX_SQL_ROWS) ) {
+                status = 0;
+                break;
+            }
+            offset += rows.size();
         }
     }
 

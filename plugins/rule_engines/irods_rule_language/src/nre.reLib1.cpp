@@ -12,12 +12,14 @@
 #include "irods/locks.hpp"
 #include "irods/private/re/functions.hpp"
 #include "irods/private/re/configuration.hpp"
-#include "irods/rsGenQuery.hpp"
 #include "irods/irods_log.hpp"
 #include "irods/irods_get_full_path_for_config_file.hpp"
 #include "irods/irods_re_plugin.hpp"
 #include "irods/rsEndTransaction.hpp"
+#include "irods/genquery2_builder.hpp"
+#include "irods/rs_genquery2.hpp"
 
+#include <fmt/format.h>
 #include <string>
 #include <string_view>
 
@@ -411,199 +413,163 @@ initRuleStruct( const char* inst_name, rsComm_t *svrComm, const char *irbSet, co
 
 int
 readRuleSetFromDB( char *ruleBaseName, char *versionStr, RuleSet *ruleSet, ruleExecInfo_t *rei, rError_t *errmsg, Region *region ) {
-    int i, status;
-    genQueryInp_t genQueryInp;
-    genQueryOut_t *genQueryOut = NULL;
-    char condstr[MAX_NAME_LEN], condstr2[MAX_NAME_LEN];
-    sqlResult_t *r[8];
-    memset( &genQueryInp, 0, sizeof( genQueryInp ) );
-    genQueryInp.maxRows = MAX_SQL_ROWS;
+    namespace gq2 = irods::experimental::genquery2;
+    using gq2::builder::col;
 
-    snprintf( condstr, MAX_NAME_LEN, "= '%s'", ruleBaseName );
-    addInxVal( &genQueryInp.sqlCondInp, COL_RULE_BASE_MAP_BASE_NAME, condstr );
-    snprintf( condstr2, MAX_NAME_LEN, "= '%s'", versionStr );
-    addInxVal( &genQueryInp.sqlCondInp, COL_RULE_BASE_MAP_VERSION, condstr2 );
-
-    addInxIval( &genQueryInp.selectInp, COL_RULE_BASE_MAP_PRIORITY, ORDER_BY );
-    addInxIval( &genQueryInp.selectInp, COL_RULE_BASE_MAP_BASE_NAME, 1 );
-    addInxIval( &genQueryInp.selectInp, COL_RULE_NAME, 1 );
-    addInxIval( &genQueryInp.selectInp, COL_RULE_EVENT, 1 );
-    addInxIval( &genQueryInp.selectInp, COL_RULE_CONDITION, 1 );
-    addInxIval( &genQueryInp.selectInp, COL_RULE_BODY, 1 );
-    addInxIval( &genQueryInp.selectInp, COL_RULE_RECOVERY, 1 );
-    addInxIval( &genQueryInp.selectInp, COL_RULE_ID, 1 );
     Env *env = newEnv( newHashTable2( 100, region ), NULL, NULL, region );
-    status = rsGenQuery( rei->rsComm, &genQueryInp, &genQueryOut );
-    while ( status >= 0 && genQueryOut->rowCnt > 0 ) {
-        r[0] = getSqlResultByInx( genQueryOut, COL_RULE_BASE_MAP_BASE_NAME );
-        r[1] = getSqlResultByInx( genQueryOut, COL_RULE_NAME );
-        r[2] = getSqlResultByInx( genQueryOut, COL_RULE_EVENT );
-        r[3] = getSqlResultByInx( genQueryOut, COL_RULE_CONDITION );
-        r[4] = getSqlResultByInx( genQueryOut, COL_RULE_BODY );
-        r[5] = getSqlResultByInx( genQueryOut, COL_RULE_RECOVERY );
-        r[6] = getSqlResultByInx( genQueryOut, COL_RULE_ID );
-        for ( i = 0; i < genQueryOut->rowCnt; i++ ) {
+    std::size_t offset = 0;
+
+    while ( true ) {
+        const auto q = gq2::builder::select({"RULE_BASE_MAP_BASE_NAME",
+                                             "RULE_NAME",
+                                             "RULE_EVENT",
+                                             "RULE_CONDITION",
+                                             "RULE_BODY",
+                                             "RULE_RECOVERY",
+                                             "RULE_ID"})
+                           .where(col("RULE_BASE_MAP_BASE_NAME") == ruleBaseName &&
+                                  col("RULE_BASE_MAP_VERSION") == versionStr)
+                           .order_by("RULE_BASE_MAP_PRIORITY", true)
+                           .offset(offset)
+                           .limit(MAX_SQL_ROWS)
+                           .build();
+
+        nlohmann::json rows;
+        if ( gq2::try_execute( *rei->rsComm, q, rows ) < 0 || rows.empty() ) {
+            break;
+        }
+
+        for ( const auto& row : rows ) {
             char ruleStr[MAX_RULE_LEN * 4];
-            /* char *ruleBase = strdup(&r[0]->value[r[0]->len * i]);
-            char *action   = strdup(&r[1]->value[r[1]->len * i]); */
-            char *ruleHead = strdup( &r[2]->value[r[2]->len * i] );
-            char *ruleCondition = strdup( &r[3]->value[r[3]->len * i] );
-            char *ruleAction    = strdup( &r[4]->value[r[4]->len * i] );
-            char *ruleRecovery  = strdup( &r[5]->value[r[5]->len * i] );
-            long ruleId = atol( &r[6]->value[r[6]->len * i] );
-            if ( ruleRecovery[0] == '@' ) {
-                /* rulegen */
-                if ( strcmp( ruleRecovery + 1, "DATA" ) == 0 ) {
-                    snprintf( ruleStr, MAX_RULE_LEN * 4, "data %s", ruleHead );
+            const auto& ruleHead = row.at(2).get_ref<const std::string&>();
+            const auto& ruleCondition = row.at(3).get_ref<const std::string&>();
+            const auto& ruleAction = row.at(4).get_ref<const std::string&>();
+            const auto& ruleRecovery = row.at(5).get_ref<const std::string&>();
+            const long ruleId = std::atol( row.at(6).get_ref<const std::string&>().c_str() );
+
+            if ( !ruleRecovery.empty() && ruleRecovery[0] == '@' ) {
+                const auto tag = std::string_view{ruleRecovery}.substr(1);
+                if ( tag == "DATA" ) {
+                    snprintf( ruleStr, MAX_RULE_LEN * 4, "data %s", ruleHead.c_str() );
                 }
-                else if ( strcmp( ruleRecovery + 1, "CONSTR" ) == 0 ) {
-                    snprintf( ruleStr, MAX_RULE_LEN * 4, "constructor %s : %s", ruleHead, ruleAction );
+                else if ( tag == "CONSTR" ) {
+                    snprintf( ruleStr, MAX_RULE_LEN * 4, "constructor %s : %s", ruleHead.c_str(), ruleAction.c_str() );
                 }
-                else if ( strcmp( ruleRecovery + 1, "EXTERN" ) == 0 ) {
-                    snprintf( ruleStr, MAX_RULE_LEN * 4, "%s : %s", ruleHead, ruleAction );
+                else if ( tag == "EXTERN" ) {
+                    snprintf( ruleStr, MAX_RULE_LEN * 4, "%s : %s", ruleHead.c_str(), ruleAction.c_str() );
                 }
-                else if ( strcmp( ruleRecovery + 1, "FUNC" ) == 0 ) {
-                    snprintf( ruleStr, MAX_RULE_LEN * 4, "%s = %s\n @(\"id\", \"%ld\")", ruleHead, ruleAction, ruleId );
+                else if ( tag == "FUNC" ) {
+                    snprintf( ruleStr, MAX_RULE_LEN * 4, "%s = %s\n @(\"id\", \"%ld\")", ruleHead.c_str(), ruleAction.c_str(), ruleId );
                 }
                 else {
-                    snprintf( ruleStr, MAX_RULE_LEN * 4, "%s { on %s %s @(\"id\", \"%ld\") }\n", ruleHead, ruleCondition, ruleAction, ruleId );
+                    snprintf( ruleStr, MAX_RULE_LEN * 4, "%s { on %s %s @(\"id\", \"%ld\") }\n", ruleHead.c_str(), ruleCondition.c_str(), ruleAction.c_str(), ruleId );
                 }
             }
             else {
-                snprintf( ruleStr, MAX_RULE_LEN * 4, "%s|%s|%s|%s", ruleHead, ruleCondition, ruleAction, ruleRecovery );
+                snprintf( ruleStr, MAX_RULE_LEN * 4, "%s|%s|%s|%s", ruleHead.c_str(), ruleCondition.c_str(), ruleAction.c_str(), ruleRecovery.c_str() );
             }
             Pointer *p = newPointer2( ruleStr );
             int errloc;
             int errcode = parseRuleSet( p, ruleSet, env, &errloc, errmsg, region );
             deletePointer( p );
             if ( errcode < 0 ) {
-                /* deleteEnv(env, 3); */
-                freeGenQueryOut( &genQueryOut );
-                free( ruleHead ); // cppcheck - Memory leak: ruleHead
-                free( ruleCondition ); // cppcheck - Memory leak: ruleCondition
-                free( ruleAction ); // cppcheck - Memory leak: ruleAction
-                free( ruleRecovery ); // cppcheck - Memory leak: ruleRecovery
                 return errcode;
             }
-            free( ruleHead ); // cppcheck - Memory leak: ruleHead
-            free( ruleCondition ); // cppcheck - Memory leak: ruleCondition
-            free( ruleAction ); // cppcheck - Memory leak: ruleAction
-            free( ruleRecovery ); // cppcheck - Memory leak: ruleRecovery
         }
-        genQueryInp.continueInx =  genQueryOut->continueInx;
-        freeGenQueryOut( &genQueryOut );
-        if ( genQueryInp.continueInx  > 0 ) {
-            /* More to come */
-            status = rsGenQuery( rei->rsComm, &genQueryInp, &genQueryOut );
-        }
-        else {
+
+        if ( rows.size() < static_cast<std::size_t>(MAX_SQL_ROWS) ) {
             break;
         }
+        offset += rows.size();
     }
 
-    clearGenQueryInp( &genQueryInp );
-	freeGenQueryOut( &genQueryOut );
-    /* deleteEnv(env, 3); */
     return 0;
 }
 
 int
 readRuleStructFromDB( char *ruleBaseName, char *versionStr, ruleStruct_t *inRuleStrct, ruleExecInfo_t *rei ) {
-    genQueryInp_t genQueryInp;
-    genQueryOut_t *genQueryOut = NULL;
-    char condstr[MAX_NAME_LEN], condstr2[MAX_NAME_LEN];
-    sqlResult_t *r[8];
-    memset( &genQueryInp, 0, sizeof( genQueryInp ) );
-    genQueryInp.maxRows = MAX_SQL_ROWS;
+    namespace gq2 = irods::experimental::genquery2;
+    using gq2::builder::col;
 
-    snprintf( condstr, MAX_NAME_LEN, "= '%s'", ruleBaseName );
-    addInxVal( &genQueryInp.sqlCondInp, COL_RULE_BASE_MAP_BASE_NAME, condstr );
-    snprintf( condstr2, MAX_NAME_LEN, "= '%s'", versionStr );
-    addInxVal( &genQueryInp.sqlCondInp, COL_RULE_BASE_MAP_VERSION, condstr2 );
+    std::size_t offset = 0;
+    while ( true ) {
+        const auto q = gq2::builder::select({"RULE_BASE_MAP_BASE_NAME",
+                                             "RULE_NAME",
+                                             "RULE_EVENT",
+                                             "RULE_CONDITION",
+                                             "RULE_BODY",
+                                             "RULE_RECOVERY",
+                                             "RULE_ID"})
+                           .where(col("RULE_BASE_MAP_BASE_NAME") == ruleBaseName &&
+                                  col("RULE_BASE_MAP_VERSION") == versionStr)
+                           .order_by("RULE_BASE_MAP_PRIORITY", true)
+                           .offset(offset)
+                           .limit(MAX_SQL_ROWS)
+                           .build();
 
-    addInxIval( &genQueryInp.selectInp, COL_RULE_BASE_MAP_PRIORITY, ORDER_BY );
-    addInxIval( &genQueryInp.selectInp, COL_RULE_BASE_MAP_BASE_NAME, 1 );
-    addInxIval( &genQueryInp.selectInp, COL_RULE_NAME, 1 );
-    addInxIval( &genQueryInp.selectInp, COL_RULE_EVENT, 1 );
-    addInxIval( &genQueryInp.selectInp, COL_RULE_CONDITION, 1 );
-    addInxIval( &genQueryInp.selectInp, COL_RULE_BODY, 1 );
-    addInxIval( &genQueryInp.selectInp, COL_RULE_RECOVERY, 1 );
-    addInxIval( &genQueryInp.selectInp, COL_RULE_ID, 1 );
-    int continueInx = 1;
-    while ( continueInx > 0 && rsGenQuery( rei->rsComm, &genQueryInp, &genQueryOut ) >= 0 && genQueryOut->rowCnt > 0 ) {
-        r[0] = getSqlResultByInx( genQueryOut, COL_RULE_BASE_MAP_BASE_NAME );
-        r[1] = getSqlResultByInx( genQueryOut, COL_RULE_NAME );
-        r[2] = getSqlResultByInx( genQueryOut, COL_RULE_EVENT );
-        r[3] = getSqlResultByInx( genQueryOut, COL_RULE_CONDITION );
-        r[4] = getSqlResultByInx( genQueryOut, COL_RULE_BODY );
-        r[5] = getSqlResultByInx( genQueryOut, COL_RULE_RECOVERY );
-        r[6] = getSqlResultByInx( genQueryOut, COL_RULE_ID );
-        for ( int i = 0; i < genQueryOut->rowCnt; i++ ) {
-            inRuleStrct->ruleBase[inRuleStrct->MaxNumOfRules] = strdup( &r[0]->value[r[0]->len * i] );
-            inRuleStrct->action[inRuleStrct->MaxNumOfRules]   = strdup( &r[1]->value[r[1]->len * i] );
-            inRuleStrct->ruleHead[inRuleStrct->MaxNumOfRules] = strdup( &r[2]->value[r[2]->len * i] );
-            inRuleStrct->ruleCondition[inRuleStrct->MaxNumOfRules] = strdup( &r[3]->value[r[3]->len * i] );
-            inRuleStrct->ruleAction[inRuleStrct->MaxNumOfRules]    = strdup( &r[4]->value[r[4]->len * i] );
-            inRuleStrct->ruleRecovery[inRuleStrct->MaxNumOfRules]  = strdup( &r[5]->value[r[5]->len * i] );
-            inRuleStrct->ruleId[inRuleStrct->MaxNumOfRules] = atol( &r[6]->value[r[6]->len * i] );
+        nlohmann::json rows;
+        if ( gq2::try_execute( *rei->rsComm, q, rows ) < 0 || rows.empty() ) {
+            break;
+        }
+
+        for ( const auto& row : rows ) {
+            const int idx = inRuleStrct->MaxNumOfRules;
+            inRuleStrct->ruleBase[idx] = strdup( row.at(0).get_ref<const std::string&>().c_str() );
+            inRuleStrct->action[idx] = strdup( row.at(1).get_ref<const std::string&>().c_str() );
+            inRuleStrct->ruleHead[idx] = strdup( row.at(2).get_ref<const std::string&>().c_str() );
+            inRuleStrct->ruleCondition[idx] = strdup( row.at(3).get_ref<const std::string&>().c_str() );
+            inRuleStrct->ruleAction[idx] = strdup( row.at(4).get_ref<const std::string&>().c_str() );
+            inRuleStrct->ruleRecovery[idx] = strdup( row.at(5).get_ref<const std::string&>().c_str() );
+            inRuleStrct->ruleId[idx] = std::atol( row.at(6).get_ref<const std::string&>().c_str() );
             inRuleStrct->MaxNumOfRules++;
         }
-        continueInx = genQueryInp.continueInx =  genQueryOut->continueInx;
-        freeGenQueryOut( &genQueryOut );
+
+        if ( rows.size() < static_cast<std::size_t>(MAX_SQL_ROWS) ) {
+            break;
+        }
+        offset += rows.size();
     }
 
-    clearGenQueryInp( &genQueryInp );
-	freeGenQueryOut( &genQueryOut );
     return 0;
 }
 
 
 int
 readDVMapStructFromDB( char *dvmBaseName, char *versionStr, rulevardef_t *inDvmStrct, ruleExecInfo_t *rei ) {
-    int i, l, status;
-    genQueryInp_t genQueryInp;
-    genQueryOut_t *genQueryOut = NULL;
-    char condstr[MAX_NAME_LEN], condstr2[MAX_NAME_LEN];
-    sqlResult_t *r[5];
-    memset( &genQueryInp, 0, sizeof( genQueryInp ) );
-    genQueryInp.maxRows = MAX_SQL_ROWS;
+    namespace gq2 = irods::experimental::genquery2;
+    using gq2::builder::col;
 
-    snprintf( condstr, MAX_NAME_LEN, "= '%s'", dvmBaseName );
-    addInxVal( &genQueryInp.sqlCondInp, COL_DVM_BASE_MAP_BASE_NAME, condstr );
-    snprintf( condstr2, MAX_NAME_LEN, "= '%s'", versionStr );
-    addInxVal( &genQueryInp.sqlCondInp, COL_DVM_BASE_MAP_VERSION, condstr2 );
+    int l = inDvmStrct->MaxNumOfDVars;
+    std::size_t offset = 0;
 
-    addInxIval( &genQueryInp.selectInp, COL_DVM_EXT_VAR_NAME, 1 );
-    addInxIval( &genQueryInp.selectInp, COL_DVM_CONDITION, 1 );
-    addInxIval( &genQueryInp.selectInp, COL_DVM_INT_MAP_PATH, 1 );
-    addInxIval( &genQueryInp.selectInp, COL_DVM_ID, ORDER_BY );
-    l = inDvmStrct->MaxNumOfDVars;
-    status = rsGenQuery( rei->rsComm, &genQueryInp, &genQueryOut );
-    while ( status >= 0 && genQueryOut->rowCnt > 0 ) {
-        r[0] = getSqlResultByInx( genQueryOut, COL_DVM_EXT_VAR_NAME );
-        r[1] = getSqlResultByInx( genQueryOut, COL_DVM_CONDITION );
-        r[2] = getSqlResultByInx( genQueryOut, COL_DVM_INT_MAP_PATH );
-        r[3] = getSqlResultByInx( genQueryOut, COL_DVM_ID );
-        for ( i = 0; i < genQueryOut->rowCnt; i++ ) {
-            inDvmStrct->varName[l]   = strdup( &r[0]->value[r[0]->len * i] );
-            inDvmStrct->action[l] = strdup( &r[1]->value[r[1]->len * i] );
-            inDvmStrct->var2CMap[l] = strdup( &r[2]->value[r[2]->len * i] );
-            inDvmStrct->varId[l] = atol( &r[3]->value[r[3]->len * i] );
-            l++;
-        }
-        genQueryInp.continueInx =  genQueryOut->continueInx;
-        freeGenQueryOut( &genQueryOut );
-        if ( genQueryInp.continueInx  > 0 ) {
-            /* More to come */
-            status =  rsGenQuery( rei->rsComm, &genQueryInp, &genQueryOut );
-        }
-        else {
+    while ( true ) {
+        const auto q = gq2::builder::select({"DVM_EXT_VAR_NAME", "DVM_CONDITION", "DVM_INT_MAP_PATH", "DVM_ID"})
+                           .where(col("DVM_BASE_MAP_BASE_NAME") == dvmBaseName &&
+                                  col("DVM_BASE_MAP_VERSION") == versionStr)
+                           .order_by("DVM_ID", true)
+                           .offset(offset)
+                           .limit(MAX_SQL_ROWS)
+                           .build();
+
+        nlohmann::json rows;
+        if ( gq2::try_execute( *rei->rsComm, q, rows ) < 0 || rows.empty() ) {
             break;
         }
+
+        for ( const auto& row : rows ) {
+            inDvmStrct->varName[l] = strdup( row.at(0).get_ref<const std::string&>().c_str() );
+            inDvmStrct->action[l] = strdup( row.at(1).get_ref<const std::string&>().c_str() );
+            inDvmStrct->var2CMap[l] = strdup( row.at(2).get_ref<const std::string&>().c_str() );
+            inDvmStrct->varId[l] = std::atol( row.at(3).get_ref<const std::string&>().c_str() );
+            l++;
+        }
+
+        if ( rows.size() < static_cast<std::size_t>(MAX_SQL_ROWS) ) {
+            break;
+        }
+        offset += rows.size();
     }
 
-	freeGenQueryOut( &genQueryOut );
-    clearGenQueryInp( &genQueryInp );
     inDvmStrct->MaxNumOfDVars = l;
     return 0;
 }
@@ -612,47 +578,39 @@ readDVMapStructFromDB( char *dvmBaseName, char *versionStr, rulevardef_t *inDvmS
 
 int
 readFNMapStructFromDB( char *fnmBaseName, char *versionStr, fnmapStruct_t *inFnmStrct, ruleExecInfo_t *rei ) {
-    int i, l, status;
-    genQueryInp_t genQueryInp;
-    genQueryOut_t *genQueryOut = NULL;
-    char condstr[MAX_NAME_LEN], condstr2[MAX_NAME_LEN];
-    sqlResult_t *r[5];
-    memset( &genQueryInp, 0, sizeof( genQueryInp ) );
-    genQueryInp.maxRows = MAX_SQL_ROWS;
+    namespace gq2 = irods::experimental::genquery2;
+    using gq2::builder::col;
 
-    snprintf( condstr, MAX_NAME_LEN, "= '%s'", fnmBaseName );
-    addInxVal( &genQueryInp.sqlCondInp, COL_FNM_BASE_MAP_BASE_NAME, condstr );
-    snprintf( condstr2, MAX_NAME_LEN, "= '%s'", versionStr );
-    addInxVal( &genQueryInp.sqlCondInp, COL_FNM_BASE_MAP_VERSION, condstr2 );
+    int l = inFnmStrct->MaxNumOfFMaps;
+    std::size_t offset = 0;
 
-    addInxIval( &genQueryInp.selectInp, COL_FNM_EXT_FUNC_NAME, 1 );
-    addInxIval( &genQueryInp.selectInp, COL_FNM_INT_FUNC_NAME, 1 );
-    addInxIval( &genQueryInp.selectInp, COL_FNM_ID, ORDER_BY );
+    while ( true ) {
+        const auto q = gq2::builder::select({"FNM_EXT_FUNC_NAME", "FNM_INT_FUNC_NAME", "FNM_ID"})
+                           .where(col("FNM_BASE_MAP_BASE_NAME") == fnmBaseName &&
+                                  col("FNM_BASE_MAP_VERSION") == versionStr)
+                           .order_by("FNM_ID", true)
+                           .offset(offset)
+                           .limit(MAX_SQL_ROWS)
+                           .build();
 
-    l = inFnmStrct->MaxNumOfFMaps;
-    status = rsGenQuery( rei->rsComm, &genQueryInp, &genQueryOut );
-    while ( status >= 0 && genQueryOut->rowCnt > 0 ) {
-        r[0] = getSqlResultByInx( genQueryOut, COL_FNM_EXT_FUNC_NAME );
-        r[1] = getSqlResultByInx( genQueryOut, COL_FNM_INT_FUNC_NAME );
-        r[2] = getSqlResultByInx( genQueryOut, COL_FNM_ID );
-        for ( i = 0; i < genQueryOut->rowCnt; i++ ) {
-            inFnmStrct->funcName[l]   = strdup( &r[0]->value[r[0]->len * i] );
-            inFnmStrct->func2CMap[l] = strdup( &r[1]->value[r[1]->len * i] );
-            inFnmStrct->fmapId[l] = atol( &r[2]->value[r[2]->len * i] );
-            l++;
-        }
-        genQueryInp.continueInx =  genQueryOut->continueInx;
-        freeGenQueryOut( &genQueryOut );
-        if ( genQueryInp.continueInx  > 0 ) {
-            /* More to come */
-            status = rsGenQuery( rei->rsComm, &genQueryInp, &genQueryOut );
-        }
-        else {
+        nlohmann::json rows;
+        if ( gq2::try_execute( *rei->rsComm, q, rows ) < 0 || rows.empty() ) {
             break;
         }
+
+        for ( const auto& row : rows ) {
+            inFnmStrct->funcName[l] = strdup( row.at(0).get_ref<const std::string&>().c_str() );
+            inFnmStrct->func2CMap[l] = strdup( row.at(1).get_ref<const std::string&>().c_str() );
+            inFnmStrct->fmapId[l] = std::atol( row.at(2).get_ref<const std::string&>().c_str() );
+            l++;
+        }
+
+        if ( rows.size() < static_cast<std::size_t>(MAX_SQL_ROWS) ) {
+            break;
+        }
+        offset += rows.size();
     }
-    freeGenQueryOut( &genQueryOut );
-    clearGenQueryInp( &genQueryInp );
+
     inFnmStrct->MaxNumOfFMaps = l;
     return 0;
 }
@@ -661,66 +619,55 @@ readFNMapStructFromDB( char *fnmBaseName, char *versionStr, fnmapStruct_t *inFnm
 
 int
 readMsrvcStructFromDB( int inStatus, msrvcStruct_t *inMsrvcStrct, ruleExecInfo_t *rei ) {
-    int i, l, status;
-    genQueryInp_t genQueryInp;
-    genQueryOut_t *genQueryOut = NULL;
-    sqlResult_t *r[10];
-    memset( &genQueryInp, 0, sizeof( genQueryInp ) );
-    genQueryInp.maxRows = MAX_SQL_ROWS;
-    char condstr[MAX_NAME_LEN];
+    namespace gq2 = irods::experimental::genquery2;
+    using gq2::builder::col;
 
-    snprintf( condstr, MAX_NAME_LEN, "= '%i'", inStatus );
-    addInxVal( &genQueryInp.sqlCondInp, COL_MSRVC_STATUS, condstr );
+    int l = inMsrvcStrct->MaxNumOfMsrvcs;
+    std::size_t offset = 0;
+    const auto status_str = fmt::to_string(inStatus);
 
-    addInxIval( &genQueryInp.selectInp, COL_MSRVC_NAME, 1 );
-    addInxIval( &genQueryInp.selectInp, COL_MSRVC_MODULE_NAME, 1 );
-    addInxIval( &genQueryInp.selectInp, COL_MSRVC_SIGNATURE, 1 );
-    addInxIval( &genQueryInp.selectInp, COL_MSRVC_VERSION, 1 );
-    addInxIval( &genQueryInp.selectInp, COL_MSRVC_HOST, 1 );
-    addInxIval( &genQueryInp.selectInp, COL_MSRVC_LOCATION, 1 );
-    addInxIval( &genQueryInp.selectInp, COL_MSRVC_LANGUAGE, 1 );
-    addInxIval( &genQueryInp.selectInp, COL_MSRVC_TYPE_NAME, 1 );
-    addInxIval( &genQueryInp.selectInp, COL_MSRVC_STATUS, 1 );
-    addInxIval( &genQueryInp.selectInp, COL_MSRVC_ID, ORDER_BY );
+    while ( true ) {
+        const auto q = gq2::builder::select({"MSRVC_MODULE_NAME",
+                                             "MSRVC_NAME",
+                                             "MSRVC_SIGNATURE",
+                                             "MSRVC_VERSION",
+                                             "MSRVC_HOST",
+                                             "MSRVC_LOCATION",
+                                             "MSRVC_LANGUAGE",
+                                             "MSRVC_TYPE_NAME",
+                                             "MSRVC_STATUS",
+                                             "MSRVC_ID"})
+                           .where(col("MSRVC_STATUS") == status_str)
+                           .order_by("MSRVC_ID", true)
+                           .offset(offset)
+                           .limit(MAX_SQL_ROWS)
+                           .build();
 
-    l = inMsrvcStrct->MaxNumOfMsrvcs;
-    status = rsGenQuery( rei->rsComm, &genQueryInp, &genQueryOut );
-    while ( status >= 0 && genQueryOut->rowCnt > 0 ) {
-        r[0] = getSqlResultByInx( genQueryOut, COL_MSRVC_MODULE_NAME );
-        r[1] = getSqlResultByInx( genQueryOut, COL_MSRVC_NAME );
-        r[2] = getSqlResultByInx( genQueryOut, COL_MSRVC_SIGNATURE );
-        r[3] = getSqlResultByInx( genQueryOut, COL_MSRVC_VERSION );
-        r[4] = getSqlResultByInx( genQueryOut, COL_MSRVC_HOST );
-        r[5] = getSqlResultByInx( genQueryOut, COL_MSRVC_LOCATION );
-        r[6] = getSqlResultByInx( genQueryOut, COL_MSRVC_LANGUAGE );
-        r[7] = getSqlResultByInx( genQueryOut, COL_MSRVC_TYPE_NAME );
-        r[8] = getSqlResultByInx( genQueryOut, COL_MSRVC_STATUS );
-        r[9] = getSqlResultByInx( genQueryOut, COL_MSRVC_ID );
-        for ( i = 0; i < genQueryOut->rowCnt; i++ ) {
-            inMsrvcStrct->moduleName[l] = strdup( &r[0]->value[r[0]->len * i] );
-            inMsrvcStrct->msrvcName[l]   = strdup( &r[1]->value[r[1]->len * i] );
-            inMsrvcStrct->msrvcSignature[l] = strdup( &r[2]->value[r[2]->len * i] );
-            inMsrvcStrct->msrvcVersion[l] = strdup( &r[3]->value[r[3]->len * i] );
-            inMsrvcStrct->msrvcHost[l]    = strdup( &r[4]->value[r[4]->len * i] );
-            inMsrvcStrct->msrvcLocation[l]  = strdup( &r[5]->value[r[5]->len * i] );
-            inMsrvcStrct->msrvcLanguage[l]  = strdup( &r[6]->value[r[6]->len * i] );
-            inMsrvcStrct->msrvcTypeName[l]  = strdup( &r[7]->value[r[7]->len * i] );
-            inMsrvcStrct->msrvcStatus[l]  = atol( &r[8]->value[r[8]->len * i] );
-            inMsrvcStrct->msrvcId[l]  = atol( &r[9]->value[r[9]->len * i] );
-            l++;
-        }
-        genQueryInp.continueInx =  genQueryOut->continueInx;
-        freeGenQueryOut( &genQueryOut );
-        if ( genQueryInp.continueInx  > 0 ) {
-            /* More to come */
-            status =  rsGenQuery( rei->rsComm, &genQueryInp, &genQueryOut );
-        }
-        else {
+        nlohmann::json rows;
+        if ( gq2::try_execute( *rei->rsComm, q, rows ) < 0 || rows.empty() ) {
             break;
         }
+
+        for ( const auto& row : rows ) {
+            inMsrvcStrct->moduleName[l] = strdup( row.at(0).get_ref<const std::string&>().c_str() );
+            inMsrvcStrct->msrvcName[l] = strdup( row.at(1).get_ref<const std::string&>().c_str() );
+            inMsrvcStrct->msrvcSignature[l] = strdup( row.at(2).get_ref<const std::string&>().c_str() );
+            inMsrvcStrct->msrvcVersion[l] = strdup( row.at(3).get_ref<const std::string&>().c_str() );
+            inMsrvcStrct->msrvcHost[l] = strdup( row.at(4).get_ref<const std::string&>().c_str() );
+            inMsrvcStrct->msrvcLocation[l] = strdup( row.at(5).get_ref<const std::string&>().c_str() );
+            inMsrvcStrct->msrvcLanguage[l] = strdup( row.at(6).get_ref<const std::string&>().c_str() );
+            inMsrvcStrct->msrvcTypeName[l] = strdup( row.at(7).get_ref<const std::string&>().c_str() );
+            inMsrvcStrct->msrvcStatus[l] = std::atol( row.at(8).get_ref<const std::string&>().c_str() );
+            inMsrvcStrct->msrvcId[l] = std::atol( row.at(9).get_ref<const std::string&>().c_str() );
+            l++;
+        }
+
+        if ( rows.size() < static_cast<std::size_t>(MAX_SQL_ROWS) ) {
+            break;
+        }
+        offset += rows.size();
     }
-    freeGenQueryOut( &genQueryOut );
-    clearGenQueryInp( &genQueryInp );
+
     inMsrvcStrct->MaxNumOfMsrvcs = l;
     return 0;
 }

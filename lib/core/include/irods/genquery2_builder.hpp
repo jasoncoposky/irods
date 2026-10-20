@@ -662,6 +662,12 @@ namespace irods::experimental::genquery2
                 return *this;
             }
 
+            auto offset(std::size_t _offset) -> select_builder&
+            {
+                sel_.range.offset = std::to_string(_offset);
+                return *this;
+            }
+
             auto build() const & -> select
             {
                 return sel_;

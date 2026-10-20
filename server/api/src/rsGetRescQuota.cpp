@@ -7,11 +7,17 @@
 #include "irods/resource.hpp"
 #include "irods/rsGetRescQuota.hpp"
 #include "irods/genQuery.h"
-#include "irods/rsGenQuery.hpp"
+#include "irods/genquery2_builder.hpp"
+#include "irods/rs_genquery2.hpp"
+#include "irods/scoped_privileged_client.hpp"
 
 #include "irods/irods_resource_backport.hpp"
 
+#include <algorithm>
+#include <charconv>
 #include <cstring>
+#include <string>
+#include <vector>
 
 using log_api = irods::experimental::log::server;
 
@@ -76,47 +82,136 @@ int getQuotaByResc(
     char*           userName,
     char*           rescName,
     genQueryOut_t** genQueryOut ) {
-    int status;
-    genQueryInp_t genQueryInp;
-    char condition1[MAX_NAME_LEN];
-    char condition2[MAX_NAME_LEN];
-
-    if ( genQueryOut == NULL ) {
+    if ( genQueryOut == NULL || rsComm == NULL || userName == NULL ) {
         return USER__NULL_INPUT_ERR;
     }
 
     *genQueryOut = NULL;
-    memset( &genQueryInp, 0, sizeof( genQueryInp ) );
 
-    genQueryInp.options = QUOTA_QUERY;
-
-    snprintf(
-        condition1,
-        MAX_NAME_LEN, "%s",
-        userName );
-    addInxVal(
-        &genQueryInp.sqlCondInp,
-        COL_USER_NAME,
-        condition1 );
-    if ( rescName != NULL && strlen( rescName ) > 0 ) {
-        snprintf(
-            condition2,
-            MAX_NAME_LEN, "%s",
-            rescName );
-        addInxVal(
-            &genQueryInp.sqlCondInp,
-            COL_R_RESC_NAME,
-            condition2 );
+    char user_name[NAME_LEN]{};
+    char user_zone[NAME_LEN]{};
+    if ( const int status = parseUserName( userName, user_name, user_zone ); status != 0 ) {
+        return status;
+    }
+    if ( user_zone[0] == '\0' ) {
+        if ( rsComm->clientUser.rodsZone[0] != '\0' ) {
+            rstrcpy( user_zone, rsComm->clientUser.rodsZone, sizeof( user_zone ) );
+        }
+        else if ( const char* local_zone = getLocalZoneName(); local_zone != nullptr ) {
+            rstrcpy( user_zone, local_zone, sizeof( user_zone ) );
+        }
     }
 
-    genQueryInp.maxRows = MAX_SQL_ROWS;
-    status = rsGenQuery(
-                 rsComm,
-                 &genQueryInp,
-                 genQueryOut );
-    clearGenQueryInp( &genQueryInp );
+    namespace gq2 = irods::experimental::genquery2;
+    using gq2::builder::col;
 
-    return status;
+    irods::experimental::scoped_privileged_client spc{*rsComm};
+
+    const auto q_user = gq2::builder::select({"USER_ID"})
+                            .where(col("USER_NAME") == user_name && col("USER_ZONE") == user_zone)
+                            .limit(1)
+                            .build();
+
+    nlohmann::json user_rows;
+    if ( const int status = gq2::try_execute( *rsComm, q_user, user_rows ); status < 0 ) {
+        return status;
+    }
+    if ( user_rows.empty() ) {
+        return CAT_NO_ROWS_FOUND;
+    }
+
+    const auto& user_id = user_rows.front().at(0).get_ref<const std::string&>();
+    std::vector<std::string> subject_ids{user_id};
+
+    const auto q_groups = gq2::builder::select({"GROUP_ID"})
+                              .where(col("GROUP_MEMBER_ID") == user_id)
+                              .build();
+
+    nlohmann::json group_rows;
+    if ( gq2::try_execute( *rsComm, q_groups, group_rows ) >= 0 ) {
+        for ( const auto& row : group_rows ) {
+            const auto& gid = row.at(0).get_ref<const std::string&>();
+            if ( std::find( subject_ids.begin(), subject_ids.end(), gid ) == subject_ids.end() ) {
+                subject_ids.push_back( gid );
+            }
+        }
+    }
+
+    struct quota_row
+    {
+        std::string user_id;
+        std::string resc_name;
+        std::string quota_limit;
+        std::string quota_over;
+        std::string resc_id;
+        long long over_val{};
+    };
+    std::vector<quota_row> collected;
+
+    // 1. Global quotas (RESC_ID = 0)
+    const auto q_global = gq2::builder::select({"QUOTA_USER_ID", "QUOTA_LIMIT", "QUOTA_OVER", "QUOTA_RESC_ID"})
+                              .where(col("QUOTA_USER_ID").in(subject_ids) && col("QUOTA_RESC_ID") == "0")
+                              .build();
+
+    nlohmann::json global_rows;
+    if ( gq2::try_execute( *rsComm, q_global, global_rows ) >= 0 ) {
+        const std::string global_resc_name = ( rescName != NULL && rescName[0] != '\0' ) ? rescName : "";
+        for ( const auto& row : global_rows ) {
+            quota_row qr{
+                row.at(0).get<std::string>(),
+                global_resc_name,
+                row.at(1).get<std::string>(),
+                row.at(2).get<std::string>(),
+                row.at(3).get<std::string>(),
+                0};
+            std::from_chars( qr.quota_over.data(), qr.quota_over.data() + qr.quota_over.size(), qr.over_val );
+            collected.push_back( std::move( qr ) );
+        }
+    }
+
+    // 2. Per-resource quotas (joined with R_RESC_MAIN)
+    auto resc_cond = col("QUOTA_USER_ID").in(subject_ids);
+    if ( rescName != NULL && strlen( rescName ) > 0 ) {
+        resc_cond = std::move( resc_cond ) && col("RESC_NAME") == rescName;
+    }
+
+    const auto q_resc = gq2::builder::select({"QUOTA_USER_ID", "RESC_NAME", "QUOTA_LIMIT", "QUOTA_OVER", "QUOTA_RESC_ID"})
+                            .where(std::move(resc_cond))
+                            .build();
+
+    nlohmann::json resc_rows;
+    if ( gq2::try_execute( *rsComm, q_resc, resc_rows ) >= 0 ) {
+        for ( const auto& row : resc_rows ) {
+            quota_row qr{
+                row.at(0).get<std::string>(),
+                row.at(1).get<std::string>(),
+                row.at(2).get<std::string>(),
+                row.at(3).get<std::string>(),
+                row.at(4).get<std::string>(),
+                0};
+            std::from_chars( qr.quota_over.data(), qr.quota_over.data() + qr.quota_over.size(), qr.over_val );
+            collected.push_back( std::move( qr ) );
+        }
+    }
+
+    if ( collected.empty() ) {
+        return CAT_NO_ROWS_FOUND;
+    }
+
+    std::stable_sort( collected.begin(), collected.end(), []( const quota_row& a, const quota_row& b ) {
+        return a.over_val < b.over_val;
+    } );
+
+    nlohmann::json combined = nlohmann::json::array();
+    for ( const auto& qr : collected ) {
+        combined.push_back( nlohmann::json::array(
+            {qr.user_id, qr.resc_name, qr.quota_limit, qr.quota_over, qr.resc_id} ) );
+    }
+
+    return gq2::rows_to_genquery_out(
+        combined,
+        {COL_QUOTA_USER_ID, COL_R_RESC_NAME, COL_QUOTA_LIMIT, COL_QUOTA_OVER, COL_QUOTA_RESC_ID},
+        genQueryOut );
 }
 
 int queRescQuota(
