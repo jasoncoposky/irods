@@ -530,73 +530,28 @@ validateAndParseUserName( const char *fullUserNameIn, char *userName, char *user
 
 namespace {
 
-int db_execute_no_answer_sql( const char *sql, icatSessionStruct *_icss = &icss ) {
-    int i = cllExecSqlNoResult( _icss, sql );
-    if ( i != 0 ) {
-        if ( i <= CAT_ENV_ERR ) {
+struct specific_query_cursor
+{
+    nanodbc::statement stmt;
+    nanodbc::result res;
+};
+
+std::array<std::optional<specific_query_cursor>, MAX_NUM_OF_CONCURRENT_STMTS> specific_query_cursors;
+
+int allocate_specific_query_slot() noexcept
+{
+    for (int i = 0; i < MAX_NUM_OF_CONCURRENT_STMTS; ++i) {
+        if (!specific_query_cursors[i].has_value()) {
             return i;
         }
-        return CAT_SQL_ERR;
     }
-    return 0;
+    return UNINITIALIZED_STATEMENT_NUMBER;
 }
 
-int db_free_statement( int statementNumber, icatSessionStruct *_icss = &icss ) {
-    return cllFreeStatement( _icss, statementNumber );
-}
-
-int db_get_first_row_from_sql( const char *sql, int *statement, int skipCount,
-                               std::vector<std::string>& bindVars, icatSessionStruct *_icss = &icss ) {
-    int i = cllExecSqlWithResultBV( _icss, statement, sql, bindVars );
-    if ( i != 0 ) {
-        cllFreeStatement( _icss, *statement );
-        *statement = UNINITIALIZED_STATEMENT_NUMBER;
-        if ( i <= CAT_ENV_ERR ) {
-            return i;
-        }
-        return CAT_SQL_ERR;
-    }
-
-    const auto& flavor = irods::experimental::catalog::get_db_flavor( _icss->databaseType );
-    if ( flavor.row_offset_requires_cursor_skip && skipCount > 0 ) {
-        for ( int j = 0; j < skipCount; ++j ) {
-            i = cllGetRow( _icss, *statement );
-            if ( i != 0 ) {
-                cllFreeStatement( _icss, *statement );
-                *statement = UNINITIALIZED_STATEMENT_NUMBER;
-                return CAT_GET_ROW_ERR;
-            }
-            if ( _icss->stmtPtr[*statement]->numOfCols == 0 ) {
-                cllFreeStatement( _icss, *statement );
-                *statement = UNINITIALIZED_STATEMENT_NUMBER;
-                return CAT_NO_ROWS_FOUND;
-            }
-        }
-    }
-
-    i = cllGetRow( _icss, *statement );
-    if ( i != 0 ) {
-        cllFreeStatement( _icss, *statement );
-        *statement = UNINITIALIZED_STATEMENT_NUMBER;
-        return CAT_GET_ROW_ERR;
-    }
-    if ( _icss->stmtPtr[*statement]->numOfCols == 0 ) {
-        cllFreeStatement( _icss, *statement );
-        *statement = UNINITIALIZED_STATEMENT_NUMBER;
-        return CAT_NO_ROWS_FOUND;
-    }
-
-    return 0;
-}
-
-int db_get_next_row_from_statement( int stmtNum, icatSessionStruct *_icss = &icss ) {
-    if ( 0 != cllGetRow( _icss, stmtNum ) ) {
-        cllFreeStatement( _icss, stmtNum );
-        return CAT_GET_ROW_ERR;
-    }
-    if ( _icss->stmtPtr[stmtNum]->numOfCols == 0 ) {
-        cllFreeStatement( _icss, stmtNum );
-        return CAT_NO_ROWS_FOUND;
+int free_specific_query_slot(int _slot) noexcept
+{
+    if (_slot >= 0 && _slot < MAX_NUM_OF_CONCURRENT_STMTS) {
+        specific_query_cursors[_slot].reset();
     }
     return 0;
 }
@@ -651,19 +606,16 @@ int db_close_connection( icatSessionStruct *_icss ) {
 // =-=-=-=-=-=-=-
 //  Called internally to rollback current transaction after an error.
 int _rollback( const char *functionName ) {
-    // =-=-=-=-=-=-=-
-    // This type of rollback is needed for Postgres since the low-level
-    // now does an automatic 'begin' to create a sql block */
-    int status =  db_execute_no_answer_sql( "rollback", &icss );
-    if ( status == 0 ) {
+    try {
+        auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
+        executor.execute_dml(db_conn, "rollback");
         log_db::info("{} rollback succeeded", functionName);
+        return 0;
     }
-    else {
-        log_db::info("{} rollback failure {}", functionName, status);
+    catch (const std::exception& e) {
+        log_db::info("{} rollback failure: {}", functionName, e.what());
+        return CAT_SQL_ERR;
     }
-
-    return status;
-
 } // _rollback
 
 // =-=-=-=-=-=-=-
@@ -2087,6 +2039,9 @@ irods::error db_close_op(
     // =-=-=-=-=-=-=-
     // set success flag
     icss.status = 0;
+    for (auto& slot : specific_query_cursors) {
+        slot.reset();
+    }
     irods::experimental::catalog::get_database_session().reset();
 
     return CODE( status );
@@ -4088,13 +4043,19 @@ irods::error db_rollback_op(
 
     log_sql::debug("chlRollback - SQL 1 ");
 
-    int status = db_execute_no_answer_sql( "rollback", &icss );
-    if ( status != 0 ) {
-        log_db::info("chlRollback rollback failure {}", status);
-        return ERROR( status, "chlRollback rollback failure" );
+    try {
+        auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
+        executor.execute_dml(db_conn, "rollback");
+        return SUCCESS();
     }
-
-    return CODE( status );
+    catch (const nanodbc::database_error& e) {
+        log_db::info("chlRollback rollback failure: {}", e.what());
+        return ERROR( CAT_SQL_ERR, "chlRollback rollback failure" );
+    }
+    catch (const std::exception& e) {
+        log_db::info("chlRollback rollback failure: {}", e.what());
+        return ERROR( SYS_INTERNAL_ERR, "chlRollback rollback failure" );
+    }
 
 } // db_rollback_op
 
@@ -4110,13 +4071,20 @@ irods::error db_commit_op(
     }
 
     log_sql::debug("chlCommit - SQL 1 ");
-    int status = db_execute_no_answer_sql( "commit", &icss );
-    if ( status != 0 ) {
-        log_db::info("chlCommit commit failure {}", status);
-        return ERROR( status, "chlCommit commit failure" );
-    }
 
-    return CODE( status );
+    try {
+        auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
+        executor.execute_dml(db_conn, "commit");
+        return SUCCESS();
+    }
+    catch (const nanodbc::database_error& e) {
+        log_db::info("chlCommit commit failure: {}", e.what());
+        return ERROR( CAT_SQL_ERR, "chlCommit commit failure" );
+    }
+    catch (const std::exception& e) {
+        log_db::info("chlCommit commit failure: {}", e.what());
+        return ERROR( SYS_INTERNAL_ERR, "chlCommit commit failure" );
+    }
 
 } // db_commit_op
 
@@ -11011,14 +10979,40 @@ irods::error db_specific_query_op(
         }
 
         log_sql::debug("chlSpecificQuery SQL 3");
-        status = db_get_first_row_from_sql( combinedSQL, &statementNum,
-                                            _spec_query_inp->rowOffset, bind_vars, &icss );
-        if ( status < 0 ) {
-            if ( status != CAT_NO_ROWS_FOUND ) {
-                log_db::info("chlSpecificQuery db_get_first_row_from_sql failure {}", status);
+        statementNum = allocate_specific_query_slot();
+        if (statementNum < 0) {
+            return ERROR(CAT_STATEMENT_TABLE_FULL, "statement table full");
+        }
+
+        try {
+            auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
+            nanodbc::statement stmt{db_conn};
+            nanodbc::prepare(stmt, combinedSQL);
+            executor.bind_parameters(stmt, bind_vars);
+            auto res = nanodbc::execute(stmt);
+
+            const auto& flavor = irods::experimental::catalog::get_db_flavor(icss.databaseType);
+            if (flavor.row_offset_requires_cursor_skip && _spec_query_inp->rowOffset > 0) {
+                for (int skip_idx = 0; skip_idx < _spec_query_inp->rowOffset; ++skip_idx) {
+                    if (!res.next() || res.columns() == 0) {
+                        return ERROR(CAT_NO_ROWS_FOUND, "db_get_first_row_from_sql failure");
+                    }
+                }
             }
-            db_free_statement(statementNum, &icss);
-            return ERROR( status, "db_get_first_row_from_sql failure" );
+
+            if (!res.next() || res.columns() == 0) {
+                return ERROR(CAT_NO_ROWS_FOUND, "db_get_first_row_from_sql failure");
+            }
+
+            specific_query_cursors[statementNum] = specific_query_cursor{std::move(stmt), std::move(res)};
+        }
+        catch (const nanodbc::database_error& e) {
+            log_db::info("chlSpecificQuery query execution failure: {}", e.what());
+            return ERROR(CAT_SQL_ERR, e.what());
+        }
+        catch (const std::exception& e) {
+            log_db::info("chlSpecificQuery query execution failure: {}", e.what());
+            return ERROR(SYS_INTERNAL_ERR, e.what());
         }
 
         _result->continueInx = statementNum + 1;
@@ -11026,45 +11020,49 @@ irods::error db_specific_query_op(
     }
     else {
         statementNum = _spec_query_inp->continueInx - 1;
+        if (statementNum < 0 || statementNum >= MAX_NUM_OF_CONCURRENT_STMTS ||
+            !specific_query_cursors[statementNum].has_value()) {
+            return ERROR(CAT_INVALID_ARGUMENT, "invalid continuation index");
+        }
         needToGetNextRow = 1;
         if ( _spec_query_inp->maxRows <= 0 ) { /* caller is closing out the query */
-            status = db_free_statement( statementNum, &icss );
-            if ( status < 0 ) {
-                return ERROR( status, "failed in free statement" );
-            }
-            else {
-                return CODE( status );
-            }
+            status = free_specific_query_slot( statementNum );
+            return CODE( status );
         }
     }
     for ( i = 0; i < _spec_query_inp->maxRows; i++ ) {
+        auto& cursor_res = specific_query_cursors[statementNum]->res;
         if ( needToGetNextRow ) {
-            status = db_get_next_row_from_statement( statementNum, &icss );
-            if ( status == CAT_NO_ROWS_FOUND ) {
-                db_free_statement( statementNum, &icss );
-                _result->continueInx = 0;
-                if ( _result->rowCnt == 0 ) {
-                    return ERROR( status, "no rows found" );
-                } /* NO ROWS; in this
-                                                          case a continuation call is finding no more rows */
-                return SUCCESS();
+            try {
+                if (!cursor_res.next() || cursor_res.columns() == 0) {
+                    free_specific_query_slot( statementNum );
+                    _result->continueInx = 0;
+                    if ( _result->rowCnt == 0 ) {
+                        return ERROR( CAT_NO_ROWS_FOUND, "no rows found" );
+                    } /* NO ROWS; in this
+                                                              case a continuation call is finding no more rows */
+                    return SUCCESS();
+                }
             }
-            if ( status < 0 ) {
-                db_free_statement(statementNum, &icss);
-                return ERROR( status, "failed to get next row" );
+            catch (const std::exception& e) {
+                free_specific_query_slot(statementNum);
+                return ERROR( CAT_GET_ROW_ERR, "failed to get next row" );
             }
         }
         needToGetNextRow = 1;
 
         _result->rowCnt++;
-        numOfCols = icss.stmtPtr[statementNum]->numOfCols;
+        numOfCols = cursor_res.columns();
         _result->attriCnt = numOfCols;
         _result->continueInx = statementNum + 1;
 
+        std::vector<std::string> col_values;
+        col_values.reserve(numOfCols);
         maxColSize = 0;
 
         for ( k = 0; k < numOfCols; k++ ) {
-            j = strlen( icss.stmtPtr[statementNum]->resultValue[k] );
+            col_values.push_back(cursor_res.is_null(k) ? "" : cursor_res.get<std::string>(k, ""));
+            j = static_cast<int>(col_values.back().size());
             if ( maxColSize <= j ) {
                 maxColSize = j;
             }
@@ -11080,7 +11078,7 @@ irods::error db_specific_query_op(
             for ( j = 0; j < numOfCols; j++ ) {
                 tResult = ( char * ) malloc( totalLen );
                 if ( tResult == NULL ) {
-                    db_free_statement(statementNum, &icss);
+                    free_specific_query_slot(statementNum);
                     return ERROR( SYS_MALLOC_ERR, "malloc error" );
                 }
                 memset( tResult, 0, totalLen );
@@ -11108,7 +11106,7 @@ irods::error db_specific_query_op(
                 int k;
                 tResult = ( char * ) malloc( totalLen );
                 if ( tResult == NULL ) {
-                    db_free_statement(statementNum, &icss);
+                    free_specific_query_slot(statementNum);
                     return ERROR( SYS_MALLOC_ERR, "failed to allocate result" );
                 }
                 memset( tResult, 0, totalLen );
@@ -11132,7 +11130,7 @@ irods::error db_specific_query_op(
             tResult2 = _result->sqlResult[j].value; /* ptr to value str */
             tResult2 += currentMaxColSize * ( _result->rowCnt - 1 );  /* skip forward
                                                                   for this row */
-            strncpy( tResult2, icss.stmtPtr[statementNum]->resultValue[j],
+            strncpy( tResult2, col_values[j].c_str(),
                      currentMaxColSize ); /* copy in the value text */
         }
 

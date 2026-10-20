@@ -8,6 +8,7 @@ set(IRODS_TEST_SOURCE_FILES
 )
 
 set(IRODS_TEST_INCLUDE_PATH
+  ${CMAKE_SOURCE_DIR}/lib/filesystem/include
   ${CMAKE_SOURCE_DIR}/plugins/database/include
   ${CMAKE_SOURCE_DIR}/server/genquery2/include
   ${CMAKE_BINARY_DIR}/server/genquery2/dsl

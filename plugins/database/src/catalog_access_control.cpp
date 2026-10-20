@@ -1,9 +1,10 @@
 #include "irods/private/catalog_access_control.hpp"
 
+#include "irods/filesystem/path.hpp"
 #include "irods/irods_logger.hpp"
+#include "irods/private/genquery2_builder.hpp"
 #include "irods/rodsErrorTable.h"
 
-#include <filesystem>
 #include <fmt/format.h>
 
 #include <chrono>
@@ -14,6 +15,8 @@ namespace irods::experimental::catalog::access_control
 {
     namespace
     {
+        namespace gq2 = irods::experimental::genquery2;
+        using gq2::builder::col;
         using log_db = irods::experimental::log::database;
 
         auto get_current_time_seconds() -> int64_t
@@ -32,17 +35,19 @@ namespace irods::experimental::catalog::access_control
         std::string_view _access_level,
         bool _admin_mode) -> int64_t
     {
-        const std::string dir_str{_dir_name};
-
         if (_admin_mode) {
-            auto coll_id_opt = _exec.query_integer(
+            auto coll_id_opt = query_catalog_integer(
+                _exec,
                 _conn,
-                "select coll_id from R_COLL_MAIN where coll_name = ?",
-                {dir_str});
+                gq2::builder::select({"coll_id"})
+                    .from("COLLECTION")
+                    .where(col("coll_name") == _dir_name)
+                    .build());
 
             return coll_id_opt.has_value() ? coll_id_opt.value() : CAT_UNKNOWN_COLLECTION;
         }
 
+        const std::string dir_str{_dir_name};
         const std::string user_str{_user_name};
         const std::string zone_str{_user_zone};
         const std::string access_str{_access_level};
@@ -66,10 +71,13 @@ namespace irods::experimental::catalog::access_control
             return coll_id_opt.value();
         }
 
-        auto exists_opt = _exec.query_integer(
+        auto exists_opt = query_catalog_integer(
+            _exec,
             _conn,
-            "select coll_id from R_COLL_MAIN where coll_name = ?",
-            {dir_str});
+            gq2::builder::select({"coll_id"})
+                .from("COLLECTION")
+                .where(col("coll_name") == _dir_name)
+                .build());
 
         if (!exists_opt.has_value()) {
             return CAT_UNKNOWN_COLLECTION;
@@ -100,16 +108,18 @@ namespace irods::experimental::catalog::access_control
         bool found = false;
 
         if (!ticket_str.empty()) {
-            const std::string sql =
-                "select CM.coll_id, CM.coll_inheritance "
-                "from R_COLL_MAIN CM, R_TICKET_MAIN TM "
-                "where CM.coll_name = ? and TM.ticket_string = ? and TM.ticket_type = 'write' and TM.object_id = CM.coll_id";
-
-            auto res = _exec.execute_query(_conn, sql, {dir_str, ticket_str});
-            if (res.next()) {
-                coll_id = res.get<int64_t>(0);
-                if (_inherit_flag && !res.is_null(1)) {
-                    *_inherit_flag = (res.get<std::string>(1) == "1") ? 1 : 0;
+            auto res = execute_catalog(
+                _exec,
+                _conn,
+                gq2::builder::select({"COLL_ID", "COLL_INHERITANCE"})
+                    .where(col("COLL_NAME") == _dir_name &&
+                           col("TICKET_STRING") == _ticket_str &&
+                           col("TICKET_TYPE") == "write")
+                    .build());
+            if (res.query_result && res.query_result->next()) {
+                coll_id = res.query_result->get<int64_t>(0);
+                if (_inherit_flag && !res.query_result->is_null(1)) {
+                    *_inherit_flag = (res.query_result->get<std::string>(1) == "1") ? 1 : 0;
                 }
                 found = true;
             }
@@ -138,10 +148,13 @@ namespace irods::experimental::catalog::access_control
         }
 
         if (!found) {
-            auto exists_opt = _exec.query_integer(
+            auto exists_opt = query_catalog_integer(
+                _exec,
                 _conn,
-                "select coll_id from R_COLL_MAIN where coll_name = ?",
-                {dir_str});
+                gq2::builder::select({"coll_id"})
+                    .from("COLLECTION")
+                    .where(col("coll_name") == _dir_name)
+                    .build());
 
             if (!exists_opt.has_value()) {
                 return CAT_UNKNOWN_COLLECTION;
@@ -185,10 +198,13 @@ namespace irods::experimental::catalog::access_control
             return 0;
         }
 
-        auto exists_opt = _exec.query_integer(
+        auto exists_opt = query_catalog_integer(
+            _exec,
             _conn,
-            "select coll_id from R_COLL_MAIN where coll_id = ?",
-            {dir_id_str});
+            gq2::builder::select({"coll_id"})
+                .from("COLLECTION")
+                .where(col("coll_id") == _dir_id)
+                .build());
 
         if (!exists_opt.has_value()) {
             return CAT_UNKNOWN_COLLECTION;
@@ -203,10 +219,15 @@ namespace irods::experimental::catalog::access_control
         std::string_view _user_name,
         std::string_view _user_zone) -> int64_t
     {
-        auto coll_id_opt = _exec.query_integer(
+        auto coll_id_opt = query_catalog_integer(
+            _exec,
             _conn,
-            "select coll_id from R_COLL_MAIN where coll_name = ? and coll_owner_name = ? and coll_owner_zone = ?",
-            {std::string{_dir_name}, std::string{_user_name}, std::string{_user_zone}});
+            gq2::builder::select({"coll_id"})
+                .from("COLLECTION")
+                .where(col("coll_name") == _dir_name &&
+                       col("coll_owner_name") == _user_name &&
+                       col("coll_owner_zone") == _user_zone)
+                .build());
 
         if (coll_id_opt.has_value()) {
             return coll_id_opt.value();
@@ -224,20 +245,18 @@ namespace irods::experimental::catalog::access_control
         std::string_view _access_level,
         bool _admin_mode) -> int64_t
     {
-        const std::string dir_str{_dir_name};
-        const std::string data_str{_data_name};
-
         if (_admin_mode) {
-            const std::string sql =
-                "select DM.data_id "
-                "from R_DATA_MAIN DM "
-                "inner join R_COLL_MAIN CM on DM.coll_id = CM.coll_id "
-                "where DM.data_name = ? and CM.coll_name = ?";
-
-            auto data_id_opt = _exec.query_integer(_conn, sql, {data_str, dir_str});
+            auto data_id_opt = query_catalog_integer(
+                _exec,
+                _conn,
+                gq2::builder::select({"DATA_ID"})
+                    .where(col("DATA_NAME") == _data_name && col("COLL_NAME") == _dir_name)
+                    .build());
             return data_id_opt.has_value() ? data_id_opt.value() : CAT_UNKNOWN_FILE;
         }
 
+        const std::string dir_str{_dir_name};
+        const std::string data_str{_data_name};
         const std::string user_str{_user_name};
         const std::string zone_str{_user_zone};
         const std::string access_str{_access_level};
@@ -255,11 +274,12 @@ namespace irods::experimental::catalog::access_control
             return data_id_opt.value();
         }
 
-        const std::string exists_sql =
-            "select DM.data_id from R_DATA_MAIN DM, R_COLL_MAIN CM "
-            "where DM.data_name = ? and DM.coll_id = CM.coll_id and CM.coll_name = ?";
-
-        auto exists_opt = _exec.query_integer(_conn, exists_sql, {data_str, dir_str});
+        auto exists_opt = query_catalog_integer(
+            _exec,
+            _conn,
+            gq2::builder::select({"DATA_ID"})
+                .where(col("DATA_NAME") == _data_name && col("COLL_NAME") == _dir_name)
+                .build());
         if (!exists_opt.has_value()) {
             return CAT_UNKNOWN_FILE;
         }
@@ -274,19 +294,28 @@ namespace irods::experimental::catalog::access_control
         std::string_view _user_name,
         std::string_view _user_zone) -> int64_t
     {
-        auto coll_id_opt = _exec.query_integer(
+        auto coll_id_opt = query_catalog_integer(
+            _exec,
             _conn,
-            "select coll_id from R_COLL_MAIN where coll_name = ?",
-            {std::string{_dir_name}});
+            gq2::builder::select({"coll_id"})
+                .from("COLLECTION")
+                .where(col("coll_name") == _dir_name)
+                .build());
 
         if (!coll_id_opt.has_value()) {
             return CAT_UNKNOWN_COLLECTION;
         }
 
-        auto data_id_opt = _exec.query_integer(
+        auto data_id_opt = query_catalog_integer(
+            _exec,
             _conn,
-            "select data_id from R_DATA_MAIN where data_name = ? and coll_id = ? and data_owner_name = ? and data_owner_zone = ?",
-            {std::string{_data_name}, std::to_string(coll_id_opt.value()), std::string{_user_name}, std::string{_user_zone}});
+            gq2::builder::select({"data_id"})
+                .from("DATA_OBJECT")
+                .where(col("data_name") == _data_name &&
+                       col("coll_id") == std::to_string(coll_id_opt.value()) &&
+                       col("data_owner_name") == _user_name &&
+                       col("data_owner_zone") == _user_zone)
+                .build());
 
         if (data_id_opt.has_value()) {
             return data_id_opt.value();
@@ -301,20 +330,39 @@ namespace irods::experimental::catalog::access_control
         std::string_view _user_zone,
         std::string_view _group_name) -> int
     {
-        auto user_id_opt = _exec.query_string(
+        auto user_id_opt = query_catalog_string(
+            _exec,
             _conn,
-            "select user_id from R_USER_MAIN where user_name = ? and zone_name = ? and user_type_name != 'rodsgroup'",
-            {std::string{_user_name}, std::string{_user_zone}});
+            gq2::builder::select({"user_id"})
+                .from("USER")
+                .where(col("user_name") == _user_name &&
+                       col("zone_name") == _user_zone &&
+                       col("user_type_name") != "rodsgroup")
+                .build());
 
         if (!user_id_opt.has_value()) {
             return CAT_INVALID_USER;
         }
 
-        const std::string sql =
-            "select group_user_id from R_USER_GROUP where user_id = ? and group_user_id = "
-            "(select user_id from R_USER_MAIN where user_type_name = 'rodsgroup' and user_name = ?)";
+        auto group_id_opt = query_catalog_string(
+            _exec,
+            _conn,
+            gq2::builder::select({"user_id"})
+                .from("USER")
+                .where(col("user_type_name") == "rodsgroup" && col("user_name") == _group_name)
+                .build());
 
-        auto grp_user_id_opt = _exec.query_integer(_conn, sql, {user_id_opt.value(), std::string{_group_name}});
+        if (!group_id_opt.has_value()) {
+            return CAT_NO_ROWS_FOUND;
+        }
+
+        auto grp_user_id_opt = query_catalog_integer(
+            _exec,
+            _conn,
+            gq2::builder::select({"group_user_id"})
+                .from("USER_GROUP")
+                .where(col("user_id") == user_id_opt.value() && col("group_user_id") == group_id_opt.value())
+                .build());
         if (!grp_user_id_opt.has_value()) {
             return CAT_NO_ROWS_FOUND;
         }
@@ -329,13 +377,14 @@ namespace irods::experimental::catalog::access_control
         std::string_view _user_name,
         std::string_view _user_zone) -> int
     {
-        const std::string ticket_id_str{_ticket_id};
-
         // 1. Host restrictions
-        auto allowed_hosts = _exec.query_strings(
+        auto allowed_hosts = query_catalog_strings(
+            _exec,
             _conn,
-            "select host from R_TICKET_ALLOWED_HOSTS where ticket_id = ?",
-            {ticket_id_str});
+            gq2::builder::select({"host"})
+                .from("TICKET_ALLOWED_HOSTS")
+                .where(col("ticket_id") == _ticket_id)
+                .build());
 
         if (!allowed_hosts.empty()) {
             bool host_ok = false;
@@ -351,10 +400,13 @@ namespace irods::experimental::catalog::access_control
         }
 
         // 2. User restrictions
-        auto allowed_users = _exec.query_strings(
+        auto allowed_users = query_catalog_strings(
+            _exec,
             _conn,
-            "select user_name from R_TICKET_ALLOWED_USERS where ticket_id = ?",
-            {ticket_id_str});
+            gq2::builder::select({"user_name"})
+                .from("TICKET_ALLOWED_USERS")
+                .where(col("ticket_id") == _ticket_id)
+                .build());
 
         if (!allowed_users.empty()) {
             bool user_ok = false;
@@ -371,10 +423,13 @@ namespace irods::experimental::catalog::access_control
         }
 
         // 3. Group restrictions
-        auto allowed_groups = _exec.query_strings(
+        auto allowed_groups = query_catalog_strings(
+            _exec,
             _conn,
-            "select group_name from R_TICKET_ALLOWED_GROUPS where ticket_id = ?",
-            {ticket_id_str});
+            gq2::builder::select({"group_name"})
+                .from("TICKET_ALLOWED_GROUPS")
+                .where(col("ticket_id") == _ticket_id)
+                .build());
 
         if (!allowed_groups.empty()) {
             bool group_ok = false;
@@ -405,11 +460,21 @@ namespace irods::experimental::catalog::access_control
         const std::string data_id_str{_data_id};
         const std::string ticket_str{_ticket_str};
 
-        auto coll_name_opt = _exec.query_string(
+        auto coll_name_opt = query_catalog_string(
+            _exec,
             _conn,
-            "select coll_name from R_COLL_MAIN "
-            "where coll_id = ? or coll_id in (select coll_id from R_DATA_MAIN where data_id = ?)",
-            {data_id_str, data_id_str});
+            gq2::builder::select({"coll_name"})
+                .from("COLLECTION")
+                .where(col("coll_id") == _data_id)
+                .build());
+        if (!coll_name_opt.has_value()) {
+            coll_name_opt = query_catalog_string(
+                _exec,
+                _conn,
+                gq2::builder::select({"COLL_NAME"})
+                    .where(col("DATA_ID") == _data_id)
+                    .build());
+        }
 
         if (!coll_name_opt.has_value()) {
             return CAT_NO_ROWS_FOUND;
@@ -417,7 +482,7 @@ namespace irods::experimental::catalog::access_control
 
         const bool is_modify = (_access_level.rfind("modify", 0) == 0);
         const auto zone_path = fmt::format("/{}", _user_zone);
-        std::filesystem::path coll_path{coll_name_opt.value()};
+        irods::experimental::filesystem::path coll_path{coll_name_opt.value()};
 
         std::string ticket_id;
         int64_t uses_limit = 0;
@@ -429,7 +494,7 @@ namespace irods::experimental::catalog::access_control
         int64_t write_byte_limit = 0;
         bool found = false;
 
-        while (coll_path != zone_path) {
+        while (coll_path.string_view() != zone_path && !coll_path.empty() && coll_path.string_view() != "/") {
             std::string sql;
             if (is_modify) {
                 sql =
@@ -460,7 +525,11 @@ namespace irods::experimental::catalog::access_control
                 found = true;
                 break;
             }
-            coll_path = coll_path.parent_path();
+            const auto parent_view = coll_path.parent_path_view();
+            if (parent_view == coll_path.string_view()) {
+                break;
+            }
+            coll_path = parent_view;
         }
 
         if (!found) {
@@ -499,10 +568,13 @@ namespace irods::experimental::catalog::access_control
                         return CAT_TICKET_WRITE_USES_EXCEEDED;
                     }
 
-                    _exec.execute_dml(
+                    execute_catalog(
+                        _exec,
                         _conn,
-                        "update R_TICKET_MAIN set write_file_count = write_file_count + 1 where ticket_id = ?",
-                        {ticket_id});
+                        gq2::builder::update("TICKET")
+                            .set("write_file_count", std::to_string(write_file_count + 1))
+                            .where(col("ticket_id") == ticket_id)
+                            .build());
                     previous_data_id_write = int_data_id;
                 }
             }
@@ -514,10 +586,13 @@ namespace irods::experimental::catalog::access_control
                     return CAT_TICKET_USES_EXCEEDED;
                 }
 
-                _exec.execute_dml(
+                execute_catalog(
+                    _exec,
                     _conn,
-                    "update R_TICKET_MAIN set uses_count = uses_count + 1 where ticket_id = ?",
-                    {ticket_id});
+                    gq2::builder::update("TICKET")
+                        .set("uses_count", std::to_string(uses_count + 1))
+                        .where(col("ticket_id") == ticket_id)
+                        .build());
                 previous_data_id_uses = int_data_id;
             }
         }
@@ -540,21 +615,24 @@ namespace irods::experimental::catalog::access_control
         const std::string obj_id_str{_object_id};
         const std::string ticket_str{_ticket_str};
 
-        auto coll_name_opt = _exec.query_string(
+        auto coll_name_opt = query_catalog_string(
+            _exec,
             _conn,
-            "select coll_name from R_COLL_MAIN where coll_id in (select coll_id from R_DATA_MAIN where data_id = ?)",
-            {obj_id_str});
+            gq2::builder::select({"COLL_NAME"})
+                .where(col("DATA_ID") == _object_id)
+                .build());
 
         if (!coll_name_opt.has_value()) {
             return CAT_NO_ROWS_FOUND;
         }
 
-        std::filesystem::path coll_path{coll_name_opt.value()};
+        irods::experimental::filesystem::path coll_path{coll_name_opt.value()};
         std::string ticket_id;
+        int64_t write_byte_count = 0;
         int64_t write_byte_limit = 0;
         bool found = false;
 
-        while (coll_path != "/") {
+        while (coll_path.string_view() != "/" && !coll_path.empty()) {
             const std::string sql =
                 "select ticket_id, write_byte_count, write_byte_limit from R_TICKET_MAIN "
                 "where ticket_type = 'write' and ticket_string = ? and (object_id = ? or object_id in (select coll_id from R_DATA_MAIN where data_id = ?))";
@@ -562,11 +640,16 @@ namespace irods::experimental::catalog::access_control
             auto res = _exec.execute_query(_conn, sql, {ticket_str, obj_id_str, obj_id_str});
             if (res.next()) {
                 ticket_id = res.is_null(0) ? "" : res.get<std::string>(0);
+                write_byte_count = res.is_null(1) ? 0 : std::strtoll(res.get<std::string>(1).c_str(), nullptr, 10);
                 write_byte_limit = res.is_null(2) ? 0 : std::strtoll(res.get<std::string>(2).c_str(), nullptr, 10);
                 found = true;
                 break;
             }
-            coll_path = coll_path.parent_path();
+            const auto parent_view = coll_path.parent_path_view();
+            if (parent_view == coll_path.string_view()) {
+                break;
+            }
+            coll_path = parent_view;
         }
 
         if (!found) {
@@ -577,10 +660,13 @@ namespace irods::experimental::catalog::access_control
             return 0;
         }
 
-        _exec.execute_dml(
+        execute_catalog(
+            _exec,
             _conn,
-            "update R_TICKET_MAIN set write_byte_count = write_byte_count + ? where ticket_id = ?",
-            {std::to_string(size_bytes), ticket_id});
+            gq2::builder::update("TICKET")
+                .set("write_byte_count", std::to_string(write_byte_count + size_bytes))
+                .where(col("ticket_id") == ticket_id)
+                .build());
 
         return 0;
     }
@@ -645,7 +731,13 @@ namespace irods::experimental::catalog::access_control
             return resc_id_opt.value();
         }
 
-        auto exists_opt = _exec.query_integer(_conn, "select resc_id from R_RESC_MAIN where resc_name = ?", {resc_str});
+        auto exists_opt = query_catalog_integer(
+            _exec,
+            _conn,
+            gq2::builder::select({"resc_id"})
+                .from("RESOURCE")
+                .where(col("resc_name") == _resc_name)
+                .build());
         if (!exists_opt.has_value()) {
             return CAT_UNKNOWN_RESOURCE;
         }
@@ -659,10 +751,15 @@ namespace irods::experimental::catalog::access_control
         std::string_view _user_zone,
         std::string_view _group_name) -> int
     {
-        auto user_id_opt = _exec.query_string(
+        auto user_id_opt = query_catalog_string(
+            _exec,
             _conn,
-            "select user_id from R_USER_MAIN where user_name = ? and zone_name = ? and user_type_name = 'groupadmin'",
-            {std::string{_user_name}, std::string{_user_zone}});
+            gq2::builder::select({"user_id"})
+                .from("USER")
+                .where(col("user_name") == _user_name &&
+                       col("zone_name") == _user_zone &&
+                       col("user_type_name") == "groupadmin")
+                .build());
 
         if (!user_id_opt.has_value()) {
             return CAT_INSUFFICIENT_PRIVILEGE_LEVEL;
@@ -672,11 +769,25 @@ namespace irods::experimental::catalog::access_control
             return 0;
         }
 
-        const std::string sql =
-            "select UG.group_user_id from R_USER_GROUP UG where UG.user_id = ? and UG.group_user_id = "
-            "(select user_id from R_USER_MAIN where user_type_name = 'rodsgroup' and user_name = ?)";
+        auto group_id_opt = query_catalog_string(
+            _exec,
+            _conn,
+            gq2::builder::select({"user_id"})
+                .from("USER")
+                .where(col("user_type_name") == "rodsgroup" && col("user_name") == _group_name)
+                .build());
 
-        auto grp_user_id_opt = _exec.query_integer(_conn, sql, {user_id_opt.value(), std::string{_group_name}});
+        if (!group_id_opt.has_value()) {
+            return CAT_INSUFFICIENT_PRIVILEGE_LEVEL;
+        }
+
+        auto grp_user_id_opt = query_catalog_integer(
+            _exec,
+            _conn,
+            gq2::builder::select({"group_user_id"})
+                .from("USER_GROUP")
+                .where(col("user_id") == user_id_opt.value() && col("group_user_id") == group_id_opt.value())
+                .build());
         if (!grp_user_id_opt.has_value()) {
             return CAT_INSUFFICIENT_PRIVILEGE_LEVEL;
         }
@@ -688,12 +799,24 @@ namespace irods::experimental::catalog::access_control
         nanodbc::connection& _conn,
         std::string_view _group_name) -> int
     {
-        const std::string sql =
-            "select count(UG.user_id) from R_USER_GROUP UG "
-            "where UG.group_user_id != UG.user_id and UG.group_user_id in "
-            "(select user_id from R_USER_MAIN where user_name = ? and user_type_name = 'rodsgroup')";
+        auto group_id_opt = query_catalog_string(
+            _exec,
+            _conn,
+            gq2::builder::select({"user_id"})
+                .from("USER")
+                .where(col("user_name") == _group_name && col("user_type_name") == "rodsgroup")
+                .build());
+        if (!group_id_opt.has_value()) {
+            return 0;
+        }
 
-        auto count_opt = _exec.query_integer(_conn, sql, {std::string{_group_name}});
+        auto count_opt = query_catalog_integer(
+            _exec,
+            _conn,
+            gq2::builder::select({gq2::builder::count("user_id")})
+                .from("USER_GROUP")
+                .where(col("group_user_id") == group_id_opt.value() && col("user_id") != group_id_opt.value())
+                .build());
         return count_opt.has_value() ? static_cast<int>(count_opt.value()) : 0;
     }
 
@@ -703,10 +826,13 @@ namespace irods::experimental::catalog::access_control
         std::string_view _namespace_name,
         std::string_view _token_name) -> int
     {
-        auto token_opt = _exec.query_integer(
+        auto token_opt = query_catalog_integer(
+            _exec,
             _conn,
-            "select token_id from R_TOKN_MAIN where token_namespace = ? and token_name = ?",
-            {std::string{_namespace_name}, std::string{_token_name}});
+            gq2::builder::select({"token_id"})
+                .from("TOKEN")
+                .where(col("token_namespace") == _namespace_name && col("token_name") == _token_name)
+                .build());
 
         return token_opt.has_value() ? 0 : CAT_NO_ROWS_FOUND;
     }

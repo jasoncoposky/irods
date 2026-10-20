@@ -114,30 +114,23 @@ int gq_get_next_row_from_statement(int stmtNum, icatSessionStruct* icss)
 }
 
 int gq_get_integer_value_from_sql_v3(const char* sql, rodsLong_t* iVal,
-                                     std::vector<std::string>& bind_vars, icatSessionStruct* icss)
+                                     std::vector<std::string>& bind_vars, [[maybe_unused]] icatSessionStruct* icss)
 {
-    int stmtNum = UNINITIALIZED_STATEMENT_NUMBER;
-    int i = cllExecSqlWithResultBV(icss, &stmtNum, sql, bind_vars);
-    if (i != 0) {
-        cllFreeStatement(icss, stmtNum);
-        return i <= CAT_ENV_ERR ? i : CAT_SQL_ERR;
+    try {
+        auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
+        const auto opt_val = executor.query_integer(db_conn, sql, bind_vars);
+        if (!opt_val) {
+            return CAT_NO_ROWS_FOUND;
+        }
+        *iVal = *opt_val;
+        return 0;
     }
-    i = cllGetRow(icss, stmtNum);
-    if (i != 0) {
-        cllFreeStatement(icss, stmtNum);
-        return CAT_GET_ROW_ERR;
+    catch (const nanodbc::database_error&) {
+        return CAT_SQL_ERR;
     }
-    if (icss->stmtPtr[stmtNum]->numOfCols == 0) {
-        cllFreeStatement(icss, stmtNum);
-        return CAT_NO_ROWS_FOUND;
+    catch (const std::exception&) {
+        return SYS_INTERNAL_ERR;
     }
-    if (icss->stmtPtr[stmtNum]->resultValue[0] == nullptr || icss->stmtPtr[stmtNum]->resultValue[0][0] == '\0') {
-        cllFreeStatement(icss, stmtNum);
-        return CAT_NO_ROWS_FOUND;
-    }
-    *iVal = strtoll(icss->stmtPtr[stmtNum]->resultValue[0], nullptr, 10);
-    cllFreeStatement(icss, stmtNum);
-    return 0;
 }
 
 } // anonymous namespace
