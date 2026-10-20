@@ -26,12 +26,10 @@
 #include "irods/specColl.hpp"
 #include "irods/structFileExtAndReg.h"
 
-#include <boost/filesystem/operations.hpp>
-#include <boost/filesystem/convenience.hpp>
-
 #include <cstring>
+#include <filesystem>
 
-using namespace boost::filesystem;
+using namespace std::filesystem;
 
 int
 bulkRegUnbunSubfiles(

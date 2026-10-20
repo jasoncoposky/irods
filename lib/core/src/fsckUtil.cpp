@@ -9,16 +9,15 @@
 #include "irods/genquery2_builder.hpp"
 #include "irods/rcGlobalExtern.h"
 
-#include <boost/filesystem/operations.hpp>
-#include <boost/filesystem/convenience.hpp>
 #include <fmt/format.h>
 
 #include <charconv>
 #include <cstring>
+#include <filesystem>
 #include <iostream>
 #include <string>
 
-namespace fs = boost::filesystem;
+namespace fs = std::filesystem;
 namespace gq2 = irods::experimental::genquery2;
 using gq2::builder::col;
 
@@ -80,7 +79,7 @@ int fsckObjDir(rcComm_t* conn,
 {
     fs::path srcDirPath(inpPath);
 
-    if (is_symlink(srcDirPath)) {
+    if (fs::is_symlink(srcDirPath)) {
         return 0;
     }
 

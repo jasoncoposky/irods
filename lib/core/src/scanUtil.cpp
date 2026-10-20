@@ -9,13 +9,12 @@
 #include "irods/rcGlobalExtern.h"
 #include "irods/rcMisc.h"
 
-#include <boost/filesystem/operations.hpp>
-#include <boost/filesystem/convenience.hpp>
 #include <fmt/format.h>
 
 #include <charconv>
+#include <filesystem>
 
-using namespace boost::filesystem;
+namespace fs = std::filesystem;
 
 int
 scanObj( rcComm_t *conn,
@@ -31,20 +30,20 @@ scanObj( rcComm_t *conn,
     char * inpPathO = rodsPathInp->srcPath[0].outPath;
     if ( rodsPathInp->srcPath[0].objType == LOCAL_FILE_T ||
             rodsPathInp->srcPath[0].objType == LOCAL_DIR_T ) {
-        path p( inpPathO );
-        if ( !exists( p ) ) {
+        fs::path p( inpPathO );
+        if ( !fs::exists( p ) ) {
             rodsLog( LOG_ERROR, "scanObj: %s does not exist", inpPathO );
             return USER_INPUT_PATH_ERR;
         }
         /* don't do anything if it is symlink */
-        if ( is_symlink( p ) ) {
+        if ( fs::is_symlink( p ) ) {
             return 0;
         }
 
         char inpPath[ MAX_NAME_LEN ];
         snprintf( inpPath, sizeof( inpPath ), "%s", inpPathO );
         // if it is part of a mounted collection, abort
-        if ( is_directory( p ) ) {
+        if ( fs::is_directory( p ) ) {
             if ( int status = checkIsMount( conn, inpPath ) ) {
                 rodsLog( LOG_ERROR, "The directory %s or one of its "
                          "subdirectories to be scanned is declared as being "
@@ -69,14 +68,14 @@ int scanObjDir(rcComm_t* conn,
                const char* inpPath,
                const char* hostname)
 {
-    const path srcDirPath(inpPath);
+    const fs::path srcDirPath(inpPath);
 
     // check if it is a directory.
-    if (is_symlink(srcDirPath)) {
+    if (fs::is_symlink(srcDirPath)) {
         return 0;
     }
 
-    if (!is_directory(srcDirPath)) {
+    if (!fs::is_directory(srcDirPath)) {
         return chkObjExist(conn, inpPath, hostname);
     }
 
@@ -90,14 +89,14 @@ int scanObjDir(rcComm_t* conn,
         int status = 0;
         char fullPath[MAX_NAME_LEN] = "\0";
 
-        for (const auto& e : directory_iterator{srcDirPath}) {
+        for (const auto& e : fs::directory_iterator{srcDirPath}) {
             snprintf(fullPath, MAX_NAME_LEN, "%s", e.path().c_str());
 
-            if (is_symlink(e)) {
+            if (e.is_symlink()) {
                 continue;
             }
 
-            if (is_directory(e)) {
+            if (e.is_directory()) {
                 if (True == myRodsArgs->recursive) {
                     status = scanObjDir(conn, myRodsArgs, fullPath, hostname);
                 }
@@ -111,7 +110,7 @@ int scanObjDir(rcComm_t* conn,
             }
         }
     }
-    catch (const filesystem_error& e) {
+    catch (const fs::filesystem_error& e) {
         rodsLog(LOG_ERROR, "scanObjDir: %s", e.what());
         return e.code().value();
     }

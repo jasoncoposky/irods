@@ -15,12 +15,10 @@
 #include "irods/rsStructFileExtract.hpp"
 #include "irods/unbunAndRegPhyBunfile.h"
 
-#include <boost/filesystem/operations.hpp>
-#include <boost/filesystem/convenience.hpp>
-
 #include <cstring>
+#include <filesystem>
 
-using namespace boost::filesystem;
+using namespace std::filesystem;
 
 int
 rsUnbunAndRegPhyBunfile( rsComm_t *rsComm, dataObjInp_t *dataObjInp ) {

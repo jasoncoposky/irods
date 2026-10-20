@@ -23,15 +23,14 @@
 #include "irods/irods_random.hpp"
 #include "irods/key_value_proxy.hpp"
 
-#include <boost/filesystem/operations.hpp>
-#include <boost/filesystem/convenience.hpp>
 #include <boost/lexical_cast.hpp>
 
 #include <fmt/format.h>
 
 #include <cstring>
+#include <filesystem>
 
-namespace fs = boost::filesystem;
+namespace fs = std::filesystem;
 using log_api = irods::experimental::log::api;
 
 int

@@ -22,9 +22,6 @@
 
 #include <openssl/evp.h>
 
-#include <boost/filesystem/operations.hpp>
-#include <boost/filesystem/convenience.hpp>
-
 #include <fmt/format.h>
 #include <fmt/ranges.h>
 
@@ -101,7 +98,6 @@ auto set_session_signature_client_side(rcComm_t* _comm, const char* _buffer, std
 int clientLoginPam( rcComm_t* Conn,
                     char*     password,
                     int       ttl ) {
-    using namespace boost::filesystem;
     int status = 0;
     pamAuthRequestInp_t pamAuthReqInp;
     pamAuthRequestOut_t *pamAuthReqOut = NULL;

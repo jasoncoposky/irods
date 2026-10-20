@@ -11,11 +11,11 @@
 #include "irods/rsProcStat.hpp"
 #include "irods/irods_resource_backport.hpp"
 
-#include <boost/filesystem/operations.hpp>
-#include <boost/filesystem/convenience.hpp>
 #include <boost/lexical_cast.hpp>
 
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 
 namespace
 {
@@ -253,8 +253,8 @@ localProcStat( procStatInp_t *procStatInp,
     }
 
     /* loop through the directory */
-    namespace fs = boost::filesystem;
-    fs::path srcDirPath(proc_dir);
+    namespace fs = std::filesystem;
+    fs::path srcDirPath(proc_dir.c_str());
     if (!fs::exists(srcDirPath) || !fs::is_directory(srcDirPath)) {
         status = USER_INPUT_PATH_ERR - errno;
         rodsLogError(LOG_ERROR, status, "localProcStat: opendir local dir error for %s", proc_dir.c_str());
@@ -269,12 +269,12 @@ localProcStat( procStatInp_t *procStatInp,
         }
         snprintf( childPath, MAX_NAME_LEN, "%s",
                   p.c_str() );
-        if ( !exists( p ) ) {
+        if ( !fs::exists( p ) ) {
             rodsLogError( LOG_ERROR, status,
                           "localProcStat: stat error for %s", childPath );
             continue;
         }
-        if ( is_regular_file( p ) ) {
+        if ( fs::is_regular_file( p ) ) {
             if ( count >= numProc ) {
                 rodsLog( LOG_ERROR,
                          "localProcStat: proc count %d exceeded", numProc );

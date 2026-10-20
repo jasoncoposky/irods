@@ -18,14 +18,11 @@
 #include <boost/thread/scoped_thread.hpp>
 #include <boost/thread/mutex.hpp>
 #include <boost/thread/condition.hpp>
-#include <boost/filesystem/operations.hpp>
-#include <boost/filesystem/convenience.hpp>
 
 #include <cstring>
+#include <filesystem>
 #include <iomanip>
 #include <fstream>
-
-using namespace boost::filesystem;
 
 int
 sendTranHeader( int sock, int oprType, int flags, rodsLong_t offset,
@@ -1270,12 +1267,13 @@ readLfRestartFile( char *infoFile, fileRestartInfo_t **info ) {
     char *buf;
 
     *info = NULL;
-    path p( infoFile );
-    if ( !exists( p ) || !is_regular_file( p ) ) {
+    namespace fs = std::filesystem;
+    const fs::path p( infoFile );
+    if ( !fs::exists( p ) || !fs::is_regular_file( p ) ) {
         status = UNIX_FILE_STAT_ERR - errno;
         return status;
     }
-    else if ( ( mySize = file_size( p ) ) <= 0 ) {
+    else if ( ( mySize = fs::file_size( p ) ) <= 0 ) {
         status = UNIX_FILE_STAT_ERR - errno;
         rodsLog( LOG_ERROR,
                  "readLfRestartFile restart infoFile size is 0 for %s",

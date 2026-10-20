@@ -16,13 +16,12 @@
 #include "irods/genquery2_builder.hpp"
 #include "irods/collection_entry_validation.hpp"
 
-#include <boost/filesystem/operations.hpp>
-#include <boost/filesystem/convenience.hpp>
-
 #include <sys/time.h>
 
+#include <chrono>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <sstream>
 
 static int CurrentTime = 0;
@@ -795,7 +794,7 @@ int
 rsyncDirToCollUtil( rcComm_t *conn, rodsPath_t *srcPath,
                     rodsPath_t *targPath, rodsEnv *myRodsEnv, rodsArguments_t *rodsArgs,
                     dataObjInp_t *dataObjOprInp ) {
-    namespace fs = boost::filesystem;
+    namespace fs = std::filesystem;
 
     char *srcDir, *targColl;
     rodsPath_t mySrcPath, myTargPath;
@@ -818,7 +817,7 @@ rsyncDirToCollUtil( rcComm_t *conn, rodsPath_t *srcPath,
     }
 
     fs::path srcDirPath( srcDir );
-    if ( !exists( srcDirPath ) || !is_directory( srcDirPath ) ) {
+    if ( !fs::exists( srcDirPath ) || !fs::is_directory( srcDirPath ) ) {
         rodsLog( LOG_ERROR,
                  "rsyncDirToCollUtil: opendir local dir error for %s, errno = %d\n",
                  srcDir, errno );
@@ -865,30 +864,34 @@ rsyncDirToCollUtil( rcComm_t *conn, rodsPath_t *srcPath,
             return USER_INPUT_PATH_ERR;
         }
 
-        if ( !exists( p ) ) {
+        if ( !fs::exists( p ) ) {
             rodsLog( LOG_ERROR, "rsyncDirToCollUtil: stat error for %s, errno = %d\n", mySrcPath.outPath, errno );
             return USER_INPUT_PATH_ERR;
         }
 
-        if ( ( is_regular_file( p ) && rodsArgs->age == True ) &&
-                ageExceeded(
-                    rodsArgs->agevalue,
-                    last_write_time( p ),
-                    mySrcPath.outPath,
-                    file_size( p ) ) ) {
-            continue;
+        if ( fs::is_regular_file( p ) && rodsArgs->age == True ) {
+            const auto ftime = fs::last_write_time( p );
+            const auto sctp = std::chrono::time_point_cast<std::chrono::seconds>(
+                ftime - fs::file_time_type::clock::now() + std::chrono::system_clock::now() );
+            if ( ageExceeded(
+                     rodsArgs->agevalue,
+                     static_cast<int>( sctp.time_since_epoch().count() ),
+                     mySrcPath.outPath,
+                     fs::file_size( p ) ) ) {
+                continue;
+            }
         }
 
         std::memset(&myTargPath, 0, sizeof(myTargPath));
         fs::path childPath = p.filename();
         snprintf( myTargPath.outPath, MAX_NAME_LEN, "%s/%s",
                   targColl, childPath.c_str() );
-        if ( is_symlink( p ) ) {
+        if ( fs::is_symlink( p ) ) {
             if (rodsArgs->link) {
                 // --ignore-symlinks option means ignore symlinks.
                 continue;
             }
-            fs::path cp = read_symlink( p );
+            fs::path cp = fs::read_symlink( p );
             // Issue 3663 - If the path is FQDN, do not add srcDir on path
             if (cp.is_relative()) {
                 snprintf( mySrcPath.outPath, MAX_NAME_LEN, "%s/%s", srcDir, cp.c_str() );
@@ -899,12 +902,12 @@ rsyncDirToCollUtil( rcComm_t *conn, rodsPath_t *srcPath,
         }
         dataObjOprInp->createMode = getPathStMode( p.c_str() );
         status = 0;
-        if ( is_regular_file( p ) ) {
+        if ( fs::is_regular_file( p ) ) {
             myTargPath.objType = DATA_OBJ_T;
             mySrcPath.objType = LOCAL_FILE_T;
             mySrcPath.objState = EXIST_ST;
 
-            mySrcPath.size = file_size( p );
+            mySrcPath.size = fs::file_size( p );
             getRodsObjType( conn, &myTargPath );
             status = rsyncFileToDataUtil( conn, &mySrcPath, &myTargPath,
                                           rodsArgs, dataObjOprInp );
@@ -914,7 +917,7 @@ rsyncDirToCollUtil( rcComm_t *conn, rodsPath_t *srcPath,
                 myTargPath.rodsObjStat = NULL;
             }
         }
-        else if ( is_directory( p ) ) {
+        else if ( fs::is_directory( p ) ) {
             /* only do the sync if no -l option specified */
             if ( rodsArgs->longOption != True ) {
                 status = mkCollR (conn, targColl, myTargPath.outPath);

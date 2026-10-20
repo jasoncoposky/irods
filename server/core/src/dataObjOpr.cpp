@@ -31,8 +31,6 @@
 #include "irods/scoped_privileged_client.hpp"
 #include "irods/filesystem/path.hpp"
 
-#include <boost/filesystem/operations.hpp>
-#include <boost/filesystem/convenience.hpp>
 #include <boost/lexical_cast.hpp>
 #include <boost/algorithm/string.hpp>
 
@@ -43,8 +41,7 @@
 
 #include <algorithm>
 #include <charconv>
-
-using namespace boost::filesystem;
+#include <filesystem>
 
 namespace
 {
@@ -893,29 +890,30 @@ chkOrphanDir( rsComm_t *rsComm, char *dirPath, const char *rescName ) {
     int savedStatus = 1;
     int status = 0;
 
-    path srcDirPath( dirPath );
-    if ( !exists( srcDirPath ) || !is_directory( srcDirPath ) ) {
+    namespace fs = std::filesystem;
+    fs::path srcDirPath( dirPath );
+    if ( !fs::exists( srcDirPath ) || !fs::is_directory( srcDirPath ) ) {
         rodsLog( LOG_ERROR,
                  "chkOrphanDir: opendir error for %s, errno = %d",
                  dirPath, errno );
         return UNIX_FILE_OPENDIR_ERR - errno;
     }
-    directory_iterator end_itr; // default construction yields past-the-end
-    for ( directory_iterator itr( srcDirPath ); itr != end_itr; ++itr ) {
-        path p = itr->path();
+    fs::directory_iterator end_itr; // default construction yields past-the-end
+    for ( fs::directory_iterator itr( srcDirPath ); itr != end_itr; ++itr ) {
+        fs::path p = itr->path();
         snprintf( subfilePath, MAX_NAME_LEN, "%s",
                   p.c_str() );
-        if ( !exists( p ) ) {
+        if ( !fs::exists( p ) ) {
             rodsLog( LOG_ERROR,
                      "chkOrphanDir: stat error for %s, errno = %d",
                      subfilePath, errno );
             savedStatus = UNIX_FILE_STAT_ERR - errno;
             continue;
         }
-        if ( is_directory( p ) ) {
+        if ( fs::is_directory( p ) ) {
             status = chkOrphanDir( rsComm, subfilePath, rescName );
         }
-        else if ( is_regular_file( p ) ) {
+        else if ( fs::is_regular_file( p ) ) {
             status = chkOrphanFile( rsComm, subfilePath, rescName, NULL );
         }
         if ( status == 0 ) {

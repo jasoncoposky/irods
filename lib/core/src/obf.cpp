@@ -52,10 +52,8 @@
 #include "irods/rods.h"
 #include "irods/rodsPath.h"
 
-#include <boost/filesystem.hpp>
-#include <boost/system/error_code.hpp>
-#include <boost/filesystem/operations.hpp>
-#include <boost/filesystem/convenience.hpp>
+#include <filesystem>
+#include <system_error>
 #define TMP_FLAG "%TEMPORARY_PW%"
 
 #include <openssl/evp.h>
@@ -211,8 +209,8 @@ obfRmPw( int opt ) {
     if ( int status = obfiGetFilename( fileName ) ) {
         return status;
     }
-    boost::filesystem::path filePath( fileName );
-    if ( !boost::filesystem::exists( filePath ) ) {
+    const std::filesystem::path filePath( fileName );
+    if ( !std::filesystem::exists( filePath ) ) {
         if ( opt == 0 ) {
             printf( "%s does not exist\n", fileName );
         }
@@ -225,9 +223,9 @@ obfRmPw( int opt ) {
             return 0;
         }
     }
-    boost::system::error_code error;
-    boost::filesystem::remove( filePath, error );
-    if ( error.value() ) {
+    std::error_code error;
+    std::filesystem::remove( filePath, error );
+    if ( error ) {
         return UNLINK_FAILED;
     }
     return 0;
@@ -274,7 +272,7 @@ obfiSetTimeFromFile( int fd ) {
 /* char *pwArg; if non-0-length, this is the new password */
 int
 obfSavePw( int promptOpt, int fileOpt, int printOpt, const char *pwArg ) {
-    using namespace boost::filesystem;
+    using namespace std::filesystem;
     char fileName[max_path_length];
     char inbuf[MAX_PASSWORD_LEN + 100];
     char myPw[MAX_PASSWORD_LEN + 10];

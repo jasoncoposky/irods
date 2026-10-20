@@ -13,7 +13,6 @@
 #include "irods/checksum.h"
 #include "irods/rcGlobalExtern.h"
 #include <string>
-#include <boost/filesystem.hpp>
 #include "irods/irods_server_properties.hpp"
 #include "irods/irods_path_recursion.hpp"
 #include "irods/irods_exception.hpp"
@@ -21,11 +20,11 @@
 #include "irods/irods_log.hpp"
 #include "irods/sockComm.h"
 
-#include <boost/filesystem/operations.hpp>
 #include <boost/lexical_cast.hpp>
-#include <boost/filesystem/convenience.hpp>
 
 #include <cstring>
+#include <filesystem>
+#include <system_error>
 
 /* checkStateForResume - check the state for resume operation
  * return 0 - skip
@@ -98,7 +97,7 @@ setStateForResume( rcComm_t * conn, rodsRestart_t * rodsRestart,
                    char * restartPath, objType_t objType, keyValPair_t * condInput,
                    int deleteFlag )
 {
-    namespace fs = boost::filesystem;
+    namespace fs = std::filesystem;
 
     if ( restartPath != NULL && deleteFlag > 0 ) {
         if ( objType == DATA_OBJ_T ) {
@@ -126,9 +125,10 @@ setStateForResume( rcComm_t * conn, rodsRestart_t * rodsRestart,
                     strcmp( conn->fileRestart.info.fileName, restartPath ) != 0 ) {
                 fs::path path( restartPath );
                 if ( fs::exists( path ) ) {
-                    int status = fs::remove( path );
-                    if ( status < 0 ) {
-                        irods::log( ERROR( status, "boost:filesystem::remove() failed." ) );
+                    std::error_code ec;
+                    fs::remove( path, ec );
+                    if ( ec ) {
+                        irods::log( ERROR( ec.value(), "std::filesystem::remove() failed." ) );
                     }
                 }
             }
@@ -462,8 +462,6 @@ initCondForPut( rcComm_t *conn, rodsEnv *myRodsEnv, rodsArguments_t *rodsArgs,
                 dataObjInp_t *dataObjOprInp, bulkOprInp_t *bulkOprInp,
                 rodsRestart_t *rodsRestart )
 {
-    namespace fs = boost::filesystem;
-
     if ( rodsArgs == NULL ) { // JMC cppcheck - nullptr
         rodsLog( LOG_ERROR, "initCondForPut :: NULL rodsArgs" );
         return -1;
@@ -665,7 +663,7 @@ putDirUtil( rcComm_t **myConn, char *srcDir, char *targColl,
             bulkOprInp_t *bulkOprInp, rodsRestart_t *rodsRestart,
             bulkOprInfo_t *bulkOprInfo )
 {
-    namespace fs = boost::filesystem;
+    namespace fs = std::filesystem;
 
     char srcChildPath[MAX_NAME_LEN], targChildPath[MAX_NAME_LEN];
     int status = 0;
@@ -708,7 +706,7 @@ putDirUtil( rcComm_t **myConn, char *srcDir, char *targColl,
 
     rcComm_t *conn = *myConn;
     fs::path srcDirPath( srcDir );
-    if ( !exists( srcDirPath ) || !is_directory( srcDirPath ) ) {
+    if ( !fs::exists( srcDirPath ) || !fs::is_directory( srcDirPath ) ) {
         rodsLog( LOG_ERROR,
                  "putDirUtil: opendir local dir error for %s, errno = %d\n",
                  srcDir, errno );
@@ -726,7 +724,7 @@ putDirUtil( rcComm_t **myConn, char *srcDir, char *targColl,
     }
 
     int savedStatus = 0;
-    boost::system::error_code ec;
+    std::error_code ec;
     fs::directory_iterator it(srcDirPath, ec), end;
 
     if (ec && it == end) {
@@ -752,7 +750,7 @@ putDirUtil( rcComm_t **myConn, char *srcDir, char *targColl,
                 return USER_INPUT_PATH_ERR;
             }
 
-            if ( !exists( p ) ) {
+            if ( !fs::exists( p ) ) {
                 rodsLog( LOG_ERROR, "putDirUtil: stat error for %s, errno = %d\n", srcChildPath, errno );
                 return USER_INPUT_PATH_ERR;
             }
@@ -762,12 +760,12 @@ putDirUtil( rcComm_t **myConn, char *srcDir, char *targColl,
             // and uses the symlink target filename instead.
             snprintf( targChildPath, MAX_NAME_LEN, "%s/%s", targColl, p.filename().c_str() );
 
-            if ( is_symlink( p ) ) {
+            if ( fs::is_symlink( p ) ) {
                 if (rodsArgs->link) {
                     // --ignore-symlinks option means ignore symlinks.
                     continue;
                 }
-                fs::path cp = read_symlink( p );
+                fs::path cp = fs::read_symlink( p );
                 // Issue 4009 (similar to Issue 3663).
                 if (cp.is_relative()) {
                     snprintf( srcChildPath, MAX_NAME_LEN, "%s/%s", srcDir, cp.c_str() );
@@ -781,11 +779,11 @@ putDirUtil( rcComm_t **myConn, char *srcDir, char *targColl,
             dataObjOprInp->createMode = getPathStMode( p.c_str() );
             objType_t childObjType;
 
-            if ( is_regular_file( p ) ) {
+            if ( fs::is_regular_file( p ) ) {
                 childObjType = DATA_OBJ_T;
-                dataSize = file_size( p );
+                dataSize = fs::file_size( p );
             }
-            else if ( is_directory( p ) ) {
+            else if ( fs::is_directory( p ) ) {
                 childObjType = COLL_OBJ_T;
             }
             else {
@@ -795,7 +793,7 @@ putDirUtil( rcComm_t **myConn, char *srcDir, char *targColl,
             }
 
             if ( childObjType == DATA_OBJ_T ) {
-                const auto f_size = file_size(p);
+                const auto f_size = fs::file_size(p);
 
                 if ( bulkFlag == BULK_OPR_SMALL_FILES && f_size > MAX_BULK_OPR_FILE_SIZE ) {
                     continue;
@@ -947,13 +945,13 @@ bulkPutDirUtil( rcComm_t **myConn, char *srcDir, char *targColl,
 int
 getPhyBunDir( char *phyBunRootDir, char *userName, char *outPhyBunDir )
 {
-    namespace fs = boost::filesystem;
+    namespace fs = std::filesystem;
 
     while ( 1 ) {
         snprintf( outPhyBunDir, MAX_NAME_LEN, "%s/%s.phybun.%u", phyBunRootDir,
                   userName, irods::getRandom<unsigned int>() );
         fs::path p( outPhyBunDir );
-        if ( !exists( p ) ) {
+        if ( !fs::exists( p ) ) {
             break;
         }
     }

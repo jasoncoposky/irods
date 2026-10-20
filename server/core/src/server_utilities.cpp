@@ -11,8 +11,7 @@
 #include <sys/stat.h>
 #include <sys/wait.h>
 
-#include <boost/filesystem.hpp>
-
+#include <filesystem>
 #include <regex>
 #include <fstream>
 
@@ -78,7 +77,7 @@ namespace irods
     {
         using log_server = irods::experimental::log::server;
 
-        const auto pid_file = boost::filesystem::temp_directory_path() / _pid_filename.data();
+        const auto pid_file = std::filesystem::temp_directory_path() / _pid_filename;
 
         // Open the PID file. If it does not exist, create it and give the owner
         // permission to read and write to it.
@@ -139,9 +138,9 @@ namespace irods
         using log_server = irods::experimental::log::server;
 
         try {
-            const auto pid_file = boost::filesystem::temp_directory_path() / _pid_filename.data();
+            const auto pid_file = std::filesystem::temp_directory_path() / _pid_filename;
 
-            if (!boost::filesystem::exists(pid_file)) {
+            if (!std::filesystem::exists(pid_file)) {
                 log_server::trace("PID file does not exist [path={}].", pid_file.c_str());
                 return std::nullopt;
             }

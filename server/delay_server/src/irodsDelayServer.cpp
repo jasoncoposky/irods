@@ -60,6 +60,7 @@
 #include <thread>
 #include <string>
 #include <string_view>
+#include <filesystem>
 #include <fstream>
 
 // __has_feature is a Clang specific feature.
@@ -243,7 +244,7 @@ namespace
         const auto& rei_file_path = get_string_ref("rei_file_path");
         const auto& exe_context = get_string_ref("exe_context");
 
-        namespace fs = boost::filesystem;
+        namespace fs = std::filesystem;
 
         ruleExecSubmitInp_t rule_exec_submit_inp{};
 
@@ -440,8 +441,8 @@ namespace
             std::string new_file_name{ _rei_file_path};
             new_file_name += ".migrated_into_catalog";
 
-            boost::system::error_code ec;
-            boost::filesystem::rename(_rei_file_path.data(), new_file_name, ec);
+            std::error_code ec;
+            std::filesystem::rename(_rei_file_path, new_file_name, ec);
         }
         catch (...) {
             log_ds::error("An unexpected error was encountered during REI file migration [rule_id={}].", _rule_id);
@@ -836,7 +837,7 @@ int main(int _argc, char** _argv)
 
     log_ds::info("Initializing delay server.");
 
-    set_ips_display_name(boost::filesystem::path{_argv[0]}.filename().c_str());
+    set_ips_display_name(std::filesystem::path{_argv[0]}.filename().c_str());
 
     load_client_api_plugins();
 
