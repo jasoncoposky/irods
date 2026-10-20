@@ -390,6 +390,10 @@ namespace irods::experimental::genquery2
         {"MSRVC_VER_COMMENT", {"R_MICROSRVC_VER", "r_comment"}},
         {"MSRVC_VER_CREATE_TIME", {"R_MICROSRVC_VER", "create_ts"}},
         {"MSRVC_VER_MODIFY_TIME", {"R_MICROSRVC_VER", "modify_ts"}},
+
+        {"SPECIFIC_QUERY_ALIAS", {"R_SPECIFIC_QUERY", "alias"}},
+        {"SPECIFIC_QUERY_SQL", {"R_SPECIFIC_QUERY", "sqlStr"}},
+        {"SPECIFIC_QUERY_CREATE_TIME", {"R_SPECIFIC_QUERY", "create_ts"}},
     }; // column_name_mappings
 } // namespace irods::experimental::genquery2
 

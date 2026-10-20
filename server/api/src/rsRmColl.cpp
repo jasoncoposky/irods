@@ -24,7 +24,6 @@
 #include "irods/rsSubStructFileRmdir.hpp"
 #include "irods/rsFileRmdir.hpp"
 #include "irods/rsDataObjRename.hpp"
-#include "irods/rsGenQuery.hpp"
 
 #include "irods/irods_resource_backport.hpp"
 #include "irods/irods_configuration_keywords.hpp"

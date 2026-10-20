@@ -284,6 +284,9 @@ int chlGetReplListForLeafBundlesOffset(rodsLong_t _count,
 /// \since 4.2.9
 auto chl_check_permission_to_modify_data_object(RsComm& _comm, const rodsLong_t _data_id) -> int;
 
+/// \brief High-level wrapper for checking data object access permissions (and ticket restrictions) by data_id.
+auto chl_check_data_object_access(RsComm& _comm, const rodsLong_t _data_id, const char* _access_perm) -> int;
+
 /// \brief High-level wrapper for database operation which calls db_ticket_update_write_bytes
 ///
 /// \parblock

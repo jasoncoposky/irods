@@ -4598,6 +4598,36 @@ auto chl_check_permission_to_modify_data_object(RsComm& _comm, const rodsLong_t 
     return ret.code();
 } // chl_check_permission_to_modify_data_object
 
+auto chl_check_data_object_access(RsComm& _comm, const rodsLong_t _data_id, const char* _access_perm) -> int
+{
+    if (!_access_perm) {
+        return SYS_INTERNAL_NULL_INPUT_ERR;
+    }
+
+    irods::database_object_ptr db_obj_ptr;
+    if (const auto ret = irods::database_factory(database_plugin_type, db_obj_ptr); !ret.ok()) {
+        irods::log(PASS(ret));
+        return ret.code();
+    }
+
+    irods::plugin_ptr db_plug_ptr;
+    if (const auto ret = db_obj_ptr->resolve(irods::DATABASE_INTERFACE, db_plug_ptr); !ret.ok()) {
+        irods::log(PASSMSG("failed to resolve database interface", ret));
+        return ret.code();
+    }
+
+    irods::first_class_object_ptr ptr = boost::dynamic_pointer_cast<irods::first_class_object>(db_obj_ptr);
+    irods::database_ptr           db = boost::dynamic_pointer_cast<irods::database>(db_plug_ptr);
+
+    const auto ret = db->call<const rodsLong_t, const char*>(&_comm,
+                                                             irods::DATABASE_OP_CHECK_DATA_OBJECT_ACCESS,
+                                                             ptr,
+                                                             _data_id,
+                                                             _access_perm);
+
+    return ret.code();
+} // chl_check_data_object_access
+
 auto chl_update_ticket_write_byte_count(RsComm& _comm, const rodsLong_t _data_id, const rodsLong_t _bytes_written) -> int
 {
     irods::database_object_ptr db_obj_ptr;

@@ -505,6 +505,17 @@ TEST_CASE("GenQuery2 SELECT with Explicit From Entity", "[genquery2][select]")
         REQUIRE(params_spec[4] == "/tempZone/home/rods/mount");
         REQUIRE(params_spec[5] == "/tempZone/home/rods/mount/sub");
         REQUIRE(params_spec[6] == "_%");
+
+        auto sel_sq = gq2::builder::select({"SPECIFIC_QUERY_ALIAS", "SPECIFIC_QUERY_SQL", "SPECIFIC_QUERY_CREATE_TIME"})
+            .where(col("SPECIFIC_QUERY_ALIAS") == "ls")
+            .build();
+
+        auto [sql_sq, params_sq] = gq2::to_sql(sel_sq, opts);
+        REQUIRE(sql_sq.find("R_SPECIFIC_QUERY") != std::string::npos);
+        REQUIRE(sql_sq.find("alias") != std::string::npos);
+        REQUIRE(sql_sq.find("sqlStr") != std::string::npos);
+        REQUIRE(params_sq.size() == 1);
+        REQUIRE(params_sq[0] == "ls");
     }
 }
 

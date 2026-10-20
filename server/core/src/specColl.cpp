@@ -14,7 +14,6 @@
 #include "irods/rods.h"
 #include "irods/rsDataObjClose.hpp"
 #include "irods/rsFileCreate.hpp"
-#include "irods/rsGenQuery.hpp"
 #include "irods/rsGlobalExtern.hpp"
 #include "irods/rsModColl.hpp"
 #include "irods/rsObjStat.hpp"

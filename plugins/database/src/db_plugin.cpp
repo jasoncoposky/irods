@@ -12792,6 +12792,39 @@ auto db_check_permission_to_modify_data_object_op(
     return SUCCESS();
 } // db_check_permission_to_modify_data_object_op
 
+auto db_check_data_object_access_op(
+    irods::plugin_context& _ctx,
+    const rodsLong_t       _data_id,
+    const char*            _access_perm) -> irods::error
+{
+    if (const auto ret = _ctx.valid(); !ret.ok()) {
+        return PASS(ret);
+    }
+
+    if (!_access_perm) {
+        return ERROR(SYS_INTERNAL_NULL_INPUT_ERR, "null access_perm");
+    }
+
+    auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
+    const auto ec = irods::experimental::catalog::access_control::check_data_object_id(
+        executor, db_conn,
+        std::to_string(_data_id),
+        _ctx.comm()->clientUser.userName,
+        _ctx.comm()->clientUser.rodsZone,
+        _access_perm,
+        mySessionTicket,
+        mySessionClientAddr);
+
+    if (ec != 0) {
+        const auto msg = fmt::format(
+            "user does not have [{}] permission for object with data id [{}]", _access_perm, _data_id);
+        log_db::info("[{}:{}] - [{}]", __func__, __LINE__, msg);
+        return ERROR(ec, msg);
+    }
+
+    return SUCCESS();
+} // db_check_data_object_access_op
+
 auto db_update_ticket_write_byte_count_op(
     irods::plugin_context& _ctx,
     const rodsLong_t       _data_id,
@@ -14468,6 +14501,10 @@ irods::database* plugin_factory(
         DATABASE_OP_CHECK_PERMISSION_TO_MODIFY_DATA_OBJECT,
         function<error(plugin_context&,const rodsLong_t)>(
             db_check_permission_to_modify_data_object_op));
+    pg->add_operation(
+        DATABASE_OP_CHECK_DATA_OBJECT_ACCESS,
+        function<error(plugin_context&,const rodsLong_t,const char*)>(
+            db_check_data_object_access_op));
     pg->add_operation(
         DATABASE_OP_UPDATE_TICKET_WRITE_BYTE_COUNT,
         function<error(plugin_context&,const rodsLong_t,const rodsLong_t)>(

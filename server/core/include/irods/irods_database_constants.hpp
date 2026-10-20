@@ -110,6 +110,7 @@ namespace irods
     const std::string DATABASE_OP_GET_REPL_LIST_FOR_LEAF_BUNDLES_OFFSET(
         "database_get_repl_list_for_leaf_bundles_offset");
     const std::string DATABASE_OP_CHECK_PERMISSION_TO_MODIFY_DATA_OBJECT{"database_check_permission_to_modify_data_object"};
+    const std::string DATABASE_OP_CHECK_DATA_OBJECT_ACCESS{"database_check_data_object_access"};
     const std::string DATABASE_OP_UPDATE_TICKET_WRITE_BYTE_COUNT{"database_update_ticket_write_byte_count"};
     const std::string DATABASE_OP_GET_DELAY_RULE_INFO{"database_get_delay_rule_info"};
     const std::string DATABASE_OP_DATA_OBJECT_FINALIZE{"database_data_object_finalize"};

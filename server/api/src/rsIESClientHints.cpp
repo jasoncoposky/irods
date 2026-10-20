@@ -2,10 +2,8 @@
 #include "irods/rsGlobalExtern.hpp"
 #include "irods/rodsErrorTable.h"
 #include "irods/miscServerFunct.hpp"
-#include "irods/specificQuery.h"
-#include "irods/miscServerFunct.hpp"
 #include "irods/rsIESClientHints.hpp"
-#include "irods/rsSpecificQuery.hpp"
+#include "irods/genquery2_builder.hpp"
 
 #include "irods/irods_log.hpp"
 #include "irods/zone_report.h"
@@ -82,29 +80,20 @@ irods::error get_query_array( rsComm_t* _comm, json& _queries )
 
     _queries = json::array();
 
-    specificQueryInp_t spec_inp;
-    memset( &spec_inp, 0, sizeof( specificQueryInp_t ) );
+    namespace gq2 = irods::experimental::genquery2;
+    const auto q = gq2::builder::select({"SPECIFIC_QUERY_ALIAS"})
+                       .limit(MAX_SQL_ROWS)
+                       .build();
 
-    spec_inp.maxRows = MAX_SQL_ROWS;
-    spec_inp.continueInx = 0;
-    spec_inp.sql = "ls";
-
-    genQueryOut_t* gen_out = 0;
-    int status = rsSpecificQuery( _comm, &spec_inp, &gen_out );
+    json rows;
+    const int status = gq2::try_execute( *_comm, q, rows );
     if ( status < 0 ) {
-        return ERROR( status, "rsSpecificQuery for 'ls' failed" );
+        return ERROR( status, "GenQuery2 query for specific queries failed" );
     }
 
-    // first attribute is the alias of the specific query
-    int   len    = gen_out->sqlResult[ 0 ].len;
-    char* values = gen_out->sqlResult[ 0 ].value;
-
-    for ( int i = 0 ; i < gen_out->rowCnt ; ++i ) {
-        char* alias = &values[ len * i ];
-        _queries.push_back(alias);
-    } // for i
-
-    freeGenQueryOut( &gen_out );
+    for ( const auto& row : rows ) {
+        _queries.push_back( row.at(0).get_ref<const std::string&>() );
+    }
 
     return SUCCESS();
 } // get_query_array

@@ -12,7 +12,7 @@
 #include "irods/closeCollection.h"
 #include "irods/collCreate.h"
 #include "irods/objMetaOpr.hpp"
-#include "irods/rsGenQuery.hpp"
+#include "irods/icatHighLevelRoutines.hpp"
 #include "irods/rsSpecificQuery.hpp"
 #include "irods/rsOpenCollection.hpp"
 #include "irods/rsReadCollection.hpp"
@@ -22,8 +22,11 @@
 #include "irods/rsDataObjRename.hpp"
 #include "irods/genquery2_builder.hpp"
 #include "irods/rs_genquery2.hpp"
+#include "irods/scoped_privileged_client.hpp"
 
 #include "irods/irods_virtual_path.hpp"
+
+#include <charconv>
 
 
 /* checkCollAccessPerm - Check whether the user is allowed to perform
@@ -35,40 +38,11 @@
 
 int
 checkCollAccessPerm( rsComm_t *rsComm, char *collection, char *accessPerm ) {
-    char accStr[LONG_NAME_LEN];
-    char condStr[MAX_NAME_LEN];
-    genQueryInp_t genQueryInp;
-    genQueryOut_t *genQueryOut = NULL;
-    int status;
-
-    if ( collection == NULL || accessPerm == NULL ) {
+    if ( rsComm == NULL || collection == NULL || accessPerm == NULL ) {
         return SYS_INTERNAL_NULL_INPUT_ERR;
     }
 
-    memset( &genQueryInp, 0, sizeof( genQueryInp ) );
-
-    snprintf( accStr, LONG_NAME_LEN, "%s", rsComm->clientUser.userName );
-    addKeyVal( &genQueryInp.condInput, USER_NAME_CLIENT_KW, accStr );
-
-    snprintf( accStr, LONG_NAME_LEN, "%s", rsComm->clientUser.rodsZone );
-    addKeyVal( &genQueryInp.condInput, RODS_ZONE_CLIENT_KW, accStr );
-
-    snprintf( accStr, LONG_NAME_LEN, "%s", accessPerm );
-    addKeyVal( &genQueryInp.condInput, ACCESS_PERMISSION_KW, accStr );
-
-    snprintf( condStr, MAX_NAME_LEN, "='%s'", collection );
-    addInxVal( &genQueryInp.sqlCondInp, COL_COLL_NAME, condStr );
-
-    addInxIval( &genQueryInp.selectInp, COL_COLL_ID, 1 );
-
-    genQueryInp.maxRows = MAX_SQL_ROWS;
-
-    status = rsGenQuery( rsComm, &genQueryInp, &genQueryOut );
-
-    clearGenQueryInp( &genQueryInp );
-    freeGenQueryOut( &genQueryOut );
-
-    return status;
+    return chlCheckAndGetObjectID( rsComm, "-c", collection, accessPerm );
 }
 
 /*
@@ -162,20 +136,57 @@ rsQueryDataObjInCollReCur( rsComm_t *rsComm, char *collection,
     addInxIval( &genQueryInp->selectInp, COL_D_RESC_ID, 1 );
 
     if ( accessPerm != NULL ) {
-        snprintf( accStr, LONG_NAME_LEN, "%s", rsComm->clientUser.userName );
-        addKeyVal( &genQueryInp->condInput, USER_NAME_CLIENT_KW, accStr );
+        namespace gq2 = irods::experimental::genquery2;
+        using gq2::builder::col;
 
-        snprintf( accStr, LONG_NAME_LEN, "%s", rsComm->clientUser.rodsZone );
-        addKeyVal( &genQueryInp->condInput, RODS_ZONE_CLIENT_KW, accStr );
+        auto cond = (std::strcmp(collection, "/") == 0)
+            ? col("COLL_NAME").like("/%")
+            : (col("COLL_NAME") == collection || col("COLL_NAME").like(fmt::format("{}/%", collection))).group();
 
-        snprintf( accStr, LONG_NAME_LEN, "%s", accessPerm );
-        addKeyVal( &genQueryInp->condInput, ACCESS_PERMISSION_KW, accStr );
+        std::vector<std::string> cols{"DATA_ID", "COLL_NAME", "DATA_NAME"};
+        if ( singleFlag == 0 ) {
+            cols.emplace_back("DATA_REPL_NUM");
+            cols.emplace_back("RESC_NAME");
+            cols.emplace_back("DATA_PATH");
+        }
+        cols.emplace_back("DATA_RESC_ID");
+
         /* have to set it to 1 because it only check the first one */
         genQueryInp->maxRows = 1;
-        status = rsGenQuery( rsComm, genQueryInp, genQueryOut );
-        rmKeyVal( &genQueryInp->condInput, USER_NAME_CLIENT_KW );
-        rmKeyVal( &genQueryInp->condInput, RODS_ZONE_CLIENT_KW );
-        rmKeyVal( &genQueryInp->condInput, ACCESS_PERMISSION_KW );
+        const auto q = gq2::builder::select(std::move(cols))
+                           .where(std::move(cond))
+                           .order_by("COLL_NAME")
+                           .order_by("DATA_NAME")
+                           .limit(1)
+                           .build();
+
+        nlohmann::json rows;
+        {
+            irods::experimental::scoped_privileged_client spc{*rsComm};
+            status = gq2::try_execute( *rsComm, q, rows );
+        }
+        if ( status >= 0 && !rows.empty() ) {
+            const auto& data_id_str = rows.front().at(0).get_ref<const std::string&>();
+            rodsLong_t data_id_val = 0;
+            std::from_chars(data_id_str.data(), data_id_str.data() + data_id_str.size(), data_id_val);
+            status = chl_check_data_object_access( *rsComm, data_id_val, accessPerm );
+            if ( status >= 0 ) {
+                if ( singleFlag == 0 ) {
+                    status = gq2::rows_to_genquery_out(
+                        rows,
+                        {COL_D_DATA_ID, COL_COLL_NAME, COL_DATA_NAME, COL_DATA_REPL_NUM, COL_D_RESC_NAME, COL_D_DATA_PATH, COL_D_RESC_ID},
+                        genQueryOut,
+                        0 );
+                }
+                else {
+                    status = gq2::rows_to_genquery_out(
+                        rows,
+                        {COL_D_DATA_ID, COL_COLL_NAME, COL_DATA_NAME, COL_D_RESC_ID},
+                        genQueryOut,
+                        0 );
+                }
+            }
+        }
     }
     else {
         genQueryInp->maxRows = MAX_SQL_ROWS;

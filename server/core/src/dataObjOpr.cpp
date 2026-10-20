@@ -15,7 +15,6 @@
 #include "irods/rsIcatOpr.hpp"
 #include "irods/getHierarchyForResc.h"
 #include "irods/dataObjTrim.h"
-#include "irods/rsGenQuery.hpp"
 #include "irods/rsDataObjTrim.hpp"
 #include "irods/rsModDataObjMeta.hpp"
 #include "irods/irods_resource_backport.hpp"
@@ -106,166 +105,101 @@ getDataObjInfo(
 
     *dataObjInfoHead = NULL;
 
-    if ( accessPerm == NULL && getValByKey( &dataObjInp->condInput, TICKET_KW ) == NULL ) {
-        namespace gq2 = irods::experimental::genquery2;
-        using gq2::builder::col;
+    namespace gq2 = irods::experimental::genquery2;
+    using gq2::builder::col;
 
-        gq2::builder::condition_builder cond;
-        if ( const char* data_id_kw = getValByKey( &dataObjInp->condInput, QUERY_BY_DATA_ID_KW ); data_id_kw != NULL ) {
-            cond = (col("DATA_ID") == data_id_kw);
-        }
-        else {
-            const irods::experimental::filesystem::path p{dataObjInp->objPath};
-            if ( p.string_view().find('/') == std::string_view::npos ) {
-                rodsLog( LOG_NOTICE,
-                         "initDataObjInfoQuery: invalid path for %s, status = %d",
-                         dataObjInp->objPath, SYS_INVALID_FILE_PATH );
-                return SYS_INVALID_FILE_PATH;
-            }
-            cond = (col("COLL_NAME") == p.parent_path_view() && col("DATA_NAME") == p.object_name_view());
-        }
-
-        const auto q = gq2::builder::select({"DATA_ID",
-                                             "DATA_NAME",
-                                             "COLL_NAME",
-                                             "DATA_COLL_ID",
-                                             "DATA_REPL_NUM",
-                                             "DATA_VERSION",
-                                             "DATA_TYPE_NAME",
-                                             "DATA_SIZE",
-                                             "DATA_PATH",
-                                             "DATA_OWNER_NAME",
-                                             "DATA_OWNER_ZONE",
-                                             "DATA_REPL_STATUS",
-                                             "DATA_STATUS",
-                                             "DATA_CHECKSUM",
-                                             "DATA_EXPIRY",
-                                             "DATA_MAP_ID",
-                                             "DATA_COMMENTS",
-                                             "DATA_ACCESS_TIME",
-                                             "DATA_CREATE_TIME",
-                                             "DATA_MODIFY_TIME",
-                                             "DATA_MODE",
-                                             "DATA_RESC_HIER"})
-                           .where(std::move(cond))
-                           .order_by("COLL_NAME")
-                           .order_by("DATA_NAME")
-                           .order_by("DATA_REPL_NUM")
-                           .limit(MAX_SQL_ROWS)
-                           .build();
-
-        nlohmann::json rows;
-        {
-            irods::experimental::scoped_privileged_client spc{*rsComm};
-            status = gq2::try_execute( *rsComm, q, rows );
-        }
-        if ( status >= 0 ) {
-            status = gq2::rows_to_genquery_out(
-                rows,
-                {COL_D_DATA_ID,
-                 COL_DATA_NAME,
-                 COL_COLL_NAME,
-                 COL_D_COLL_ID,
-                 COL_DATA_REPL_NUM,
-                 COL_DATA_VERSION,
-                 COL_DATA_TYPE_NAME,
-                 COL_DATA_SIZE,
-                 COL_D_DATA_PATH,
-                 COL_D_OWNER_NAME,
-                 COL_D_OWNER_ZONE,
-                 COL_D_REPL_STATUS,
-                 COL_D_DATA_STATUS,
-                 COL_D_DATA_CHECKSUM,
-                 COL_D_EXPIRY,
-                 COL_D_MAP_ID,
-                 COL_D_COMMENTS,
-                 COL_D_ACCESS_TIME,
-                 COL_D_CREATE_TIME,
-                 COL_D_MODIFY_TIME,
-                 COL_DATA_MODE,
-                 COL_D_RESC_HIER},
-                &genQueryOut );
-        }
-        if ( status < 0 ) {
-            if ( status != CAT_NO_ROWS_FOUND ) {
-                rodsLog( LOG_NOTICE, "%s: rs_genquery2 error, status = %d", __FUNCTION__, status );
-            }
-            freeGenQueryOut( &genQueryOut );
-            return status;
-        }
-        qcondCnt = 0;
+    gq2::builder::condition_builder cond;
+    if ( const char* data_id_kw = getValByKey( &dataObjInp->condInput, QUERY_BY_DATA_ID_KW ); data_id_kw != NULL ) {
+        cond = (col("DATA_ID") == data_id_kw);
     }
     else {
-        qcondCnt = initDataObjInfoQuery( dataObjInp, &genQueryInp,
-                                         ignoreCondInput );
-
-        if ( qcondCnt < 0 ) {
-            return qcondCnt;
+        const irods::experimental::filesystem::path p{dataObjInp->objPath};
+        if ( p.string_view().find('/') == std::string_view::npos ) {
+            rodsLog( LOG_NOTICE,
+                     "initDataObjInfoQuery: invalid path for %s, status = %d",
+                     dataObjInp->objPath, SYS_INVALID_FILE_PATH );
+            return SYS_INVALID_FILE_PATH;
         }
-
-        addInxIval( &genQueryInp.selectInp, COL_D_DATA_ID, 1 );
-        addInxIval( &genQueryInp.selectInp, COL_DATA_NAME, 1 );
-        addInxIval( &genQueryInp.selectInp, COL_COLL_NAME, 1 );
-        addInxIval( &genQueryInp.selectInp, COL_D_COLL_ID, 1 );
-        addInxIval( &genQueryInp.selectInp, COL_DATA_REPL_NUM, 1 );
-        addInxIval( &genQueryInp.selectInp, COL_DATA_VERSION, 1 );
-        addInxIval( &genQueryInp.selectInp, COL_DATA_TYPE_NAME, 1 );
-        addInxIval( &genQueryInp.selectInp, COL_DATA_SIZE, 1 );
-        addInxIval( &genQueryInp.selectInp, COL_D_DATA_PATH, 1 );
-        addInxIval( &genQueryInp.selectInp, COL_D_OWNER_NAME, 1 );
-        addInxIval( &genQueryInp.selectInp, COL_D_OWNER_ZONE, 1 );
-        addInxIval( &genQueryInp.selectInp, COL_D_REPL_STATUS, 1 );
-        addInxIval( &genQueryInp.selectInp, COL_D_DATA_STATUS, 1 );
-        addInxIval( &genQueryInp.selectInp, COL_D_DATA_CHECKSUM, 1 );
-        addInxIval( &genQueryInp.selectInp, COL_D_EXPIRY, 1 );
-        addInxIval( &genQueryInp.selectInp, COL_D_MAP_ID, 1 );
-        addInxIval( &genQueryInp.selectInp, COL_D_COMMENTS, 1 );
-        addInxIval(&genQueryInp.selectInp, COL_D_ACCESS_TIME, 1);
-        addInxIval( &genQueryInp.selectInp, COL_D_CREATE_TIME, 1 );
-        addInxIval( &genQueryInp.selectInp, COL_D_MODIFY_TIME, 1 );
-        addInxIval( &genQueryInp.selectInp, COL_DATA_MODE, 1 );
-        addInxIval( &genQueryInp.selectInp, COL_D_RESC_HIER, 1 );
-
-        if ( accessPerm != NULL ) {
-            snprintf( accStr, LONG_NAME_LEN, "%s", rsComm->clientUser.userName );
-            addKeyVal( &genQueryInp.condInput, USER_NAME_CLIENT_KW, accStr );
-
-            snprintf( accStr, LONG_NAME_LEN, "%s", rsComm->clientUser.rodsZone );
-            addKeyVal( &genQueryInp.condInput, RODS_ZONE_CLIENT_KW, accStr );
-
-            snprintf( accStr, LONG_NAME_LEN, "%s", accessPerm );
-            addKeyVal( &genQueryInp.condInput, ACCESS_PERMISSION_KW, accStr );
-        }
-        if ( ( tmpStr = getValByKey( &dataObjInp->condInput, TICKET_KW ) ) != NULL ) {
-            addKeyVal( &genQueryInp.condInput, TICKET_KW, tmpStr );
-        }
-
-        genQueryInp.maxRows = MAX_SQL_ROWS;
-
-        status = rsGenQuery( rsComm, &genQueryInp, &genQueryOut );
-
-        if ( status < 0 ) {
-            if ( status != CAT_NO_ROWS_FOUND ) {
-                rodsLog( LOG_NOTICE,
-                         "%s: rsGenQuery error, status = %d", __FUNCTION__,
-                         status );
-            }
-
-            if (genQueryOut && genQueryOut->continueInx > 0) {
-                genQueryInp.continueInx = genQueryOut->continueInx;
-                genQueryInp.maxRows = 0;
-                freeGenQueryOut(&genQueryOut);
-                rsGenQuery(rsComm, &genQueryInp, &genQueryOut);
-            }
-
-            freeGenQueryOut(&genQueryOut);
-            clearGenQueryInp( &genQueryInp );
-
-            return status;
-        }
-
-        clearGenQueryInp(&genQueryInp);
+        cond = (col("COLL_NAME") == p.parent_path_view() && col("DATA_NAME") == p.object_name_view());
     }
+
+    const auto q = gq2::builder::select({"DATA_ID",
+                                         "DATA_NAME",
+                                         "COLL_NAME",
+                                         "DATA_COLL_ID",
+                                         "DATA_REPL_NUM",
+                                         "DATA_VERSION",
+                                         "DATA_TYPE_NAME",
+                                         "DATA_SIZE",
+                                         "DATA_PATH",
+                                         "DATA_OWNER_NAME",
+                                         "DATA_OWNER_ZONE",
+                                         "DATA_REPL_STATUS",
+                                         "DATA_STATUS",
+                                         "DATA_CHECKSUM",
+                                         "DATA_EXPIRY",
+                                         "DATA_MAP_ID",
+                                         "DATA_COMMENTS",
+                                         "DATA_ACCESS_TIME",
+                                         "DATA_CREATE_TIME",
+                                         "DATA_MODIFY_TIME",
+                                         "DATA_MODE",
+                                         "DATA_RESC_HIER"})
+                       .where(std::move(cond))
+                       .order_by("COLL_NAME")
+                       .order_by("DATA_NAME")
+                       .order_by("DATA_REPL_NUM")
+                       .limit(MAX_SQL_ROWS)
+                       .build();
+
+    nlohmann::json rows;
+    {
+        irods::experimental::scoped_privileged_client spc{*rsComm};
+        status = gq2::try_execute( *rsComm, q, rows );
+    }
+
+    if ( status >= 0 && !rows.empty() && accessPerm != NULL && getValByKey( &dataObjInp->condInput, ADMIN_KW ) == NULL ) {
+        const auto& data_id_str = rows.front().at(0).get_ref<const std::string&>();
+        rodsLong_t data_id_val = 0;
+        std::from_chars(data_id_str.data(), data_id_str.data() + data_id_str.size(), data_id_val);
+        status = chl_check_data_object_access( *rsComm, data_id_val, accessPerm );
+    }
+
+    if ( status >= 0 ) {
+        status = gq2::rows_to_genquery_out(
+            rows,
+            {COL_D_DATA_ID,
+             COL_DATA_NAME,
+             COL_COLL_NAME,
+             COL_D_COLL_ID,
+             COL_DATA_REPL_NUM,
+             COL_DATA_VERSION,
+             COL_DATA_TYPE_NAME,
+             COL_DATA_SIZE,
+             COL_D_DATA_PATH,
+             COL_D_OWNER_NAME,
+             COL_D_OWNER_ZONE,
+             COL_D_REPL_STATUS,
+             COL_D_DATA_STATUS,
+             COL_D_DATA_CHECKSUM,
+             COL_D_EXPIRY,
+             COL_D_MAP_ID,
+             COL_D_COMMENTS,
+             COL_D_ACCESS_TIME,
+             COL_D_CREATE_TIME,
+             COL_D_MODIFY_TIME,
+             COL_DATA_MODE,
+             COL_D_RESC_HIER},
+            &genQueryOut );
+    }
+    if ( status < 0 ) {
+        if ( status != CAT_NO_ROWS_FOUND ) {
+            rodsLog( LOG_NOTICE, "%s: rs_genquery2 error, status = %d", __FUNCTION__, status );
+        }
+        freeGenQueryOut( &genQueryOut );
+        return status;
+    }
+    qcondCnt = 0;
 
     if ( genQueryOut == NULL ) {
         rodsLog( LOG_NOTICE,
