@@ -14,6 +14,7 @@ CommandLineOptions document so we can keep it all consistent.
 #include "irods/getRodsEnv.h"
 #include "irods/rodsLog.h"
 #include "irods/rcMisc.h"
+#include "irods/filesystem/path.hpp"
 
 #include <cstring>
 
@@ -38,9 +39,12 @@ parseCmdLineOpt( int argc, char **argv, const char *optString, int includeLong,
 
     if ( argv != NULL && argv[0] != NULL ) {
         /* set SP_OPTION to argv[0] so it can be passed to server */
-        char child[MAX_NAME_LEN], parent[MAX_NAME_LEN];
-        *child = '\0';
-        splitPathByKey( argv[0], parent, MAX_NAME_LEN, child, MAX_NAME_LEN, '/' );
+        char child[MAX_NAME_LEN]{};
+        const irods::experimental::filesystem::path p{argv[0]};
+        const auto child_sv = p.object_name_view();
+        if ( child_sv.size() < MAX_NAME_LEN ) {
+            std::memcpy( child, child_sv.data(), child_sv.size() );
+        }
         if ( *child != '\0' ) {
             mySetenvStr( SP_OPTION, child );
         }

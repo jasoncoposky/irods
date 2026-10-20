@@ -662,7 +662,6 @@ rsyncCollToDirUtil( rcComm_t *conn, rodsPath_t *srcPath,
     int savedStatus = 0;
     char *srcColl, *targDir;
     char targChildPath[MAX_NAME_LEN];
-    char parPath[MAX_NAME_LEN], childPath[MAX_NAME_LEN];
     rodsPath_t mySrcPath, myTargPath;
     collHandle_t collHandle;
     collEnt_t collEnt;
@@ -740,15 +739,19 @@ rsyncCollToDirUtil( rcComm_t *conn, rodsPath_t *srcPath,
             }
         }
         else if ( collEnt.objType == COLL_OBJ_T ) {
-            if ( ( status = splitPathByKey(
-                                collEnt.collName, parPath, MAX_NAME_LEN, childPath, MAX_NAME_LEN, '/' ) ) < 0 ) {
+            const irods::experimental::filesystem::path coll_p{collEnt.collName};
+            const auto child_sv = coll_p.object_name_view();
+            if ( std::strchr( collEnt.collName, '/' ) == NULL ||
+                 coll_p.parent_path_view().size() >= MAX_NAME_LEN ||
+                 child_sv.size() >= MAX_NAME_LEN ) {
+                status = ( std::strchr( collEnt.collName, '/' ) == NULL ) ? SYS_INVALID_FILE_PATH : USER_STRLEN_TOOLONG;
                 rodsLogError( LOG_ERROR, status,
                               "rsyncCollToDirUtil:: splitPathByKey for %s error, stat=%d",
                               collEnt.collName, status );
                 return status;
             }
-            snprintf( targChildPath, MAX_NAME_LEN, "%s/%s",
-                      targDir, childPath );
+            snprintf( targChildPath, MAX_NAME_LEN, "%s/%.*s",
+                      targDir, static_cast<int>( child_sv.size() ), child_sv.data() );
 
             /* only do the sync if no -l option specified */
             if ( rodsArgs->longOption != True ) {
@@ -964,7 +967,6 @@ rsyncCollToCollUtil( rcComm_t *conn, rodsPath_t *srcPath,
     int savedStatus = 0;
     char *srcColl, *targColl;
     char targChildPath[MAX_NAME_LEN];
-    char parPath[MAX_NAME_LEN], childPath[MAX_NAME_LEN];
 
     rodsPath_t mySrcPath, myTargPath;
     collHandle_t collHandle;
@@ -1065,15 +1067,19 @@ rsyncCollToCollUtil( rcComm_t *conn, rodsPath_t *srcPath,
             }
         }
         else if ( collEnt.objType == COLL_OBJ_T ) {
-            if ( ( status = splitPathByKey(
-                                collEnt.collName, parPath, MAX_NAME_LEN, childPath, MAX_NAME_LEN, '/' ) ) < 0 ) {
+            const irods::experimental::filesystem::path coll_p{collEnt.collName};
+            const auto child_sv = coll_p.object_name_view();
+            if ( std::strchr( collEnt.collName, '/' ) == NULL ||
+                 coll_p.parent_path_view().size() >= MAX_NAME_LEN ||
+                 child_sv.size() >= MAX_NAME_LEN ) {
+                status = ( std::strchr( collEnt.collName, '/' ) == NULL ) ? SYS_INVALID_FILE_PATH : USER_STRLEN_TOOLONG;
                 rodsLogError( LOG_ERROR, status,
                               "rsyncCollToCollUtil:: splitPathByKey for %s error, status = %d",
                               collEnt.collName, status );
                 return status;
             }
-            snprintf( targChildPath, MAX_NAME_LEN, "%s/%s",
-                      targColl, childPath );
+            snprintf( targChildPath, MAX_NAME_LEN, "%s/%.*s",
+                      targColl, static_cast<int>( child_sv.size() ), child_sv.data() );
 
             if ( rodsArgs->longOption != True ) {   /* only do the sync if no -l option specified */
                 mkColl( conn, targChildPath );

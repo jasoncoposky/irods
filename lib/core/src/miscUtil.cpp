@@ -1,5 +1,6 @@
 #include "irods/miscUtil.h"
 
+#include "irods/filesystem/path.hpp"
 #include "irods/genquery2_builder.hpp"
 #include "irods/get_hier_from_leaf_id.h"
 #include "irods/irods_at_scope_exit.hpp"
@@ -402,19 +403,27 @@ mkdirR( char *startDir, char *destDir, int mode ) {
 
 int
 mkdirForFilePath( char* filePath ) {
-    char child[MAX_NAME_LEN], parent[MAX_NAME_LEN];
-    int status;
+    if ( filePath == NULL ) {
+        return USER__NULL_INPUT_ERR;
+    }
 
-    if ( ( status = splitPathByKey( filePath, parent, MAX_NAME_LEN, child, MAX_NAME_LEN, '/' ) ) < 0 ) {
+    const irods::experimental::filesystem::path p{filePath};
+    const auto parent_sv = p.parent_path_view();
+    if ( parent_sv.empty() || std::strchr( filePath, '/' ) == NULL ) {
+        const int status = SYS_INVALID_FILE_PATH;
         rodsLogError( LOG_ERROR, status,
                       "mkdirForFilePath:: splitPathByKey for %s error, status = %d",
                       filePath, status );
         return status;
     }
+    if ( parent_sv.size() >= MAX_NAME_LEN || p.object_name_view().size() >= MAX_NAME_LEN ) {
+        return USER_STRLEN_TOOLONG;
+    }
 
-    status =  mkdirR( "/", parent, DEFAULT_DIR_MODE );
+    char parent[MAX_NAME_LEN]{};
+    std::memcpy( parent, parent_sv.data(), parent_sv.size() );
 
-    return status;
+    return mkdirR( "/", parent, DEFAULT_DIR_MODE );
 }
 
 int
@@ -608,17 +617,22 @@ int
 printTiming( rcComm_t *conn, char *objPath, rodsLong_t fileSize,
              char *localFile, struct timeval *startTime, struct timeval *endTime ) {
     struct timeval diffTime;
-    char myDir[MAX_NAME_LEN], myFile[MAX_NAME_LEN];
+    char myFile[MAX_NAME_LEN]{};
     float transRate, sizeInMb, timeInSec;
-    int status;
 
-
-    if ( ( status = splitPathByKey( objPath, myDir, MAX_NAME_LEN, myFile, MAX_NAME_LEN, '/' ) ) < 0 ) {
+    if ( objPath == NULL || std::strchr( objPath, '/' ) == NULL ) {
+        const int status = SYS_INVALID_FILE_PATH;
         rodsLogError( LOG_NOTICE, status,
                       "printTiming: splitPathByKey for %s error, status = %d",
-                      objPath, status );
+                      objPath ? objPath : "", status );
         return status;
     }
+    const irods::experimental::filesystem::path p{objPath};
+    const auto file_sv = p.object_name_view();
+    if ( p.parent_path_view().size() >= MAX_NAME_LEN || file_sv.size() >= MAX_NAME_LEN ) {
+        return USER_STRLEN_TOOLONG;
+    }
+    std::memcpy( myFile, file_sv.data(), file_sv.size() );
 
     diffTime.tv_sec = endTime->tv_sec - startTime->tv_sec;
     diffTime.tv_usec = endTime->tv_usec - startTime->tv_usec;
@@ -672,17 +686,22 @@ int
 printTime( char *objPath, struct timeval *startTime,
            struct timeval *endTime ) {
     struct timeval diffTime;
-    char myDir[MAX_NAME_LEN], myFile[MAX_NAME_LEN];
+    char myFile[MAX_NAME_LEN]{};
     float timeInSec;
-    int status;
 
-
-    if ( ( status = splitPathByKey( objPath, myDir, MAX_NAME_LEN, myFile, MAX_NAME_LEN, '/' ) ) < 0 ) {
+    if ( objPath == NULL || std::strchr( objPath, '/' ) == NULL ) {
+        const int status = SYS_INVALID_FILE_PATH;
         rodsLogError( LOG_NOTICE, status,
                       "printTime: splitPathByKey for %s error, status = %d",
-                      objPath, status );
+                      objPath ? objPath : "", status );
         return status;
     }
+    const irods::experimental::filesystem::path p{objPath};
+    const auto file_sv = p.object_name_view();
+    if ( p.parent_path_view().size() >= MAX_NAME_LEN || file_sv.size() >= MAX_NAME_LEN ) {
+        return USER_STRLEN_TOOLONG;
+    }
+    std::memcpy( myFile, file_sv.data(), file_sv.size() );
 
     diffTime.tv_sec = endTime->tv_sec - startTime->tv_sec;
     diffTime.tv_usec = endTime->tv_usec - startTime->tv_usec;
@@ -701,12 +720,20 @@ printTime( char *objPath, struct timeval *startTime,
 
 int
 printNoSync( char *objPath, rodsLong_t fileSize, char *reason ) {
-    char myDir[MAX_NAME_LEN], myFile[MAX_NAME_LEN];
+    char myFile[MAX_NAME_LEN]{};
     float sizeInMb;
-    int status;
 
-
-    if ( ( status = splitPathByKey( objPath, myDir, MAX_NAME_LEN, myFile, MAX_NAME_LEN, '/' ) ) < 0 ) {
+    if ( objPath != NULL && std::strchr( objPath, '/' ) != NULL ) {
+        const irods::experimental::filesystem::path p{objPath};
+        const auto file_sv = p.object_name_view();
+        if ( file_sv.size() < MAX_NAME_LEN ) {
+            std::memcpy( myFile, file_sv.data(), file_sv.size() );
+        }
+        else {
+            rstrcpy( myFile, objPath, MAX_NAME_LEN );
+        }
+    }
+    else if ( objPath != NULL ) {
         rstrcpy( myFile, objPath, MAX_NAME_LEN );
     }
 
@@ -2211,8 +2238,7 @@ getDirSizeForProgStat( rodsArguments_t *rodsArgs, char *srcDir,
 guiProgressCallback
 iCommandProgStat( operProgress_t *operProgress ) {
     using namespace boost::filesystem;
-    char myDir[MAX_NAME_LEN], myFile[MAX_NAME_LEN];
-    int status;
+    char myFile[MAX_NAME_LEN]{};
     time_t myTime;
     struct tm *mytm;
     char timeStr[TIME_LEN];
@@ -2221,12 +2247,17 @@ iCommandProgStat( operProgress_t *operProgress ) {
         /* relative path */
         rstrcpy( myFile, operProgress->curFileName, MAX_NAME_LEN );
     }
-    else if ( ( status = splitPathByKey( operProgress->curFileName,
-                                         myDir, MAX_NAME_LEN, myFile, MAX_NAME_LEN, '/' ) ) < 0 ) {
-        rodsLogError( LOG_NOTICE, status,
-                      "iCommandProgStat: splitPathByKey for %s error, status = %d",
-                      operProgress->curFileName, status );
-        return NULL;
+    else {
+        const irods::experimental::filesystem::path p{operProgress->curFileName};
+        const auto file_sv = p.object_name_view();
+        if ( p.parent_path_view().size() >= MAX_NAME_LEN || file_sv.size() >= MAX_NAME_LEN ) {
+            const int status = USER_STRLEN_TOOLONG;
+            rodsLogError( LOG_NOTICE, status,
+                          "iCommandProgStat: splitPathByKey for %s error, status = %d",
+                          operProgress->curFileName, status );
+            return NULL;
+        }
+        std::memcpy( myFile, file_sv.data(), file_sv.size() );
     }
 
     myTime = time( 0 );

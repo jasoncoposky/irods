@@ -4,6 +4,7 @@
 
 #include "irods/apiHeaderAll.h"
 #include "irods/collection.hpp"
+#include "irods/filesystem/path.hpp"
 #include "irods/irods_at_scope_exit.hpp"
 #include "irods/key_value_proxy.hpp"
 #include "irods/rsApiHandler.hpp"
@@ -2647,7 +2648,6 @@ _rsCollRsync( rsComm_t *rsComm, dataObjInp_t *dataObjInp,
     collInp_t openCollInp;
     collEnt_t *collEnt;
     int handleInx;
-    char parPath[MAX_NAME_LEN], childPath[MAX_NAME_LEN];
     char destChildPath[MAX_NAME_LEN];
     msParamArray_t *outParamArray = NULL;
     int status = 0;
@@ -2680,16 +2680,20 @@ _rsCollRsync( rsComm_t *rsComm, dataObjInp_t *dataObjInp,
             }
         }
         else if ( collEnt->objType == COLL_OBJ_T ) {
-            if ( ( status = splitPathByKey(
-                                collEnt->collName, parPath, MAX_NAME_LEN, childPath, MAX_NAME_LEN, '/' ) ) < 0 ) {
+            const irods::experimental::filesystem::path coll_p{collEnt->collName};
+            const auto child_sv = coll_p.object_name_view();
+            if ( std::strchr( collEnt->collName, '/' ) == NULL ||
+                 coll_p.parent_path_view().size() >= MAX_NAME_LEN ||
+                 child_sv.size() >= MAX_NAME_LEN ) {
+                status = ( std::strchr( collEnt->collName, '/' ) == NULL ) ? SYS_INVALID_FILE_PATH : USER_STRLEN_TOOLONG;
                 rodsLogError( LOG_ERROR, status,
                               "_rsCollRsync:: splitPathByKey for %s error, status = %d",
                               collEnt->collName, status );
                 freeCollEnt( collEnt );
                 return status;
             }
-            snprintf( destChildPath, MAX_NAME_LEN, "%s/%s",
-                      destColl, childPath );
+            snprintf( destChildPath, MAX_NAME_LEN, "%s/%.*s",
+                      destColl, static_cast<int>( child_sv.size() ), child_sv.data() );
 
             status = _rsCollRsync( rsComm, dataObjInp, collEnt->collName,
                                    destChildPath );

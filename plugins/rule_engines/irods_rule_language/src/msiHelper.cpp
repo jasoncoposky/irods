@@ -6,6 +6,7 @@
 #include "irods/rcMisc.h"
 #include "irods/msiHelper.hpp"
 #include "irods/private/re/reFuncDefs.hpp"
+#include "irods/filesystem/path.hpp"
 
 #include <cstring>
 
@@ -298,15 +299,32 @@ msiSplitPath( msParam_t *inpPath,  msParam_t *outParentColl,
     }
 
     if ( strcmp( inpPath->type, STR_MS_T ) == 0 ) {
-        if ( ( rei->status = splitPathByKey( ( char * ) inpPath->inOutStruct,
-                                             parent, MAX_NAME_LEN, child, MAX_NAME_LEN, '/' ) ) < 0 ) {
+        const char* in_str = static_cast<const char*>( inpPath->inOutStruct );
+        if ( in_str == NULL || std::strchr( in_str, '/' ) == NULL ) {
+            rei->status = SYS_INVALID_FILE_PATH;
             rodsLog( LOG_ERROR,
                      "msiSplitPath: splitPathByKey for %s error, status = %d",
-                     ( char * ) inpPath->inOutStruct, rei->status );
+                     in_str ? in_str : "", rei->status );
         }
         else {
-            fillStrInMsParam( outParentColl, parent );
-            fillStrInMsParam( outChildName, child );
+            const irods::experimental::filesystem::path p{in_str};
+            const auto parent_sv = p.parent_path_view();
+            const auto child_sv = p.object_name_view();
+            if ( parent_sv.size() >= MAX_NAME_LEN || child_sv.size() >= MAX_NAME_LEN ) {
+                rei->status = USER_STRLEN_TOOLONG;
+                rodsLog( LOG_ERROR,
+                         "msiSplitPath: splitPathByKey for %s error, status = %d",
+                         in_str, rei->status );
+            }
+            else {
+                std::memcpy( parent, parent_sv.data(), parent_sv.size() );
+                parent[parent_sv.size()] = '\0';
+                std::memcpy( child, child_sv.data(), child_sv.size() );
+                child[child_sv.size()] = '\0';
+                rei->status = 0;
+                fillStrInMsParam( outParentColl, parent );
+                fillStrInMsParam( outChildName, child );
+            }
         }
     }
     else {

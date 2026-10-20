@@ -4,6 +4,9 @@
 #include "irods/dataObjGet.h"
 #include "irods/rcMisc.h"
 #include "irods/apiNumber.h"
+#include "irods/filesystem/path.hpp"
+
+#include <cstring>
 
 /**
  * \fn rcExecMyRule( rcComm_t *conn, execMyRuleInp_t *execMyRuleInp, msParamArray_t **outParamArray )
@@ -47,13 +50,24 @@ rcExecMyRule( rcComm_t *conn, execMyRuleInp_t *execMyRuleInp,
                 ( myParam = getMsParamByLabel( *outParamArray, CL_GET_ACTION ) ) ) {
             //putParam is non-null if it's a put, null if it's a get
             dataObjInp_t * dataObjInp = ( dataObjInp_t * ) myParam->inOutStruct;
-            char * locFilePath;
-            char myDir[MAX_NAME_LEN], myFile[MAX_NAME_LEN];
-            // locFilePath should be the return of getValByKey if it exists,
-            // otherwise use the filename from splitPathByKey
-            if ( ( locFilePath = getValByKey( &dataObjInp->condInput, LOCAL_PATH_KW ) ) ||
-                    ( ( status = splitPathByKey( dataObjInp->objPath, myDir, MAX_NAME_LEN, myFile, MAX_NAME_LEN, '/' ) ) >= 0 &&
-                      ( locFilePath = ( char * ) myFile ) ) ) {
+            char * locFilePath = getValByKey( &dataObjInp->condInput, LOCAL_PATH_KW );
+            char myFile[MAX_NAME_LEN]{};
+            if ( !locFilePath ) {
+                const irods::experimental::filesystem::path p{dataObjInp->objPath};
+                const auto file_sv = p.object_name_view();
+                if ( std::strchr( dataObjInp->objPath, '/' ) == NULL ) {
+                    status = SYS_INVALID_FILE_PATH;
+                }
+                else if ( p.parent_path_view().size() >= MAX_NAME_LEN || file_sv.size() >= MAX_NAME_LEN ) {
+                    status = USER_STRLEN_TOOLONG;
+                }
+                else {
+                    std::memcpy( myFile, file_sv.data(), file_sv.size() );
+                    locFilePath = myFile;
+                    status = 0;
+                }
+            }
+            if ( locFilePath ) {
                 status = putParam ?
                          rcDataObjPut( conn, dataObjInp, locFilePath ) :
                          rcDataObjGet( conn, dataObjInp, locFilePath );

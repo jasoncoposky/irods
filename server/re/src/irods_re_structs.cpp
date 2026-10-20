@@ -185,22 +185,27 @@ initReiWithDataObjInp( ruleExecInfo_t *rei, rsComm_t *rsComm,
 int
 initReiWithCollInp( ruleExecInfo_t *rei, rsComm_t *rsComm,
                     collInp_t *collCreateInp, collInfo_t *collInfo ) {
-    int status;
-
     memset( rei, 0, sizeof( ruleExecInfo_t ) );
     memset( collInfo, 0, sizeof( collInfo_t ) );
     rei->coi = collInfo;
     /* try to fill out as much info in collInfo as possible */
-    if ( ( status = splitPathByKey( collCreateInp->collName,
-                                    collInfo->collParentName, MAX_NAME_LEN, collInfo->collName, MAX_NAME_LEN, '/' ) ) < 0 ) {
+    const irods::experimental::filesystem::path p{collCreateInp->collName};
+    const auto parent_sv = p.parent_path_view();
+    const auto child_sv = p.object_name_view();
+    if ( std::strchr( collCreateInp->collName, '/' ) == NULL ||
+         parent_sv.size() >= MAX_NAME_LEN ||
+         child_sv.size() >= MAX_NAME_LEN ) {
+        const int status = ( std::strchr( collCreateInp->collName, '/' ) == NULL )
+                               ? SYS_INVALID_FILE_PATH
+                               : USER_STRLEN_TOOLONG;
         rodsLog( LOG_ERROR,
                  "initReiWithCollInp: splitPathByKey for %s error, status = %d",
                  collCreateInp->collName, status );
         return status;
     }
-    else {
-        rstrcpy( collInfo->collName, collCreateInp->collName, MAX_NAME_LEN );
-    }
+    std::memcpy( collInfo->collParentName, parent_sv.data(), parent_sv.size() );
+    collInfo->collParentName[parent_sv.size()] = '\0';
+    rstrcpy( collInfo->collName, collCreateInp->collName, MAX_NAME_LEN );
     rei->rsComm = rsComm;
     if ( rsComm != NULL ) {
         rei->uoic = &rsComm->clientUser;
