@@ -91,6 +91,28 @@ TEST_CASE("logical paths and special characters")
         REQUIRE(parseRodsPath(&input, &env) == 0);
         REQUIRE(in_path == input.outPath);
     }
+
+    SECTION("normalize dot, dot-dot, and duplicate slashes")
+    {
+        const std::string in_path = "/zone//home/./rods/../user/sub/";
+        std::memset(&input, 0, sizeof(input));
+        std::strncpy(input.inPath, in_path.data(), in_path.size());
+
+        REQUIRE(parseRodsPath(&input, &env) == 0);
+        REQUIRE("/zone/home/user/sub"s == input.outPath);
+        REQUIRE(input.objType == COLL_OBJ_T);
+    }
+
+    SECTION("normalize trailing /.. to root")
+    {
+        const std::string in_path = "/zone/..";
+        std::memset(&input, 0, sizeof(input));
+        std::strncpy(input.inPath, in_path.data(), in_path.size());
+
+        REQUIRE(parseRodsPath(&input, &env) == 0);
+        REQUIRE("/"s == input.outPath);
+        REQUIRE(input.objType == COLL_OBJ_T);
+    }
 }
 
 TEST_CASE("test getLastPathElement")

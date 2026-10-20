@@ -6,14 +6,12 @@
 
 #include "irods/filesystem/path.hpp"
 
+#include <cstring>
 #include <filesystem>
 #include <map>
 #include <string>
 #include <string_view>
 #include <unordered_set>
-
-#include <boost/filesystem/operations.hpp>
-#include <boost/filesystem/convenience.hpp>
 
 /* parseRodsPathStr - This is similar to parseRodsPath except the
  * input and output are char string inPath and outPath
@@ -87,11 +85,6 @@ parseRodsPathStr( const char *inPath, rodsEnv *myRodsEnv, char *outPath ) {
 
 int
 parseRodsPath( rodsPath_t *rodsPath, rodsEnv *myRodsEnv ) {
-    int len;
-    char *tmpPtr1, *tmpPtr2;
-    char tmpStr[MAX_NAME_LEN];
-
-
     if ( rodsPath == NULL ) {
         fprintf( stderr, "parseRodsPath: NULL rodsPath input\n" );
         return USER__NULL_INPUT_ERR;
@@ -100,149 +93,62 @@ parseRodsPath( rodsPath_t *rodsPath, rodsEnv *myRodsEnv ) {
     rodsPath->objType = UNKNOWN_OBJ_T;
     rodsPath->objState = UNKNOWN_ST;
 
-    if ( myRodsEnv == NULL && rodsPath->inPath[0] != '/' ) {
+    const std::string_view in_sv{rodsPath->inPath};
+
+    if ( myRodsEnv == NULL && (in_sv.empty() || in_sv.front() != '/') ) {
         fprintf( stderr, "parseRodsPath: NULL myRodsEnv input\n" );
         return USER__NULL_INPUT_ERR;
     }
 
-    len = strlen( rodsPath->inPath );
+    if ( in_sv.empty() || in_sv == "." || in_sv == "./" ) {
+        rstrcpy( rodsPath->outPath, myRodsEnv->rodsCwd, MAX_NAME_LEN );
+        rodsPath->objType = COLL_OBJ_T;
+        return 0;
+    }
 
-    if ( len == 0 ) {
-        /* just copy rodsCwd */
-        rstrcpy( rodsPath->outPath, myRodsEnv->rodsCwd, MAX_NAME_LEN );
-        rodsPath->objType = COLL_OBJ_T;
-        return 0;
-    }
-    else if ( strcmp( rodsPath->inPath, "." ) == 0 ||
-              strcmp( rodsPath->inPath, "./" ) == 0 ) {
-        /* '.' or './' */
-        rstrcpy( rodsPath->outPath, myRodsEnv->rodsCwd, MAX_NAME_LEN );
-        rodsPath->objType = COLL_OBJ_T;
-        return 0;
-    }
-    else if ( strcmp( rodsPath->inPath, "~" ) == 0 ||
-              strcmp( rodsPath->inPath, "~/" ) == 0) {
-        /* ~ or ~/ */
+    if ( in_sv == "~" || in_sv == "~/" ) {
         rstrcpy( rodsPath->outPath, myRodsEnv->rodsHome, MAX_NAME_LEN );
         rodsPath->objType = COLL_OBJ_T;
         return 0;
     }
-    else if (rodsPath->inPath[0] == '~') {
-        if ( rodsPath->inPath[1] == '/' ) {
-            snprintf( rodsPath->outPath, MAX_NAME_LEN, "%s/%s",
-                      myRodsEnv->rodsHome, rodsPath->inPath + 2 );
-        }
-        else {
-            // treat it like a relative path
-            snprintf( rodsPath->outPath, MAX_NAME_LEN, "%s/%s",
-                      myRodsEnv->rodsCwd, rodsPath->inPath );
-        }
+
+    namespace fs = irods::experimental::filesystem;
+    fs::path combined;
+
+    if ( in_sv.starts_with("~/") ) {
+        combined.assign_concat(myRodsEnv->rodsHome, in_sv.substr(2));
     }
-    else if ( rodsPath->inPath[0] == '/' ) {
-        /* full path */
-        rstrcpy( rodsPath->outPath, rodsPath->inPath, MAX_NAME_LEN );
+    else if ( in_sv.front() == '/' ) {
+        combined = in_sv;
     }
     else {
-        /* a relative path */
-        snprintf( rodsPath->outPath, MAX_NAME_LEN, "%s/%s",
-                  myRodsEnv->rodsCwd, rodsPath->inPath );
+        combined.assign_concat(myRodsEnv->rodsCwd, in_sv);
     }
 
-    /* take out any "//" */
+    const auto raw_sv = combined.string_view();
+    const bool ends_with_coll_indicator =
+        (raw_sv.size() > 1 && raw_sv.back() == '/') ||
+        raw_sv.ends_with("/.") ||
+        raw_sv.ends_with("/..");
 
-    while ( ( tmpPtr1 = strstr( rodsPath->outPath, "//" ) ) != NULL ) {
-        //    rstrcpy (tmpPtr1 + 1, tmpPtr1 + 2, MAX_NAME_LEN);
-        rstrcpy( tmpStr, tmpPtr1 + 2, MAX_NAME_LEN );
-        rstrcpy( tmpPtr1 + 1, tmpStr, MAX_NAME_LEN );
+    auto norm = combined.lexically_normal();
+    auto norm_sv = norm.string_view();
+    while ( norm_sv.size() > 1 && norm_sv.back() == '/' ) {
+        norm_sv.remove_suffix(1);
     }
 
-    /* take out any "/./" */
-
-    while ( ( tmpPtr1 = strstr( rodsPath->outPath, "/./" ) ) != NULL ) {
-        //    rstrcpy (tmpPtr1 + 1, tmpPtr1 + 3, MAX_NAME_LEN);
-        rstrcpy( tmpStr, tmpPtr1 + 3, MAX_NAME_LEN );
-        rstrcpy( tmpPtr1 + 1, tmpStr, MAX_NAME_LEN );
-    }
-
-    /* take out any /../ */
-
-    while ( ( tmpPtr1 = strstr( rodsPath->outPath, "/../" ) ) != NULL ) {
-        /* go back */
-        tmpPtr2 = tmpPtr1 - 1;
-        while ( *tmpPtr2 != '/' ) {
-            tmpPtr2 --;
-            if ( tmpPtr2 < rodsPath->outPath ) {
-                rodsLog( LOG_ERROR,
-                         "parseRodsPath: parsing error for %s",
-                         rodsPath->outPath );
-                return USER_INPUT_PATH_ERR;
-            }
-        }
-        //    rstrcpy (tmpPtr2 + 1, tmpPtr1 + 4, MAX_NAME_LEN);
-        rstrcpy( tmpStr, tmpPtr1 + 4, MAX_NAME_LEN );
-        rstrcpy( tmpPtr2 + 1, tmpStr, MAX_NAME_LEN );
-    }
-
-    /* handle "/.", "/.." and "/" at the end */
-
-    len = strlen( rodsPath->outPath );
-
-    tmpPtr1 = rodsPath->outPath + len;
-
-    if ( ( tmpPtr2 = strstr( tmpPtr1 - 3, "/.." ) ) != NULL ) {
-        /* go back */
-        tmpPtr2 -= 1;
-        while ( *tmpPtr2 != '/' ) {
-            tmpPtr2 --;
-            if ( tmpPtr2 < rodsPath->outPath ) {
-                rodsLog( LOG_ERROR,
-                         "parseRodsPath: parsing error for %s",
-                         rodsPath->outPath );
-                return USER_INPUT_PATH_ERR;
-            }
-        }
-        *tmpPtr2 = '\0';
-        if ( tmpPtr2 == rodsPath->outPath ) { /* nothing, special case */
-            *tmpPtr2++ = '/'; /* root */
-            *tmpPtr2 = '\0';
-        }
+    if ( ends_with_coll_indicator ) {
         rodsPath->objType = COLL_OBJ_T;
-        if ( strnlen(rodsPath->outPath, MAX_PATH_ALLOWED) >= MAX_PATH_ALLOWED - 1) {
-            rodsLog( LOG_ERROR,
-                     "parseRodsPath: parsing error - path too long" );
-            return USER_PATH_EXCEEDS_MAX;
-        }
-        return 0;
     }
 
-    /* take out "/." */
-
-    if ( ( tmpPtr2 = strstr( tmpPtr1 - 2, "/." ) ) != NULL ) {
-        *tmpPtr2 = '\0';
-        rodsPath->objType = COLL_OBJ_T;
-        if ( strnlen(rodsPath->outPath, MAX_PATH_ALLOWED) >= MAX_PATH_ALLOWED - 1) {
-            rodsLog( LOG_ERROR,
-                     "parseRodsPath: parsing error - path too long" );
-            return USER_PATH_EXCEEDS_MAX;
-        }
-        return 0;
-    }
-
-    if ( *( tmpPtr1 - 1 ) == '/' && len > 1 ) {
-        *( tmpPtr1 - 1 ) = '\0';
-        rodsPath->objType = COLL_OBJ_T;
-        if ( strnlen(rodsPath->outPath, MAX_PATH_ALLOWED) >= MAX_PATH_ALLOWED - 1) {
-            rodsLog( LOG_ERROR,
-                     "parseRodsPath: parsing error - path too long" );
-            return USER_PATH_EXCEEDS_MAX;
-        }
-        return 0;
-    }
-    if ( strnlen(rodsPath->outPath, MAX_PATH_ALLOWED) >= MAX_PATH_ALLOWED - 1) {
+    if ( norm_sv.size() >= MAX_PATH_ALLOWED - 1 || norm_sv.size() >= MAX_NAME_LEN ) {
         rodsLog( LOG_ERROR,
                  "parseRodsPath: parsing error - path too long" );
         return USER_PATH_EXCEEDS_MAX;
     }
+
+    std::memcpy( rodsPath->outPath, norm_sv.data(), norm_sv.size() );
+    rodsPath->outPath[norm_sv.size()] = '\0';
     return 0;
 }
 
@@ -273,25 +179,26 @@ parseLocalPath( rodsPath_t *rodsPath ) {
 
 int
 getFileType( rodsPath_t *rodsPath ) {
-    boost::filesystem::path p( rodsPath->outPath );
+    namespace fs = std::filesystem;
+    const fs::path p{rodsPath->outPath};
 
     try {
-        if ( !exists( p ) ) {
+        if ( !fs::exists( p ) ) {
             rodsPath->objType = UNKNOWN_FILE_T;
             rodsPath->objState = NOT_EXIST_ST;
             return NOT_EXIST_ST;
         }
-        else if ( is_regular_file( p ) ) {
+        else if ( fs::is_regular_file( p ) ) {
             rodsPath->objType = LOCAL_FILE_T;
             rodsPath->objState = EXIST_ST;
-            rodsPath->size = file_size( p );
+            rodsPath->size = static_cast<rodsLong_t>(fs::file_size( p ));
         }
-        else if ( is_directory( p ) ) {
+        else if ( fs::is_directory( p ) ) {
             rodsPath->objType = LOCAL_DIR_T;
             rodsPath->objState = EXIST_ST;
         }
     }
-    catch ( const boost::filesystem::filesystem_error& e ) {
+    catch ( const fs::filesystem_error& e ) {
         fprintf( stderr, "%s\n", e.what() );
         return SYS_NO_PATH_PERMISSION;
     }
@@ -512,25 +419,28 @@ int getLastPathElement(char* _logical_path, char* _last_path_element)
     namespace fs = irods::experimental::filesystem;
 
     if (std::string_view sv = _logical_path; !sv.empty() && fs::path::preferred_separator == sv.back()) {
-        sv = sv.substr(0, sv.size() - 1);
-        rstrcpy(_last_path_element, std::string{sv}.data(), MAX_NAME_LEN);
+        sv.remove_suffix(1);
+        const auto copy_len = std::min<std::size_t>(sv.size(), MAX_NAME_LEN - 1);
+        std::memcpy(_last_path_element, sv.data(), copy_len);
+        _last_path_element[copy_len] = '\0';
         return 0;
     }
 
-    auto object_name = fs::path{_logical_path}.object_name();
+    const fs::path p{_logical_path};
+    auto sv = p.object_name_view();
 
-    if ("." == object_name || ".." == object_name) {
+    if ("." == sv || ".." == sv) {
         *_last_path_element = '\0';
         return 0;
     }
 
-    std::string_view sv = object_name.c_str();
-
     if (!sv.empty() && fs::path::preferred_separator == sv.back()) {
-        sv = sv.substr(0, sv.size() - 1);
+        sv.remove_suffix(1);
     }
 
-    rstrcpy(_last_path_element, std::string{sv}.data(), MAX_NAME_LEN);
+    const auto copy_len = std::min<std::size_t>(sv.size(), MAX_NAME_LEN - 1);
+    std::memcpy(_last_path_element, sv.data(), copy_len);
+    _last_path_element[copy_len] = '\0';
 
     return 0;
 }

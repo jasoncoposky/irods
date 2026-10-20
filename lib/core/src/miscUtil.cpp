@@ -13,8 +13,6 @@
 #include "irods/rodsClient.h"
 #include "irods/rodsLog.h"
 
-#include <boost/filesystem/operations.hpp>
-#include <boost/filesystem/convenience.hpp>
 #include <fmt/format.h>
 
 #ifndef windows_platform
@@ -25,6 +23,7 @@
 
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <string>
 #include <string_view>
@@ -352,7 +351,7 @@ mkCollR( rcComm_t *conn, char *startColl, char *destColl ) {
 
 int
 mkdirR( char *startDir, char *destDir, int mode ) {
-    using namespace boost::filesystem;
+    namespace fs = std::filesystem;
     int status = 0;
     int startLen;
     int pathLen, tmpLen;
@@ -365,8 +364,9 @@ mkdirR( char *startDir, char *destDir, int mode ) {
     tmpLen = pathLen;
 
     while ( tmpLen > startLen ) {
-        path p( tmpPath );
-        if ( exists( p ) ) {
+        const fs::path p{tmpPath};
+        std::error_code ec;
+        if ( fs::exists( p, ec ) ) {
             break;
         }
 
@@ -2173,7 +2173,7 @@ getCollSizeForProgStat( rcComm_t *conn, char *srcColl,
 int
 getDirSizeForProgStat( rodsArguments_t *rodsArgs, char *srcDir,
                        operProgress_t *operProgress ) {
-    using namespace boost::filesystem;
+    namespace fs = std::filesystem;
     int status = 0;
     char srcChildPath[MAX_NAME_LEN];
 
@@ -2187,17 +2187,17 @@ getDirSizeForProgStat( rodsArguments_t *rodsArgs, char *srcDir,
         return USER_INPUT_PATH_ERR;
     }
 
-    path srcDirPath( srcDir );
-    if ( !exists( srcDirPath ) || !is_directory( srcDirPath ) ) {
+    const fs::path srcDirPath{srcDir};
+    std::error_code ec;
+    if ( !fs::exists( srcDirPath, ec ) || !fs::is_directory( srcDirPath, ec ) ) {
         rodsLog( LOG_ERROR,
                  "getDirSizeForProgStat: opendir local dir error for %s, errno = %d\n",
                  srcDir, errno );
         return USER_INPUT_PATH_ERR;
     }
 
-    directory_iterator end_itr; // default construction yields past-the-end
-    for ( directory_iterator itr( srcDirPath ); itr != end_itr; ++itr ) {
-        path p = itr->path();
+    for ( const auto& entry : fs::directory_iterator{srcDirPath, ec} ) {
+        const auto& p = entry.path();
         snprintf( srcChildPath, MAX_NAME_LEN, "%s", p.c_str() );
 
         try {
@@ -2210,17 +2210,17 @@ getDirSizeForProgStat( rodsArguments_t *rodsArgs, char *srcDir,
             return USER_INPUT_PATH_ERR;
         }
 
-        if ( !exists( p ) ) {
+        if ( !fs::exists( p, ec ) ) {
             rodsLog( LOG_ERROR,
                      "getDirSizeForProgStat: stat error for %s, errno = %d\n",
                      srcChildPath, errno );
             return USER_INPUT_PATH_ERR;
         }
-        else if ( is_regular_file( p ) ) {
+        else if ( fs::is_regular_file( p, ec ) ) {
             operProgress->totalNumFiles++;
-            operProgress->totalFileSize += file_size( p );
+            operProgress->totalFileSize += static_cast<rodsLong_t>(fs::file_size( p, ec ));
         }
-        else if ( is_directory( p ) ) {
+        else if ( fs::is_directory( p, ec ) ) {
             status = getDirSizeForProgStat( rodsArgs, srcChildPath,
                                             operProgress );
             if ( status < 0 ) {
@@ -2237,7 +2237,6 @@ getDirSizeForProgStat( rodsArguments_t *rodsArgs, char *srcDir,
  */
 guiProgressCallback
 iCommandProgStat( operProgress_t *operProgress ) {
-    using namespace boost::filesystem;
     char myFile[MAX_NAME_LEN]{};
     time_t myTime;
     struct tm *mytm;
@@ -2309,30 +2308,30 @@ getOpenedCollLen( collHandle_t *collHandle ) {
 
 int
 rmSubDir( char *mydir ) {
-    using namespace boost::filesystem;
+    namespace fs = std::filesystem;
     int status = 0;
     int savedStatus = 0;
     char childPath[MAX_NAME_LEN];
 
-    path srcDirPath( mydir );
-    if ( !exists( srcDirPath ) || !is_directory( srcDirPath ) ) {
+    const fs::path srcDirPath{mydir};
+    std::error_code ec;
+    if ( !fs::exists( srcDirPath, ec ) || !fs::is_directory( srcDirPath, ec ) ) {
         status = USER_INPUT_PATH_ERR - errno;
         rodsLogError( LOG_ERROR, status,
                       "rmSubDir: opendir local dir error for %s", mydir );
         return status;
     }
-    directory_iterator end_itr; // default construction yields past-the-end
-    for ( directory_iterator itr( srcDirPath ); itr != end_itr; ++itr ) {
-        path p = itr->path();
+    for ( const auto& entry : fs::directory_iterator{srcDirPath, ec} ) {
+        const auto& p = entry.path();
         snprintf( childPath, MAX_NAME_LEN, "%s",
                   p.c_str() );
-        if ( !exists( p ) ) {
+        if ( !fs::exists( p, ec ) ) {
             savedStatus = USER_INPUT_PATH_ERR - errno;
             rodsLogError( LOG_ERROR, savedStatus,
                           "rmSubDir: stat error for %s", childPath );
             continue;
         }
-        if ( is_directory( p ) ) {
+        if ( fs::is_directory( p, ec ) ) {
             status = rmSubDir( childPath );
             if ( status < 0 ) {
                 savedStatus = USER_INPUT_PATH_ERR - errno;
@@ -2358,30 +2357,30 @@ rmSubDir( char *mydir ) {
 
 int
 rmFilesInDir( char *mydir ) {
-    using namespace boost::filesystem;
+    namespace fs = std::filesystem;
     int status = 0;
     int savedStatus = 0;
     char childPath[MAX_NAME_LEN];
 
-    path srcDirPath( mydir );
-    if ( !exists( srcDirPath ) || !is_directory( srcDirPath ) ) {
+    const fs::path srcDirPath{mydir};
+    std::error_code ec;
+    if ( !fs::exists( srcDirPath, ec ) || !fs::is_directory( srcDirPath, ec ) ) {
         status = USER_INPUT_PATH_ERR - errno;
         rodsLogError( LOG_ERROR, status,
                       "rmFilesInDir: opendir local dir error for %s", mydir );
         return status;
     }
-    directory_iterator end_itr; // default construction yields past-the-end
-    for ( directory_iterator itr( srcDirPath ); itr != end_itr; ++itr ) {
-        path p = itr->path();
+    for ( const auto& entry : fs::directory_iterator{srcDirPath, ec} ) {
+        const auto& p = entry.path();
         snprintf( childPath, MAX_NAME_LEN, "%s",
                   p.c_str() );
-        if ( !exists( p ) ) {
+        if ( !fs::exists( p, ec ) ) {
             savedStatus = USER_INPUT_PATH_ERR - errno;
             rodsLogError( LOG_ERROR, savedStatus,
                           "rmFilesInDir: stat error for %s", childPath );
             continue;
         }
-        if ( is_regular_file( p ) ) {
+        if ( fs::is_regular_file( p, ec ) ) {
             unlink( childPath );
         }
         else {
@@ -2392,31 +2391,31 @@ rmFilesInDir( char *mydir ) {
 }
 int
 getNumFilesInDir( const char *mydir ) {
-    using namespace boost::filesystem;
+    namespace fs = std::filesystem;
     int status = 0;
     int savedStatus = 0;
     char childPath[MAX_NAME_LEN];
     int count = 0;
 
-    path srcDirPath( mydir );
-    if ( !exists( srcDirPath ) || !is_directory( srcDirPath ) ) {
+    const fs::path srcDirPath{mydir};
+    std::error_code ec;
+    if ( !fs::exists( srcDirPath, ec ) || !fs::is_directory( srcDirPath, ec ) ) {
         status = USER_INPUT_PATH_ERR - errno;
         rodsLogError( LOG_ERROR, status,
                       "getNumFilesInDir: opendir local dir error for %s", mydir );
         return status;
     }
-    directory_iterator end_itr; // default construction yields past-the-end
-    for ( directory_iterator itr( srcDirPath ); itr != end_itr; ++itr ) {
-        path p = itr->path();
+    for ( const auto& entry : fs::directory_iterator{srcDirPath, ec} ) {
+        const auto& p = entry.path();
         snprintf( childPath, MAX_NAME_LEN, "%s",
                   p.c_str() );
-        if ( !exists( p ) ) {
+        if ( !fs::exists( p, ec ) ) {
             savedStatus = USER_INPUT_PATH_ERR - errno;
             rodsLogError( LOG_ERROR, savedStatus,
                           "getNumFilesInDir: stat error for %s", childPath );
             continue;
         }
-        if ( is_regular_file( p ) ) {
+        if ( fs::is_regular_file( p, ec ) ) {
             count++;
         }
         else {
