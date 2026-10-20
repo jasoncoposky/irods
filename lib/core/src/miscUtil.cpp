@@ -1,5 +1,6 @@
 #include "irods/miscUtil.h"
 
+#include "irods/genquery2_builder.hpp"
 #include "irods/get_hier_from_leaf_id.h"
 #include "irods/irods_at_scope_exit.hpp"
 #include "irods/irods_exception.hpp"
@@ -13,6 +14,7 @@
 
 #include <boost/filesystem/operations.hpp>
 #include <boost/filesystem/convenience.hpp>
+#include <fmt/format.h>
 
 #ifndef windows_platform
 #  include <sys/time.h>
@@ -23,6 +25,9 @@
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <string>
+#include <string_view>
+#include <vector>
 
 /* VERIFY_DIV - contributed by g.soudlenkov@auckland.ac.nz */
 #define VERIFY_DIV(_v1_,_v2_) ((_v2_)? (float)(_v1_)/(_v2_):0.0)
@@ -34,6 +39,208 @@ const char NON_ROOT_COLL_CHECK_STR[] = "<>'/'";
 
 namespace
 {
+    namespace gq2 = irods::experimental::genquery2;
+    using gq2::builder::col;
+
+    auto execute_gq2_via_handle(queryHandle_t* _qh,
+                                const gq2::select& _ast,
+                                nlohmann::json& _rows,
+                                std::string_view _zone_hint = {}) -> int
+    {
+        if (!_qh || !_qh->conn) {
+            return USER__NULL_INPUT_ERR;
+        }
+#ifdef RODS_SERVER
+        if (_qh->connType == RS_COMM) {
+            return gq2::try_execute(*static_cast<RsComm*>(_qh->conn), _ast, _rows, _zone_hint);
+        }
+#endif
+        return gq2::try_execute(*static_cast<rcComm_t*>(_qh->conn), _ast, _rows, _zone_hint);
+    }
+
+    auto query_coll_in_coll_page(queryHandle_t* _qh,
+                                 const char* _collection,
+                                 int _flags,
+                                 std::size_t _offset,
+                                 genQueryOut_t** _genQueryOut) -> int
+    {
+        if (!_collection || !_genQueryOut) {
+            return USER__NULL_INPUT_ERR;
+        }
+
+        auto cond = (col("COLL_NAME") != "/");
+        if ((_flags & RECUR_QUERY_FG) != 0) {
+            if (std::strcmp(_collection, "/") == 0) {
+                cond = cond && col("COLL_NAME").like("/%");
+            }
+            else {
+                cond = cond &&
+                       (col("COLL_NAME") == _collection ||
+                        col("COLL_NAME").like(fmt::format("{}/%", _collection)))
+                           .group();
+            }
+        }
+        else {
+            cond = cond && (col("COLL_PARENT_NAME") == _collection);
+        }
+
+        const auto q = gq2::builder::select({"COLL_NAME",
+                                             "COLL_OWNER_NAME",
+                                             "COLL_CREATE_TIME",
+                                             "COLL_MODIFY_TIME",
+                                             "COLL_TYPE",
+                                             "COLL_INFO_1",
+                                             "COLL_INFO_2"})
+                           .where(std::move(cond))
+                           .order_by("COLL_NAME")
+                           .offset(_offset)
+                           .limit(MAX_SQL_ROWS)
+                           .build();
+
+        nlohmann::json rows;
+        if (const int ec = execute_gq2_via_handle(_qh, q, rows, _collection); ec < 0) {
+            return ec;
+        }
+
+        const int cont_inx = (rows.size() >= static_cast<std::size_t>(MAX_SQL_ROWS)) ? 1 : 0;
+        return gq2::rows_to_genquery_out(rows,
+                                         {COL_COLL_NAME,
+                                          COL_COLL_OWNER_NAME,
+                                          COL_COLL_CREATE_TIME,
+                                          COL_COLL_MODIFY_TIME,
+                                          COL_COLL_TYPE,
+                                          COL_COLL_INFO1,
+                                          COL_COLL_INFO2},
+                                         _genQueryOut,
+                                         cont_inx);
+    }
+
+    auto query_data_obj_in_coll_page(queryHandle_t* _qh,
+                                     const char* _collection,
+                                     int _flags,
+                                     keyValPair_t* _condInput,
+                                     std::size_t _offset,
+                                     genQueryOut_t** _genQueryOut) -> int
+    {
+        if (!_collection || !_genQueryOut) {
+            return USER__NULL_INPUT_ERR;
+        }
+
+        auto cond = [&]() {
+            if ((_flags & RECUR_QUERY_FG) != 0) {
+                if (std::strcmp(_collection, "/") == 0) {
+                    return gq2::builder::condition_builder{col("COLL_NAME").like("/%")};
+                }
+                return (col("COLL_NAME") == _collection ||
+                        col("COLL_NAME").like(fmt::format("{}/%", _collection)))
+                    .group();
+            }
+            return gq2::builder::condition_builder{col("COLL_NAME") == _collection};
+        }();
+
+        if ((_flags & INCLUDE_CONDINPUT_IN_QUERY) != 0 && _condInput != nullptr) {
+            if (const char* resc_name = getValByKey(_condInput, RESC_NAME_KW); resc_name != nullptr) {
+                cond = cond && (col("RESC_NAME") == resc_name);
+            }
+        }
+
+        std::vector<std::string> proj = {"COLL_NAME",
+                                         "DATA_NAME",
+                                         "DATA_ID",
+                                         "DATA_MODE",
+                                         "DATA_SIZE",
+                                         "DATA_MODIFY_TIME",
+                                         "DATA_CREATE_TIME"};
+        std::vector<int> col_indices = {COL_COLL_NAME,
+                                        COL_DATA_NAME,
+                                        COL_D_DATA_ID,
+                                        COL_DATA_MODE,
+                                        COL_DATA_SIZE,
+                                        COL_D_MODIFY_TIME,
+                                        COL_D_CREATE_TIME};
+
+        if ((_flags & LONG_METADATA_FG) != 0 || (_flags & VERY_LONG_METADATA_FG) != 0) {
+            proj.insert(proj.end(),
+                        {"RESC_NAME", "DATA_RESC_HIER", "DATA_OWNER_NAME", "DATA_REPL_NUM", "DATA_REPL_STATUS"});
+            col_indices.insert(col_indices.end(),
+                               {COL_D_RESC_NAME,
+                                COL_D_RESC_HIER,
+                                COL_D_OWNER_NAME,
+                                COL_DATA_REPL_NUM,
+                                COL_D_REPL_STATUS});
+
+            if ((_flags & VERY_LONG_METADATA_FG) != 0) {
+                proj.insert(proj.end(), {"DATA_PATH", "DATA_CHECKSUM", "DATA_TYPE_NAME"});
+                col_indices.insert(col_indices.end(), {COL_D_DATA_PATH, COL_D_DATA_CHECKSUM, COL_DATA_TYPE_NAME});
+            }
+        }
+
+        auto sb = gq2::builder::select(std::move(proj))
+                      .where(std::move(cond))
+                      .order_by("COLL_NAME")
+                      .order_by("DATA_NAME")
+                      .order_by("DATA_ID");
+
+        if ((_flags & LONG_METADATA_FG) != 0 || (_flags & VERY_LONG_METADATA_FG) != 0) {
+            sb.order_by("DATA_REPL_NUM");
+        }
+
+        const auto q = sb.offset(_offset).limit(MAX_SQL_ROWS).build();
+
+        nlohmann::json rows;
+        if (const int ec = execute_gq2_via_handle(_qh, q, rows, _collection); ec < 0) {
+            return ec;
+        }
+
+        if (rows.empty()) {
+            return CAT_NO_ROWS_FOUND;
+        }
+
+        auto* res = static_cast<GenQueryOut*>(std::calloc(1, sizeof(GenQueryOut)));
+        if (!res) {
+            return SYS_MALLOC_ERR;
+        }
+
+        res->rowCnt = static_cast<int>(rows.size());
+        res->attriCnt = static_cast<int>(col_indices.size());
+        res->continueInx = (rows.size() >= static_cast<std::size_t>(MAX_SQL_ROWS)) ? 1 : 0;
+        res->totalRowCount = res->rowCnt;
+
+        for (std::size_t c = 0; c < col_indices.size(); ++c) {
+            std::size_t max_len = 1;
+            for (const auto& row : rows) {
+                if (c < row.size() && row[c].is_string()) {
+                    const auto& s = row[c].get_ref<const std::string&>();
+                    max_len = std::max(max_len, s.size() + 1);
+                }
+            }
+
+            res->sqlResult[c].attriInx = col_indices[c];
+            res->sqlResult[c].len = static_cast<int>(max_len);
+            res->sqlResult[c].value = static_cast<char*>(std::calloc(rows.size(), max_len));
+            if (!res->sqlResult[c].value) {
+                for (std::size_t j = 0; j < c; ++j) {
+                    std::free(res->sqlResult[j].value);
+                }
+                std::free(res);
+                return SYS_MALLOC_ERR;
+            }
+
+            for (std::size_t r = 0; r < rows.size(); ++r) {
+                if (c < rows[r].size() && rows[r][c].is_string()) {
+                    const auto& s = rows[r][c].get_ref<const std::string&>();
+                    std::memcpy(&res->sqlResult[c].value[r * max_len], s.data(), s.size());
+                }
+            }
+        }
+
+        if (*_genQueryOut) {
+            freeGenQueryOut(_genQueryOut);
+        }
+        *_genQueryOut = res;
+        return 0;
+    }
+
     auto copyRodsPath(rodsPath_t* to, const rodsPath_t* from) -> int
     {
         // No nullptrs allowed.
@@ -326,39 +533,19 @@ int
 queryCollInColl( queryHandle_t *queryHandle, char *collection,
                  int flags, genQueryInp_t *genQueryInp,
                  genQueryOut_t **genQueryOut ) {
-    char collQCond[MAX_NAME_LEN];
-    int status;
-
     if ( collection == NULL || genQueryOut == NULL ) {
         return USER__NULL_INPUT_ERR;
     }
 
-    memset( genQueryInp, 0, sizeof( genQueryInp_t ) );
-
-    snprintf( collQCond, MAX_NAME_LEN, "%s", NON_ROOT_COLL_CHECK_STR);
-    addInxVal( &genQueryInp->sqlCondInp, COL_COLL_NAME, collQCond );
-
-    if ( ( flags & RECUR_QUERY_FG ) != 0 ) {
-        genAllInCollQCond( collection, collQCond );
-        addInxVal( &genQueryInp->sqlCondInp, COL_COLL_NAME, collQCond );
+    if ( genQueryInp != NULL ) {
+        memset( genQueryInp, 0, sizeof( genQueryInp_t ) );
+        genQueryInp->maxRows = MAX_SQL_ROWS;
     }
-    else {
-        snprintf( collQCond, MAX_NAME_LEN, "='%s'", collection );
-        addInxVal( &genQueryInp->sqlCondInp, COL_COLL_PARENT_NAME, collQCond );
+
+    const int status = query_coll_in_coll_page( queryHandle, collection, flags, 0, genQueryOut );
+    if ( status >= 0 && genQueryInp != NULL && *genQueryOut != NULL ) {
+        genQueryInp->rowOffset = ( *genQueryOut )->rowCnt;
     }
-    addInxIval( &genQueryInp->selectInp, COL_COLL_NAME, 1 );
-    addInxIval( &genQueryInp->selectInp, COL_COLL_OWNER_NAME, 1 );
-    addInxIval( &genQueryInp->selectInp, COL_COLL_CREATE_TIME, 1 );
-    addInxIval( &genQueryInp->selectInp, COL_COLL_MODIFY_TIME, 1 );
-    addInxIval( &genQueryInp->selectInp, COL_COLL_TYPE, 1 );
-    addInxIval( &genQueryInp->selectInp, COL_COLL_INFO1, 1 );
-    addInxIval( &genQueryInp->selectInp, COL_COLL_INFO2, 1 );
-
-    genQueryInp->maxRows = MAX_SQL_ROWS;
-
-    status = ( *queryHandle->genQuery )(
-                 ( rcComm_t * ) queryHandle->conn, genQueryInp, genQueryOut );
-
     return status;
 }
 
@@ -368,40 +555,21 @@ int
 queryDataObjInColl( queryHandle_t *queryHandle, char *collection,
                     int flags, genQueryInp_t *genQueryInp,
                     genQueryOut_t **genQueryOut, keyValPair_t *condInput ) {
-    char collQCond[MAX_NAME_LEN];
-    int status;
-    char *rescName = NULL;
     if ( collection == NULL || genQueryOut == NULL ) {
         return USER__NULL_INPUT_ERR;
     }
 
-    memset( genQueryInp, 0, sizeof( genQueryInp_t ) );
-
-    if ( ( flags & RECUR_QUERY_FG ) != 0 ) {
-        genAllInCollQCond( collection, collQCond );
-        addInxVal( &genQueryInp->sqlCondInp, COL_COLL_NAME, collQCond );
-    }
-    else {
-        snprintf( collQCond, MAX_NAME_LEN, " = '%s'", collection );
-        addInxVal( &genQueryInp->sqlCondInp, COL_COLL_NAME, collQCond );
-    }
-    if ( ( flags & INCLUDE_CONDINPUT_IN_QUERY ) != 0 &&
-            condInput != NULL &&
-            ( rescName = getValByKey( condInput, RESC_NAME_KW ) ) != NULL ) {
-        snprintf( collQCond, MAX_NAME_LEN, " = '%s'", rescName );
-        addInxVal( &genQueryInp->sqlCondInp, COL_D_RESC_NAME, collQCond );
+    if ( genQueryInp != NULL ) {
+        memset( genQueryInp, 0, sizeof( genQueryInp_t ) );
+        genQueryInp->maxRows = MAX_SQL_ROWS;
+        genQueryInp->options = RETURN_TOTAL_ROW_COUNT;
     }
 
-    setQueryInpForData( flags, genQueryInp );
-
-    genQueryInp->maxRows = MAX_SQL_ROWS;
-    genQueryInp->options = RETURN_TOTAL_ROW_COUNT;
-
-    status = ( *queryHandle->genQuery )(
-                 ( rcComm_t * ) queryHandle->conn, genQueryInp, genQueryOut );
-
+    const int status = query_data_obj_in_coll_page( queryHandle, collection, flags, condInput, 0, genQueryOut );
+    if ( status >= 0 && genQueryInp != NULL && *genQueryOut != NULL ) {
+        genQueryInp->rowOffset = ( *genQueryOut )->rowCnt;
+    }
     return status;
-
 }
 
 int
@@ -557,36 +725,27 @@ printNoSync( char *objPath, rodsLong_t fileSize, char *reason ) {
 
 int
 queryDataObjAcl( rcComm_t *conn, char *dataId, char *zoneHint, genQueryOut_t **genQueryOut ) { // JMC - bacport 4516
-    genQueryInp_t genQueryInp;
-    char tmpStr[MAX_NAME_LEN];
-
-    if ( dataId == NULL || genQueryOut == NULL ) {
+    if ( conn == NULL || dataId == NULL || genQueryOut == NULL ) {
         return USER__NULL_INPUT_ERR;
     }
 
-    memset( &genQueryInp, 0, sizeof( genQueryInp_t ) );
+    const auto q = gq2::builder::select({"DATA_ACCESS_USER_NAME",
+                                         "DATA_ACCESS_USER_ZONE",
+                                         "DATA_ACCESS_USER_TYPE",
+                                         "DATA_ACCESS_NAME"})
+                       .where(col("DATA_ID") == dataId)
+                       .limit(MAX_SQL_ROWS)
+                       .build();
 
-    if ( zoneHint != NULL ) { // JMC - bacport 4516
-        addKeyVal( &genQueryInp.condInput, ZONE_KW, zoneHint );
+    nlohmann::json rows;
+    const std::string_view zh = ( zoneHint != NULL ) ? std::string_view{zoneHint} : std::string_view{};
+    if ( const int ec = gq2::try_execute( *conn, q, rows, zh ); ec < 0 ) {
+        return ec;
     }
 
-    addInxIval( &genQueryInp.selectInp, COL_USER_NAME, 1 );
-    addInxIval( &genQueryInp.selectInp, COL_USER_ZONE, 1 );
-    addInxIval( &genQueryInp.selectInp, COL_USER_TYPE, 1 );
-    addInxIval( &genQueryInp.selectInp, COL_DATA_ACCESS_NAME, 1 );
-
-    snprintf( tmpStr, MAX_NAME_LEN, " = '%s'", dataId );
-
-    addInxVal( &genQueryInp.sqlCondInp, COL_DATA_ACCESS_DATA_ID, tmpStr );
-
-    snprintf( tmpStr, MAX_NAME_LEN, "='%s'", "access_type" );
-
-    /* Currently necessary since other namespaces exist in the token table */
-    addInxVal( &genQueryInp.sqlCondInp, COL_DATA_TOKEN_NAMESPACE, tmpStr );
-
-    genQueryInp.maxRows = MAX_SQL_ROWS;
-
-    return rcGenQuery( conn, &genQueryInp, genQueryOut );
+    return gq2::rows_to_genquery_out( rows,
+                                      {COL_USER_NAME, COL_USER_ZONE, COL_USER_TYPE, COL_DATA_ACCESS_NAME},
+                                      genQueryOut );
 }
 
 int
@@ -620,79 +779,46 @@ queryCollAclSpecific( rcComm_t *conn, char *collName, char *zoneHint,
 
 int
 queryCollAcl( rcComm_t *conn, char *collName, char *zoneHint, genQueryOut_t **genQueryOut ) { // JMC - bacport 4516
-    genQueryInp_t genQueryInp;
-    genQueryOut_t *myGenQueryOut;
-    int status;
-    char tmpStr[MAX_NAME_LEN];
-
-    if ( collName == NULL || genQueryOut == NULL ) {
+    if ( conn == NULL || collName == NULL || genQueryOut == NULL ) {
         return USER__NULL_INPUT_ERR;
     }
 
-    memset( &genQueryInp, 0, sizeof( genQueryInp_t ) );
+    const auto q = gq2::builder::select({"COLL_ACCESS_USER_NAME",
+                                         "COLL_ACCESS_USER_ZONE",
+                                         "COLL_ACCESS_NAME"})
+                       .where(col("COLL_NAME") == collName)
+                       .limit(MAX_SQL_ROWS)
+                       .build();
 
-    myGenQueryOut = *genQueryOut =
-                        ( genQueryOut_t * ) malloc( sizeof( genQueryOut_t ) );
-    memset( myGenQueryOut, 0, sizeof( genQueryOut_t ) );
-
-    clearGenQueryInp( &genQueryInp );
-
-    if ( zoneHint != NULL ) { // JMC - bacport 4516
-        addKeyVal( &genQueryInp.condInput, ZONE_KW, zoneHint );
+    nlohmann::json rows;
+    const std::string_view zh = ( zoneHint != NULL ) ? std::string_view{zoneHint} : std::string_view{};
+    if ( const int ec = gq2::try_execute( *conn, q, rows, zh ); ec < 0 ) {
+        return ec;
     }
 
-    addInxIval( &genQueryInp.selectInp, COL_COLL_USER_NAME, 1 );
-    addInxIval( &genQueryInp.selectInp, COL_COLL_USER_ZONE, 1 );
-
-    addInxIval( &genQueryInp.selectInp, COL_COLL_ACCESS_NAME, 1 );
-
-    snprintf( tmpStr, MAX_NAME_LEN, "='%s'", "access_type" );
-
-    /* Currently necessary since other namespaces exist in the token table */
-    addInxVal( &genQueryInp.sqlCondInp, COL_COLL_TOKEN_NAMESPACE, tmpStr );
-
-    snprintf( tmpStr, MAX_NAME_LEN, " = '%s'", collName );
-    addInxVal( &genQueryInp.sqlCondInp, COL_COLL_NAME, tmpStr );
-
-    genQueryInp.maxRows = MAX_SQL_ROWS;
-
-    status =  rcGenQuery( conn, &genQueryInp, genQueryOut );
-
-    return status;
-
+    return gq2::rows_to_genquery_out( rows,
+                                      {COL_COLL_USER_NAME, COL_COLL_USER_ZONE, COL_COLL_ACCESS_NAME},
+                                      genQueryOut );
 }
 
 int
 queryCollInheritance( rcComm_t *conn, char *collName,
                       genQueryOut_t **genQueryOut ) {
-    genQueryInp_t genQueryInp;
-    genQueryOut_t *myGenQueryOut;
-    int status;
-    char tmpStr[MAX_NAME_LEN];
-
-    if ( collName == NULL || genQueryOut == NULL ) {
+    if ( conn == NULL || collName == NULL || genQueryOut == NULL ) {
         return USER__NULL_INPUT_ERR;
     }
 
-    memset( &genQueryInp, 0, sizeof( genQueryInp_t ) );
+    const auto q = gq2::builder::select({"COLL_INHERITANCE"})
+                       .where(col("COLL_NAME") == collName)
+                       .limit(MAX_SQL_ROWS)
+                       .build();
 
-    myGenQueryOut = *genQueryOut =
-                        ( genQueryOut_t * ) malloc( sizeof( genQueryOut_t ) );
-    memset( myGenQueryOut, 0, sizeof( genQueryOut_t ) );
+    nlohmann::json rows;
+    if ( const int ec = gq2::try_execute( *conn, q, rows, collName ); ec < 0 ) {
+        return ec;
+    }
 
-    clearGenQueryInp( &genQueryInp );
-
-    addInxIval( &genQueryInp.selectInp, COL_COLL_INHERITANCE, 1 );
-
-    snprintf( tmpStr, MAX_NAME_LEN, " = '%s'", collName );
-    addInxVal( &genQueryInp.sqlCondInp, COL_COLL_NAME, tmpStr );
-
-    genQueryInp.maxRows = MAX_SQL_ROWS;
-
-    status =  rcGenQuery( conn, &genQueryInp, genQueryOut );
-
-    return status;
-
+    return gq2::rows_to_genquery_out( rows, {COL_COLL_INHERITANCE}, genQueryOut );
 }
 
 int
@@ -1452,15 +1578,28 @@ getNextCollMetaInfo( collHandle_t *collHandle, collEnt_t *outCollEnt ) {
         if ( continueInx > 0 ) {
             /* More to come */
 
-            if ( dataObjInp->specColl != NULL ) {
+            if ( dataObjInp->specColl != NULL && dataObjInp->specColl->collClass != LINKED_COLL ) {
                 dataObjInp->openFlags = continueInx;
                 status = ( *queryHandle->querySpecColl )(
                              ( rcComm_t * ) queryHandle->conn, dataObjInp, &genQueryOut );
             }
             else {
-                genQueryInp->continueInx = continueInx;
-                status = ( *queryHandle->genQuery )(
-                             ( rcComm_t * ) queryHandle->conn, genQueryInp, &genQueryOut );
+                const char* target_coll = ( dataObjInp->specColl != NULL &&
+                                            dataObjInp->specColl->collClass == LINKED_COLL )
+                                              ? collHandle->linkedObjPath
+                                              : collHandle->dataObjInp.objPath;
+                const int target_flags = ( dataObjInp->specColl != NULL &&
+                                           dataObjInp->specColl->collClass == LINKED_COLL )
+                                             ? ( collHandle->flags & ~RECUR_QUERY_FG )
+                                             : collHandle->flags;
+                status = query_coll_in_coll_page( queryHandle,
+                                                  target_coll,
+                                                  target_flags,
+                                                  static_cast<std::size_t>( genQueryInp->rowOffset ),
+                                                  &genQueryOut );
+                if ( status >= 0 && genQueryOut != NULL ) {
+                    genQueryInp->rowOffset += genQueryOut->rowCnt;
+                }
             }
             if ( status < 0 ) {
                 collHandle->rowInx = 0;
@@ -1616,22 +1755,29 @@ getNextDataObjMetaInfo( collHandle_t *collHandle, collEnt_t *outCollEnt ) {
         if ( continueInx > 0 ) {
             /* More to come */
 
-            if ( dataObjInp->specColl != NULL ) {
-                if (LINKED_COLL == dataObjInp->specColl->collClass) {
-                    genQueryInp->continueInx = continueInx;
-                    status =
-                        (*queryHandle->genQuery)(static_cast<rcComm_t*>(queryHandle->conn), genQueryInp, &genQueryOut);
-                }
-                else {
-                    dataObjInp->openFlags = continueInx;
-                    status = (*queryHandle->querySpecColl)(
-                        static_cast<rcComm_t*>(queryHandle->conn), dataObjInp, &genQueryOut);
-                }
+            if ( dataObjInp->specColl != NULL && LINKED_COLL != dataObjInp->specColl->collClass ) {
+                dataObjInp->openFlags = continueInx;
+                status = (*queryHandle->querySpecColl)(
+                    static_cast<rcComm_t*>(queryHandle->conn), dataObjInp, &genQueryOut);
             }
             else {
-                genQueryInp->continueInx = continueInx;
-                status = ( *queryHandle->genQuery )(
-                             ( rcComm_t * ) queryHandle->conn, genQueryInp, &genQueryOut );
+                const char* target_coll = ( dataObjInp->specColl != NULL &&
+                                            LINKED_COLL == dataObjInp->specColl->collClass )
+                                              ? collHandle->linkedObjPath
+                                              : collHandle->dataObjInp.objPath;
+                const int target_flags = ( dataObjInp->specColl != NULL &&
+                                           LINKED_COLL == dataObjInp->specColl->collClass )
+                                             ? ( collHandle->flags & ~RECUR_QUERY_FG )
+                                             : collHandle->flags;
+                status = query_data_obj_in_coll_page( queryHandle,
+                                                      target_coll,
+                                                      target_flags,
+                                                      &collHandle->dataObjInp.condInput,
+                                                      static_cast<std::size_t>( genQueryInp->rowOffset ),
+                                                      &genQueryOut );
+                if ( status >= 0 && genQueryOut != NULL ) {
+                    genQueryInp->rowOffset += genQueryOut->rowCnt;
+                }
             }
             if ( status < 0 ) {
                 collHandle->rowInx = 0;
@@ -1919,49 +2065,28 @@ getZoneHintForGenQuery( genQueryInp_t *genQueryInp ) {
 int
 getZoneType( rcComm_t *conn, char *icatZone, char *inZoneName,
              char *outZoneType ) {
-    genQueryInp_t genQueryInp;
-    genQueryOut_t* genQueryOut{};
-
-    irods::at_scope_exit cleanup{[&genQueryInp, &genQueryOut] {
-        clearGenQueryInp(&genQueryInp);
-        freeGenQueryOut(&genQueryOut);
-    }};
-
-    int status;
-    sqlResult_t *zoneType;
-    char tmpStr[MAX_NAME_LEN];
-
-    if ( inZoneName == NULL || outZoneType == NULL ) {
+    if ( conn == NULL || inZoneName == NULL || outZoneType == NULL ) {
         return USER__NULL_INPUT_ERR;
     }
 
-    memset( &genQueryInp, 0, sizeof( genQueryInp ) );
-    if ( icatZone != NULL && strlen( icatZone ) > 0 ) {
-        addKeyVal( &genQueryInp.condInput, ZONE_KW, icatZone );
-    }
-    addInxIval( &genQueryInp.selectInp, COL_ZONE_NAME, 1 );
-    addInxIval( &genQueryInp.selectInp, COL_ZONE_TYPE, 1 );
+    const auto q = gq2::builder::select({"ZONE_TYPE"})
+                       .where(col("ZONE_NAME") == inZoneName)
+                       .limit(1)
+                       .build();
 
-    snprintf( tmpStr, MAX_NAME_LEN, " = '%s'", inZoneName );
-
-    addInxVal( &genQueryInp.sqlCondInp, COL_ZONE_NAME, tmpStr );
-
-    genQueryInp.maxRows = MAX_SQL_ROWS;
-
-    status =  rcGenQuery( conn, &genQueryInp, &genQueryOut );
-
-    if ( status < 0 ) {
+    nlohmann::json rows;
+    const std::string_view zh = ( icatZone != NULL && strlen( icatZone ) > 0 )
+                                    ? std::string_view{icatZone}
+                                    : std::string_view{};
+    if ( const int status = gq2::try_execute( *conn, q, rows, zh ); status < 0 ) {
         return status;
     }
 
-    if ( ( zoneType = getSqlResultByInx( genQueryOut, COL_ZONE_TYPE ) ) == NULL ) {
-        rodsLog( LOG_NOTICE,
-                 "getZoneInfo: getSqlResultByInx for COL_ZONE_TYPE failed" );
-        return UNMATCHED_KEY_OR_INDEX;
+    if ( rows.empty() || rows[0].empty() || !rows[0][0].is_string() ) {
+        return CAT_NO_ROWS_FOUND;
     }
 
-    rstrcpy( outZoneType, zoneType->value, MAX_NAME_LEN );
-
+    rstrcpy( outZoneType, rows[0][0].get_ref<const std::string&>().c_str(), MAX_NAME_LEN );
     return 0;
 }
 

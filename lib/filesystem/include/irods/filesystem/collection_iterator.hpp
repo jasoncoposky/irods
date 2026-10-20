@@ -23,8 +23,10 @@
 
 #include <iterator>
 #include <memory>
+#include <string>
 #include <system_error>
 #include <utility>
+#include <vector>
 
 #ifndef IRODS_FILESYSTEM_COLLECTION_OPTIONS_DEFINED
 #define IRODS_FILESYSTEM_COLLECTION_OPTIONS_DEFINED
@@ -125,9 +127,22 @@ namespace irods::experimental::filesystem::NAMESPACE_IMPL
     private:
         struct context
         {
+            enum class query_stage
+            {
+                subcollections,
+                data_objects,
+                done
+            };
+
             rxComm* comm{};
             path path{};
+            std::string target_coll{};
             collection_options opts{collection_options::none};
+            bool use_genquery2{false};
+            query_stage stage{query_stage::subcollections};
+            std::size_t row_offset{0};
+            std::size_t batch_index{0};
+            std::vector<value_type> batch{};
             bool handle_open{false};
 #ifdef IRODS_FILESYSTEM_ENABLE_SERVER_SIDE_API
             int handle{-1};

@@ -55,15 +55,10 @@ int lsUtil(rcComm_t *conn,
         }
 
         // Need to populate dataId in srcPath as it is needed for getting permissions info
-        char coll_name[MAX_NAME_LEN]{};
-        char data_name[MAX_NAME_LEN]{};
-        status = splitPathByKey(rodsPathInp->srcPath[i].outPath, coll_name, MAX_NAME_LEN, data_name, MAX_NAME_LEN, '/');
-        if (status < 0) {
-            return status;
-        }
-
+        const fs::path src_p{rodsPathInp->srcPath[i].outPath};
         const auto q = gq2::builder::select({"DATA_ID"})
-                           .where(col("DATA_NAME") == data_name && col("COLL_NAME") == coll_name)
+                           .where(col("DATA_NAME") == src_p.object_name_view() &&
+                                  col("COLL_NAME") == src_p.parent_path_view())
                            .limit(1)
                            .build();
         if (const auto rows = gq2::try_execute(*conn, q); rows && !rows->empty()) {
@@ -142,55 +137,107 @@ int printLsStrShort( char *srcPath ) {
 
 int lsDataObjUtilLong(RcComm* conn, char* srcPath, RodsArguments* rodsArgs, GenQueryInp*)
 {
-    genQueryInp_t genQueryInp{};
-    genQueryOut_t* genQueryOut{};
-
-    irods::at_scope_exit cleanup{[&genQueryInp, &genQueryOut] {
-        clearGenQueryInp(&genQueryInp);
-        freeGenQueryOut(&genQueryOut);
-    }};
-
-    int status = 0;
-    char myColl[MAX_NAME_LEN], myData[MAX_NAME_LEN];
-    char condStr[MAX_NAME_LEN];
-    int queryFlags;
-
-    queryFlags = setQueryFlag( rodsArgs );
-    setQueryInpForData( queryFlags, &genQueryInp );
-    genQueryInp.maxRows = MAX_SQL_ROWS;
-
-    memset( myColl, 0, MAX_NAME_LEN );
-    memset( myData, 0, MAX_NAME_LEN );
-
-    if ( ( status = splitPathByKey(
-                        srcPath, myColl, MAX_NAME_LEN, myData, MAX_NAME_LEN, '/' ) ) < 0 ) {
-        rodsLogError( LOG_ERROR, status,
-                      "setQueryInpForLong: splitPathByKey for %s error, status = %d",
-                      srcPath, status );
-        return status;
+    if (!conn || !srcPath || !rodsArgs) {
+        return USER__NULL_INPUT_ERR;
     }
 
-    // Need to clear each time in case there are multiple inputs to ils -l
-    clearInxVal( &genQueryInp.sqlCondInp );
-    snprintf( condStr, MAX_NAME_LEN, "='%s'", myColl );
-    addInxVal( &genQueryInp.sqlCondInp, COL_COLL_NAME, condStr );
-    snprintf( condStr, MAX_NAME_LEN, "='%s'", myData );
-    addInxVal( &genQueryInp.sqlCondInp, COL_DATA_NAME, condStr );
+    genQueryOut_t* genQueryOut{};
+    irods::at_scope_exit cleanup{[&genQueryOut] { freeGenQueryOut(&genQueryOut); }};
 
-    status =  rcGenQuery( conn, &genQueryInp, &genQueryOut );
+    namespace fs = irods::experimental::filesystem;
+    namespace gq2 = irods::experimental::genquery2;
+    using gq2::builder::col;
 
-    if ( status < 0 ) {
-        if ( status == CAT_NO_ROWS_FOUND ) {
-            rodsLog( LOG_ERROR, "%s does not exist or user lacks access permission",
-                     srcPath );
+    const fs::path p{srcPath};
+    if (p.parent_path_view().empty() && p.object_name_view().empty()) {
+        return USER_INPUT_PATH_ERR;
+    }
+
+    const int queryFlags = setQueryFlag(rodsArgs);
+
+    std::vector<std::string> proj = {"COLL_NAME",
+                                     "DATA_NAME",
+                                     "DATA_ID",
+                                     "DATA_MODE",
+                                     "DATA_SIZE",
+                                     "DATA_MODIFY_TIME",
+                                     "DATA_CREATE_TIME",
+                                     "RESC_NAME",
+                                     "DATA_RESC_HIER",
+                                     "DATA_OWNER_NAME",
+                                     "DATA_REPL_NUM",
+                                     "DATA_REPL_STATUS"};
+    std::vector<int> col_indices = {COL_COLL_NAME,
+                                    COL_DATA_NAME,
+                                    COL_D_DATA_ID,
+                                    COL_DATA_MODE,
+                                    COL_DATA_SIZE,
+                                    COL_D_MODIFY_TIME,
+                                    COL_D_CREATE_TIME,
+                                    COL_D_RESC_NAME,
+                                    COL_D_RESC_HIER,
+                                    COL_D_OWNER_NAME,
+                                    COL_DATA_REPL_NUM,
+                                    COL_D_REPL_STATUS};
+
+    if ((queryFlags & VERY_LONG_METADATA_FG) != 0) {
+        proj.insert(proj.end(), {"DATA_PATH", "DATA_CHECKSUM", "DATA_TYPE_NAME"});
+        col_indices.insert(col_indices.end(), {COL_D_DATA_PATH, COL_D_DATA_CHECKSUM, COL_DATA_TYPE_NAME});
+    }
+
+    const auto q = gq2::builder::select(std::move(proj))
+                       .where(col("COLL_NAME") == p.parent_path_view() &&
+                              col("DATA_NAME") == p.object_name_view())
+                       .order_by("DATA_REPL_NUM")
+                       .limit(MAX_SQL_ROWS)
+                       .build();
+
+    nlohmann::json rows;
+    int status = gq2::try_execute(*conn, q, rows, srcPath);
+    if (status >= 0) {
+        if (rows.empty()) {
+            status = CAT_NO_ROWS_FOUND;
         }
         else {
-            rodsLogError( LOG_ERROR, status,
-                          "lsDataObjUtilLong: rcGenQuery error for %s", srcPath );
+            auto* res = static_cast<GenQueryOut*>(std::calloc(1, sizeof(GenQueryOut)));
+            if (!res) {
+                return SYS_MALLOC_ERR;
+            }
+            res->rowCnt = static_cast<int>(rows.size());
+            res->attriCnt = static_cast<int>(col_indices.size());
+            res->totalRowCount = res->rowCnt;
+            for (std::size_t c = 0; c < col_indices.size(); ++c) {
+                std::size_t max_len = 1;
+                for (const auto& row : rows) {
+                    if (c < row.size() && row[c].is_string()) {
+                        max_len = std::max(max_len, row[c].get_ref<const std::string&>().size() + 1);
+                    }
+                }
+                res->sqlResult[c].attriInx = col_indices[c];
+                res->sqlResult[c].len = static_cast<int>(max_len);
+                res->sqlResult[c].value = static_cast<char*>(std::calloc(rows.size(), max_len));
+                for (std::size_t r = 0; r < rows.size(); ++r) {
+                    if (c < rows[r].size() && rows[r][c].is_string()) {
+                        const auto& s = rows[r][c].get_ref<const std::string&>();
+                        std::memcpy(&res->sqlResult[c].value[r * max_len], s.data(), s.size());
+                    }
+                }
+            }
+            genQueryOut = res;
+        }
+    }
+
+    if (status < 0) {
+        if (status == CAT_NO_ROWS_FOUND) {
+            rodsLog(LOG_ERROR, "%s does not exist or user lacks access permission", srcPath);
+        }
+        else {
+            rodsLogError(LOG_ERROR, status, "lsDataObjUtilLong: rcGenQuery error for %s", srcPath);
         }
         return status;
     }
-    printLsLong( conn, rodsArgs, genQueryOut );
+
+    printLsLong(conn, rodsArgs, genQueryOut);
 
     return 0;
 }
