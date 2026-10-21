@@ -1,9 +1,12 @@
 #include <catch2/catch_all.hpp>
 
+#include "irods/archive_engine.hpp"
 #include "irods/collection_types.hpp"
 #include "irods/rcMisc.h"
 #include "irods/rodsErrorTable.h"
 
+#include <archive.h>
+#include <archive_entry.h>
 #include <filesystem>
 #include <fstream>
 #include <variant>
@@ -285,4 +288,108 @@ TEST_CASE("collection_resolution_cache and resolve_collection_path_with_lookup h
               "/var/lib/irods/new_mnt");
     }
 }
+
+namespace
+{
+    auto write_Synthetic_tar_with_entry(
+        const std::filesystem::path& _tar_path,
+        const char* _entry_path,
+        mode_t _filetype,
+        const char* _link_target = nullptr) -> void
+    {
+        struct archive* a = archive_write_new();
+        archive_write_add_filter_none(a);
+        archive_write_set_format_pax_restricted(a);
+        REQUIRE(archive_write_open_filename(a, _tar_path.c_str()) == ARCHIVE_OK);
+
+        struct archive_entry* entry = archive_entry_new();
+        archive_entry_set_pathname(entry, _entry_path);
+        archive_entry_set_filetype(entry, _filetype);
+        archive_entry_set_perm(entry, 0644);
+        if (_filetype == AE_IFLNK && _link_target) {
+            archive_entry_set_symlink(entry, _link_target);
+            archive_entry_set_size(entry, 0);
+        }
+        else if (_link_target) {
+            archive_entry_set_hardlink(entry, _link_target);
+            archive_entry_set_size(entry, 0);
+        }
+        else {
+            archive_entry_set_size(entry, 4);
+        }
+
+        REQUIRE(archive_write_header(a, entry) == ARCHIVE_OK);
+        if (_filetype == AE_IFREG && !_link_target) {
+            archive_write_data(a, "test", 4);
+        }
+
+        archive_entry_free(entry);
+        archive_write_close(a);
+        archive_write_free(a);
+    }
+} // anonymous namespace
+
+TEST_CASE("archive_engine bundles and extracts safely", "[collections][archive_engine]")
+{
+    namespace fs = std::filesystem;
+
+    const auto tmp_root = fs::temp_directory_path() / "irods_test_archive_engine";
+    std::error_code ec;
+    fs::remove_all(tmp_root, ec);
+    fs::create_directories(tmp_root);
+
+    SECTION("Bundle directory to tar/gzip/zip and extract round-trip")
+    {
+        const auto src_dir = tmp_root / "src";
+        const auto dst_dir = tmp_root / "dst";
+        const auto tar_file = tmp_root / "bundle.tar.gz";
+
+        fs::create_directories(src_dir / "nested" / "deep");
+        {
+            std::ofstream{src_dir / "root.txt"} << "root payload";
+            std::ofstream{src_dir / "nested" / "child.txt"} << "child payload";
+            std::ofstream{src_dir / "nested" / "deep" / "leaf.txt"} << "leaf payload";
+        }
+
+        REQUIRE(colls::archive_engine::bundle_directory_to_file(src_dir, tar_file, GZIP_TAR_DT_STR) == 0);
+        REQUIRE(fs::exists(tar_file));
+        CHECK(fs::file_size(tar_file) > 0);
+
+        fs::create_directories(dst_dir);
+        REQUIRE(colls::archive_engine::extract_file_to_directory(tar_file, dst_dir) == 0);
+
+        CHECK(fs::is_regular_file(dst_dir / "root.txt"));
+        CHECK(fs::is_regular_file(dst_dir / "nested" / "child.txt"));
+        CHECK(fs::is_regular_file(dst_dir / "nested" / "deep" / "leaf.txt"));
+
+        std::string content;
+        std::getline(std::ifstream{dst_dir / "nested" / "deep" / "leaf.txt"}, content);
+        CHECK(content == "leaf payload");
+    }
+
+    SECTION("Rejects archive entries with .. traversal, absolute paths, symlinks, and hardlinks")
+    {
+        const auto dst_dir = tmp_root / "extract_sec";
+        fs::create_directories(dst_dir);
+
+        const auto dotdot_tar = tmp_root / "dotdot.tar";
+        write_Synthetic_tar_with_entry(dotdot_tar, "../escape.txt", AE_IFREG);
+        CHECK(colls::archive_engine::extract_file_to_directory(dotdot_tar, dst_dir) == SYS_STRUCT_FILE_PATH_ERR);
+
+        const auto abs_tar = tmp_root / "abs.tar";
+        write_Synthetic_tar_with_entry(abs_tar, "/etc/passwd", AE_IFREG);
+        CHECK(colls::archive_engine::extract_file_to_directory(abs_tar, dst_dir) == SYS_STRUCT_FILE_PATH_ERR);
+
+        const auto symlink_tar = tmp_root / "symlink.tar";
+        write_Synthetic_tar_with_entry(symlink_tar, "evil_link", AE_IFLNK, "/etc/shadow");
+        CHECK(colls::archive_engine::extract_file_to_directory(symlink_tar, dst_dir) == SYS_STRUCT_FILE_PATH_ERR);
+
+        const auto hardlink_tar = tmp_root / "hardlink.tar";
+        write_Synthetic_tar_with_entry(hardlink_tar, "evil_hardlink", AE_IFREG, "other_file");
+        CHECK(colls::archive_engine::extract_file_to_directory(hardlink_tar, dst_dir) == SYS_STRUCT_FILE_PATH_ERR);
+    }
+
+    fs::remove_all(tmp_root, ec);
+}
+
 

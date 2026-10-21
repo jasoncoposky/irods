@@ -2,6 +2,7 @@ set(
   IRODS_SERVER_CORE_SOURCES
   "${CMAKE_CURRENT_SOURCE_DIR}/src/access_time_queue.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/administration_utilities.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/archive_engine.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/atomic_apply_database_operations.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/authentication_server_utils.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/client_api_allowlist.cpp"
@@ -69,6 +70,7 @@ set(
   IRODS_SERVER_CORE_HEADERS_PUBLIC
   "${CMAKE_CURRENT_SOURCE_DIR}/include/irods/access_time_queue.hpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/include/irods/administration_utilities.hpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/include/irods/archive_engine.hpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/include/irods/atomic_apply_database_operations.hpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/include/irods/authentication_server_utils.hpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/include/irods/catalog.hpp"
@@ -195,6 +197,13 @@ target_compile_definitions(
 )
 set_target_properties(irods_server_core PROPERTIES INTERFACE_POSITION_INDEPENDENT_CODE TRUE)
 set_target_properties(irods_server_core PROPERTIES POSITION_INDEPENDENT_CODE TRUE)
+
+if (TARGET LibArchive::LibArchive)
+  objects_link_libraries(irods_server_core PRIVATE LibArchive::LibArchive)
+else()
+  objects_link_libraries(irods_server_core PRIVATE "${LibArchive_LIBRARIES}")
+  target_include_directories(irods_server_core PRIVATE "${LibArchive_INCLUDE_DIRS}")
+endif()
 
 if (IRODS_USE_LIBSYSTEMD)
   objects_link_libraries(irods_server_core PRIVATE systemd::libsystemd)

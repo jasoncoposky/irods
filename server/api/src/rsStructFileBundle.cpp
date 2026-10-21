@@ -27,9 +27,8 @@
 #define IRODS_FILESYSTEM_ENABLE_SERVER_SIDE_API
 #include "irods/filesystem.hpp"
 
-#include <boost/lexical_cast.hpp>
-
 #include <cstring>
+#include <string>
 
 // clang-format off
 namespace fs     = irods::experimental::filesystem;
@@ -162,7 +161,7 @@ namespace
         //}
 
         // convert resc id to a string for the cond input
-        std::string resc_id_str = boost::lexical_cast<std::string>(L1desc[l1descInx].dataObjInfo->rescId);
+        const std::string resc_id_str = std::to_string(L1desc[l1descInx].dataObjInfo->rescId);
 
         // =-=-=-=-=-=-=-
         // check object permissions / stat
@@ -227,27 +226,13 @@ namespace
         // preserve the collection path?
         int collLen = 0;
         if ( ( structFileBundleInp->oprType & PRESERVE_COLL_PATH ) != 0 ) {
-            // =-=-=-=-=-=-=-
             // preserve the last entry of the coll path
-            char* tmpPtr = collInp.collName;
-            int   tmpLen = 0;
-            collLen = 0;
-
-            // =-=-=-=-=-=-=-
-            // find length to the last '/'
-            while ( *tmpPtr != '\0' ) {
-                if ( *tmpPtr == '/' ) {
-                    collLen = tmpLen;
-                }
-
-                tmpLen++;
-                tmpPtr++;
-            }
-
+            const fs::path coll_path{collInp.collName};
+            const auto parent_view = coll_path.parent_path_view();
+            collLen = parent_view == "/" ? 0 : static_cast<int>(parent_view.size());
         }
         else {
-            collLen = strlen( collInp.collName );
-
+            collLen = static_cast<int>(std::strlen( collInp.collName ));
         }
 
 

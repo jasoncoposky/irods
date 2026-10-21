@@ -60,6 +60,8 @@ target_link_libraries(
   "${IRODS_EXTERNALS_FULLPATH_NANODBC}/lib/libnanodbc.so"
   OpenSSL::SSL
   OpenSSL::Crypto
+  $<$<TARGET_EXISTS:LibArchive::LibArchive>:LibArchive::LibArchive>
+  $<$<NOT:$<TARGET_EXISTS:LibArchive::LibArchive>>:${LibArchive_LIBRARIES}>
   ${CMAKE_DL_LIBS}
   rt
 )

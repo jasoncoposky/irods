@@ -26,27 +26,19 @@
 #include "irods/rsFileRename.hpp"
 #include "irods/rsFileTruncate.hpp"
 #include "irods/irods_logger.hpp"
+#include "irods/archive_engine.hpp"
+#include "irods/collection_types.hpp"
 
 // =-=-=-=-=-=-=-
 // stl includes
+#include <filesystem>
 #include <iostream>
 #include <sstream>
 #include <vector>
 #include <string>
-#include <sstream>
 #include <fstream>
 
-// =-=-=-=-=-=-=-
-// boost includes
-#include <boost/filesystem/operations.hpp>
-#include <boost/filesystem/path.hpp>
-
 #include <fmt/format.h>
-
-// =-=-=-=-=-=-=-
-// system includes
-#include <archive.h>
-#include <archive_entry.h>
 
 // =-=-=-=-=-=-=-
 // structures and defines
@@ -149,356 +141,23 @@ inline irods::error tar_check_params(
 } // tar_check_params
 
 // =-=-=-=-=-=-=-
-// @brief simple struct to pass into libarchive callbacks
-struct cb_ctx_t {
-    int               idx_;
-    char              loc_[ NAME_LEN ];
-    structFileDesc_t* desc_;
-    bytesBuf_t        read_buf;
-};
-
-// =-=-=-=-=-=-=-
-// OPEN callback for use by libarchive which makes use of the
-// irods rsFile API for file access
-int irods_file_open(
-    struct archive* _arch,
-    void*           _data,
-    int             mode ) {
-    if ( !_arch ||
-            !_data ) {
-        rodsLog( LOG_ERROR, "irods_file_open - null input" );
-        return ARCHIVE_FATAL;
-    }
-
-    // =-=-=-=-=-=-=-
-    // cast data pointer to the cb_struct
-    cb_ctx_t* cb_ctx = static_cast< cb_ctx_t* >( _data );
-
-    // =-=-=-=-=-=-=-
-    // handy pointer to special collection
-    specColl_t* spec_coll = cb_ctx->desc_->specColl;
-
-    // =-=-=-=-=-=-=-
-    // prepare a file inp to call a rsFileOpen
-    fileOpenInp_t f_inp;
-    memset( &f_inp, 0, sizeof( f_inp ) );
-    rstrcpy( f_inp.resc_name_,	spec_coll->resource, MAX_NAME_LEN );
-    rstrcpy( f_inp.resc_hier_,	spec_coll->rescHier, MAX_NAME_LEN );
-    rstrcpy( f_inp.objPath,		spec_coll->objPath,  MAX_NAME_LEN );
-    rstrcpy( f_inp.addr.hostAddr,	cb_ctx->loc_,        NAME_LEN );
-    rstrcpy( f_inp.fileName,	spec_coll->phyPath,  MAX_NAME_LEN );
-    f_inp.mode  = getDefFileMode();
-    f_inp.flags = mode;
-    //rstrcpy( f_inp.in_pdmo, dataObjInfo->in_pdmo, MAX_NAME_LEN );
-    cb_ctx->idx_ = rsFileOpen( cb_ctx->desc_->rsComm, &f_inp );
-
-    return ARCHIVE_OK;
-
-} // irods_file_open
-
-int irods_file_open_for_read(
-    struct archive* _arch,
-    void*           _data ) {
-    return irods_file_open( _arch, _data, O_RDONLY );
-}
-
-int irods_file_open_for_write(
-    struct archive* _arch,
-    void*           _data ) {
-    return irods_file_open( _arch, _data, O_WRONLY | O_CREAT );
-}
-
-// =-=-=-=-=-=-=-
-// READ callback for use by libarchive which makes use of the
-// irods rsFile API for file access
-ssize_t irods_file_read(
-    struct archive* _arch,
-    void*           _data,
-    const void**    _block) {
-    if ( !_arch ||
-            !_data ||
-            !_block ) {
-        rodsLog( LOG_ERROR, "irods_file_read - null input" );
-        return ARCHIVE_FATAL;
-    }
-
-    // =-=-=-=-=-=-=-
-    // cast data pointer to the cb_struct
-    cb_ctx_t* cb_ctx = static_cast< cb_ctx_t* >( _data );
-
-    // =-=-=-=-=-=-=-
-    // build a read inp and read the buffer
-    if ( cb_ctx->read_buf.buf ) {
-        free( cb_ctx->read_buf.buf );
-    }
-
-    // Based on some performance testing, it was determined that there were little
-    // or no performance gains beyond a block size of 1MB.
-    constexpr auto block_size_in_bytes = 1 * 1024 * 1024;
-
-    memset( &cb_ctx->read_buf, 0, sizeof( cb_ctx->read_buf ) );
-    cb_ctx->read_buf.buf = malloc( block_size_in_bytes );
-    cb_ctx->read_buf.len = block_size_in_bytes;
-
-    fileReadInp_t r_inp{};
-    r_inp.fileInx = cb_ctx->idx_;
-    r_inp.len     = block_size_in_bytes;
-    const auto status = rsFileRead( cb_ctx->desc_->rsComm, &r_inp, &cb_ctx->read_buf );
-    if ( status < 0 ) {
-        return -1;
-    }
-    else {
-        ( *_block ) = cb_ctx->read_buf.buf;
-        return status;
-    }
-
-} // irods_file_read
-
-// =-=-=-=-=-=-=-
-// CLOSE callback for use by libarchive which makes use of the
-// irods rsFile API for file access
-int irods_file_close(
-    struct archive* _arch,
-    void*           _data ) {
-    // =-=-=-=-=-=-=-
-    // parameter check
-    if ( !_arch ||
-            !_data ) {
-        rodsLog( LOG_ERROR, "irods_file_close - null input" );
-        return ARCHIVE_FATAL;
-    }
-    // =-=-=-=-=-=-=-
-    // cast data pointer to the cb_struct
-    cb_ctx_t* cb_ctx = static_cast< cb_ctx_t* >( _data );
-
-    fileCloseInp_t fileCloseInp;
-    memset( &fileCloseInp, 0, sizeof( fileCloseInp ) );
-    fileCloseInp.fileInx = cb_ctx->idx_;
-    return rsFileClose( cb_ctx->desc_->rsComm, &fileCloseInp );
-
-} // irods_file_close
-
-// =-=-=-=-=-=-=-
-//
-ssize_t irods_file_write(
-    struct archive* _arch,
-    void*           _data,
-    const void*     _buff,
-    size_t          _len ) {
-    // =-=-=-=-=-=-=-
-    // parameter check
-    if ( !_arch ||
-            !_data ||
-            !_buff ) {
-        rodsLog( LOG_ERROR, "irods_file_write - null input" );
-        return ARCHIVE_FATAL;
-    }
-
-    // =-=-=-=-=-=-=-
-    // cast data pointer to the cb_struct
-    cb_ctx_t* cb_ctx = static_cast< cb_ctx_t* >( _data );
-
-    fileWriteInp_t fileWriteInp;
-    memset( &fileWriteInp, 0, sizeof( fileWriteInp ) );
-    fileWriteInp.fileInx = cb_ctx->idx_;
-    fileWriteInp.len     = _len;
-
-    bytesBuf_t write_buf;
-    write_buf.buf = const_cast< void* >( _buff );
-    write_buf.len = _len;
-    int sz = rsFileWrite(
-                 cb_ctx->desc_->rsComm,
-                 &fileWriteInp,
-                 &write_buf );
-    if ( sz < 0 ) {
-        return -1;
-    }
-    else {
-        return sz;
-    }
-
-} // irods_file_write
-
-// =-=-=-=-=-=-=-
 // call archive file extraction for struct file
 irods::error extract_file( int _index ) {
-    // =-=-=-=-=-=-=-
-    // check struct desc table in use flag
     if ( PluginStructFileDesc[ _index ].inuseFlag <= 0 ) {
         std::stringstream msg;
-        msg << "extract_file - struct file index: ";
-        msg << _index;
-        msg << " is not in use";
+        msg << "extract_file - struct file index: " << _index << " is not in use";
         return ERROR( SYS_STRUCT_FILE_DESC_ERR, msg.str() );
     }
 
-    // =-=-=-=-=-=-=-
-    // check struct desc table in use flag
     specColl_t* spec_coll = PluginStructFileDesc[ _index ].specColl;
-    if ( spec_coll == NULL                  ||
-            strlen( spec_coll->cacheDir ) == 0 ||
-            strlen( spec_coll->phyPath ) == 0 ) {
+    rsComm_t* comm = PluginStructFileDesc[ _index ].rsComm;
+    if ( !comm || !spec_coll || strlen( spec_coll->cacheDir ) == 0 || strlen( spec_coll->phyPath ) == 0 ) {
         std::stringstream msg;
-        msg << "extract_file - bad special collection for index: ";
-        msg << _index;
+        msg << "extract_file - bad special collection for index: " << _index;
         return ERROR( SYS_STRUCT_FILE_DESC_ERR, msg.str() );
-
     }
 
-    // =-=-=-=-=-=-=-
-    // select which attributes we want to restore
-    int flags = ARCHIVE_EXTRACT_TIME;
-    //flags |= ARCHIVE_EXTRACT_SECURE_NOABSOLUTEPATHS;
-    flags |= ARCHIVE_EXTRACT_SECURE_NODOTDOT;
-    flags |= ARCHIVE_EXTRACT_SECURE_SYMLINKS;
-    //flags |= ARCHIVE_EXTRACT_PERM;
-    //flags |= ARCHIVE_EXTRACT_ACL;
-    //flags |= ARCHIVE_EXTRACT_FFLAGS;
-
-    // =-=-=-=-=-=-=-
-    // initialize archive struct and set flags for format etc
-    struct archive* arch = archive_read_new();
-    if (nullptr == arch) {
-        log_api::error("{}: Failed to initialize archive struct.", __func__);
-        return ERROR(SYS_LIBRARY_ERROR, "archive_read_new");
-    }
-
-    auto ec = archive_read_support_filter_all(arch);
-    if (ec != ARCHIVE_OK) {
-        log_api::error("{}: archive_read_support_filter_all error [code={}, message={}]",
-                       __func__,
-                       ec,
-                       archive_error_string(arch));
-        return ERROR(SYS_LIBRARY_ERROR, "archive_read_support_filter_all ");
-    }
-
-    ec = archive_read_support_format_all(arch);
-    if (ec != ARCHIVE_OK) {
-        log_api::error("{}: archive_read_support_format_all error [code={}, message={}]",
-                       __func__,
-                       ec,
-                       archive_error_string(arch));
-        return ERROR(SYS_LIBRARY_ERROR, "archive_read_support_format_all  ");
-    }
-
-    // =-=-=-=-=-=-=-
-    // extract the host location from the resource hierarchy
-    std::string location;
-    irods::error ret = irods::get_loc_for_hier_string( spec_coll->rescHier, location );
-    if ( !ret.ok() ) {
-        return PASSMSG( "extract_file - failed in get_loc_for_hier_string", ret );
-    }
-
-    cb_ctx_t cb_ctx{};
-    cb_ctx.desc_ = &PluginStructFileDesc[ _index ];
-    snprintf( cb_ctx.loc_, sizeof( cb_ctx.loc_ ), "%s", location.c_str() );
-
-    // =-=-=-=-=-=-=-
-    // open the archive and and prepare to read
-    ec = archive_read_open(arch, &cb_ctx, irods_file_open_for_read, irods_file_read, irods_file_close);
-    if (ec != ARCHIVE_OK) {
-        log_api::error("{}: archive_read_open error [code={}, message={}]", __func__, ec, archive_error_string(arch));
-        std::stringstream msg;
-        msg << "extract_file - failed to open archive [";
-        msg << spec_coll->phyPath;
-        msg << "]";
-        return ERROR( -1, msg.str() );
-    }
-
-    // =-=-=-=-=-=-=-
-    // build a cache directory string
-    std::string cache_dir( spec_coll->cacheDir );
-    if ( cache_dir[ cache_dir.size() - 1 ] != '/' ) {
-        cache_dir += "/";
-    }
-
-    irods::error result = SUCCESS();
-
-    // =-=-=-=-=-=-=-
-    // iterate over entries in the archive and write them to a resource
-    struct archive_entry* entry;
-    while (true) {
-        ec = archive_read_next_header(arch, &entry);
-        if (ARCHIVE_OK != ec) {
-            const char* msg = archive_error_string(arch);
-            log_api::debug("{}: archive_read_next_header error [code={}, message={}]", __func__, ec, (msg ? msg : ""));
-            break;
-        }
-
-        const char* entry_pathname = archive_entry_pathname(entry);
-        if (!entry_pathname || '\0' == *entry_pathname) {
-            result = ERROR(SYS_STRUCT_FILE_PATH_ERR, "extract_file - archive entry has an empty path");
-            break;
-        }
-
-        ec = archive_entry_filetype(entry);
-        if (AE_IFLNK == ec) {
-            const char* msg = archive_error_string(arch);
-            log_api::error("{}: archive_entry_filetype error [code={}, message={}]", __func__, ec, (msg ? msg : ""));
-            result = ERROR(SYS_STRUCT_FILE_PATH_ERR,
-                           fmt::format("extract_file - archive entry path [{}] is a symlink", entry_pathname));
-            break;
-        }
-
-        if (const char* hardlink_path = archive_entry_hardlink(entry); hardlink_path && '\0' != *hardlink_path) {
-            result = ERROR(
-                SYS_STRUCT_FILE_PATH_ERR,
-                fmt::format(
-                    "extract_file - archive entry path [{}] is a hardlink to [{}]", entry_pathname, hardlink_path));
-            break;
-        }
-
-        boost::filesystem::path relative_entry_path{entry_pathname};
-        relative_entry_path = relative_entry_path.lexically_normal();
-
-        if (relative_entry_path.is_absolute() || relative_entry_path.has_root_name()) {
-            result = ERROR(SYS_STRUCT_FILE_PATH_ERR,
-                           fmt::format("extract_file - archive entry path [{}] is absolute", entry_pathname));
-            break;
-        }
-
-        if (!relative_entry_path.empty()) {
-            const auto& first_component = *relative_entry_path.begin();
-            if (".." == first_component.string()) {
-                result = ERROR(
-                    SYS_STRUCT_FILE_PATH_ERR,
-                    fmt::format("extract_file - archive entry path [{}] escapes the cache directory", entry_pathname));
-                break;
-            }
-        }
-
-        // =-=-=-=-=-=-=-
-        // redirect the path to the cache directory
-        const auto path = boost::filesystem::path{cache_dir} / relative_entry_path;
-        archive_entry_set_pathname( entry, path.c_str() );
-
-        // =-=-=-=-=-=-=-
-        // read data from entry and write it to a resource
-        ec = archive_read_extract(arch, entry, flags);
-        if (ARCHIVE_OK != ec) {
-            const char* msg = archive_error_string(arch);
-            log_api::error(
-                "{}: archive_read_extract error [code={}, message={}]", __func__, ec, (msg ? msg : "no info"));
-            log_api::info("{}: extract_file - failed to write [{}]", __func__, path.c_str());
-        }
-    } // while
-
-    // =-=-=-=-=-=-=-
-    // release the archive back into the wild
-    archive_read_free( arch );
-
-    // =-=-=-=-=-=-=-
-    // release the last read buffer
-    if ( cb_ctx.read_buf.buf ) {
-        free( cb_ctx.read_buf.buf );
-    }
-
-    if (!result.ok()) {
-        return result;
-    }
-
-    return SUCCESS();
-
+    return irods::experimental::collections::archive_engine::extract_to_cache_dir( *comm, *spec_coll );
 } // extract_file
 
 // =-=-=-=-=-=-=-
@@ -627,7 +286,7 @@ irods::error stage_tar_struct_file( int _index, std::string _host ) {
         // =-=-=-=-=-=-=-
         // if the left over cache dir has a symlink in it, remove the
         // directory ( addresses Wisc Security Issue r4906 )
-        if ( hasSymlinkInDir( spec_coll->cacheDir ) ) {
+        if ( irods::experimental::collections::archive_engine::directory_contains_symlinks( spec_coll->cacheDir ) ) {
             rodsLog( LOG_ERROR, "extractTarFile: cacheDir %s has symlink in it",
                      spec_coll->cacheDir );
 
@@ -818,160 +477,37 @@ irods::error tar_struct_file_open(
 
 } // tar_struct_file_open
 
-// =-=-=-=-=-=-=-
-// create the phy path to the cache dir
-irods::error reject_linked_cache_paths(const boost::filesystem::path& _cache_dir,
-                                       const boost::filesystem::path& _relative_sub_path,
-                                       const char* _sub_file_path)
+irods::error compose_cache_dir_physical_path(
+    char*       _phy_path,
+    specColl_t* _spec_coll,
+    const char* _sub_file_path)
 {
-    namespace fs = boost::filesystem;
+    namespace colls = irods::experimental::collections;
 
-    boost::system::error_code ec;
-    const auto cache_dir_status = fs::symlink_status(_cache_dir, ec);
-    if (ec) {
-        std::stringstream msg;
-        msg << "reject_linked_cache_paths - failed to stat cache dir [";
-        msg << _cache_dir.string();
-        msg << "] for sub file path [";
-        msg << _sub_file_path;
-        msg << "]";
-        return ERROR(UNIX_FILE_STAT_ERR - ec.value(), msg.str());
+    std::filesystem::path physical_path;
+    if (const int rc = colls::compose_contained_physical_path(
+            _spec_coll->cacheDir, _spec_coll->collection, _sub_file_path, physical_path);
+        rc < 0)
+    {
+        return ERROR(SYS_STRUCT_FILE_PATH_ERR,
+                     fmt::format("compose_cache_dir_physical_path - collection [{}] sub file path [{}] invalid",
+                                 _spec_coll->collection,
+                                 _sub_file_path));
     }
 
-    if (fs::is_symlink(cache_dir_status)) {
-        std::stringstream msg;
-        msg << "reject_linked_cache_paths - cache dir [";
-        msg << _cache_dir.string();
-        msg << "] for sub file path [";
-        msg << _sub_file_path;
-        msg << "] is a symlink";
-        return ERROR(SYS_STRUCT_FILE_PATH_ERR, msg.str());
+    std::error_code ec;
+    const auto rel_sub_path = std::filesystem::relative(physical_path, _spec_coll->cacheDir, ec);
+    if (const int link_rc = colls::validate_cache_path_no_links(
+            _spec_coll->cacheDir, rel_sub_path);
+        link_rc < 0)
+    {
+        return ERROR(link_rc,
+                     fmt::format("compose_cache_dir_physical_path - linked cache path rejected for [{}]",
+                                 _sub_file_path));
     }
 
-    auto current_path = _cache_dir;
-    const auto end = _relative_sub_path.end();
-    for (auto itr = _relative_sub_path.begin(); itr != end; ++itr) {
-        current_path /= *itr;
-
-        ec.clear();
-        const auto current_status = fs::symlink_status(current_path, ec);
-
-        if (current_status.type() == fs::file_type::file_not_found) {
-            log_api::debug("{}: Relative subpath [{}] does not exist.", __func__, current_path.c_str());
-            break;
-        }
-
-        if (ec) {
-            std::stringstream msg;
-            msg << "reject_linked_cache_paths - failed to stat path [";
-            msg << current_path.string();
-            msg << "] for sub file path [";
-            msg << _sub_file_path;
-            msg << "]";
-            return ERROR(UNIX_FILE_STAT_ERR - ec.value(), msg.str());
-        }
-
-        if (fs::is_symlink(current_status)) {
-            std::stringstream msg;
-            msg << "reject_linked_cache_paths - path [";
-            msg << current_path.string();
-            msg << "] for sub file path [";
-            msg << _sub_file_path;
-            msg << "] is a symlink";
-            return ERROR(SYS_STRUCT_FILE_PATH_ERR, msg.str());
-        }
-
-        auto next_itr = itr;
-        ++next_itr;
-        if (next_itr == end && fs::is_regular_file(current_status)) {
-            ec.clear();
-            const auto link_count = fs::hard_link_count(current_path, ec);
-            if (ec) {
-                std::stringstream msg;
-                msg << "reject_linked_cache_paths - failed to inspect hard links for path [";
-                msg << current_path.string();
-                msg << "] for sub file path [";
-                msg << _sub_file_path;
-                msg << "]";
-                return ERROR(UNIX_FILE_STAT_ERR - ec.value(), msg.str());
-            }
-
-            if (link_count > 1) {
-                std::stringstream msg;
-                msg << "reject_linked_cache_paths - path [";
-                msg << current_path.string();
-                msg << "] for sub file path [";
-                msg << _sub_file_path;
-                msg << "] is hard linked";
-                return ERROR(SYS_STRUCT_FILE_PATH_ERR, msg.str());
-            }
-        }
-    }
-
+    std::snprintf(_phy_path, MAX_NAME_LEN, "%s", physical_path.c_str());
     return SUCCESS();
-
-} // reject_linked_cache_paths
-
-irods::error compose_cache_dir_physical_path( char*       _phy_path,
-        specColl_t* _spec_coll,
-        const char* _sub_file_path ) {
-    // =-=-=-=-=-=-=-
-    // subFilePath is composed by appending path to the objPath which is
-    // the logical path of the tar file. So we need to substitute the
-    // objPath with cacheDir
-    int len = strlen( _spec_coll->collection );
-    if ( strncmp( _spec_coll->collection, _sub_file_path, len ) != 0 ) {
-        std::stringstream msg;
-        msg << "compose_cache_dir_physical_path - collection [";
-        msg << _spec_coll->collection;
-        msg << "] sub file path [";
-        msg << _sub_file_path;
-        msg << "] mismatch";
-        return ERROR( SYS_STRUCT_FILE_PATH_ERR, msg.str() );
-    }
-
-    const char* sub_path_suffix = _sub_file_path + len;
-    if ('\0' != *sub_path_suffix && '/' != *sub_path_suffix) {
-        std::stringstream msg;
-        msg << "compose_cache_dir_physical_path - collection [";
-        msg << _spec_coll->collection;
-        msg << "] sub file path [";
-        msg << _sub_file_path;
-        msg << "] is not contained within the collection";
-        return ERROR(SYS_STRUCT_FILE_PATH_ERR, msg.str());
-    }
-
-    boost::filesystem::path relative_sub_path{'/' == *sub_path_suffix ? sub_path_suffix + 1 : sub_path_suffix};
-    relative_sub_path = relative_sub_path.lexically_normal();
-
-    if (!relative_sub_path.empty()) {
-        const auto& first_component = *relative_sub_path.begin();
-        if (".." == first_component.string()) {
-            std::stringstream msg;
-            msg << "compose_cache_dir_physical_path - collection [";
-            msg << _spec_coll->collection;
-            msg << "] sub file path [";
-            msg << _sub_file_path;
-            msg << "] escapes the collection";
-            return ERROR(SYS_STRUCT_FILE_PATH_ERR, msg.str());
-        }
-    }
-
-    // =-=-=-=-=-=-=-
-    // compose the path
-    const auto cache_dir = boost::filesystem::path{_spec_coll->cacheDir};
-    irods::error link_err = reject_linked_cache_paths(cache_dir, relative_sub_path, _sub_file_path);
-    if (!link_err.ok()) {
-        return PASSMSG("compose_cache_dir_physical_path failed to validate cache path.", link_err);
-    }
-
-    const auto physical_path = cache_dir / relative_sub_path;
-    snprintf(_phy_path, MAX_NAME_LEN, "%s", physical_path.c_str());
-
-    // =-=-=-=-=-=-=-
-    // Win!
-    return SUCCESS();
-
 } // compose_cache_dir_physical_path
 
 // =-=-=-=-=-=-=-
@@ -1361,7 +897,9 @@ irods::error tar_file_close(
     // =-=-=-=-=-=-=-
     // close out the sub file allocation and free the space
     int struct_file_index = PluginTarSubFileDesc[ fco->file_descriptor() ].structFileInx;
-    PluginStructFileDesc[ struct_file_index ].openCnt++;
+    if ( PluginStructFileDesc[ struct_file_index ].openCnt > 0 ) {
+        PluginStructFileDesc[ struct_file_index ].openCnt--;
+    }
     free_tar_sub_file_desc( fco->file_descriptor() );
     fco->file_descriptor( 0 );
 
@@ -1908,7 +1446,9 @@ irods::error tar_file_closedir(
     // =-=-=-=-=-=-=-
     // close out the sub file index and free the allocation
     int struct_file_index = PluginTarSubFileDesc[ fco->file_descriptor() ].structFileInx;
-    PluginStructFileDesc[ struct_file_index ].openCnt++;
+    if ( PluginStructFileDesc[ struct_file_index ].openCnt > 0 ) {
+        PluginStructFileDesc[ struct_file_index ].openCnt--;
+    }
     free_tar_sub_file_desc( fco->file_descriptor() );
     fco->file_descriptor( 0 );
 
@@ -2107,17 +1647,6 @@ irods::error tar_file_truncate(
     spec_coll = PluginStructFileDesc[ struct_file_index ].specColl;
 
     // =-=-=-=-=-=-=-
-    // allocate yet another index into another table
-    int sub_index = alloc_tar_sub_file_desc();
-    if ( sub_index < 0 ) {
-        return ERROR( sub_index, "tar_file_truncate_plugin - alloc_tar_sub_file_desc failed." );
-    }
-
-    // =-=-=-=-=-=-=-
-    // cache struct file index into sub file index
-    PluginTarSubFileDesc[ sub_index ].structFileInx = struct_file_index;
-
-    // =-=-=-=-=-=-=-
     // build a file create structure to pass off to the server api call
     fileOpenInp_t fileTruncateInp;
     memset( &fileTruncateInp, 0, sizeof( fileTruncateInp ) );
@@ -2138,11 +1667,9 @@ irods::error tar_file_truncate(
     // =-=-=-=-=-=-=-
     // make the truncate api call
     int status = rsFileTruncate( comm, &fileTruncateInp );
-    if ( status > 0 ) {
+    if ( status >= 0 ) {
         // =-=-=-=-=-=-=-
         // cache has been written
-        int         struct_idx = PluginTarSubFileDesc[ struct_obj->file_descriptor() ].structFileInx;
-        specColl_t* spec_coll   = PluginStructFileDesc[ struct_idx ].specColl;
         if ( spec_coll->cacheDirty == 0 ) {
             spec_coll->cacheDirty = 1;
             int status1 = modCollInfo2( struct_obj->comm(), spec_coll, 0 );
@@ -2192,6 +1719,7 @@ irods::error tar_file_extract(
     if ( ( struct_file_index = alloc_struct_file_desc() ) < 0 ) {
         return ERROR( struct_file_index, "tar_file_extract_plugin - failed to allocate struct file descriptor" );
     }
+    const irods::at_scope_exit free_desc{[struct_file_index] { free_struct_file_desc( struct_file_index ); }};
 
     // =-=-=-=-=-=-=-
     // populate the file descriptor table
@@ -2220,7 +1748,7 @@ irods::error tar_file_extract(
     // =-=-=-=-=-=-=-
     // if the left over cache dir has a symlink in it, remove the
     // directory ( addresses Wisc Security Issue r4906 )
-    if ( hasSymlinkInDir( spec_coll->cacheDir ) ) {
+    if ( irods::experimental::collections::archive_engine::directory_contains_symlinks( spec_coll->cacheDir ) ) {
         rodsLog( LOG_ERROR, "extractTarFile: cacheDir %s has symlink in it",
                  spec_coll->cacheDir );
 
@@ -2253,358 +1781,27 @@ irods::error tar_file_extract(
 } // tar_file_extract_plugin
 
 // =-=-=-=-=-=-=-
-// helper function to write an archive entry
-irods::error write_file_to_archive( const boost::filesystem::path _path,
-                                    const std::string&            _cache_dir,
-                                    struct archive*               _archive ) {
-    namespace fs = boost::filesystem;
-    struct archive_entry* entry = archive_entry_new();
-
-    // =-=-=-=-=-=-=-
-    // strip arch path from file name for header entry
-    std::string path_name  = _path.string();
-    std::string strip_file = path_name.substr( _cache_dir.size() + 1 ); // add one for the last '/'
-    archive_entry_set_pathname( entry, strip_file.c_str() );
-
-    // =-=-=-=-=-=-=-
-    // ask for the file size
-    archive_entry_set_size( entry, fs::file_size( _path ) );
-    archive_entry_set_filetype( entry, AE_IFREG );
-
-    // =-=-=-=-=-=-=-
-    // set the permissions
-    //fs::perms pp;
-    //fs::permissions( _path, pp );
-    archive_entry_set_perm( entry, 0600 );
-
-    // =-=-=-=-=-=-=-
-    // set the time for the file
-    std::time_t tt = last_write_time( _path );
-    archive_entry_set_mtime( entry, tt, 0 );
-
-    // =-=-=-=-=-=-=-
-    // write out the header to the archive
-    if ( archive_write_header( _archive, entry ) != ARCHIVE_OK ) {
-        std::stringstream msg;
-        msg << "write_file_to_archive - failed to write entry header for [";
-        msg << path_name;
-        msg << "] with error string [";
-        msg << archive_error_string( _archive );
-        msg << "]";
-        return ERROR( -1, msg.str() );
-    }
-
-    // =-=-=-=-=-=-=-
-    // JMC :: i didn't use ifstream as readsome() garbled the file
-    //     :: some reason.  revisit this for windows
-    // =-=-=-=-=-=-=-
-    // open the file in question
-    int fd = open( path_name.c_str(), O_RDONLY );
-    if ( -1 == fd )  {
-        std::stringstream msg;
-        msg << "write_file_to_archive - failed to open file for read [";
-        msg << path_name;
-        msg << "] with error [";
-        msg << strerror( errno );
-        msg << "]";
-        return ERROR( -1, msg.str() );
-    }
-
-    // =-=-=-=-=-=-=-
-    // read in the file and add it to the archive
-    char buff[ 16384 ];
-    int len = read( fd, buff, sizeof( buff ) );
-    while ( len > 0 ) {
-        archive_write_data( _archive, buff, len );
-        len = read( fd, buff, sizeof( buff ) );
-    }
-
-    // =-=-=-=-=-=-=-
-    // clean up
-    close( fd );
-    archive_entry_free( entry );
-
-    return SUCCESS();
-
-} // write_file_to_archive
-
-// =-=-=-=-=-=-=-
-// helper function for recursive directory scanning
-irods::error build_directory_listing( const boost::filesystem::path&          _path,
-                                      std::vector< boost::filesystem::path >& _listing ) {
-    // =-=-=-=-=-=-=-
-    // namespace alias for brevity
-    namespace fs = boost::filesystem;
-    irods::error final_error = SUCCESS();
-
-    // =-=-=-=-=-=-=-
-    // begin iterating over the cache dir
-    try {
-        if ( fs::is_directory( _path ) ) {
-            // =-=-=-=-=-=-=-
-            // iterate over the directory and archive it
-            fs::directory_iterator end_iter;
-            fs::directory_iterator dir_itr( _path );
-            for ( ; dir_itr != end_iter; ++dir_itr ) {
-                // =-=-=-=-=-=-=-
-                // recurse on this new directory
-                irods::error ret = build_directory_listing( dir_itr->path(), _listing );
-                if ( !ret.ok() ) {
-                    std::stringstream msg;
-                    msg << "build_directory_listing - failed on [";
-                    msg << dir_itr->path().string();
-                    msg << "]";
-                    final_error = PASSMSG( msg.str(), final_error );
-                }
-
-            } // for dir_itr
-
-        }
-        else if ( fs::is_regular_file( _path ) ) {
-            // =-=-=-=-=-=-=-
-            // add file path to the vector
-            _listing.push_back( _path );
-
-        }
-        else {
-            std::stringstream msg;
-            msg << "build_directory_listing - unhandled entry [";
-            msg << _path.filename();
-            msg << "]";
-            rodsLog( LOG_NOTICE, "%s", msg.str().c_str() );
-        }
-
-    }
-    catch ( const std::exception& ex ) {
-        std::stringstream msg;
-        msg << "build_directory_listing - caught exception [";
-        msg << ex.what();
-        msg << "] for directory entry [";
-        msg << _path.filename();
-        msg << "]";
-        return ERROR( -1, msg.str() );
-
-    }
-
-    return final_error;
-
-} // build_directory_listing
-
-// =-=-=-=-=-=-=-
 // create an archive from the cache directory
 irods::error bundle_cache_dir( int                _index,
                                const std::string& _data_type ) {
-    // =-=-=-=-=-=-=-
-    // namespace alias for brevity
-    namespace fs = boost::filesystem;
-
-    // =-=-=-=-=-=-=-
-    // check struct desc table in use flag
     if ( PluginStructFileDesc[ _index ].inuseFlag <= 0 ) {
         std::stringstream msg;
-        msg << "bundle_cache_dir - struct file index: ";
-        msg << _index;
-        msg << " is not in use";
+        msg << "bundle_cache_dir - struct file index: " << _index << " is not in use";
         return ERROR( SYS_STRUCT_FILE_DESC_ERR, msg.str() );
     }
 
-    // =-=-=-=-=-=-=-
-    // check struct desc table in use flag
     specColl_t* spec_coll = PluginStructFileDesc[ _index ].specColl;
-    if ( spec_coll == NULL                   ||
-            spec_coll->cacheDirty <= 0          ||
-            strlen( spec_coll->cacheDir ) == 0  ||
-            strlen( spec_coll->phyPath ) == 0 ) {
+    rsComm_t* comm = PluginStructFileDesc[ _index ].rsComm;
+    if ( !comm || !spec_coll ||
+         spec_coll->cacheDirty <= 0 ||
+         strlen( spec_coll->cacheDir ) == 0 ||
+         strlen( spec_coll->phyPath ) == 0 ) {
         std::stringstream msg;
-        msg << "bundle_cache_dir - bad special collection for index: ";
-        msg << _index;
+        msg << "bundle_cache_dir - bad special collection for index: " << _index;
         return ERROR( SYS_STRUCT_FILE_DESC_ERR, msg.str() );
-
     }
 
-    // =-=-=-=-=-=-=-
-    // create a boost filesystem path for the cache directory
-    fs::path full_path;//( fs::initial_path<fs::path>() );
-    full_path = fs::system_complete( fs::path( spec_coll->cacheDir ) );
-
-    // =-=-=-=-=-=-=-
-    // check if the path is really there, just in case
-    if ( !fs::exists( full_path ) ) {
-        std::stringstream msg;
-        msg << "bundle_cache_dir - cache directory does not exist [";
-        msg << spec_coll->cacheDir;
-        msg << "]";
-        return ERROR( -1, msg.str() );
-    }
-
-    // =-=-=-=-=-=-=-
-    // make sure it is a directory, just in case
-    if ( !fs::is_directory( full_path ) ) {
-        std::stringstream msg;
-        msg << "bundle_cache_dir - cache directory is not actually a directory [";
-        msg << spec_coll->cacheDir;
-        msg << "]";
-        return ERROR( -1, msg.str() );
-    }
-
-    // =-=-=-=-=-=-=-
-    // build a listing of all of the files in all of the subdirs
-    // in the full_path
-    std::vector< fs::path > listing;
-    build_directory_listing( full_path, listing );
-
-    // =-=-=-=-=-=-=-
-    // create the archive
-    struct archive* arch = archive_write_new();
-    if ( !arch ) {
-        std::stringstream msg;
-        msg << "bundle_cache_dir - failed to create archive struct for [";
-        msg << spec_coll->cacheDir;
-        msg << "] into archive file [";
-        msg << spec_coll->phyPath;
-        msg << "]";
-        return ERROR( -1, msg.str() );
-
-    }
-
-    // =-=-=-=-=-=-=-
-    // set the compression flags given data_type
-    if ( _data_type == ZIP_DT_STR ) {
-        if ( archive_write_set_format_zip( arch ) != ARCHIVE_OK ) {
-            std::stringstream msg;
-            msg << "bundle_cache_dir - failed to set format to zip for archive [";
-            msg << spec_coll->phyPath;
-            msg << "] with error string [";
-            msg << archive_error_string( arch );
-            msg << "]";
-            return ERROR( -1, msg.str() );
-
-        }
-
-    }
-    else if ( _data_type == GZIP_TAR_DT_STR ) {
-        if ( archive_write_add_filter_gzip( arch ) != ARCHIVE_OK ) {
-            std::stringstream msg;
-            msg << "bundle_cache_dir - failed to set compression to gzip for archive [";
-            msg << spec_coll->phyPath;
-            msg << "] with error string [";
-            msg << archive_error_string( arch );
-            msg << "]";
-            return ERROR( -1, msg.str() );
-
-        }
-
-        // =-=-=-=-=-=-=-
-        // set the format of the tar archive
-        archive_write_set_format_pax(arch);
-    }
-    else if ( _data_type == BZIP2_TAR_DT_STR ) {
-        if ( archive_write_add_filter_bzip2( arch ) != ARCHIVE_OK ) {
-            std::stringstream msg;
-            msg << "bundle_cache_dir - failed to set compression to bzip2 for archive [";
-            msg << spec_coll->phyPath;
-            msg << "] with error string [";
-            msg << archive_error_string( arch );
-            msg << "]";
-            return ERROR( -1, msg.str() );
-
-        }
-
-        // =-=-=-=-=-=-=-
-        // set the format of the tar archive
-        archive_write_set_format_pax(arch);
-    }
-    else {
-        if ( archive_write_add_filter_none( arch ) != ARCHIVE_OK ) {
-            std::stringstream msg;
-            msg << "bundle_cache_dir - failed to set compression to none for archive [";
-            msg << spec_coll->phyPath;
-            msg << "] with error string [";
-            msg << archive_error_string( arch );
-            msg << "]";
-            return ERROR( -1, msg.str() );
-
-        }
-
-        // =-=-=-=-=-=-=-
-        // set the format of the tar archive
-        archive_write_set_format_pax(arch);
-    }
-
-    // =-=-=-=-=-=-=-
-    // extract the host location from the resource hierarchy
-    std::string location;
-    irods::error ret = irods::get_loc_for_hier_string( spec_coll->rescHier, location );
-    if ( !ret.ok() ) {
-        return PASSMSG( "bundle_cache_dir - failed in get_loc_for_hier_string", ret );
-    }
-
-    // =-=-=-=-=-=-=-
-    // create a context to pass to the callbacks
-    cb_ctx_t cb_ctx;
-    memset( &cb_ctx, 0, sizeof( cb_ctx_t ) );
-    cb_ctx.desc_ = &PluginStructFileDesc[ _index ];
-    snprintf( cb_ctx.loc_, sizeof( cb_ctx.loc_ ), "%s", location.c_str() );
-
-    // =-=-=-=-=-=-=-
-    // open the spec coll physical path for archival
-    if ( archive_write_open(
-                arch,
-                &cb_ctx,
-                irods_file_open_for_write,
-                irods_file_write,
-                irods_file_close ) < ARCHIVE_OK ) {
-        std::stringstream msg;
-        msg << "bundle_cache_dir - failed to open archive file [";
-        msg << spec_coll->phyPath;
-        msg << "] with error string [";
-        msg << archive_error_string( arch );
-        msg << "]";
-        return ERROR( -1, msg.str() );
-    }
-
-    // =-=-=-=-=-=-=-
-    // iterate over the dir listing and archive the files
-    std::string cache_dir( spec_coll->cacheDir );
-    irods::error arch_err = SUCCESS();
-    for ( size_t i = 0; i < listing.size(); ++i ) {
-        // =-=-=-=-=-=-=-
-        // strip off archive path from the filename
-        irods::error ret = write_file_to_archive( listing[ i ].string(), cache_dir, arch );
-
-        if ( !ret.ok() ) {
-            std::stringstream msg;
-            msg << "bundle_cache_dir - failed to archive file [";
-            msg << listing[ i ].string();
-            msg << "]";
-            arch_err = PASSMSG( msg.str(), arch_err );
-            irods::log( PASSMSG( msg.str(), ret ) );
-        }
-
-    } // for i
-
-    // =-=-=-=-=-=-=-
-    // close the archive and clean up
-    archive_write_close( arch );
-    archive_write_free( arch );
-
-    // =-=-=-=-=-=-=-
-    // handle errors
-    if ( !arch_err.ok() ) {
-        std::stringstream msg;
-        msg << "bundle_cache_dir - failed to archive [";
-        msg << spec_coll->cacheDir;
-        msg << "] into archive file [";
-        msg << spec_coll->phyPath;
-        msg << "]";
-        return PASSMSG( msg.str(), arch_err );
-
-    }
-    else {
-        return SUCCESS();
-
-    }
-
+    return irods::experimental::collections::archive_engine::bundle_cache_dir( *comm, *spec_coll, _data_type );
 } // bundle_cache_dir
 
 // =-=-=-=-=-=-=-
