@@ -64,37 +64,6 @@ namespace
     namespace id = irods::experimental::data_object;
     namespace ir = irods::experimental::replica;
     namespace ill = irods::logical_locking;
-    namespace gq2 = irods::experimental::genquery2;
-
-    int getNumSubfilesInBunfileObj(rsComm_t *rsComm, const char *objPath)
-    {
-        if (!rsComm || !objPath) {
-            return USER__NULL_INPUT_ERR;
-        }
-
-        using gq2::builder::col;
-        const auto q = gq2::builder::select({gq2::builder::count("DATA_ID")})
-                           .where(col("DATA_PATH") == objPath && col("RESC_CLASS_NAME") == BUNDLE_RESC_CLASS)
-                           .build();
-
-        nlohmann::json rows;
-        if (const int ec = gq2::try_execute(*rsComm, q, rows, objPath); ec < 0) {
-            return (ec == CAT_NO_ROWS_FOUND) ? 0 : ec;
-        }
-
-        if (rows.empty() || rows[0].empty()) {
-            return 0;
-        }
-
-        const auto count_str = rows[0][0].get_ref<const std::string&>();
-        int totalRowCount = 0;
-        const auto [ptr, err] = std::from_chars(count_str.data(), count_str.data() + count_str.size(), totalRowCount);
-        if (err != std::errc{} || ptr != count_str.data() + count_str.size()) {
-            return INVALID_LEXICAL_CAST;
-        }
-
-        return totalRowCount;
-    } // getNumSubfilesInBunfileObj
 
 int chkPreProcDeleteRule(
     rsComm_t* rsComm,
@@ -220,8 +189,6 @@ int rsMvDataObjToTrash(
             return SYS_INTERNAL_NULL_INPUT_ERR;
         }
 
-        auto cond_input = irods::experimental::make_key_value_proxy(_inp.condInput);
-
         DataObjInfo* replica_ptr = *_head;
 
         auto replica = ir::make_replica_proxy(*replica_ptr);
@@ -230,41 +197,6 @@ int rsMvDataObjToTrash(
         int status = chkPreProcDeleteRule(&_comm, _inp, replica.get());
         if ( status < 0 ) {
             return status;
-        }
-
-        // Handle bundled data object
-        if (replica.type() == BUNDLE_STR) {
-            if (_comm.proxyUser.authInfo.authFlag < LOCAL_PRIV_USER_AUTH) {
-                return CAT_INSUFFICIENT_PRIVILEGE_LEVEL;
-            }
-
-            if (const int numSubfiles = getNumSubfilesInBunfileObj(&_comm, replica.logical_path().data()); numSubfiles > 0) {
-                if (cond_input.contains(EMPTY_BUNDLE_ONLY_KW)) {
-                    // There is nothing to do if only empty bundles are allowed
-                    return 0;
-                }
-
-                auto* info_head = replica.get();
-                status = _unbunAndStageBunfileObj(&_comm, &info_head, cond_input.get(), NULL, 1);
-
-                // Unlink the object here if the file does not exist or fails to untar
-                if (status < 0 && EEXIST != getErrno(status) &&
-                    SYS_TAR_STRUCT_FILE_EXTRACT_ERR != getIrodsErrno(status)) {
-
-                    irods::log(LOG_ERROR, fmt::format(
-                        "[{}:{}] - _unbunAndStageBunfileObj err for {}",
-                        __FUNCTION__, __LINE__, replica.logical_path()));
-
-                    return status;
-                }
-
-                /* _head may be outdated */
-                *_head = NULL;
-                status = getDataObjInfoIncSpecColl(&_comm, &_inp, _head);
-                if ( status < 0 ) {
-                    return status;
-                }
-            }
         }
 
         auto op = id::make_data_object_proxy(**_head);
@@ -641,9 +573,6 @@ int l3Unlink(
         msg << "]";
         irods::log( PASSMSG( msg.str(), prop_err ) );
         return prop_err.code();
-    }
-    else if (resc_class == irods::RESOURCE_CLASS_BUNDLE) {
-        return 0;
     }
 
     std::string location{};

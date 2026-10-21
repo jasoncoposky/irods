@@ -132,23 +132,8 @@ namespace
         return _replica.replStatus == GOOD_REPLICA;
     } // is_replica_good
 
-    bool is_member_of_bundle_resource(rodsLong_t _resource_id)
-    {
-        std::string resc_class;
-        const auto err = irods::get_resource_property(_resource_id, irods::RESOURCE_CLASS, resc_class);
-        if (!err.ok()) {
-            log::api::error(err.result());
-        }
-
-        return irods::RESOURCE_CLASS_BUNDLE == resc_class;
-    } // is_member_of_bundle_resource
-
     int check_replica_accessibility(const DataObjInfo& _replica)
     {
-        if (is_member_of_bundle_resource(_replica.rescId)) {
-            return SYS_CANT_CHKSUM_BUNDLED_DATA;
-        }
-
         const auto l = {GOOD_REPLICA, STALE_REPLICA};
 
         if (std::none_of(begin(l), end(l), [&_replica](int _x) { return _replica.replStatus == _x; })) {
@@ -164,7 +149,7 @@ namespace
         good_replicas.reserve(std::distance(begin(&_replicas), end(&_replicas)));
 
         for (auto& r : &_replicas) {
-            if (is_replica_good(r) && !is_member_of_bundle_resource(r.rescId)) {
+            if (is_replica_good(r)) {
                 good_replicas.push_back(&r);
             }
         }

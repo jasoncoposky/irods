@@ -67,11 +67,6 @@ namespace
             return 0;
         }
 
-        /* don't do anything for BUNDLE_RESC for now */
-        if (strcmp(dataObjInfo->rescName, BUNDLE_RESC) == 0) {
-            return 0;
-        }
-
         status = l3Truncate(rsComm, dataObjTruncateInp, dataObjInfo);
 
         if (status < 0) {

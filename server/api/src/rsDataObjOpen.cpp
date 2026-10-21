@@ -163,14 +163,6 @@ namespace
         irods::experimental::key_value_proxy{_comm.session_props}[REG_REPL_KW] = "";
     } // enable_creation_of_additional_replicas
 
-    auto leaf_resource_is_bundleresc(const std::string_view _hierarchy)
-    {
-        std::string resc_class{};
-        const irods::error prop_err = irods::get_resource_property<std::string>(
-            resc_mgr.hier_to_leaf_id(_hierarchy), irods::RESOURCE_CLASS, resc_class);
-        return prop_err.ok() && irods::RESOURCE_CLASS_BUNDLE == resc_class;
-    } // leaf_resource_is_bundleresc
-
     auto create_new_replica(rsComm_t& _comm, dataObjInp_t& _inp, DataObjInfo* _existing_replica_list) -> int
     {
         auto cond_input = irods::experimental::make_key_value_proxy(_inp.condInput);
@@ -564,37 +556,6 @@ namespace
         }
     } // create_new_replica
 
-    int stage_bundled_data_to_cache_directory(rsComm_t * rsComm, dataObjInfo_t **subfileObjInfoHead)
-    {
-        dataObjInfo_t *dataObjInfoHead = *subfileObjInfoHead;
-        char* cacheRescName{};
-        int status = unbunAndStageBunfileObj(
-                        rsComm,
-                        dataObjInfoHead->filePath,
-                        &cacheRescName);
-        if ( status < 0 ) {
-            return status;
-        }
-
-        /* query the bundle dataObj */
-        dataObjInp_t dataObjInp{};
-        addKeyVal( &dataObjInp.condInput, RESC_NAME_KW, cacheRescName );
-        rstrcpy( dataObjInp.objPath, dataObjInfoHead->objPath, MAX_NAME_LEN );
-
-        dataObjInfo_t* cacheObjInfo{};
-        status = getDataObjInfo( rsComm, &dataObjInp, &cacheObjInfo, NULL, 0 );
-        clearKeyVal( &dataObjInp.condInput );
-        if ( status < 0 ) {
-            rodsLog( LOG_ERROR,
-                     "%s: getDataObjInfo of subfile %s failed.stat=%d",
-                     __FUNCTION__, dataObjInp.objPath, status );
-            return status;
-        }
-        /* que the cache copy at the top */
-        queueDataObjInfo(subfileObjInfoHead, cacheObjInfo, 0, 1);
-        return status;
-    } // stage_bundled_data_to_cache_directory
-
     int l3Open(rsComm_t *rsComm, int l1descInx)
     {
         dataObjInfo_t* dataObjInfo = L1desc[l1descInx].dataObjInfo;
@@ -697,7 +658,7 @@ namespace
         // Return before truncating the file in the catalog - the catalog may not even have a entry for
         // the special collection items, so these are not being considered for updating at this point,
         // especially because special collections are not supported by RST.
-        if (_replica.special_collection_info() || leaf_resource_is_bundleresc(_replica.hierarchy())) {
+        if (_replica.special_collection_info()) {
             return l1_index;
         }
 
@@ -1070,17 +1031,6 @@ namespace
                 __FUNCTION__, __LINE__, dataObjInp->objPath, hierarchy));
 
             return SYS_REPLICA_DOES_NOT_EXIST;
-        }
-
-        // We need to migrate bundled data to the cache directory before opening. Bundled data is not
-        // considered for intermediate replicas as it is legacy behavior, so we simply stage the data
-        // and open the replica in this case.
-        if (leaf_resource_is_bundleresc(hierarchy)) {
-            if (const int ec = stage_bundled_data_to_cache_directory(rsComm, &info_head); ec < 0) {
-                return ec;
-            }
-
-            return open_special_replica(*rsComm, *dataObjInp, info_head);
         }
 
         // Special collections are not considered for intermediate replicas, so we simply open the replica.

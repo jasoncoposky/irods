@@ -977,14 +977,8 @@ namespace
         subFile.specColl = &specColl;
         rstrcpy( specColl.collection, collection, MAX_NAME_LEN );
         specColl.collClass = STRUCT_FILE_COLL;
-        if ( strcmp( collType, HAAW_STRUCT_FILE_STR ) == 0 ) {
-            specColl.type = HAAW_STRUCT_FILE_T;
-        }
-        else if ( strcmp( collType, TAR_STRUCT_FILE_STR ) == 0 ) {
+        if ( strcmp( collType, TAR_STRUCT_FILE_STR ) == 0 ) {
             specColl.type = TAR_STRUCT_FILE_T;
-        }
-        else if ( strcmp( collType, MSSO_STRUCT_FILE_STR ) == 0 ) {
-            specColl.type = MSSO_STRUCT_FILE_T;
         }
         else {
             return 0;
@@ -1345,10 +1339,7 @@ namespace
         }
 
         // structfile collection registration requires the resource hierarchy
-        const auto collection_is_structfile = !coll_type.empty() &&
-            (coll_type == HAAW_STRUCT_FILE_STR ||
-             coll_type == TAR_STRUCT_FILE_STR ||
-             coll_type == MSSO_STRUCT_FILE_STR);
+        const auto collection_is_structfile = (coll_type == TAR_STRUCT_FILE_STR);
         if (collection_is_structfile) {
             return structFileReg(_comm, _inp);
         }

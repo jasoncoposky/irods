@@ -16,7 +16,7 @@ namespace irods {
         spec_coll_( 0 ),
         data_type_( "" ),
         opr_type_( 0 ),
-        spec_coll_type_( HAAW_STRUCT_FILE_T ) {
+        spec_coll_type_( TAR_STRUCT_FILE_T ) {
     } // structured_object
 
 // =-=-=-=-=-=-=-
@@ -120,17 +120,9 @@ namespace irods {
             return ERROR( SYS_INVALID_INPUT_PARAM, msg.str() );
         }
 
-        // =-=-=-=-=-=-=-
-        // we now support tar file ( structfile ) and
-        // msso file types.  this needs to be moved out
         std::string plugin_type;
         if ( TAR_STRUCT_FILE_T == spec_coll_type_ ) {
             plugin_type = "structfile";
-
-        }
-        else if ( MSSO_STRUCT_FILE_T == spec_coll_type_ ) {
-            plugin_type = "mssofile";
-
         }
         else {
             std::stringstream msg;

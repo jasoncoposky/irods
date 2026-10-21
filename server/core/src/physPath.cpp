@@ -937,10 +937,6 @@ syncDataObjPhyPath( rsComm_t *rsComm, dataObjInp_t *dataObjInp,
 int
 syncDataObjPhyPathS( rsComm_t *rsComm, dataObjInp_t *dataObjInp,
                      dataObjInfo_t *dataObjInfo, char *acLCollection ) {
-    if ( strcmp( dataObjInfo->rescName, BUNDLE_RESC ) == 0 ) {
-        return 0;
-    }
-
     int create_path = 0;
     irods::error err = irods::get_resource_property< int >(
               dataObjInfo->rescId,
