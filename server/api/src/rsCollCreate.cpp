@@ -15,6 +15,7 @@
 #include "irods/rcGlobalExtern.h"
 #include "irods/objMetaOpr.hpp"
 #include "irods/collection.hpp"
+#include "irods/collection_resolver.hpp"
 #include "irods/specColl.hpp"
 #include "irods/physPath.hpp"
 #include "irods/dataObjOpr.hpp"
@@ -153,6 +154,10 @@ namespace
                         return CATALOG_ALREADY_HAS_ITEM_BY_THAT_NAME;
                     }
                     status = _rsRegColl( rsComm, collCreateInp );
+                    if ( status >= 0 ) {
+                        irods::experimental::collections::invalidate_collection_cache(
+                            collCreateInp->collName );
+                    }
                 }
                 rei.status = status;
                 if ( status >= 0 ) {

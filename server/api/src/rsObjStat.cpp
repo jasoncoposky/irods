@@ -21,6 +21,7 @@
 #include "irods/genquery2_builder.hpp"
 #include "irods/rs_genquery2.hpp"
 #include "irods/irods_resource_backport.hpp"
+#include "irods/collection_driver.hpp"
 #include "irods/rsSubStructFileStat.hpp"
 #include "irods/rsFileStat.hpp"
 
@@ -248,33 +249,10 @@ int l3Stat(
     dataObjInfo_t *dataObjInfo,
     rodsStat_t **myStat)
 {
-    fileStatInp_t fileStatInp;
-    int status;
-
-    if ( getStructFileType( dataObjInfo->specColl ) >= 0 ) {
-
-        std::string location;
-        irods::error ret = irods::get_loc_for_hier_string( dataObjInfo->rescHier, location );
-        if ( !ret.ok() ) {
-            irods::log( PASSMSG( "l3Stat - failed in get_loc_for_hier_string", ret ) );
-            return -1;
-        }
-
-        subFile_t subFile;
-        memset( &subFile, 0, sizeof( subFile ) );
-        rstrcpy( subFile.subFilePath, dataObjInfo->subPath, MAX_NAME_LEN );
-        rstrcpy( subFile.addr.hostAddr, location.c_str(), NAME_LEN );
-
-        subFile.specColl = dataObjInfo->specColl;
-        status = rsSubStructFileStat( rsComm, &subFile, myStat );
+    if (!rsComm || !dataObjInfo || !myStat) {
+        return USER__NULL_INPUT_ERR;
     }
-    else {
-        memset( &fileStatInp, 0, sizeof( fileStatInp ) );
-        rstrcpy( fileStatInp.fileName, dataObjInfo->filePath, MAX_NAME_LEN );
-        rstrcpy( fileStatInp.rescHier, dataObjInfo->rescHier, MAX_NAME_LEN );
-        rstrcpy( fileStatInp.objPath, dataObjInfo->objPath, MAX_NAME_LEN );
-        status = rsFileStat( rsComm, &fileStatInp, myStat );
-    }
-    return status;
+    const auto& driver = irods::experimental::collections::driver_for_legacy_spec_coll(dataObjInfo->specColl);
+    return driver.stat_entry(*rsComm, *dataObjInfo, myStat);
 } // l3Stat
 

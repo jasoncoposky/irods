@@ -4,6 +4,7 @@
 #include "irods/rcMisc.h"
 #include "irods/rmColl.h"
 #include "irods/objMetaOpr.hpp"
+#include "irods/collection_resolver.hpp"
 #include "irods/specColl.hpp"
 #include "irods/icatHighLevelRoutines.hpp"
 #include "irods/openCollection.h"
@@ -180,6 +181,9 @@ _rsRmColl( rsComm_t *rsComm, collInp_t *rmCollInp,
             status = svrUnregColl( rsComm, rmCollInp );
         }
     }
+    if ( status >= 0 ) {
+        irods::experimental::collections::invalidate_collection_cache( rmCollInp->collName );
+    }
     if ( status >= 0 && collOprStat != NULL ) {
         *collOprStat = ( collOprStat_t* )malloc( sizeof( collOprStat_t ) );
         memset( *collOprStat, 0, sizeof( collOprStat_t ) );
@@ -231,7 +235,10 @@ _rsRmCollRecur( rsComm_t *rsComm, collInp_t *rmCollInp,
             }
             if (NO_TRASH_CAN != rei.status) {
                 status = rsMvCollToTrash( rsComm, rmCollInp );
-                if ( status >= 0 && collOprStat != NULL ) {
+                if ( status >= 0 ) {
+        irods::experimental::collections::invalidate_collection_cache( rmCollInp->collName );
+    }
+    if ( status >= 0 && collOprStat != NULL ) {
                     if ( *collOprStat == NULL ) {
                         *collOprStat = ( collOprStat_t* )malloc( sizeof( collOprStat_t ) );
                         memset( *collOprStat, 0, sizeof( collOprStat_t ) );

@@ -1,6 +1,7 @@
 #include <catch2/catch_all.hpp>
 
 #include "irods/archive_engine.hpp"
+#include "irods/collection_entry_stream.hpp"
 #include "irods/collection_types.hpp"
 #include "irods/rcMisc.h"
 #include "irods/rodsErrorTable.h"
@@ -391,5 +392,38 @@ TEST_CASE("archive_engine bundles and extracts safely", "[collections][archive_e
 
     fs::remove_all(tmp_root, ec);
 }
+
+TEST_CASE("collection_entry projects linked paths and populates specColl query batches", "[collections][entry_stream]")
+{
+    colls::collection_entry file_entry{};
+    file_entry.obj_type = DATA_OBJ_T;
+    file_entry.coll_name = "/tempZone/home/rods/real_target/sub";
+    file_entry.data_name = "report.csv";
+    file_entry.data_size = 4096;
+    file_entry.create_time = "01700000000";
+    file_entry.modify_time = "01700000100";
+
+    const auto projected = colls::project_entry_for_link(
+        file_entry,
+        "/tempZone/home/rods/link_pt",
+        "/tempZone/home/rods/real_target");
+    CHECK(projected.coll_name == "/tempZone/home/rods/link_pt/sub");
+    CHECK(projected.data_name == "report.csv");
+
+    genQueryOut_t* out = nullptr;
+    REQUIRE(colls::init_spec_coll_query_out(&out) == 0);
+    REQUIRE(out != nullptr);
+    CHECK(out->attriCnt == 5);
+    CHECK(out->rowCnt == 0);
+
+    REQUIRE(colls::append_to_spec_coll_query_out(projected, *out) == 0);
+    CHECK(out->rowCnt == 1);
+    CHECK(std::string{out->sqlResult[0].value} == "/tempZone/home/rods/link_pt/sub");
+    CHECK(std::string{out->sqlResult[1].value} == "report.csv");
+    CHECK(std::string{out->sqlResult[4].value} == "4096");
+
+    freeGenQueryOut(&out);
+}
+
 
 

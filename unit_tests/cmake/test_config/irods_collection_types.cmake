@@ -3,6 +3,7 @@ set(IRODS_TEST_TARGET irods_collection_types)
 set(IRODS_TEST_SOURCE_FILES
   ${CMAKE_CURRENT_SOURCE_DIR}/src/test_collection_types.cpp
   ${CMAKE_IRODS_SOURCE_DIR}/server/core/src/archive_engine.cpp
+  ${CMAKE_IRODS_SOURCE_DIR}/server/core/src/collection_entry_stream.cpp
 )
 
 set(IRODS_TEST_INCLUDE_PATH

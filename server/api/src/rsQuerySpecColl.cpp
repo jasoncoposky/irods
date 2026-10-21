@@ -32,6 +32,8 @@
 #include "irods/irods_resource_redirect.hpp"
 #include "irods/irods_stacktrace.hpp"
 #include "irods/irods_hierarchy_parser.hpp"
+#include "irods/collection_driver.hpp"
+#include "irods/collection_entry_stream.hpp"
 
 
 int
@@ -152,51 +154,7 @@ openSpecColl( rsComm_t *rsComm, dataObjInp_t *dataObjInp, int parentInx ) {
 
 int
 initOutForQuerySpecColl( genQueryOut_t **genQueryOut ) {
-    genQueryOut_t *myGenQueryOut;
-
-    /* will do collection, dataName, createTime, modifyTime, objSize */
-
-    myGenQueryOut = *genQueryOut =
-                        ( genQueryOut_t * ) malloc( sizeof( genQueryOut_t ) );
-
-    memset( myGenQueryOut, 0, sizeof( genQueryOut_t ) );
-
-    myGenQueryOut->attriCnt = 5;
-
-    myGenQueryOut->sqlResult[0].attriInx = COL_COLL_NAME;
-    myGenQueryOut->sqlResult[0].len = MAX_NAME_LEN;
-    myGenQueryOut->sqlResult[0].value =
-        ( char* )malloc( MAX_NAME_LEN * MAX_SPEC_COLL_ROW );
-    memset( myGenQueryOut->sqlResult[0].value, 0,
-            MAX_NAME_LEN * MAX_SPEC_COLL_ROW );
-    myGenQueryOut->sqlResult[1].attriInx = COL_DATA_NAME;
-    myGenQueryOut->sqlResult[1].len = MAX_NAME_LEN;
-    myGenQueryOut->sqlResult[1].value =
-        ( char* )malloc( MAX_NAME_LEN * MAX_SPEC_COLL_ROW );
-    memset( myGenQueryOut->sqlResult[1].value, 0,
-            MAX_NAME_LEN * MAX_SPEC_COLL_ROW );
-    myGenQueryOut->sqlResult[2].attriInx = COL_D_CREATE_TIME;
-    myGenQueryOut->sqlResult[2].len = NAME_LEN;
-    myGenQueryOut->sqlResult[2].value =
-        ( char* )malloc( NAME_LEN * MAX_SPEC_COLL_ROW );
-    memset( myGenQueryOut->sqlResult[2].value, 0,
-            NAME_LEN * MAX_SPEC_COLL_ROW );
-    myGenQueryOut->sqlResult[3].attriInx = COL_D_MODIFY_TIME;
-    myGenQueryOut->sqlResult[3].len = NAME_LEN;
-    myGenQueryOut->sqlResult[3].value =
-        ( char* )malloc( NAME_LEN * MAX_SPEC_COLL_ROW );
-    memset( myGenQueryOut->sqlResult[3].value, 0,
-            NAME_LEN * MAX_SPEC_COLL_ROW );
-    myGenQueryOut->sqlResult[4].attriInx = COL_DATA_SIZE;
-    myGenQueryOut->sqlResult[4].len = NAME_LEN;
-    myGenQueryOut->sqlResult[4].value =
-        ( char* )malloc( NAME_LEN * MAX_SPEC_COLL_ROW );
-    memset( myGenQueryOut->sqlResult[4].value, 0,
-            NAME_LEN * MAX_SPEC_COLL_ROW );
-
-    myGenQueryOut->continueInx = -1;
-
-    return 0;
+    return irods::experimental::collections::init_spec_coll_query_out( genQueryOut );
 }
 
 int
@@ -205,7 +163,6 @@ _rsQuerySpecColl( rsComm_t *rsComm, int specCollInx,
     int status = 0;
     rodsDirent_t *rodsDirent = NULL;
     dataObjInfo_t *dataObjInfo;
-    int rowCnt;
     objType_t selObjType;
     char *tmpStr;
     dataObjInp_t newDataObjInp;
@@ -279,35 +236,28 @@ _rsQuerySpecColl( rsComm_t *rsComm, int specCollInx,
                 free( fileStatOut );
                 continue;
             }
-            rowCnt = genQueryOut->rowCnt;
-            rstrcpy( &genQueryOut->sqlResult[0].value[MAX_NAME_LEN * rowCnt],
-                     dataObjInfo->subPath, MAX_NAME_LEN );
-            rstrcpy( &genQueryOut->sqlResult[1].value[MAX_NAME_LEN * rowCnt],
-                     myRodsDirent.d_name, MAX_NAME_LEN );
-            snprintf( &genQueryOut->sqlResult[2].value[NAME_LEN * rowCnt],
-                      NAME_LEN, "%d", fileStatOut->st_ctim );
-            snprintf( &genQueryOut->sqlResult[3].value[NAME_LEN * rowCnt],
-                      NAME_LEN, "%d", fileStatOut->st_mtim );
-            snprintf( &genQueryOut->sqlResult[4].value[NAME_LEN * rowCnt],
-                      NAME_LEN, "%lld", fileStatOut->st_size );
+            irods::experimental::collections::collection_entry entry{};
+            entry.obj_type = DATA_OBJ_T;
+            entry.coll_name = dataObjInfo->subPath;
+            entry.data_name = myRodsDirent.d_name;
+            entry.create_time = std::to_string( fileStatOut->st_ctim );
+            entry.modify_time = std::to_string( fileStatOut->st_mtim );
+            entry.data_size = fileStatOut->st_size;
 
             free( fileStatOut );
 
-            genQueryOut->rowCnt++;
-
+            irods::experimental::collections::append_to_spec_coll_query_out( entry, *genQueryOut );
         }
         else {
             if ( selObjType != DATA_OBJ_T ) {
-                rowCnt = genQueryOut->rowCnt;
-                rstrcpy( &genQueryOut->sqlResult[0].value[MAX_NAME_LEN * rowCnt],
-                         myDataObjInfo.subPath, MAX_NAME_LEN );
-                snprintf( &genQueryOut->sqlResult[2].value[NAME_LEN * rowCnt],
-                          NAME_LEN, "%d", fileStatOut->st_ctim );
-                snprintf( &genQueryOut->sqlResult[3].value[NAME_LEN * rowCnt],
-                          NAME_LEN, "%d", fileStatOut->st_mtim );
-                snprintf( &genQueryOut->sqlResult[4].value[NAME_LEN * rowCnt],
-                          NAME_LEN, "%lld", fileStatOut->st_size );
-                genQueryOut->rowCnt++;
+                irods::experimental::collections::collection_entry entry{};
+                entry.obj_type = COLL_OBJ_T;
+                entry.coll_name = myDataObjInfo.subPath;
+                entry.create_time = std::to_string( fileStatOut->st_ctim );
+                entry.modify_time = std::to_string( fileStatOut->st_mtim );
+                entry.data_size = fileStatOut->st_size;
+
+                irods::experimental::collections::append_to_spec_coll_query_out( entry, *genQueryOut );
             }
 
             free( fileStatOut );
@@ -316,7 +266,7 @@ _rsQuerySpecColl( rsComm_t *rsComm, int specCollInx,
                 /* need to drill down */
                 int newSpecCollInx;
                 newDataObjInp = *dataObjInp;
-                rstrcpy( newDataObjInp.objPath, dataObjInfo->subPath,
+                rstrcpy( newDataObjInp.objPath, myDataObjInfo.subPath,
                          MAX_NAME_LEN );
                 newSpecCollInx =
                     openSpecColl( rsComm, &newDataObjInp, specCollInx );
@@ -378,139 +328,37 @@ _rsQuerySpecColl( rsComm_t *rsComm, int specCollInx,
 
 int
 specCollReaddir( rsComm_t *rsComm, int specCollInx, rodsDirent_t **rodsDirent ) {
-    fileReaddirInp_t fileReaddirInp;
-    specColl_t *specColl;
-    int status;
     dataObjInfo_t *dataObjInfo = SpecCollDesc[specCollInx].dataObjInfo;
-
-    if ( dataObjInfo == NULL || ( specColl = dataObjInfo->specColl ) == NULL ) {
+    if ( dataObjInfo == NULL || dataObjInfo->specColl == NULL ) {
         return SYS_INTERNAL_NULL_INPUT_ERR;
     }
 
-    // =-=-=-=-=-=-=-
-    // get the resc location of the hier leaf
-    std::string location;
-    irods::error ret = irods::get_loc_for_hier_string( dataObjInfo->rescHier, location );
-    if ( !ret.ok() ) {
-        irods::log( PASSMSG( "specCollReaddir - failed in get_loc_for_hier_string", ret ) );
-        return -1;
-    }
-
-
-    if ( getStructFileType( dataObjInfo->specColl ) >= 0 ) {
-        subStructFileFdOprInp_t subStructFileReaddirInp;
-        memset( &subStructFileReaddirInp, 0, sizeof( subStructFileReaddirInp ) );
-        subStructFileReaddirInp.type = dataObjInfo->specColl->type;
-        subStructFileReaddirInp.fd = SpecCollDesc[specCollInx].l3descInx;
-        rstrcpy( subStructFileReaddirInp.addr.hostAddr,
-                 location.c_str(), NAME_LEN );
-        rstrcpy( subStructFileReaddirInp.resc_hier,
-                 dataObjInfo->rescHier,
-                 MAX_NAME_LEN );
-        status = rsSubStructFileReaddir( rsComm, &subStructFileReaddirInp,
-                                         rodsDirent );
-    }
-    else if ( specColl->collClass == MOUNTED_COLL ) {
-        fileReaddirInp.fileInx = SpecCollDesc[specCollInx].l3descInx;
-        status = rsFileReaddir( rsComm, &fileReaddirInp, rodsDirent );
-    }
-    else {
-        rodsLog( LOG_ERROR,
-                 "specCollReaddir: Unknown specColl collClass = %d",
-                 specColl->collClass );
-        status = SYS_UNKNOWN_SPEC_COLL_CLASS;
-    }
-
-    return status;
+    const auto& driver = irods::experimental::collections::driver_for_legacy_spec_coll( dataObjInfo->specColl );
+    return driver.read_dir( *rsComm, *dataObjInfo, SpecCollDesc[specCollInx].l3descInx, rodsDirent );
 }
 
 int
 specCollClosedir( rsComm_t *rsComm, int specCollInx ) {
-    fileClosedirInp_t fileClosedirInp;
-    specColl_t *specColl;
-    int status;
     dataObjInfo_t *dataObjInfo = SpecCollDesc[specCollInx].dataObjInfo;
-
-    if ( dataObjInfo == NULL || ( specColl = dataObjInfo->specColl ) == NULL ) {
+    if ( dataObjInfo == NULL || dataObjInfo->specColl == NULL ) {
         return SYS_INTERNAL_NULL_INPUT_ERR;
     }
 
-    // =-=-=-=-=-=-=-
-    // get the resc location of the hier leaf
-    std::string location;
-    irods::error ret = irods::get_loc_for_hier_string( dataObjInfo->rescHier, location );
-    if ( !ret.ok() ) {
-        irods::log( PASSMSG( "specCollClosedir - failed in get_loc_for_hier_string", ret ) );
-        return -1;
-    }
-
-    if ( getStructFileType( dataObjInfo->specColl ) >= 0 ) {
-        subStructFileFdOprInp_t subStructFileClosedirInp;
-        memset( &subStructFileClosedirInp, 0, sizeof( subStructFileClosedirInp ) );
-        subStructFileClosedirInp.type = dataObjInfo->specColl->type;
-        subStructFileClosedirInp.fd = SpecCollDesc[specCollInx].l3descInx;
-        rstrcpy( subStructFileClosedirInp.addr.hostAddr,
-                 location.c_str(),
-                 NAME_LEN );
-        rstrcpy( subStructFileClosedirInp.resc_hier,
-                 dataObjInfo->rescHier,
-                 MAX_NAME_LEN );
-        status = rsSubStructFileClosedir( rsComm, &subStructFileClosedirInp );
-    }
-    else if ( specColl->collClass == MOUNTED_COLL ) {
-        fileClosedirInp.fileInx = SpecCollDesc[specCollInx].l3descInx;
-        status = rsFileClosedir( rsComm, &fileClosedirInp );
-    }
-    else {
-        rodsLog( LOG_ERROR,
-                 "specCollClosedir: Unknown specColl collClass = %d",
-                 specColl->collClass );
-        status = SYS_UNKNOWN_SPEC_COLL_CLASS;
-    }
-
-    return status;
+    const auto& driver = irods::experimental::collections::driver_for_legacy_spec_coll( dataObjInfo->specColl );
+    return driver.close_dir( *rsComm, *dataObjInfo, SpecCollDesc[specCollInx].l3descInx );
 }
 
 int
 l3Opendir( rsComm_t *rsComm, dataObjInfo_t *dataObjInfo ) {
-    fileOpendirInp_t fileOpendirInp;
-    int status;
-
     if ( dataObjInfo == NULL ) {
         return SYS_INTERNAL_NULL_INPUT_ERR;
     }
 
-    // =-=-=-=-=-=-=-
-    // get the resc location of the hier leaf
-    std::string location;
-    irods::error ret = irods::get_loc_for_hier_string( dataObjInfo->rescHier, location );
-    if ( !ret.ok() ) {
-        irods::log( PASSMSG( "l3Opendir - failed in get_loc_for_hier_string", ret ) );
-        return -1;
+    if ( dataObjInfo->specColl == NULL ) {
+        irods::experimental::collections::MountedCollectionDriver mounted_driver{};
+        return mounted_driver.open_dir( *rsComm, *dataObjInfo );
     }
 
-    if ( getStructFileType( dataObjInfo->specColl ) >= 0 ) {
-        subFile_t subStructFileOpendirInp;
-        memset( &subStructFileOpendirInp, 0, sizeof( subStructFileOpendirInp ) );
-        rstrcpy( subStructFileOpendirInp.subFilePath, dataObjInfo->subPath, MAX_NAME_LEN );
-        //rstrcpy( subStructFileOpendirInp.addr.hostAddr, dataObjInfo->rescInfo->rescLoc, NAME_LEN );
-        rstrcpy( subStructFileOpendirInp.addr.hostAddr, location.c_str(), NAME_LEN );
-        subStructFileOpendirInp.specColl = dataObjInfo->specColl;
-        status = rsSubStructFileOpendir( rsComm, &subStructFileOpendirInp );
-    }
-    else {
-        memset( &fileOpendirInp, 0, sizeof( fileOpendirInp ) );
-        rstrcpy( fileOpendirInp.dirName, dataObjInfo->filePath, MAX_NAME_LEN );
-        rstrcpy( fileOpendirInp.resc_name_, dataObjInfo->rescName, MAX_NAME_LEN );
-        rstrcpy( fileOpendirInp.resc_hier_, dataObjInfo->rescHier, MAX_NAME_LEN );
-        rstrcpy( fileOpendirInp.addr.hostAddr, location.c_str(), NAME_LEN );
-
-        status = rsFileOpendir( rsComm, &fileOpendirInp );
-        if ( status < 0 ) {
-            rodsLog( LOG_ERROR,
-                     "l3Opendir: rsFileOpendir for %s error, status = %d",
-                     dataObjInfo->filePath, status );
-        }
-    }
-    return status;
+    const auto& driver = irods::experimental::collections::driver_for_legacy_spec_coll( dataObjInfo->specColl );
+    return driver.open_dir( *rsComm, *dataObjInfo );
 }
