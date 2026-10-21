@@ -1,4 +1,5 @@
 #include "irods/collection.hpp"
+#include "irods/collection_resolver.hpp"
 #include "irods/dataObjClose.h"
 #include "irods/dataObjInpOut.h"
 #include "irods/dataObjOpr.hpp"
@@ -29,9 +30,6 @@
 #include <fmt/format.h>
 
 #include <cstring>
-
-static int HaveFailedSpecCollPath = 0;
-static char FailedSpecCollPath[MAX_NAME_LEN];
 
 namespace
 {
@@ -69,7 +67,8 @@ querySpecColl( rsComm_t *rsComm, const char *objPath, genQueryOut_t **genQueryOu
         return USER__NULL_INPUT_ERR;
     }
 
-    if ( HaveFailedSpecCollPath && strcmp( objPath, FailedSpecCollPath ) == 0 ) {
+    namespace colls = irods::experimental::collections;
+    if ( colls::global_resolution_cache().is_known_negative( objPath ) ) {
         return CAT_NO_ROWS_FOUND;
     }
 
@@ -107,8 +106,7 @@ querySpecColl( rsComm_t *rsComm, const char *objPath, genQueryOut_t **genQueryOu
     }
 
     if ( status < 0 ) {
-        rstrcpy( FailedSpecCollPath, objPath, MAX_NAME_LEN );
-        HaveFailedSpecCollPath = 1;
+        colls::global_resolution_cache().store_negative( objPath );
         return status;
     }
 
@@ -243,11 +241,14 @@ queueSpecCollCache( rsComm_t *rsComm, genQueryOut_t *genQueryOut, const char *ob
             rstrcpy( tmpSpecCollCache->modifyTime, tmpModifyTime, TIME_LEN );
             tmpSpecCollCache->next = SpecCollCacheHead;
             SpecCollCacheHead = tmpSpecCollCache;
+            irods::experimental::collections::global_resolution_cache().store_positive(
+                specColl->collection, irods::experimental::collections::from_legacy_spec_coll( *specColl ) );
 
             return 0;
         }
     }
 
+    irods::experimental::collections::global_resolution_cache().store_negative( objPath );
     return CAT_NO_ROWS_FOUND;
 }
 

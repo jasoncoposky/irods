@@ -164,3 +164,125 @@ TEST_CASE("collection_types enforces physical path containment and symlink/hardl
         std::filesystem::remove_all(tmp_base);
     }
 }
+
+TEST_CASE("collection_resolution_cache and resolve_collection_path_with_lookup handle links, cycles, and invalidation",
+          "[collections][resolver]")
+{
+    colls::collection_resolution_cache cache;
+
+    std::unordered_map<std::string, colls::collection_info_variant> mock_catalog;
+    mock_catalog["/tempZone/home/rods/link1"] = colls::linked_collection_info{
+        101, fs::path{"/tempZone/home/rods/link2"}};
+    mock_catalog["/tempZone/home/rods/link2"] = colls::linked_collection_info{
+        102, fs::path{"/tempZone/home/rods/mnt"}};
+    mock_catalog["/tempZone/home/rods/mnt"] = colls::mounted_collection_info{
+        103, "/var/lib/irods/mounted_dir", "ptResc;unixResc", "ptResc"};
+    mock_catalog["/tempZone/home/rods/cycleA"] = colls::linked_collection_info{
+        104, fs::path{"/tempZone/home/rods/cycleB"}};
+    mock_catalog["/tempZone/home/rods/cycleB"] = colls::linked_collection_info{
+        105, fs::path{"/tempZone/home/rods/cycleA"}};
+
+    int catalog_queries = 0;
+    auto lookup_fn = [&](std::string_view coll_path,
+                         std::string& out_governing_coll,
+                         colls::collection_info_variant& out) -> int {
+        ++catalog_queries;
+        std::string current{coll_path};
+        while (!current.empty() && current != "/") {
+            if (auto it = mock_catalog.find(current); it != mock_catalog.end()) {
+                out_governing_coll = current;
+                out = it->second;
+                return 0;
+            }
+            const auto slash = current.rfind('/');
+            if (slash == std::string::npos || slash == 0) {
+                break;
+            }
+            current.resize(slash);
+        }
+        return CAT_NO_ROWS_FOUND;
+    };
+
+    SECTION("Multi-hop linked collection into mounted collection resolves cleanly without mutating input")
+    {
+        const std::string input = "/tempZone/home/rods/link1/sub/file.txt";
+        colls::resolved_path resolved;
+        REQUIRE(colls::resolve_collection_path_with_lookup(
+                    input, colls::link_resolution_mode::follow_links, cache, lookup_fn, resolved) == 0);
+
+        CHECK(resolved.original_path.string() == "/tempZone/home/rods/link1/sub/file.txt");
+        CHECK(resolved.canonical_path.string() == "/tempZone/home/rods/mnt/sub/file.txt");
+        CHECK(resolved.governing_coll.string() == "/tempZone/home/rods/mnt");
+        CHECK(resolved.relative_subpath.string() == "sub/file.txt");
+        CHECK(resolved.was_link_translated);
+        REQUIRE(std::holds_alternative<colls::mounted_collection_info>(resolved.info));
+        CHECK(std::get<colls::mounted_collection_info>(resolved.info).physical_directory_path ==
+              "/var/lib/irods/mounted_dir");
+    }
+
+    SECTION("do_not_follow_link stops at terminal link point itself")
+    {
+        colls::resolved_path resolved;
+        REQUIRE(colls::resolve_collection_path_with_lookup(
+                    "/tempZone/home/rods/link1",
+                    colls::link_resolution_mode::do_not_follow_link,
+                    cache,
+                    lookup_fn,
+                    resolved) == 0);
+
+        CHECK(resolved.canonical_path.string() == "/tempZone/home/rods/link1");
+        CHECK(resolved.governing_coll.string() == "/tempZone/home/rods/link1");
+        CHECK(!resolved.was_link_translated);
+        REQUIRE(std::holds_alternative<colls::linked_collection_info>(resolved.info));
+    }
+
+    SECTION("Link cycle returns SYS_COLL_LINK_PATH_ERR")
+    {
+        colls::resolved_path resolved;
+        CHECK(colls::resolve_collection_path_with_lookup(
+                  "/tempZone/home/rods/cycleA/data.txt",
+                  colls::link_resolution_mode::follow_links,
+                  cache,
+                  lookup_fn,
+                  resolved) == SYS_COLL_LINK_PATH_ERR);
+    }
+
+    SECTION("Cache stores positive and negative lookups and invalidates prefixes on mutation")
+    {
+        colls::resolved_path resolved;
+        REQUIRE(colls::resolve_collection_path_with_lookup(
+                    "/tempZone/home/rods/normal_coll/file.txt",
+                    colls::link_resolution_mode::follow_links,
+                    cache,
+                    lookup_fn,
+                    resolved) == 0);
+        CHECK(std::holds_alternative<colls::catalog_collection_info>(resolved.info));
+        const int queries_after_first = catalog_queries;
+
+        // Second lookup on same negative path hits cache without querying catalog
+        REQUIRE(colls::resolve_collection_path_with_lookup(
+                    "/tempZone/home/rods/normal_coll/file.txt",
+                    colls::link_resolution_mode::follow_links,
+                    cache,
+                    lookup_fn,
+                    resolved) == 0);
+        CHECK(catalog_queries == queries_after_first);
+
+        // Now mount /tempZone/home/rods/normal_coll and invalidate cache
+        mock_catalog["/tempZone/home/rods/normal_coll"] = colls::mounted_collection_info{
+            200, "/var/lib/irods/new_mnt", "rescA", "rescA"};
+        cache.invalidate("/tempZone/home/rods/normal_coll");
+
+        REQUIRE(colls::resolve_collection_path_with_lookup(
+                    "/tempZone/home/rods/normal_coll/file.txt",
+                    colls::link_resolution_mode::follow_links,
+                    cache,
+                    lookup_fn,
+                    resolved) == 0);
+        CHECK(catalog_queries > queries_after_first);
+        REQUIRE(std::holds_alternative<colls::mounted_collection_info>(resolved.info));
+        CHECK(std::get<colls::mounted_collection_info>(resolved.info).physical_directory_path ==
+              "/var/lib/irods/new_mnt");
+    }
+}
+

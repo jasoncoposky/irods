@@ -2,6 +2,7 @@
 
 #include "irods/catalog_utilities.hpp"
 #include "irods/client_connection.hpp"
+#include "irods/collection_resolver.hpp"
 #include "irods/filesystem/path.hpp"
 #include "irods/fully_qualified_username.hpp"
 #include "irods/icatHighLevelRoutines.hpp"
@@ -65,6 +66,8 @@ namespace
             chlRollback(rsComm);
             return ec;
         }
+
+        irods::experimental::collections::invalidate_collection_cache(modCollInp->collName);
 
         if (int ec = applyRule("acPostProcForModifyCollMeta", nullptr, &rei2, NO_SAVE_REI); ec < 0) {
             if (rei2.status < 0) {

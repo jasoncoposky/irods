@@ -366,4 +366,194 @@ namespace irods::experimental::collections
         projected.append(suffix);
         return projected;
     }
+
+    namespace
+    {
+        auto is_path_or_descendant(std::string_view _candidate, std::string_view _prefix) noexcept -> bool
+        {
+            while (_prefix.size() > 1 && _prefix.back() == '/') {
+                _prefix.remove_suffix(1);
+            }
+            if (_candidate.size() < _prefix.size() || _candidate.substr(0, _prefix.size()) != _prefix) {
+                return false;
+            }
+            return _candidate.size() == _prefix.size() || _candidate[_prefix.size()] == '/';
+        }
+
+        auto normalize_logical_sv(std::string_view _p) -> std::string
+        {
+            while (_p.size() > 1 && _p.back() == '/') {
+                _p.remove_suffix(1);
+            }
+            return std::string{_p};
+        }
+    } // anonymous namespace
+
+    auto collection_resolution_cache::lookup_positive(std::string_view _logical_path,
+                                                      std::string& _out_governing_coll,
+                                                      collection_info_variant& _out_info) const -> bool
+    {
+        const auto norm = normalize_logical_sv(_logical_path);
+        std::string current = norm;
+        while (!current.empty() && current != "/") {
+            if (auto it = positive_entries_.find(current); it != positive_entries_.end()) {
+                _out_governing_coll = it->first;
+                _out_info = it->second;
+                return true;
+            }
+            const auto slash = current.rfind('/');
+            if (slash == std::string::npos || slash == 0) {
+                break;
+            }
+            current.resize(slash);
+        }
+        return false;
+    }
+
+    auto collection_resolution_cache::is_known_negative(std::string_view _logical_path) const -> bool
+    {
+        return negative_paths_.find(normalize_logical_sv(_logical_path)) != negative_paths_.end();
+    }
+
+    auto collection_resolution_cache::store_positive(std::string_view _governing_coll,
+                                                     collection_info_variant _info) -> void
+    {
+        auto key = normalize_logical_sv(_governing_coll);
+        negative_paths_.erase(key);
+        positive_entries_[std::move(key)] = std::move(_info);
+    }
+
+    auto collection_resolution_cache::store_negative(std::string_view _logical_path) -> void
+    {
+        if (negative_paths_.size() >= 256) {
+            negative_paths_.clear();
+        }
+        negative_paths_.insert(normalize_logical_sv(_logical_path));
+    }
+
+    auto collection_resolution_cache::invalidate(std::string_view _logical_path) -> void
+    {
+        const auto norm = normalize_logical_sv(_logical_path);
+        for (auto it = positive_entries_.begin(); it != positive_entries_.end();) {
+            if (is_path_or_descendant(it->first, norm) || is_path_or_descendant(norm, it->first)) {
+                it = positive_entries_.erase(it);
+            }
+            else {
+                ++it;
+            }
+        }
+        for (auto it = negative_paths_.begin(); it != negative_paths_.end();) {
+            if (is_path_or_descendant(*it, norm) || is_path_or_descendant(norm, *it)) {
+                it = negative_paths_.erase(it);
+            }
+            else {
+                ++it;
+            }
+        }
+    }
+
+    auto collection_resolution_cache::clear() noexcept -> void
+    {
+        positive_entries_.clear();
+        negative_paths_.clear();
+    }
+
+    auto resolve_collection_path_with_lookup(std::string_view _input_path,
+                                             link_resolution_mode _mode,
+                                             collection_resolution_cache& _cache,
+                                             const catalog_special_lookup_fn& _lookup_fn,
+                                             resolved_path& _out_resolved) -> int
+    {
+        if (_input_path.empty()) {
+            return USER__NULL_INPUT_ERR;
+        }
+
+        const auto orig_norm = normalize_logical_sv(_input_path);
+        _out_resolved.original_path = irods::experimental::filesystem::path{orig_norm};
+
+        std::string current_path = orig_norm;
+        bool link_translated = false;
+        int link_count = 0;
+
+        while (true) {
+            std::string governing_coll;
+            collection_info_variant info{catalog_collection_info{}};
+
+            bool found_special = _cache.lookup_positive(current_path, governing_coll, info);
+            if (!found_special && !_cache.is_known_negative(current_path)) {
+                const int status = _lookup_fn(current_path, governing_coll, info);
+                if (status >= 0 && !std::holds_alternative<catalog_collection_info>(info)) {
+                    _cache.store_positive(governing_coll, info);
+                    found_special = true;
+                }
+                else if (status == CAT_NO_ROWS_FOUND || std::holds_alternative<catalog_collection_info>(info)) {
+                    _cache.store_negative(current_path);
+                }
+                else if (status < 0) {
+                    return status;
+                }
+            }
+
+            if (!found_special) {
+                _out_resolved.canonical_path = irods::experimental::filesystem::path{current_path};
+                _out_resolved.governing_coll = _out_resolved.canonical_path;
+                _out_resolved.relative_subpath.clear();
+                _out_resolved.was_link_translated = link_translated;
+                _out_resolved.info = catalog_collection_info{};
+                return 0;
+            }
+
+            if (const auto* link_info = std::get_if<linked_collection_info>(&info)) {
+                if (_mode == link_resolution_mode::do_not_follow_link && current_path == governing_coll) {
+                    _out_resolved.canonical_path = irods::experimental::filesystem::path{current_path};
+                    _out_resolved.governing_coll = irods::experimental::filesystem::path{governing_coll};
+                    _out_resolved.relative_subpath.clear();
+                    _out_resolved.was_link_translated = link_translated;
+                    _out_resolved.info = info;
+                    return 0;
+                }
+
+                if (++link_count > MAX_LINK_CNT) {
+                    return SYS_COLL_LINK_PATH_ERR;
+                }
+
+                const auto target_str = normalize_logical_sv(link_info->target_collection_path.string());
+                const auto suffix = std::string_view{current_path}.substr(governing_coll.size());
+                if (target_str.size() + suffix.size() >= MAX_NAME_LEN) {
+                    return USER_STRLEN_TOOLONG;
+                }
+
+                std::string next_path;
+                next_path.reserve(target_str.size() + suffix.size());
+                next_path.append(target_str);
+                next_path.append(suffix);
+                current_path = std::move(next_path);
+                link_translated = true;
+                continue;
+            }
+
+            // Governing collection is MOUNTED_COLL or ARCHIVE_COLL
+            std::filesystem::path rel_subpath;
+            if (current_path.size() > governing_coll.size()) {
+                auto suffix = std::string_view{current_path}.substr(governing_coll.size());
+                while (!suffix.empty() && suffix.front() == '/') {
+                    suffix.remove_prefix(1);
+                }
+                rel_subpath = std::filesystem::path{suffix}.lexically_normal();
+                if (rel_subpath.is_absolute() || (!rel_subpath.empty() && *rel_subpath.begin() == "..")) {
+                    return SYS_STRUCT_FILE_PATH_ERR;
+                }
+                if (rel_subpath == ".") {
+                    rel_subpath.clear();
+                }
+            }
+
+            _out_resolved.canonical_path = irods::experimental::filesystem::path{current_path};
+            _out_resolved.governing_coll = irods::experimental::filesystem::path{governing_coll};
+            _out_resolved.relative_subpath = std::move(rel_subpath);
+            _out_resolved.was_link_translated = link_translated;
+            _out_resolved.info = std::move(info);
+            return 0;
+        }
+    }
 } // namespace irods::experimental::collections

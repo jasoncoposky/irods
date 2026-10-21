@@ -6,8 +6,11 @@
 #include "irods/rodsType.h"
 
 #include <filesystem>
+#include <functional>
 #include <string>
 #include <string_view>
+#include <unordered_map>
+#include <unordered_set>
 #include <variant>
 
 namespace irods::experimental::collections
@@ -101,6 +104,57 @@ namespace irods::experimental::collections
     auto project_linked_logical_path(std::string_view _original_link_prefix,
                                      std::string_view _canonical_target_prefix,
                                      std::string_view _canonical_entry_path) -> std::string;
+
+    enum class link_resolution_mode
+    {
+        follow_links,
+        do_not_follow_link
+    };
+
+    struct resolved_path
+    {
+        irods::experimental::filesystem::path original_path;
+        irods::experimental::filesystem::path canonical_path;
+        irods::experimental::filesystem::path governing_coll;
+        std::filesystem::path relative_subpath;
+        bool was_link_translated{false};
+        collection_info_variant info{catalog_collection_info{}};
+    };
+
+    class collection_resolution_cache
+    {
+      public:
+        auto lookup_positive(std::string_view _logical_path,
+                             std::string& _out_governing_coll,
+                             collection_info_variant& _out_info) const -> bool;
+
+        auto is_known_negative(std::string_view _logical_path) const -> bool;
+
+        auto store_positive(std::string_view _governing_coll, collection_info_variant _info) -> void;
+
+        auto store_negative(std::string_view _logical_path) -> void;
+
+        auto invalidate(std::string_view _logical_path) -> void;
+
+        auto clear() noexcept -> void;
+
+      private:
+        std::unordered_map<std::string, collection_info_variant> positive_entries_;
+        std::unordered_set<std::string> negative_paths_;
+    };
+
+    using catalog_special_lookup_fn = std::function<int(
+        std::string_view _query_path,
+        std::string& _out_governing_coll,
+        collection_info_variant& _out_info)>;
+
+    /// Resolves a logical path through any LINKED_COLL chain and identifies its governing collection
+    /// without mutating caller buffers.
+    auto resolve_collection_path_with_lookup(std::string_view _input_path,
+                                             link_resolution_mode _mode,
+                                             collection_resolution_cache& _cache,
+                                             const catalog_special_lookup_fn& _lookup_fn,
+                                             resolved_path& _out_resolved) -> int;
 } // namespace irods::experimental::collections
 
 #endif // IRODS_COLLECTION_TYPES_HPP
