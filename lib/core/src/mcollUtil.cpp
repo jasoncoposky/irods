@@ -102,23 +102,10 @@ initCondForMcoll( rodsEnv *myRodsEnv, rodsArguments_t *rodsArgs,
     }
     else if ( rodsArgs->mountCollection == True ) {
         char *mountType = rodsArgs->mountType;
-        if ( strcmp( mountType, "h" ) == 0 ||
-                strcmp( mountType, "haaw" ) == 0 ) {
-            addKeyVal( &dataObjOprInp->condInput,
-                       COLLECTION_TYPE_KW, HAAW_STRUCT_FILE_STR );
-        }
-        else if ( strcmp( mountType, "m" ) == 0 ||
-                  strcmp( mountType, "msso" ) == 0 ) {
-            addKeyVal( &dataObjOprInp->condInput,
-                       COLLECTION_TYPE_KW, MSSO_STRUCT_FILE_STR );
-            /* XXXXX need to add "msso structFile" token */
-            addKeyVal( &dataObjOprInp->condInput, DATA_TYPE_KW, MSSO_DT_STR );
-        }
-        else if ( strcmp( mountType, "t" ) == 0 ||
-                  strcmp( mountType, "tar" ) == 0 ) {
+        if ( strcmp( mountType, "t" ) == 0 ||
+             strcmp( mountType, "tar" ) == 0 ) {
             addKeyVal( &dataObjOprInp->condInput,
                        COLLECTION_TYPE_KW, TAR_STRUCT_FILE_STR );
-            /* XXXXX need to add "tar structFile" token */
             addKeyVal( &dataObjOprInp->condInput, DATA_TYPE_KW, TAR_DT_STR );
         }
         else if ( strcmp( mountType, "f" ) == 0 ||
@@ -132,6 +119,10 @@ initCondForMcoll( rodsEnv *myRodsEnv, rodsArguments_t *rodsArgs,
             /* the collection is a softlink point */
             addKeyVal( &dataObjOprInp->condInput,
                        COLLECTION_TYPE_KW, LINK_POINT_STR );
+        }
+        else {
+            rodsLog( LOG_ERROR, "initCondForMcoll: unsupported mountType %s", mountType );
+            return SYS_UNMATCHED_SPEC_COLL_TYPE;
         }
     }
     else if ( rodsArgs->purgeCacheDir == True ) {

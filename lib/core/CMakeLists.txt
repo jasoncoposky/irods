@@ -13,6 +13,7 @@ set(
   "${CMAKE_CURRENT_SOURCE_DIR}/include/irods/chrono.hpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/include/irods/client_connection.hpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/include/irods/collection_entry_validation.hpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/include/irods/collection_types.hpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/include/irods/connection_pool.hpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/include/irods/cpUtil.h"
   "${CMAKE_CURRENT_SOURCE_DIR}/include/irods/data_object_proxy.hpp"
@@ -163,6 +164,7 @@ set(
 set(
   IRODS_LIB_CORE_SOURCES_COMMON
   "${CMAKE_CURRENT_SOURCE_DIR}/src/base64.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/collection_types.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/dns_cache.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/escape_utilities.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/getRodsEnv.cpp"

@@ -1,6 +1,7 @@
 #include "irods/rcMisc.h"
 
 #include "irods/apiHeaderAll.h"
+#include "irods/collection_types.hpp"
 #include "irods/authCheck.h"
 #include "irods/authRequest.h"
 #include "irods/dataObjInpOut.h"
@@ -3262,114 +3263,51 @@ getSpecCollTypeStr( specColl_t * specColl, char * outStr ) {
 int
 resolveSpecCollType( char * type, char * collection, char * collInfo1,
                      char * collInfo2, specColl_t * specColl ) {
-    int i;
-
     if ( specColl == NULL ) {
         return USER__NULL_INPUT_ERR;
     }
 
-    if ( *type == '\0' ) {
+    if ( type == NULL || *type == '\0' ) {
         specColl->collClass = NO_SPEC_COLL;
         return SYS_UNMATCHED_SPEC_COLL_TYPE;
     }
 
-    rstrcpy( specColl->collection, collection,
-             MAX_NAME_LEN );
-
-    if ( strcmp( type, MOUNT_POINT_STR ) == 0 ) {
-        specColl->collClass = MOUNTED_COLL;
-        rstrcpy( specColl->phyPath, collInfo1, MAX_NAME_LEN );
-
-        irods::hierarchy_parser parse;
-        parse.set_string( collInfo2 );
-
-        std::string first_resc;
-        parse.first_resc( first_resc );
-
-        rstrcpy( specColl->resource, first_resc.c_str(), NAME_LEN );
-        rstrcpy( specColl->rescHier, collInfo2, NAME_LEN );
-
-        return 0;
-    }
-    else if ( strcmp( type, LINK_POINT_STR ) == 0 ) {
-        specColl->collClass = LINKED_COLL;
-        rstrcpy( specColl->phyPath, collInfo1, MAX_NAME_LEN );
-
-        return 0;
-    }
-    else {
-        for ( i = 0; i < NumStructFileType; i++ ) {
-            if ( strcmp( type, StructFileTypeDef[i].typeName ) == 0 ) {
-                specColl->collClass = STRUCT_FILE_COLL;
-                specColl->type = StructFileTypeDef[i].type;
-                rstrcpy( specColl->objPath, collInfo1,
-                         MAX_NAME_LEN );
-                parseCachedStructFileStr( collInfo2, specColl );
-                return 0;
-            }
-        }
-
+    namespace colls = irods::experimental::collections;
+    colls::collection_info_variant info;
+    const int status = colls::parse_special_collection_info(
+        collection ? collection : "",
+        type,
+        collInfo1 ? collInfo1 : "",
+        collInfo2 ? collInfo2 : "",
+        info);
+    if ( status < 0 && status != SYS_COLLINFO_2_FORMAT_ERR ) {
         specColl->collClass = NO_SPEC_COLL;
-        rodsLog( LOG_ERROR,
-                 "resolveSpecCollType: unmatch specColl type %s", type );
-        return SYS_UNMATCHED_SPEC_COLL_TYPE;
+        return status;
     }
+
+    colls::populate_legacy_spec_coll(collection ? collection : "", info, *specColl);
+    return 0;
 }
 
 int
 parseCachedStructFileStr( char * collInfo2, specColl_t * specColl ) {
-    char *tmpPtr1, *tmpPtr2;
-    int len;
-
     if ( collInfo2 == NULL || specColl == NULL ) {
         rodsLog( LOG_ERROR,
                  "parseCachedStructFileStr: NULL input" );
         return SYS_INTERNAL_NULL_INPUT_ERR;
     }
 
-    if ( strlen( collInfo2 ) == 0 ) {
-        /* empty */
-        specColl->cacheDir[0] = specColl->resource[0] = '\0';
-        return 0;
+    namespace colls = irods::experimental::collections;
+    colls::archive_collection_info arch{};
+    const int status = colls::parse_cached_archive_info2(collInfo2, arch);
+    if ( status < 0 ) {
+        return status;
     }
 
-    tmpPtr1 = strstr( collInfo2, ";;;" );
-
-    if ( tmpPtr1 == NULL ) {
-        rodsLog( LOG_NOTICE,
-                 "parseCachedStructFileStr: collInfo2 %s format error 1", collInfo2 );
-        return SYS_COLLINFO_2_FORMAT_ERR;
-    }
-
-    len = ( int )( tmpPtr1 - collInfo2 );
-    strncpy( specColl->cacheDir, collInfo2, len );
-
-    tmpPtr1 += 3;
-
-    tmpPtr2 = strstr( tmpPtr1, ";;;" );
-
-    if ( tmpPtr2 == NULL ) {
-        rodsLog( LOG_NOTICE,
-                 "parseCachedStructFileStr: collInfo2 %s format error 2", collInfo2 );
-        return SYS_COLLINFO_2_FORMAT_ERR;
-    }
-
-    *tmpPtr2 = '\0';
-
-    irods::hierarchy_parser parse;
-    parse.set_string( tmpPtr1 );
-
-    std::string first_resc;
-    parse.first_resc( first_resc );
-
-    snprintf( specColl->resource, sizeof( specColl->resource ),
-              "%s", first_resc.c_str() );
-    snprintf( specColl->rescHier, sizeof( specColl->rescHier ),
-              "%s", tmpPtr1 );
-    tmpPtr2 += 3;
-
-    specColl->cacheDirty = atoi( tmpPtr2 );
-
+    rstrcpy( specColl->cacheDir, arch.cache_directory_path.c_str(), MAX_NAME_LEN );
+    rstrcpy( specColl->rescHier, arch.resource_hierarchy.c_str(), MAX_NAME_LEN );
+    rstrcpy( specColl->resource, arch.root_resource.c_str(), NAME_LEN );
+    specColl->cacheDirty = arch.cache_dirty ? 1 : 0;
     return 0;
 }
 
@@ -3385,10 +3323,12 @@ makeCachedStructFileStr( char * collInfo2, specColl_t * specColl ) {
         return 0;
     }
 
-    snprintf( collInfo2, MAX_NAME_LEN, "%s;;;%s;;;%d",
-              //specColl->cacheDir, specColl->resource, specColl->cacheDirty);
-              specColl->cacheDir, specColl->rescHier, specColl->cacheDirty );
-
+    namespace colls = irods::experimental::collections;
+    const auto var = colls::from_legacy_spec_coll(*specColl);
+    if ( const auto* arch = std::get_if<colls::archive_collection_info>(&var) ) {
+        const auto formatted = colls::format_cached_archive_info2(*arch);
+        rstrcpy( collInfo2, formatted.c_str(), MAX_NAME_LEN );
+    }
     return 0;
 }
 
