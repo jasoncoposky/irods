@@ -3,8 +3,8 @@
 #include "irods/client_connection.hpp"
 #include "irods/getRodsEnv.h"
 #include "irods/get_delay_rule_info.h"
+#include "irods/genquery2_builder.hpp"
 #include "irods/irods_at_scope_exit.hpp"
-#include "irods/irods_query.hpp"
 #include "irods/rodsClient.h"
 #include "irods/rodsDef.h"
 #include "irods/rodsErrorTable.h"
@@ -31,9 +31,10 @@ TEST_CASE("rc_get_delay_rule_info")
         REQUIRE(std::system(R"_(irule -r irods_rule_engine_plugin-irods_rule_language-instance 'delay("<INST_NAME>irods_rule_engine_plugin-irods_rule_language-instance</INST_NAME><PLUSET>3600s</PLUSET>") { writeLine("serverLog", "Testing API plugin."); }' null ruleExecOut)_") == 0); // NOLINT(cert-env33-c, concurrency-mt-unsafe)
         // clang-format on
 
+        namespace gq2 = irods::experimental::genquery2;
         std::string rule_id;
-        for (auto&& row : irods::query{conn_ptr, "select RULE_EXEC_ID"}) {
-            rule_id = row[0];
+        for (const auto& row : gq2::execute(*conn_ptr, gq2::builder::select({"DELAY_RULE_ID"}))) {
+            rule_id = row[0].get<std::string>();
             break;
         }
 

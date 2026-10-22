@@ -2,8 +2,8 @@
 
 #include "irods/client_connection.hpp"
 #include "irods/filesystem.hpp"
+#include "irods/genquery2_builder.hpp"
 #include "irods/getRodsEnv.h"
-#include "irods/query_builder.hpp"
 #include "irods/rcConnect.h"
 #include "irods/rodsClient.h"
 #include "irods/rodsGenQuery.h"
@@ -15,6 +15,7 @@
 
 namespace ix = irods::experimental;
 namespace fs = irods::experimental::filesystem;
+namespace gq2 = irods::experimental::genquery2;
 
 TEST_CASE("query builder")
 {
@@ -24,62 +25,37 @@ TEST_CASE("query builder")
     load_client_api_plugins();
 
     ix::client_connection conn{env.rodsHost, env.rodsPort, {env.rodsUserName, env.rodsZone}};
+    auto& comm = static_cast<RcComm&>(conn);
 
     const fs::path user_home = env.rodsHome;
 
     SECTION("general query")
     {
-        auto query = ix::query_builder{}
-            .zone_hint(env.rodsZone)
-            .build<RcComm>(conn, "select count(COLL_NAME) where COLL_NAME = '" + user_home.string() + "'");
+        const auto q = gq2::builder::select(gq2::builder::count("COLL_NAME"))
+                           .where(gq2::builder::col("COLL_NAME") == user_home.string());
+        const auto query = gq2::execute(comm, q, env.rodsZone);
 
-        REQUIRE(query.size() > 0);
+        REQUIRE(!query.empty());
     }
 
     SECTION("general query supports additional options")
     {
-        std::string path = env.rodsHome;
-        std::transform(std::begin(path), std::end(path), std::begin(path),
-                       [](unsigned char _ch) { return std::toupper(_ch); });
+        const auto q = gq2::builder::select({"COLL_ID", "COLL_NAME"})
+                           .where(gq2::builder::col("COLL_NAME") == user_home.string())
+                           .order_by("COLL_NAME", true)
+                           .limit(10, 0);
+        const auto query = gq2::execute(comm, q, env.rodsZone);
 
-        auto query = ix::query_builder{}
-            .options(UPPER_CASE_WHERE) // Case-insensitive search.
-            .build<RcComm>(conn, "select count(COLL_NAME) where COLL_NAME = '" + path + "'");
-
-        REQUIRE(query.size() > 0);
+        REQUIRE(!query.empty());
     }
 
-    SECTION("specific query")
+    SECTION("parent_of condition builder")
     {
-        using namespace std::string_literals;
+        const auto q = gq2::builder::select({"COLL_NAME"})
+                           .where(gq2::builder::col("COLL_NAME").parent_of(user_home.string()));
+        const auto query = gq2::execute(comm, q, env.rodsZone);
 
-        const std::vector args{user_home.string()};
-
-        ix::query_builder qb;
-        const std::string specific_query = "ShowCollAcls";
-
-        auto query = qb.type(irods::query_type::specific)
-                       .zone_hint(env.rodsZone)
-                       .bind_arguments(args)
-                       .build<RcComm>(conn, specific_query);
-
-        REQUIRE(query.size() > 0);
-
-        // Show that the specific query arguments can be cleared.
-        REQUIRE_THROWS([&conn, &qb, &specific_query] {
-            qb.clear_bound_arguments();
-
-            // This should throw an exception because the specific query arguments
-            // vector is not set.
-            qb.build<RcComm>(conn, specific_query);
-        }());
-    }
-
-    SECTION("throw exception on empty query string")
-    {
-        REQUIRE_THROWS([&conn] {
-            ix::query_builder{}.build<RcComm>(conn, "");
-        }(), "query string is empty");
+        REQUIRE(!query.empty());
     }
 }
 

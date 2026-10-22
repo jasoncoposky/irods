@@ -3,8 +3,8 @@
 #include "irods/authenticate.h"
 #include "irods/authentication_plugin_framework.hpp"
 #include "irods/client_connection.hpp"
+#include "irods/genquery2_builder.hpp"
 #include "irods/getRodsEnv.h"
-#include "irods/irods_query.hpp"
 #include "irods/obf.h"
 #include "irods/rcConnect.h"
 #include "irods/rodsClient.h"
@@ -82,14 +82,16 @@ TEST_CASE("rc_authenticate_client: minimum viable inputs")
     const auto disconnect = irods::at_scope_exit{[&comm] { rcDisconnect(comm); }};
 
     // Show that user cannot perform a query on a protected collection before authenticating.
-    const auto query_str =
-        fmt::format("select COLL_ID where COLL_NAME = '/{}/home/{}'", env.rodsZone, env.rodsUserName);
-    CHECK_THROWS(irods::query{comm, query_str});
+    namespace gq2 = irods::experimental::genquery2;
+    const auto query_ast = gq2::builder::select({"COLL_ID"})
+                               .where(gq2::builder::col("COLL_NAME") ==
+                                      fmt::format("/{}/home/{}", env.rodsZone, env.rodsUserName));
+    CHECK_THROWS(gq2::execute(*comm, query_ast));
 
     // Authenticate using the minimum required inputs...
     const auto ctx = nlohmann::json{{ia::scheme_name, env.rodsAuthScheme}};
     REQUIRE(0 == rc_authenticate_client(comm, ctx.dump().c_str()));
 
     // Show that user can now run a query on a protected collection after authenticating.
-    CHECK(!irods::query{comm, query_str}.empty());
+    CHECK(!gq2::execute(*comm, query_ast).empty());
 }

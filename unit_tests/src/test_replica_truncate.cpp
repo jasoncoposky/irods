@@ -4,6 +4,7 @@
 #include "irods/dataObjInpOut.h"
 #include "irods/dstream.hpp"
 #include "irods/filesystem.hpp"
+#include "irods/genquery2_builder.hpp"
 #include "irods/irods_at_scope_exit.hpp"
 #include "irods/irods_exception.hpp"
 #include "irods/key_value_proxy.hpp"
@@ -1268,12 +1269,13 @@ TEST_CASE("checksum_tests")
     REQUIRE(GOOD_REPLICA == replica::replica_status(comm, target_object, 0));
     REQUIRE(contents.size() == replica::replica_size(comm, target_object, 0));
 
-    const auto checksum_query = fmt::format("select DATA_CHECKSUM where COLL_NAME = '{}' and DATA_NAME = '{}'",
-                                            target_object.parent_path().c_str(),
-                                            target_object.object_name().c_str());
+    namespace gq2 = irods::experimental::genquery2;
+    const auto checksum_query = gq2::builder::select({"DATA_CHECKSUM"})
+                                    .where(gq2::builder::col("COLL_NAME") == target_object.parent_path().c_str() &&
+                                           gq2::builder::col("DATA_NAME") == target_object.object_name().c_str());
     const auto original_checksum =
         replica::replica_checksum(comm, target_object, 0, replica::verification_calculation::always);
-    CHECK(!irods::query{&comm, checksum_query}.front()[0].empty());
+    CHECK(!gq2::execute(comm, checksum_query).front()[0].get_ref<const std::string&>().empty());
 
     DataObjInp truncate_doi{};
     const auto clear_kvp = irods::at_scope_exit{[&truncate_doi] { clearKeyVal(&truncate_doi.condInput); }};
@@ -1289,7 +1291,7 @@ TEST_CASE("checksum_tests")
             truncate_doi.dataSize = contents.size();
             CHECK(0 == rc_replica_truncate(&comm, &truncate_doi, &output_str));
             // Ensure that the checksum was not cleared and that re-calculating it results in the same checksum.
-            CHECK(!irods::query{&comm, checksum_query}.front()[0].empty());
+            CHECK(!gq2::execute(comm, checksum_query).front()[0].get_ref<const std::string&>().empty());
             const auto new_checksum =
                 replica::replica_checksum(comm, target_object, 0, replica::verification_calculation::always);
             CHECK(original_checksum == new_checksum);
@@ -1309,7 +1311,7 @@ TEST_CASE("checksum_tests")
             CHECK(0 == rc_replica_truncate(&comm, &truncate_doi, &output_str));
             // Ensure that the checksum was cleared after the truncate and that re-calculating it results in a
             // different checksum.
-            CHECK(irods::query{&comm, checksum_query}.front()[0].empty());
+            CHECK(gq2::execute(comm, checksum_query).front()[0].get_ref<const std::string&>().empty());
             const auto new_checksum =
                 replica::replica_checksum(comm, target_object, 0, replica::verification_calculation::always);
             CHECK(original_checksum != new_checksum);
@@ -1327,7 +1329,7 @@ TEST_CASE("checksum_tests")
             CHECK(0 == rc_replica_truncate(&comm, &truncate_doi, &output_str));
             // Ensure that the checksum was cleared after the truncate and that re-calculating it results in a
             // different checksum.
-            CHECK(irods::query{&comm, checksum_query}.front()[0].empty());
+            CHECK(gq2::execute(comm, checksum_query).front()[0].get_ref<const std::string&>().empty());
             const auto new_checksum =
                 replica::replica_checksum(comm, target_object, 0, replica::verification_calculation::always);
             CHECK(original_checksum != new_checksum);
@@ -1351,7 +1353,7 @@ TEST_CASE("checksum_tests")
                 truncate_doi.dataSize = contents.size();
                 CHECK(0 == rc_replica_truncate(&comm, &truncate_doi, &output_str));
                 // Ensure that the checksum was not cleared and that re-calculating it results in the same checksum.
-                CHECK(!irods::query{&comm, checksum_query}.front()[0].empty());
+                CHECK(!gq2::execute(comm, checksum_query).front()[0].get_ref<const std::string&>().empty());
                 const auto new_checksum = replica::replica_checksum(comm, target_object, 0, replica::verification_calculation::always);
                 CHECK(original_checksum == new_checksum);
             }
@@ -1360,7 +1362,7 @@ TEST_CASE("checksum_tests")
                 truncate_doi.dataSize = contents.size() + 1;
                 CHECK(0 == rc_replica_truncate(&comm, &truncate_doi, &output_str));
                 // Ensure that the checksum was re-calculated and is identical.
-                CHECK(!irods::query{&comm, checksum_query}.front()[0].empty());
+                CHECK(!gq2::execute(comm, checksum_query).front()[0].get_ref<const std::string&>().empty());
                 const auto new_checksum = replica::replica_checksum(comm, target_object, 0, replica::verification_calculation::always);
                 CHECK(original_checksum == new_checksum);
             }
@@ -1369,7 +1371,7 @@ TEST_CASE("checksum_tests")
                 truncate_doi.dataSize = contents.size() - 1;
                 CHECK(0 == rc_replica_truncate(&comm, &truncate_doi, &output_str));
                 // Ensure that the checksum was re-calculated and is identical.
-                CHECK(!irods::query{&comm, checksum_query}.front()[0].empty());
+                CHECK(!gq2::execute(comm, checksum_query).front()[0].get_ref<const std::string&>().empty());
                 const auto new_checksum = replica::replica_checksum(comm, target_object, 0, replica::verification_calculation::always);
                 CHECK(original_checksum == new_checksum);
             }

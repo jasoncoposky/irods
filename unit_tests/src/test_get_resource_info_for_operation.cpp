@@ -6,7 +6,6 @@
 #include "irods/filesystem.hpp"
 #include "irods/get_resource_info_for_operation.h"
 #include "irods/irods_at_scope_exit.hpp"
-#include "irods/irods_query.hpp"
 #include "irods/irods_resource_redirect.hpp"
 #include "irods/key_value_proxy.hpp"
 #include "irods/replica.hpp"

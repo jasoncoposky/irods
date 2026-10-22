@@ -9,7 +9,7 @@
 #include "irods/filesystem.hpp"
 #include "irods/irods_at_scope_exit.hpp"
 #include "irods/irods_exception.hpp"
-#include "irods/irods_query.hpp"
+#include "irods/genquery2_builder.hpp"
 #include "irods/objInfo.h"
 #include "irods/rcMisc.h"
 #include "irods/replica.hpp"
@@ -191,14 +191,14 @@ TEST_CASE("#8999: rsModDataObjMeta formats string as timestamp for DATA_CREATE_K
     REQUIRE(rcModDataObjMeta(static_cast<RcComm*>(conn), &input) == 0);
 
     // Show that the server handles create time just like the other time fields.
-    const auto query_str = fmt::format(
-        "select DATA_CREATE_TIME, DATA_MODIFY_TIME, DATA_ACCESS_TIME where COLL_NAME = '{}' and DATA_NAME = '{}'",
-        sandbox.c_str(),
-        data_object.object_name().c_str());
+    namespace gq2 = irods::experimental::genquery2;
+    const auto query_ast = gq2::builder::select({"DATA_CREATE_TIME", "DATA_MODIFY_TIME", "DATA_ACCESS_TIME"})
+                               .where(gq2::builder::col("COLL_NAME") == sandbox.c_str() &&
+                                      gq2::builder::col("DATA_NAME") == data_object.object_name().c_str());
     constexpr const char* expected_ts = "00000000000";
-    for (auto&& row : irods::query{static_cast<RcComm*>(conn), query_str}) {
-        CHECK(expected_ts == row[0]);
-        CHECK(expected_ts == row[1]);
-        CHECK(expected_ts == row[2]);
+    for (const auto& row : gq2::execute(*static_cast<RcComm*>(conn), query_ast)) {
+        CHECK(expected_ts == row[0].get_ref<const std::string&>());
+        CHECK(expected_ts == row[1].get_ref<const std::string&>());
+        CHECK(expected_ts == row[2].get_ref<const std::string&>());
     }
 }

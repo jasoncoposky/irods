@@ -4,9 +4,9 @@
 #include "irods/delay_rule_lock.h"
 #include "irods/delay_rule_unlock.h"
 #include "irods/genquery2.h"
+#include "irods/genquery2_builder.hpp"
 #include "irods/getRodsEnv.h"
 #include "irods/irods_at_scope_exit.hpp"
-#include "irods/irods_query.hpp"
 #include "irods/rcMisc.h"
 #include "irods/rodsClient.h"
 #include "irods/rodsDef.h"
@@ -45,13 +45,17 @@ TEST_CASE("lock and unlock delay rule")
     constexpr const char* rule = R"___(writeLine("serverLog", "SHOULD NOT EXECUTE BEFORE TEST COMPLETES"))___";
     REQUIRE(create_delay_rule(rule) == 0);
 
+    namespace gq2 = irods::experimental::genquery2;
+
     std::string rule_id;
     {
-        // Show the delay rule is not locked using GenQuery1.
-        irods::query query{static_cast<RcComm*>(conn), "select RULE_EXEC_ID where RULE_EXEC_LOCK_HOST = ''"};
+        // Show the delay rule is not locked using GenQuery2 AST builder.
+        const auto q = gq2::builder::select({"DELAY_RULE_ID"})
+                           .where(gq2::builder::col("DELAY_RULE_LOCK_HOST") == "");
+        const auto query = gq2::execute(*static_cast<RcComm*>(conn), q);
         REQUIRE_FALSE(query.empty());
         // Capture the delay rule's ID so we can prove the locking API works as intended.
-        rule_id = std::move(query.front()[0]);
+        rule_id = query.front()[0].get<std::string>();
         CHECK_FALSE(rule_id.empty());
 
         // Show the delay rule is not locked using GenQuery2.
@@ -77,16 +81,16 @@ TEST_CASE("lock and unlock delay rule")
     REQUIRE(rc_delay_rule_lock(static_cast<RcComm*>(conn), &lock_input) == 0);
 
     {
-        // Show the delay rule is now locked using GenQuery1.
-        const auto query_string = fmt::format(
-            "select RULE_EXEC_LOCK_HOST, RULE_EXEC_LOCK_HOST_PID, RULE_EXEC_LOCK_TIME where RULE_EXEC_ID = '{}'",
-            rule_id);
-        irods::query query{static_cast<RcComm*>(conn), query_string};
+        // Show the delay rule is now locked using GenQuery2 AST builder.
+        const auto q = gq2::builder::select(
+                           {"DELAY_RULE_LOCK_HOST", "DELAY_RULE_LOCK_HOST_PID", "DELAY_RULE_LOCK_TIME"})
+                           .where(gq2::builder::col("DELAY_RULE_ID") == rule_id);
+        const auto query = gq2::execute(*static_cast<RcComm*>(conn), q);
         REQUIRE_FALSE(query.empty());
-        const auto row = query.front();
-        CHECK(row[0] == boost::asio::ip::host_name());
-        CHECK(row[1] == std::to_string(getpid()));
-        CHECK_FALSE(row[2].empty());
+        const auto& row = query.front();
+        CHECK(row[0].get_ref<const std::string&>() == boost::asio::ip::host_name());
+        CHECK(row[1].get_ref<const std::string&>() == std::to_string(getpid()));
+        CHECK_FALSE(row[2].get_ref<const std::string&>().empty());
 
         // Show the delay rule is now locked using GenQuery2.
         Genquery2Input input{};
@@ -115,16 +119,16 @@ TEST_CASE("lock and unlock delay rule")
     REQUIRE(rc_delay_rule_unlock(static_cast<RcComm*>(conn), &unlock_input) == 0);
 
     {
-        // Show the delay rule is now unlocked using GenQuery1.
-        const auto query_string = fmt::format(
-            "select RULE_EXEC_LOCK_HOST, RULE_EXEC_LOCK_HOST_PID, RULE_EXEC_LOCK_TIME where RULE_EXEC_ID = '{}'",
-            rule_id);
-        irods::query query{static_cast<RcComm*>(conn), query_string};
+        // Show the delay rule is now unlocked using GenQuery2 AST builder.
+        const auto q = gq2::builder::select(
+                           {"DELAY_RULE_LOCK_HOST", "DELAY_RULE_LOCK_HOST_PID", "DELAY_RULE_LOCK_TIME"})
+                           .where(gq2::builder::col("DELAY_RULE_ID") == rule_id);
+        const auto query = gq2::execute(*static_cast<RcComm*>(conn), q);
         REQUIRE_FALSE(query.empty());
-        const auto row = query.front();
-        CHECK(row[0].empty());
-        CHECK(row[1].empty());
-        CHECK(row[2].empty());
+        const auto& row = query.front();
+        CHECK(row[0].get_ref<const std::string&>().empty());
+        CHECK(row[1].get_ref<const std::string&>().empty());
+        CHECK(row[2].get_ref<const std::string&>().empty());
 
         // Show the delay rule is now unlocked using GenQuery2.
         Genquery2Input input{};
@@ -168,6 +172,8 @@ TEST_CASE("unlock multiple delay rules")
         REQUIRE(create_delay_rule(rule) == 0);
     }
 
+    namespace gq2 = irods::experimental::genquery2;
+
     std::vector<std::string> rule_ids;
     {
         DelayRuleLockInput lock_input{};
@@ -175,12 +181,14 @@ TEST_CASE("unlock multiple delay rules")
         lock_input.lock_host_pid = getpid();
 
         // Capture the IDs of the delay rules and lock them.
-        for (auto&& row :
-             irods::query{static_cast<RcComm*>(conn), "select RULE_EXEC_ID where RULE_EXEC_LOCK_HOST = ''"}) {
-            rule_ids.push_back(row[0]);
+        const auto q = gq2::builder::select({"DELAY_RULE_ID"})
+                           .where(gq2::builder::col("DELAY_RULE_LOCK_HOST") == "");
+        for (const auto& row : gq2::execute(*static_cast<RcComm*>(conn), q)) {
+            const auto id = row[0].get<std::string>();
+            rule_ids.push_back(id);
 
             // Lock the delay rule.
-            row[0].copy(lock_input.rule_id, sizeof(DelayRuleLockInput::rule_id) - 1);
+            id.copy(lock_input.rule_id, sizeof(DelayRuleLockInput::rule_id) - 1);
             REQUIRE(rc_delay_rule_lock(static_cast<RcComm*>(conn), &lock_input) == 0);
         }
     }
@@ -188,16 +196,16 @@ TEST_CASE("unlock multiple delay rules")
 
     // Show the delay rules are now locked.
     for (auto&& rule_id : rule_ids) {
-        const auto query_string = fmt::format("select RULE_EXEC_ID, RULE_EXEC_LOCK_HOST, RULE_EXEC_LOCK_HOST_PID, "
-                                              "RULE_EXEC_LOCK_TIME where RULE_EXEC_ID = '{}'",
-                                              rule_id);
-        irods::query query{static_cast<RcComm*>(conn), query_string};
+        const auto q = gq2::builder::select(
+                           {"DELAY_RULE_ID", "DELAY_RULE_LOCK_HOST", "DELAY_RULE_LOCK_HOST_PID", "DELAY_RULE_LOCK_TIME"})
+                           .where(gq2::builder::col("DELAY_RULE_ID") == rule_id);
+        const auto query = gq2::execute(*static_cast<RcComm*>(conn), q);
         REQUIRE_FALSE(query.empty());
-        const auto row = query.front();
-        CHECK(row[0] == rule_id);
-        CHECK(row[1] == boost::asio::ip::host_name());
-        CHECK(row[2] == std::to_string(getpid()));
-        CHECK_FALSE(row[3].empty());
+        const auto& row = query.front();
+        CHECK(row[0].get_ref<const std::string&>() == rule_id);
+        CHECK(row[1].get_ref<const std::string&>() == boost::asio::ip::host_name());
+        CHECK(row[2].get_ref<const std::string&>() == std::to_string(getpid()));
+        CHECK_FALSE(row[3].get_ref<const std::string&>().empty());
     }
 
     // Unlock the delay rules.
@@ -208,16 +216,16 @@ TEST_CASE("unlock multiple delay rules")
 
     // Show the delay rules are now unlocked.
     for (auto&& rule_id : rule_ids) {
-        const auto query_string = fmt::format("select RULE_EXEC_ID, RULE_EXEC_LOCK_HOST, RULE_EXEC_LOCK_HOST_PID, "
-                                              "RULE_EXEC_LOCK_TIME where RULE_EXEC_ID = '{}'",
-                                              rule_id);
-        irods::query query{static_cast<RcComm*>(conn), query_string};
+        const auto q = gq2::builder::select(
+                           {"DELAY_RULE_ID", "DELAY_RULE_LOCK_HOST", "DELAY_RULE_LOCK_HOST_PID", "DELAY_RULE_LOCK_TIME"})
+                           .where(gq2::builder::col("DELAY_RULE_ID") == rule_id);
+        const auto query = gq2::execute(*static_cast<RcComm*>(conn), q);
         REQUIRE_FALSE(query.empty());
-        const auto row = query.front();
-        CHECK(row[0] == rule_id);
-        CHECK(row[1].empty());
-        CHECK(row[2].empty());
-        CHECK(row[3].empty());
+        const auto& row = query.front();
+        CHECK(row[0].get_ref<const std::string&>() == rule_id);
+        CHECK(row[1].get_ref<const std::string&>().empty());
+        CHECK(row[2].get_ref<const std::string&>().empty());
+        CHECK(row[3].get_ref<const std::string&>().empty());
     }
 
     // Show that invoking the unlock API with the same IDs is safe and does not

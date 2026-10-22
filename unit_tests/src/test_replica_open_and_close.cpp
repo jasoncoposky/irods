@@ -5,8 +5,8 @@
 #include "irods/dataObjWrite.h"
 #include "irods/dstream.hpp"
 #include "irods/filesystem.hpp"
+#include "irods/genquery2_builder.hpp"
 #include "irods/irods_at_scope_exit.hpp"
-#include "irods/irods_query.hpp"
 #include "irods/key_value_proxy.hpp"
 #include "irods/modDataObjMeta.h"
 #include "irods/replica.hpp"
@@ -93,9 +93,10 @@ TEST_CASE("replica_open and replica_close")
             REQUIRE(rcDataObjWrite(conn_ptr, &opened_fd, &bbuf) == bbuf.len);
         }
 
-        const auto gql = fmt::format("select DATA_SIZE where COLL_NAME = '{}' and DATA_NAME = '{}'",
-                                     path.parent_path().c_str(),
-                                     path.object_name().c_str());
+        namespace gq2 = irods::experimental::genquery2;
+        const auto gql = gq2::builder::select({"DATA_SIZE"})
+                             .where(gq2::builder::col("COLL_NAME") == path.parent_path().c_str() &&
+                                    gq2::builder::col("DATA_NAME") == path.object_name().c_str());
 
         SECTION("do not update")
         {
@@ -106,8 +107,8 @@ TEST_CASE("replica_open and replica_close")
 
             REQUIRE(rc_replica_close(conn_ptr, close_input.data()) == 0);
 
-            for (auto&& row : irods::query{conn_ptr, gql}) {
-                REQUIRE("0" == row[0]);
+            for (const auto& row : gq2::execute(*conn_ptr, gql)) {
+                REQUIRE("0" == row[0].get_ref<const std::string&>());
             }
         }
 
@@ -120,17 +121,18 @@ TEST_CASE("replica_open and replica_close")
 
             REQUIRE(rc_replica_close(conn_ptr, close_input.data()) == 0);
 
-            for (auto&& row : irods::query{conn_ptr, gql}) {
-                REQUIRE(std::to_string(contents.size() + 1) == row[0]);
+            for (const auto& row : gq2::execute(*conn_ptr, gql)) {
+                REQUIRE(std::to_string(contents.size() + 1) == row[0].get_ref<const std::string&>());
             }
         }
     }
 
     SECTION("replica status")
     {
-        const auto gql = fmt::format("select DATA_REPL_STATUS where COLL_NAME = '{}' and DATA_NAME = '{}'",
-                                     path.parent_path().c_str(),
-                                     path.object_name().c_str());
+        namespace gq2 = irods::experimental::genquery2;
+        const auto gql = gq2::builder::select({"DATA_REPL_STATUS"})
+                             .where(gq2::builder::col("COLL_NAME") == path.parent_path().c_str() &&
+                                    gq2::builder::col("DATA_NAME") == path.object_name().c_str());
 
         SECTION("do not update")
         {
@@ -141,9 +143,9 @@ TEST_CASE("replica_open and replica_close")
 
             REQUIRE(rc_replica_close(conn_ptr, close_input.data()) == 0);
 
-            for (auto&& row : irods::query{conn_ptr, gql}) {
+            for (const auto& row : gq2::execute(*conn_ptr, gql)) {
                 std::string_view replica_status_intermediate = "2";
-                REQUIRE(replica_status_intermediate == row[0]);
+                REQUIRE(replica_status_intermediate == row[0].get_ref<const std::string&>());
             }
         }
 
@@ -156,18 +158,19 @@ TEST_CASE("replica_open and replica_close")
 
             REQUIRE(rc_replica_close(conn_ptr, close_input.data()) == 0);
 
-            for (auto&& row : irods::query{conn_ptr, gql}) {
+            for (const auto& row : gq2::execute(*conn_ptr, gql)) {
                 std::string_view replica_status_good = "1";
-                REQUIRE(replica_status_good == row[0]);
+                REQUIRE(replica_status_good == row[0].get_ref<const std::string&>());
             }
         }
     }
 
     SECTION("checksum")
     {
-        const auto gql = fmt::format("select DATA_CHECKSUM where COLL_NAME = '{}' and DATA_NAME = '{}'",
-                                     path.parent_path().c_str(),
-                                     path.object_name().c_str());
+        namespace gq2 = irods::experimental::genquery2;
+        const auto gql = gq2::builder::select({"DATA_CHECKSUM"})
+                             .where(gq2::builder::col("COLL_NAME") == path.parent_path().c_str() &&
+                                    gq2::builder::col("DATA_NAME") == path.object_name().c_str());
 
         SECTION("do not compute")
         {
@@ -177,8 +180,8 @@ TEST_CASE("replica_open and replica_close")
 
             REQUIRE(rc_replica_close(conn_ptr, close_input.data()) == 0);
 
-            for (auto&& row : irods::query{conn_ptr, gql}) {
-                REQUIRE(row[0].empty());
+            for (const auto& row : gq2::execute(*conn_ptr, gql)) {
+                REQUIRE(row[0].get_ref<const std::string&>().empty());
             }
         }
 
@@ -191,8 +194,8 @@ TEST_CASE("replica_open and replica_close")
 
             REQUIRE(rc_replica_close(conn_ptr, close_input.data()) == 0);
 
-            for (auto&& row : irods::query{conn_ptr, gql}) {
-                REQUIRE_FALSE(row[0].empty());
+            for (const auto& row : gq2::execute(*conn_ptr, gql)) {
+                REQUIRE_FALSE(row[0].get_ref<const std::string&>().empty());
             }
         }
     }

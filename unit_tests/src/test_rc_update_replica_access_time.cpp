@@ -6,8 +6,8 @@
 #include "irods/dstream.hpp"
 #include "irods/filesystem.hpp"
 #include "irods/getRodsEnv.h"
+#include "irods/genquery2_builder.hpp"
 #include "irods/irods_at_scope_exit.hpp"
-#include "irods/irods_query.hpp"
 #include "irods/modDataObjMeta.h"
 #include "irods/rcConnect.h"
 #include "irods/resource_administration.hpp"
@@ -473,8 +473,11 @@ TEST_CASE("#8260: targeting mix of existent and non-existent replicas is not an 
     constexpr auto non_existent_data_id = 9999;
     constexpr auto non_existent_replica_number = 8888;
     auto* conn_ptr = static_cast<RcComm*>(conn);
+    namespace gq2 = irods::experimental::genquery2;
+    const auto non_existent_query = gq2::builder::select({"DATA_ID"})
+                                        .where(gq2::builder::col("DATA_ID") == std::to_string(non_existent_data_id));
     {
-        auto query = irods::query{conn_ptr, fmt::format("select DATA_ID where DATA_ID = '{}'", non_existent_data_id)};
+        auto query = gq2::execute(*conn_ptr, non_existent_query);
         REQUIRE(query.empty());
     }
 
@@ -500,8 +503,7 @@ TEST_CASE("#8260: targeting mix of existent and non-existent replicas is not an 
         // prove the post-condition state is what we expect. That is, no new replica is
         // accidentally created.
         {
-            auto query =
-                irods::query{conn_ptr, fmt::format("select DATA_ID where DATA_ID = '{}'", non_existent_data_id)};
+            auto query = gq2::execute(*conn_ptr, non_existent_query);
             CHECK(query.empty());
         }
     }
@@ -556,8 +558,7 @@ TEST_CASE("#8260: targeting mix of existent and non-existent replicas is not an 
         // prove the post-condition state is what we expect. That is, no new replica is
         // accidentally created.
         {
-            auto query =
-                irods::query{conn_ptr, fmt::format("select DATA_ID where DATA_ID = '{}'", non_existent_data_id)};
+            auto query = gq2::execute(*conn_ptr, non_existent_query);
             CHECK(query.empty());
         }
 
@@ -689,14 +690,14 @@ TEST_CASE("#8260: opening a replica for writing does not update its access time"
 auto get_replica_info(RcComm& _comm, const fs::path& _logical_path, int _replica_number)
     -> std::tuple<std::string, std::string, std::string>
 {
-    const auto query_string = fmt::format("select DATA_ID, DATA_ACCESS_TIME, DATA_MODIFY_TIME where COLL_NAME = '{}' "
-                                          "and DATA_NAME = '{}' and DATA_REPL_NUM = '{}'",
-                                          _logical_path.parent_path().c_str(),
-                                          _logical_path.object_name().c_str(),
-                                          _replica_number);
+    namespace gq2 = irods::experimental::genquery2;
+    const auto query_ast = gq2::builder::select({"DATA_ID", "DATA_ACCESS_TIME", "DATA_MODIFY_TIME"})
+                               .where(gq2::builder::col("COLL_NAME") == _logical_path.parent_path().c_str() &&
+                                      gq2::builder::col("DATA_NAME") == _logical_path.object_name().c_str() &&
+                                      gq2::builder::col("DATA_REPL_NUM") == std::to_string(_replica_number));
 
-    for (auto&& row : irods::query{&_comm, query_string}) {
-        return {row[0], row[1], row[2]};
+    for (const auto& row : gq2::execute(_comm, query_ast)) {
+        return {row[0].get<std::string>(), row[1].get<std::string>(), row[2].get<std::string>()};
     }
 
     throw std::logic_error{

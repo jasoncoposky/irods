@@ -24,7 +24,7 @@
 #include "irods/irods_at_scope_exit.hpp"
 #include "irods/irods_client_api_table.hpp"
 #include "irods/irods_pack_table.hpp"
-#include "irods/irods_query.hpp"
+#include "irods/genquery2_builder.hpp"
 #include "irods/replica.hpp"
 #include "irods/system_error.hpp"
 #include "irods/user_administration.hpp"
@@ -301,18 +301,16 @@ TEST_CASE("filesystem")
 
         // Get the mtime of the second replica.
         const auto second_replica_mtime = [&p] {
-            const auto gql = fmt::format("select DATA_MODIFY_TIME "
-                                         "where"
-                                         " COLL_NAME = '{}' and"
-                                         " DATA_NAME = '{}' and"
-                                         " DATA_REPL_NUM = '1'",
-                                         p.parent_path().c_str(),
-                                         p.object_name().c_str());
+            namespace gq2 = irods::experimental::genquery2;
+            const auto gql = gq2::builder::select({"DATA_MODIFY_TIME"})
+                                 .where(gq2::builder::col("COLL_NAME") == p.parent_path().c_str() &&
+                                        gq2::builder::col("DATA_NAME") == p.object_name().c_str() &&
+                                        gq2::builder::col("DATA_REPL_NUM") == "1");
 
             irods::experimental::client_connection conn;
-            irods::query query{static_cast<rcComm_t*>(conn), gql};
+            const auto query = gq2::execute(*static_cast<rcComm_t*>(conn), gql);
 
-            return fs::object_time_type{duration_type{std::stoull(query.front()[0])}};
+            return fs::object_time_type{duration_type{std::stoull(query.front()[0].get_ref<const std::string&>())}};
         }();
 
         REQUIRE(first_replica_mtime < second_replica_mtime);

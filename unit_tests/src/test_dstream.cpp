@@ -4,8 +4,8 @@
 #include "irods/connection_pool.hpp"
 #include "irods/dstream.hpp"
 #include "irods/filesystem.hpp"
+#include "irods/genquery2_builder.hpp"
 #include "irods/irods_at_scope_exit.hpp"
-#include "irods/irods_query.hpp"
 #include "irods/replica.hpp"
 #include "irods/rodsClient.h"
 #include "irods/rodsErrorTable.h"
@@ -265,12 +265,13 @@ TEST_CASE("dstream", "[iostreams]")
             out.close();
 
             // Show that two replicas exist.
-            const auto gql = fmt::format("select COUNT(DATA_ID) where COLL_NAME = '{}' and DATA_NAME = '{}'",
-                                         path.parent_path().c_str(),
-                                         path.object_name().c_str());
+            namespace gq2 = irods::experimental::genquery2;
+            const auto gql = gq2::builder::select(gq2::builder::count("DATA_ID"))
+                                 .where(gq2::builder::col("COLL_NAME") == path.parent_path().c_str() &&
+                                        gq2::builder::col("DATA_NAME") == path.object_name().c_str());
 
-            for (auto&& row : irods::query{static_cast<rcComm_t*>(conn), gql}) {
-                REQUIRE(row[0] == "2");
+            for (const auto& row : gq2::execute(*static_cast<rcComm_t*>(conn), gql)) {
+                REQUIRE(row[0].get_ref<const std::string&>() == "2");
             }
         }
     }

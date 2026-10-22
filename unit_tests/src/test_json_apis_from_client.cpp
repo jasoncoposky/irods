@@ -4,8 +4,8 @@
 #include "irods/connection_pool.hpp"
 #include "irods/dstream.hpp"
 #include "irods/filesystem.hpp"
+#include "irods/genquery2_builder.hpp"
 #include "irods/irods_at_scope_exit.hpp"
-#include "irods/irods_query.hpp"
 #include "irods/replica.hpp"
 #include "irods/rodsClient.h"
 #include "irods/client_connection.hpp"
@@ -109,11 +109,12 @@ TEST_CASE("test atomic metadata with BinBytesBuf", "[xml]")
 
     restore_environment_variable("irodsProt",save_protocol);
 
-    const auto gql = fmt::format("select COUNT(COLL_ID) where COLL_NAME = '{}' and META_COLL_ATTR_VALUE like '{}'",
-                                 sandbox.c_str(), 
-                                 ("%" "<&" "%" "&>" "%"));
+    namespace gq2 = irods::experimental::genquery2;
+    const auto gql = gq2::builder::select(gq2::builder::count("COLL_ID"))
+                         .where(gq2::builder::col("COLL_NAME") == sandbox.c_str() &&
+                                gq2::builder::col("META_COLL_ATTR_VALUE").like("%<&%&>%"));
 
-    for (auto&& row : irods::query{static_cast<rcComm_t*>(conn), gql}) {
-        REQUIRE(row[0] == "1");
+    for (const auto& row : gq2::execute(*static_cast<rcComm_t*>(conn), gql)) {
+        REQUIRE(row[0].get_ref<const std::string&>() == "1");
     }
 }

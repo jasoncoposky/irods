@@ -11,6 +11,7 @@
 #include "irods/dstream.hpp"
 #include "irods/fileLseek.h"
 #include "irods/filesystem.hpp"
+#include "irods/genquery2_builder.hpp"
 #include "irods/get_file_descriptor_info.h"
 #include "irods/irods_at_scope_exit.hpp"
 #include "irods/irods_default_paths.hpp"
@@ -1524,12 +1525,13 @@ TEST_CASE("#7250: updates to ticket stats do not hang")
         REQUIRE(rcDataObjClose(conn_ptr2, &close_inp) >= 0);
 
         // Show that the ticket stats have been updated correctly.
-        const auto gql = fmt::format(
-            "select TICKET_WRITE_FILE_COUNT, TICKET_WRITE_BYTE_COUNT where TICKET_STRING = '{}'", ticket_string);
+        namespace gq2 = irods::experimental::genquery2;
+        const auto q = gq2::builder::select({"TICKET_WRITE_FILE_COUNT", "TICKET_WRITE_BYTE_COUNT"})
+                           .where(gq2::builder::col("TICKET_STRING") == ticket_string);
 
-        for (auto&& row : irods::query{conn_ptr2, gql}) {
-            CHECK(row[0] == "2");
-            CHECK(row[1] == std::to_string(write_bbuf.len));
+        for (const auto& row : gq2::execute(*conn_ptr2, q)) {
+            CHECK(row[0].get_ref<const std::string&>() == "2");
+            CHECK(row[1].get_ref<const std::string&>() == std::to_string(write_bbuf.len));
         }
     }
 }
