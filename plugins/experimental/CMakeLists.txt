@@ -31,7 +31,6 @@ foreach(plugin IN LISTS IRODS_EXPERIMENTAL_API_PLUGINS)
     PRIVATE
     irods_server
     irods_common
-    "${IRODS_EXTERNALS_FULLPATH_BOOST}/lib/libboost_filesystem.so"
     "${IRODS_EXTERNALS_FULLPATH_BOOST}/lib/libboost_system.so"
     fmt::fmt
     ${CMAKE_DL_LIBS}

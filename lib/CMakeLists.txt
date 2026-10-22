@@ -26,7 +26,6 @@ target_link_objects(
 target_link_libraries(
   irods_common
   PRIVATE
-  "${IRODS_EXTERNALS_FULLPATH_BOOST}/lib/libboost_filesystem.so"
   "${IRODS_EXTERNALS_FULLPATH_BOOST}/lib/libboost_program_options.so"
   "${IRODS_EXTERNALS_FULLPATH_BOOST}/lib/libboost_random.so"
   "${IRODS_EXTERNALS_FULLPATH_BOOST}/lib/libboost_regex.so"
@@ -81,7 +80,6 @@ target_link_libraries(
   irods_common
   PRIVATE
   "${IRODS_EXTERNALS_FULLPATH_BOOST}/lib/libboost_chrono.so"
-  "${IRODS_EXTERNALS_FULLPATH_BOOST}/lib/libboost_filesystem.so"
   "${IRODS_EXTERNALS_FULLPATH_BOOST}/lib/libboost_regex.so"
   "${IRODS_EXTERNALS_FULLPATH_BOOST}/lib/libboost_system.so"
   "${IRODS_EXTERNALS_FULLPATH_BOOST}/lib/libboost_thread.so"

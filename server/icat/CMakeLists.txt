@@ -25,7 +25,6 @@ objects_link_libraries(
   irods_plugin_dependencies
   PRIVATE
   "${IRODS_EXTERNALS_FULLPATH_BOOST}/lib/libboost_chrono.so"
-  "${IRODS_EXTERNALS_FULLPATH_BOOST}/lib/libboost_filesystem.so"
   "${IRODS_EXTERNALS_FULLPATH_BOOST}/lib/libboost_thread.so"
   "${IRODS_EXTERNALS_FULLPATH_BOOST}/lib/libboost_regex.so"
   "${IRODS_EXTERNALS_FULLPATH_BOOST}/lib/libboost_system.so"

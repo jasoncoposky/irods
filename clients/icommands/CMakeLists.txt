@@ -148,7 +148,6 @@ foreach(EXECUTABLE IN LISTS IRODS_CLIENT_ICOMMANDS_EXECUTABLES)
     irods_common
     nlohmann_json::nlohmann_json
     fmt::fmt
-    "${IRODS_EXTERNALS_FULLPATH_BOOST}/lib/libboost_filesystem.so"
     "${IRODS_EXTERNALS_FULLPATH_BOOST}/lib/libboost_program_options.so"
     "${IRODS_EXTERNALS_FULLPATH_BOOST}/lib/libboost_system.so"
     ${CMAKE_DL_LIBS}

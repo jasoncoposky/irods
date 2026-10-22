@@ -61,7 +61,6 @@ foreach(plugin IN LISTS IRODS_API_PLUGINS)
       irods_plugin_dependencies
       irods_common
       irods_${variant}
-      "${IRODS_EXTERNALS_FULLPATH_BOOST}/lib/libboost_filesystem.so"
       "${IRODS_EXTERNALS_FULLPATH_BOOST}/lib/libboost_system.so"
       "${IRODS_EXTERNALS_FULLPATH_NANODBC}/lib/libnanodbc.so"
       nlohmann_json::nlohmann_json

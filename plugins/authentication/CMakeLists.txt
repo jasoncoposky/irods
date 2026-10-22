@@ -29,7 +29,6 @@ foreach(plugin IN LISTS IRODS_AUTH_PLUGINS)
       irods_common
       irods_plugin_dependencies
       irods_${variant}
-      "${IRODS_EXTERNALS_FULLPATH_BOOST}/lib/libboost_filesystem.so"
       "${IRODS_EXTERNALS_FULLPATH_BOOST}/lib/libboost_system.so"
       nlohmann_json::nlohmann_json
       fmt::fmt

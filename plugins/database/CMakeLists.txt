@@ -68,7 +68,6 @@ target_link_libraries(
   irods_common
   irods_server
   irods_plugin_dependencies
-  "${IRODS_EXTERNALS_FULLPATH_BOOST}/lib/libboost_filesystem.so"
   "${IRODS_EXTERNALS_FULLPATH_BOOST}/lib/libboost_system.so"
   "${IRODS_EXTERNALS_FULLPATH_BOOST}/lib/libboost_regex.so"
   "${IRODS_EXTERNALS_FULLPATH_NANODBC}/lib/libnanodbc.so"

@@ -11,7 +11,6 @@ foreach(harness IN ITEMS api configuration)
     irods_plugin_dependencies
     irods_common
     "${IRODS_EXTERNALS_FULLPATH_BOOST}/lib/libboost_system.so"
-    "${IRODS_EXTERNALS_FULLPATH_BOOST}/lib/libboost_filesystem.so"
     "${IRODS_EXTERNALS_FULLPATH_BOOST}/lib/libboost_thread.so"
     rt
     ${CMAKE_DL_LIBS}

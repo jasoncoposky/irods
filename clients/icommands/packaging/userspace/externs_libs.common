@@ -15,7 +15,6 @@
 # This file contains directives that are more or less universal for all distros we might support
 
 libboost_chrono
-libboost_filesystem
 libboost_program_options
 libboost_thread
 libc++

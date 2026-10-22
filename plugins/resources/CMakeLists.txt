@@ -39,7 +39,6 @@ foreach(plugin IN LISTS IRODS_RESOURCE_PLUGINS)
     PRIVATE
     irods_common
     irods_server
-    "${IRODS_EXTERNALS_FULLPATH_BOOST}/lib/libboost_filesystem.so"
     "${IRODS_EXTERNALS_FULLPATH_BOOST}/lib/libboost_system.so"
     fmt::fmt
     OpenSSL::Crypto

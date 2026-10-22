@@ -9,6 +9,5 @@ set(IRODS_TEST_INCLUDE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/src # For unit_test_util
 set(IRODS_TEST_LINK_LIBRARIES irods_common
                               irods_client
                               irods_plugin_dependencies
-                              ${IRODS_EXTERNALS_FULLPATH_BOOST}/lib/libboost_filesystem.so
                               ${IRODS_EXTERNALS_FULLPATH_BOOST}/lib/libboost_system.so
                               fmt::fmt)

@@ -372,7 +372,6 @@ target_link_objects(
 target_link_libraries(
   irods_plugin_dependencies
   PRIVATE
-  "${IRODS_EXTERNALS_FULLPATH_BOOST}/lib/libboost_filesystem.so"
   "${IRODS_EXTERNALS_FULLPATH_BOOST}/lib/libboost_random.so"
   "${IRODS_EXTERNALS_FULLPATH_BOOST}/lib/libboost_system.so"
 )
