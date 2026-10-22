@@ -45,7 +45,7 @@
 /// Provides various facilities for performing logical operations on data objects and collections.
 ///
 /// \since 4.2.6
-namespace irods::experimental::filesystem
+namespace irods::filesystem
 {
     class path;
 
@@ -722,6 +722,11 @@ namespace irods::experimental::filesystem
             } // do_metadata_op
         } // namespace detail
     } // namespace NAMESPACE_IMPL
-} // namespace irods::experimental::filesystem
+} // namespace irods::filesystem
+
+namespace irods::experimental
+{
+    namespace filesystem = ::irods::filesystem;
+} // namespace irods::experimental
 
 #endif // IRODS_FILESYSTEM_FILESYSTEM_HPP_INCLUDE_HEADER

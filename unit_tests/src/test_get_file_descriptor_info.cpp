@@ -14,7 +14,7 @@
 TEST_CASE("get_file_descriptor_info")
 {
     // clang-format off
-    namespace fs = irods::experimental::filesystem;
+    namespace fs = irods::filesystem;
     namespace io = irods::experimental::io;
     using json   = nlohmann::json;
     // clang-format on

@@ -20,13 +20,6 @@
 int
 checkCollAccessPerm( rsComm_t *rsComm, char *collection, char *accessPerm );
 int
-rsQueryDataObjInCollReCur( rsComm_t *rsComm, char *collection,
-                           genQueryInp_t *genQueryInp, genQueryOut_t **genQueryOut, char *accessPerm,
-                           int singleFlag );
-int
-rsQueryCollInColl( rsComm_t *rsComm, char *collection,
-                   genQueryInp_t *genQueryInp, genQueryOut_t **genQueryOut );
-int
 isCollEmpty( rsComm_t *rsComm, char *collection );
 int
 collStat( rsComm_t *rsComm, const dataObjInp_t *dataObjInp,

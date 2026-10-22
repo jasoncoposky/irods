@@ -530,7 +530,7 @@ int msiRenameCollection(msParam_t* oldName, msParam_t* newName, ruleExecInfo_t *
     namespace log = irods::experimental::log;
 
     if (irods::KW_CFG_SERVICE_ROLE_PROVIDER == svc_role) {
-        namespace fs = irods::experimental::filesystem;
+        namespace fs = irods::filesystem;
 
         const fs::path src_path = static_cast<const char*>(oldName->inOutStruct);
         const fs::path dst_path = static_cast<const char*>(newName->inOutStruct);
@@ -591,7 +591,7 @@ int msiRenameLocalZoneCollection(msParam_t* _new_zone_name, ruleExecInfo_t* _rei
     }
 
     if (irods::KW_CFG_SERVICE_ROLE_PROVIDER == svc_role) {
-        namespace fs = irods::experimental::filesystem;
+        namespace fs = irods::filesystem;
 
         const fs::path root = "/";
         const auto src_path = root / _rei->rsComm->myEnv.rodsZone;

@@ -20,6 +20,8 @@
 #include "irods/rsObjStat.hpp"
 #include "irods/rsCollCreate.hpp"
 #include "irods/rsDataObjRename.hpp"
+#define IRODS_FILESYSTEM_ENABLE_SERVER_SIDE_API
+#include "irods/filesystem.hpp"
 #include "irods/genquery2_builder.hpp"
 #include "irods/rs_genquery2.hpp"
 #include "irods/scoped_privileged_client.hpp"
@@ -27,6 +29,7 @@
 #include "irods/irods_virtual_path.hpp"
 
 #include <charconv>
+#include <system_error>
 
 
 /* checkCollAccessPerm - Check whether the user is allowed to perform
@@ -45,282 +48,24 @@ checkCollAccessPerm( rsComm_t *rsComm, char *collection, char *accessPerm ) {
     return chlCheckAndGetObjectID( rsComm, "-c", collection, accessPerm );
 }
 
-/*
-   Try a specific-query for the a particular Data-object in collection
-   query first, for performance improvements, before going back to a
-   general-query.  This is called from rsQueryDataObjInCollReCur below.
-   See the svn commit log (r5682) for the specific query definition.
- */
-int trySpecificQueryDataObjInCollReCur(
-    rsComm_t *rsComm,
-    char *collection,
-    genQueryOut_t **genQueryOut ) {
-
-    int status = 0;
-    char collNamePercent[MAX_NAME_LEN + 2];
-
-    specificQueryInp_t specificQueryInp;
-
-    rstrcpy( collNamePercent, collection, MAX_NAME_LEN );
-    rstrcat( collNamePercent, "/%", MAX_NAME_LEN );
-
-    memset( &specificQueryInp, 0, sizeof( specificQueryInp_t ) );
-
-    specificQueryInp.maxRows = MAX_SQL_ROWS;
-    specificQueryInp.continueInx = 0;
-
-    specificQueryInp.sql = "DataObjInCollReCur";
-    specificQueryInp.args[0] = collection;
-    specificQueryInp.args[1] = collNamePercent;
-
-    status = rsSpecificQuery( rsComm, &specificQueryInp, genQueryOut );
-
-    if ( status == 0 ) {
-        /*
-           Set the attriInx values so the server-side code can locate
-           the fields (avoid a UNMATCHED_KEY_OR_INDEX error) the way
-           general-query is handled.  The specific-query can't set these
-           because the columns being returned are not known (unlike for
-           general-query).  So this code assumes the DataObjInCollReCur
-           is defined correctly and is returning the following columns.
-           The result->attriCnt == 6 test is a sanity check.
-         */
-        genQueryOut_t *result;
-        result = *genQueryOut;
-        if ( result->attriCnt == 7 ) {
-
-            result->sqlResult[0].attriInx = COL_D_DATA_ID;
-            result->sqlResult[1].attriInx = COL_COLL_NAME;
-            result->sqlResult[2].attriInx = COL_DATA_NAME;
-            result->sqlResult[3].attriInx = COL_DATA_REPL_NUM;
-            result->sqlResult[4].attriInx = COL_D_RESC_NAME;
-            result->sqlResult[5].attriInx = COL_D_DATA_PATH;
-            result->sqlResult[6].attriInx = COL_D_RESC_ID;
-        }
-    }
-    return status;
-}
-
-
-
-int
-rsQueryDataObjInCollReCur( rsComm_t *rsComm, char *collection,
-                           genQueryInp_t *genQueryInp, genQueryOut_t **genQueryOut, char *accessPerm,
-                           int singleFlag ) {
-    char collQCond[MAX_NAME_LEN * 2];
-    int status = 0;
-    char accStr[LONG_NAME_LEN];
-
-    if ( genQueryInp == NULL ||
-            collection  == NULL ||
-            genQueryOut == NULL ) {
-        return USER__NULL_INPUT_ERR;
-    }
-
-    memset( genQueryInp, 0, sizeof( genQueryInp_t ) );
-
-    genAllInCollQCond( collection, collQCond );
-
-    addInxVal( &genQueryInp->sqlCondInp, COL_COLL_NAME, collQCond );
-
-    addInxIval( &genQueryInp->selectInp, COL_D_DATA_ID, 1 );
-    addInxIval( &genQueryInp->selectInp, COL_COLL_NAME, 1 );
-    addInxIval( &genQueryInp->selectInp, COL_DATA_NAME, 1 );
-
-    if ( singleFlag == 0 ) {
-        addInxIval( &genQueryInp->selectInp, COL_DATA_REPL_NUM, 1 );
-        addInxIval( &genQueryInp->selectInp, COL_D_RESC_NAME, 1 );
-        addInxIval( &genQueryInp->selectInp, COL_D_DATA_PATH, 1 );
-    }
-
-    addInxIval( &genQueryInp->selectInp, COL_D_RESC_ID, 1 );
-
-    if ( accessPerm != NULL ) {
-        namespace gq2 = irods::experimental::genquery2;
-        using gq2::builder::col;
-
-        auto cond = (std::strcmp(collection, "/") == 0)
-            ? col("COLL_NAME").like("/%")
-            : (col("COLL_NAME") == collection || col("COLL_NAME").like(fmt::format("{}/%", collection))).group();
-
-        std::vector<std::string> cols{"DATA_ID", "COLL_NAME", "DATA_NAME"};
-        if ( singleFlag == 0 ) {
-            cols.emplace_back("DATA_REPL_NUM");
-            cols.emplace_back("RESC_NAME");
-            cols.emplace_back("DATA_PATH");
-        }
-        cols.emplace_back("DATA_RESC_ID");
-
-        /* have to set it to 1 because it only check the first one */
-        genQueryInp->maxRows = 1;
-        const auto q = gq2::builder::select(std::move(cols))
-                           .where(std::move(cond))
-                           .order_by("COLL_NAME")
-                           .order_by("DATA_NAME")
-                           .limit(1)
-                           .build();
-
-        nlohmann::json rows;
-        {
-            irods::experimental::scoped_privileged_client spc{*rsComm};
-            status = gq2::try_execute( *rsComm, q, rows );
-        }
-        if ( status >= 0 && !rows.empty() ) {
-            const auto& data_id_str = rows.front().at(0).get_ref<const std::string&>();
-            rodsLong_t data_id_val = 0;
-            std::from_chars(data_id_str.data(), data_id_str.data() + data_id_str.size(), data_id_val);
-            status = chl_check_data_object_access( *rsComm, data_id_val, accessPerm );
-            if ( status >= 0 ) {
-                if ( singleFlag == 0 ) {
-                    status = gq2::rows_to_genquery_out(
-                        rows,
-                        {COL_D_DATA_ID, COL_COLL_NAME, COL_DATA_NAME, COL_DATA_REPL_NUM, COL_D_RESC_NAME, COL_D_DATA_PATH, COL_D_RESC_ID},
-                        genQueryOut,
-                        0 );
-                }
-                else {
-                    status = gq2::rows_to_genquery_out(
-                        rows,
-                        {COL_D_DATA_ID, COL_COLL_NAME, COL_DATA_NAME, COL_D_RESC_ID},
-                        genQueryOut,
-                        0 );
-                }
-            }
-        }
-    }
-    else {
-        genQueryInp->maxRows = MAX_SQL_ROWS;
-        status = trySpecificQueryDataObjInCollReCur(
-                     rsComm,
-                     collection,
-                     genQueryOut );
-        if ( status < 0 && status != CAT_NO_ROWS_FOUND ) {
-            rodsLog(
-                LOG_NOTICE,
-                "Note: DataObjInCollReCur specific-Query failed (not defined?), running standard query, status=%d",
-                status );
-            /* remove the level 0 error msg added by the specific-query failure */
-            freeRErrorContent( &rsComm->rError );
-
-            namespace gq2 = irods::experimental::genquery2;
-            using gq2::builder::col;
-
-            auto cond = (std::strcmp(collection, "/") == 0)
-                ? col("COLL_NAME").like("/%")
-                : (col("COLL_NAME") == collection || col("COLL_NAME").like(fmt::format("{}/%", collection))).group();
-
-            std::vector<std::string> cols{"DATA_ID", "COLL_NAME", "DATA_NAME"};
-            if ( singleFlag == 0 ) {
-                cols.emplace_back("DATA_REPL_NUM");
-                cols.emplace_back("RESC_NAME");
-                cols.emplace_back("DATA_PATH");
-            }
-            cols.emplace_back("DATA_RESC_ID");
-
-            const int offset = genQueryInp->rowOffset > 0 ? genQueryInp->rowOffset : 0;
-            const auto q = gq2::builder::select(std::move(cols))
-                               .where(std::move(cond))
-                               .order_by("COLL_NAME")
-                               .order_by("DATA_NAME")
-                               .offset(offset)
-                               .limit(MAX_SQL_ROWS)
-                               .build();
-
-            nlohmann::json rows;
-            status = gq2::try_execute( *rsComm, q, rows );
-            if ( status >= 0 ) {
-                const int next_inx = (rows.size() == static_cast<std::size_t>(MAX_SQL_ROWS)) ? (offset + MAX_SQL_ROWS) : 0;
-                if ( singleFlag == 0 ) {
-                    status = gq2::rows_to_genquery_out(
-                        rows,
-                        {COL_D_DATA_ID, COL_COLL_NAME, COL_DATA_NAME, COL_DATA_REPL_NUM, COL_D_RESC_NAME, COL_D_DATA_PATH, COL_D_RESC_ID},
-                        genQueryOut,
-                        next_inx );
-                }
-                else {
-                    status = gq2::rows_to_genquery_out(
-                        rows,
-                        {COL_D_DATA_ID, COL_COLL_NAME, COL_DATA_NAME, COL_D_RESC_ID},
-                        genQueryOut,
-                        next_inx );
-                }
-            }
-        }
-
-    }
-
-    return status;
-
-}
-
-int
-rsQueryCollInColl( rsComm_t *rsComm, char *collection,
-                   genQueryInp_t *genQueryInp, genQueryOut_t **genQueryOut ) {
-    if ( rsComm == NULL || collection == NULL || genQueryOut == NULL ) {
-        return USER__NULL_INPUT_ERR;
-    }
-
-    if ( genQueryInp != NULL ) {
-        memset( genQueryInp, 0, sizeof( genQueryInp_t ) );
-    }
-
-    namespace gq2 = irods::experimental::genquery2;
-    using gq2::builder::col;
-
-    const auto q = gq2::builder::select({"COLL_NAME"})
-                       .where(col("COLL_PARENT_NAME") == collection)
-                       .order_by("COLL_NAME")
-                       .limit(MAX_SQL_ROWS)
-                       .build();
-
-    nlohmann::json rows;
-    int status = gq2::try_execute( *rsComm, q, rows );
-    if ( status >= 0 ) {
-        const int next_inx = (rows.size() == static_cast<std::size_t>(MAX_SQL_ROWS)) ? MAX_SQL_ROWS : 0;
-        status = gq2::rows_to_genquery_out( rows, {COL_COLL_NAME}, genQueryOut, next_inx );
-    }
-
-    return status;
-}
-
 int
 isCollEmpty( rsComm_t *rsComm, char *collection ) {
-    collInp_t openCollInp;
-    collEnt_t *collEnt;
-    int handleInx;
-    int entCnt = 0;
-
     if ( rsComm == NULL || collection == NULL ) {
         rodsLog( LOG_ERROR,
                  "isCollEmpty: Input rsComm or collection is NULL" );
         return True;
     }
 
-    memset( &openCollInp, 0, sizeof( openCollInp ) );
-    rstrcpy( openCollInp.collName, collection, MAX_NAME_LEN );
-    /* cannot query recur because collection is sorted in wrong order */
-    openCollInp.flags = 0;
-    handleInx = rsOpenCollection( rsComm, &openCollInp );
-    if ( handleInx < 0 ) {
+    std::error_code ec;
+    const bool empty = irods::filesystem::server::is_empty(*rsComm, collection, ec);
+    if ( ec ) {
         rodsLog( LOG_ERROR,
-                 "isCollEmpty: rsOpenCollection of %s error. status = %d",
-                 openCollInp.collName, handleInx );
+                 "isCollEmpty: is_empty of %s error. status = %d",
+                 collection, ec.value() );
         return True;
     }
 
-    while ( rsReadCollection( rsComm, &handleInx, &collEnt ) >= 0 ) {
-        entCnt++;
-        free( collEnt );    /* just free collEnt but not content */
-    }
-
-    rsCloseCollection( rsComm, &handleInx );
-
-    if ( entCnt > 0 ) {
-        return False;
-    }
-    else {
-        return True;
-    }
+    return empty ? True : False;
 }
 
 /* collStat - query metaData of a collection. */

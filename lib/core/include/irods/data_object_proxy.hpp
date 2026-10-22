@@ -382,7 +382,7 @@ namespace irods::experimental::data_object
     ///
     /// \since 4.2.9
     template<typename rxComm>
-    static auto make_data_object_proxy(rxComm& _comm, const irods::experimental::filesystem::path& _logical_path)
+    static auto make_data_object_proxy(rxComm& _comm, const irods::filesystem::path& _logical_path)
         -> std::pair<data_object_proxy_t, lifetime_manager<DataObjInfo>>
     {
         namespace replica = irods::experimental::replica;

@@ -189,7 +189,7 @@ initReiWithCollInp( ruleExecInfo_t *rei, rsComm_t *rsComm,
     memset( collInfo, 0, sizeof( collInfo_t ) );
     rei->coi = collInfo;
     /* try to fill out as much info in collInfo as possible */
-    const irods::experimental::filesystem::path p{collCreateInp->collName};
+    const irods::filesystem::path p{collCreateInp->collName};
     const auto parent_sv = p.parent_path_view();
     const auto child_sv = p.object_name_view();
     if ( std::strchr( collCreateInp->collName, '/' ) == NULL ||
@@ -308,7 +308,7 @@ int _writeString( char *writeId, char *writeStr, ruleExecInfo_t *rei )
         return 0;
     }
 
-    namespace fs = irods::experimental::filesystem::server;
+    namespace fs = irods::filesystem::server;
 
     if (fs::is_data_object(*rei->rsComm, writeId)) {
         return append_message_to_data_object(rei, writeId, writeStr);

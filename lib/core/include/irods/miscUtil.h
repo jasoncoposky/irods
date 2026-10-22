@@ -162,8 +162,6 @@ int
 queryDataObjInColl( queryHandle_t *queryHandle, char *collection,
                     int flags, genQueryInp_t *genQueryInp,
                     genQueryOut_t **genQueryOut, keyValPair_t *condInput );
-int
-setQueryInpForData( int flags, genQueryInp_t *genQueryInp );
 
 int
 printTiming( rcComm_t *conn, char *objPath, rodsLong_t fileSize,

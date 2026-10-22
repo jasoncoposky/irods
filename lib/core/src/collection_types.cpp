@@ -140,14 +140,14 @@ namespace irods::experimental::collections
 
         if (_coll_type == LINK_POINT_STR) {
             linked_collection_info link{};
-            link.target_collection_path = irods::experimental::filesystem::path{std::string{_coll_info1}};
+            link.target_collection_path = irods::filesystem::path{std::string{_coll_info1}};
             _out = std::move(link);
             return 0;
         }
 
         if (_coll_type == TAR_STRUCT_FILE_STR) {
             archive_collection_info arch{};
-            arch.archive_logical_path = irods::experimental::filesystem::path{std::string{_coll_info1}};
+            arch.archive_logical_path = irods::filesystem::path{std::string{_coll_info1}};
             arch.format = archive_format::tar;
             if (const int ec = parse_cached_archive_info2(_coll_info2, arch); ec < 0) {
                 return ec;
@@ -205,7 +205,7 @@ namespace irods::experimental::collections
         switch (_in.collClass) {
             case LINKED_COLL: {
                 linked_collection_info link{};
-                link.target_collection_path = irods::experimental::filesystem::path{_in.phyPath};
+                link.target_collection_path = irods::filesystem::path{_in.phyPath};
                 return link;
             }
             case MOUNTED_COLL: {
@@ -218,7 +218,7 @@ namespace irods::experimental::collections
             }
             case STRUCT_FILE_COLL: {
                 archive_collection_info arch{};
-                arch.archive_logical_path = irods::experimental::filesystem::path{_in.objPath};
+                arch.archive_logical_path = irods::filesystem::path{_in.objPath};
                 arch.archive_physical_path = std::filesystem::path{_in.phyPath};
                 arch.cache_directory_path = std::filesystem::path{_in.cacheDir};
                 arch.resource_hierarchy = _in.rescHier;
@@ -469,7 +469,7 @@ namespace irods::experimental::collections
         }
 
         const auto orig_norm = normalize_logical_sv(_input_path);
-        _out_resolved.original_path = irods::experimental::filesystem::path{orig_norm};
+        _out_resolved.original_path = irods::filesystem::path{orig_norm};
 
         std::string current_path = orig_norm;
         bool link_translated = false;
@@ -495,7 +495,7 @@ namespace irods::experimental::collections
             }
 
             if (!found_special) {
-                _out_resolved.canonical_path = irods::experimental::filesystem::path{current_path};
+                _out_resolved.canonical_path = irods::filesystem::path{current_path};
                 _out_resolved.governing_coll = _out_resolved.canonical_path;
                 _out_resolved.relative_subpath.clear();
                 _out_resolved.was_link_translated = link_translated;
@@ -505,8 +505,8 @@ namespace irods::experimental::collections
 
             if (const auto* link_info = std::get_if<linked_collection_info>(&info)) {
                 if (_mode == link_resolution_mode::do_not_follow_link && current_path == governing_coll) {
-                    _out_resolved.canonical_path = irods::experimental::filesystem::path{current_path};
-                    _out_resolved.governing_coll = irods::experimental::filesystem::path{governing_coll};
+                    _out_resolved.canonical_path = irods::filesystem::path{current_path};
+                    _out_resolved.governing_coll = irods::filesystem::path{governing_coll};
                     _out_resolved.relative_subpath.clear();
                     _out_resolved.was_link_translated = link_translated;
                     _out_resolved.info = info;
@@ -548,8 +548,8 @@ namespace irods::experimental::collections
                 }
             }
 
-            _out_resolved.canonical_path = irods::experimental::filesystem::path{current_path};
-            _out_resolved.governing_coll = irods::experimental::filesystem::path{governing_coll};
+            _out_resolved.canonical_path = irods::filesystem::path{current_path};
+            _out_resolved.governing_coll = irods::filesystem::path{governing_coll};
             _out_resolved.relative_subpath = std::move(rel_subpath);
             _out_resolved.was_link_translated = link_translated;
             _out_resolved.info = std::move(info);

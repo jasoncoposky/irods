@@ -24,7 +24,7 @@
 
 // clang-format off
 namespace po   = boost::program_options;
-namespace fs   = irods::experimental::filesystem;
+namespace fs   = irods::filesystem;
 namespace ix   = irods::experimental;
 
 using pattern_matcher = std::variant<int,               // no option specified

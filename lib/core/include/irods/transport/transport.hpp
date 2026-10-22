@@ -88,7 +88,7 @@ namespace irods::experimental::io
         /// \return A boolean.
         /// \retval true  If the data object was opened successfully.
         /// \retval false If the data object could not be opened.
-        virtual bool open(const irods::experimental::filesystem::path& _path,
+        virtual bool open(const irods::filesystem::path& _path,
                           std::ios_base::openmode _mode) = 0;
 
         /// Opens a specific replica of a data object in the specified mode.
@@ -102,7 +102,7 @@ namespace irods::experimental::io
         /// \return A boolean.
         /// \retval true  If the replica was opened successfully.
         /// \retval false If the replica could not be opened.
-        virtual bool open(const irods::experimental::filesystem::path& _path,
+        virtual bool open(const irods::filesystem::path& _path,
                           const replica_number& _replica_number,
                           std::ios_base::openmode _mode) = 0;
 
@@ -116,7 +116,7 @@ namespace irods::experimental::io
         /// \return A boolean.
         /// \retval true  If the replica was opened successfully.
         /// \retval false If the replica could not be opened.
-        virtual bool open(const irods::experimental::filesystem::path& _path,
+        virtual bool open(const irods::filesystem::path& _path,
                           const root_resource_name& _root_resource_name,
                           std::ios_base::openmode _mode) = 0;
 
@@ -130,7 +130,7 @@ namespace irods::experimental::io
         /// \return A boolean.
         /// \retval true  If the replica was opened successfully.
         /// \retval false If the replica could not be opened.
-        virtual bool open(const irods::experimental::filesystem::path& _path,
+        virtual bool open(const irods::filesystem::path& _path,
                           const leaf_resource_name& _leaf_resource_name,
                           std::ios_base::openmode _mode) = 0;
 
@@ -146,7 +146,7 @@ namespace irods::experimental::io
         /// \retval true  If the replica was opened successfully.
         /// \retval false If the replica could not be opened.
         virtual bool open(const replica_token& _replica_token,
-                          const irods::experimental::filesystem::path& _path,
+                          const irods::filesystem::path& _path,
                           const replica_number& _replica_number,
                           std::ios_base::openmode _mode) = 0;
 
@@ -162,7 +162,7 @@ namespace irods::experimental::io
         /// \retval true  If the replica was opened successfully.
         /// \retval false If the replica could not be opened.
         virtual bool open(const replica_token& _replica_token,
-                          const irods::experimental::filesystem::path& _path,
+                          const irods::filesystem::path& _path,
                           const leaf_resource_name& _leaf_resource_name,
                           std::ios_base::openmode _mode) = 0;
 

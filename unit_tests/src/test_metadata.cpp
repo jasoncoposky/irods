@@ -35,7 +35,7 @@ TEST_CASE("metadata")
     auto conn = conn_pool.get_connection();
 
     // clang-format off
-    namespace fs = irods::experimental::filesystem;
+    namespace fs = irods::filesystem;
 
     using odstream          = irods::experimental::io::odstream;
     using default_transport = irods::experimental::io::client::default_transport;

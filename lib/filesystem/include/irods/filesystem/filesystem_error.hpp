@@ -7,7 +7,7 @@
 #include <system_error>
 #include <string>
 
-namespace irods::experimental::filesystem
+namespace irods::filesystem
 {
     class path;
 
@@ -56,6 +56,6 @@ namespace irods::experimental::filesystem
         path p1_;
         path p2_;
     };
-} // namespace irods::experimental::filesystem
+} // namespace irods::filesystem
 
 #endif // IRODS_FILESYSTEM_ERROR_HPP

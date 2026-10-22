@@ -13,7 +13,7 @@
 #include <variant>
 
 namespace colls = irods::experimental::collections;
-namespace fs = irods::experimental::filesystem;
+namespace fs = irods::filesystem;
 
 TEST_CASE("collection_types parses and serializes R_COLL_MAIN special collection encodings", "[collections][types]")
 {

@@ -35,7 +35,7 @@ int rmdirCollUtil(rcComm_t        *conn,
                   int             treatAsPathname, 
                   rodsPath_t      collPath)
 {
-    namespace fs = irods::experimental::filesystem;
+    namespace fs = irods::filesystem;
 
     fs::path abs_path = collPath.outPath;
 
@@ -92,16 +92,19 @@ int rmdirCollUtil(rcComm_t        *conn,
         return 0;
     }
 
-    collInp_t collInp;
-    dataObjInp_t dataObjInp;
+    std::error_code ec;
+    fs::client::remove(*conn,
+                       abs_path,
+                       fs::extended_remove_options{.no_trash = (myRodsArgs->force == True),
+                                                   .verbose = (myRodsArgs->verbose == True),
+                                                   .progress = false,
+                                                   .recursive = (myRodsArgs->recursive == True),
+                                                   .unregister = (myRodsArgs->unmount == True)},
+                       ec);
 
-    initCondForRm( myRodsArgs, &dataObjInp, &collInp );
-    rstrcpy( collInp.collName, collPath.outPath, MAX_NAME_LEN );
-
-    const int status = rcRmColl( conn, &collInp, myRodsArgs->verbose );
-
+    const int status = ec.value();
     if (status < 0) {
-        std::cout << "rmdirColl: rcRmColl failed with error " << status << '\n';
+        std::cout << "rmdirColl: remove failed with error " << status << '\n';
     }
 
     return status;

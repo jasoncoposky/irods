@@ -14,7 +14,7 @@
 #include <algorithm>
 
 namespace ix = irods::experimental;
-namespace fs = irods::experimental::filesystem;
+namespace fs = irods::filesystem;
 namespace gq2 = irods::experimental::genquery2;
 
 TEST_CASE("query builder")

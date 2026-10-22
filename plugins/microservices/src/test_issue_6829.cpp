@@ -31,7 +31,7 @@ namespace
     {
         IRODS_MSI_TEST_BEGIN("#6829: client and server dstream interfaces can be used in the same translation unit")
 
-        namespace fs = irods::experimental::filesystem;
+        namespace fs = irods::filesystem;
         namespace io = irods::experimental::io;
 
         // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-array-to-pointer-decay)

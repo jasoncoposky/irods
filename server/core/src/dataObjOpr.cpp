@@ -83,21 +83,9 @@ getDataObjInfo(
     dataObjInfo_t** dataObjInfoHead,
     char*           accessPerm,
     int             ignoreCondInput ) {
-    genQueryInp_t genQueryInp;
-    genQueryOut_t *genQueryOut = NULL;
     int i, status;
     dataObjInfo_t *dataObjInfo;
     char *tmpStr;
-    sqlResult_t *dataId, *collId, *replNum, *version, *dataType, *dataSize, *hierString, *filePath, *dataOwnerName,
-        *dataOwnerZone, *replStatus, *statusString, *chksum, *dataExpiry, *dataMapId, *dataComments, *dataCreate,
-        *dataModify, *dataMode, *dataName, *collName, *dataAccessTime;
-    char *tmpDataId, *tmpCollId, *tmpReplNum, *tmpVersion, *tmpDataType, *tmpDataSize, *tmpFilePath, *tmpDataOwnerName,
-        *tmpDataOwnerZone, *tmpReplStatus, *tmpStatusString, *tmpChksum, *tmpDataExpiry, *tmpDataMapId,
-        *tmpDataComments, *tmpDataCreate, *tmpDataModify, *tmpDataMode, *tmpDataName, *tmpCollName, *tmpHierString,
-        *tmpDataAccessTime;
-
-    char accStr[LONG_NAME_LEN];
-    int qcondCnt;
     int writeFlag;
 
     *dataObjInfoHead = NULL;
@@ -110,7 +98,7 @@ getDataObjInfo(
         cond = (col("DATA_ID") == data_id_kw);
     }
     else {
-        const irods::experimental::filesystem::path p{dataObjInp->objPath};
+        const irods::filesystem::path p{dataObjInp->objPath};
         if ( p.string_view().find('/') == std::string_view::npos ) {
             rodsLog( LOG_NOTICE,
                      "initDataObjInfoQuery: invalid path for %s, status = %d",
@@ -162,236 +150,54 @@ getDataObjInfo(
         status = chl_check_data_object_access( *rsComm, data_id_val, accessPerm );
     }
 
-    if ( status >= 0 ) {
-        status = gq2::rows_to_genquery_out(
-            rows,
-            {COL_D_DATA_ID,
-             COL_DATA_NAME,
-             COL_COLL_NAME,
-             COL_D_COLL_ID,
-             COL_DATA_REPL_NUM,
-             COL_DATA_VERSION,
-             COL_DATA_TYPE_NAME,
-             COL_DATA_SIZE,
-             COL_D_DATA_PATH,
-             COL_D_OWNER_NAME,
-             COL_D_OWNER_ZONE,
-             COL_D_REPL_STATUS,
-             COL_D_DATA_STATUS,
-             COL_D_DATA_CHECKSUM,
-             COL_D_EXPIRY,
-             COL_D_MAP_ID,
-             COL_D_COMMENTS,
-             COL_D_ACCESS_TIME,
-             COL_D_CREATE_TIME,
-             COL_D_MODIFY_TIME,
-             COL_DATA_MODE,
-             COL_D_RESC_HIER},
-            &genQueryOut );
+    if ( status >= 0 && rows.empty() ) {
+        status = CAT_NO_ROWS_FOUND;
     }
+
     if ( status < 0 ) {
         if ( status != CAT_NO_ROWS_FOUND ) {
             rodsLog( LOG_NOTICE, "%s: rs_genquery2 error, status = %d", __FUNCTION__, status );
         }
-        freeGenQueryOut( &genQueryOut );
         return status;
-    }
-    qcondCnt = 0;
-
-    if ( genQueryOut == NULL ) {
-        rodsLog( LOG_NOTICE,
-                 "%s: NULL genQueryOut", __FUNCTION__);
-        return SYS_INTERNAL_NULL_INPUT_ERR;
-    }
-
-    if ( ( dataOwnerName =
-                getSqlResultByInx( genQueryOut, COL_D_OWNER_NAME ) ) == NULL ) {
-        rodsLog( LOG_NOTICE,
-                 "%s: getSqlResultByInx for COL_D_OWNER_NAME failed", __FUNCTION__);
-        return UNMATCHED_KEY_OR_INDEX;
-    }
-
-    if ( ( dataName =
-                getSqlResultByInx( genQueryOut, COL_DATA_NAME ) ) == NULL ) {
-        rodsLog( LOG_NOTICE,
-                 "%s: getSqlResultByInx for COL_DATA_NAME failed", __FUNCTION__);
-        return UNMATCHED_KEY_OR_INDEX;
-    }
-
-    if ( ( collName =
-                getSqlResultByInx( genQueryOut, COL_COLL_NAME ) ) == NULL ) {
-        rodsLog( LOG_NOTICE,
-                 "%s: getSqlResultByInx for COL_COLL_NAME failed", __FUNCTION__);
-        return UNMATCHED_KEY_OR_INDEX;
-    }
-
-    if ( ( dataId = getSqlResultByInx( genQueryOut, COL_D_DATA_ID ) ) == NULL ) {
-        rodsLog( LOG_NOTICE,
-                 "%s: getSqlResultByInx for COL_D_DATA_ID failed", __FUNCTION__);
-        return UNMATCHED_KEY_OR_INDEX;
-    }
-
-    if ( ( collId = getSqlResultByInx( genQueryOut, COL_D_COLL_ID ) ) == NULL ) {
-        rodsLog( LOG_NOTICE,
-                 "%s: getSqlResultByInx for COL_D_COLL_ID failed", __FUNCTION__);
-        return UNMATCHED_KEY_OR_INDEX;
-    }
-
-    if ( ( replNum = getSqlResultByInx( genQueryOut, COL_DATA_REPL_NUM ) ) ==
-            NULL ) {
-        rodsLog( LOG_NOTICE,
-                 "%s: getSqlResultByInx for COL_DATA_REPL_NUM failed", __FUNCTION__);
-        return UNMATCHED_KEY_OR_INDEX;
-    }
-
-    if ( ( version = getSqlResultByInx( genQueryOut, COL_DATA_VERSION ) ) ==
-            NULL ) {
-        rodsLog( LOG_NOTICE,
-                 "%s: getSqlResultByInx for COL_DATA_VERSION failed", __FUNCTION__);
-        return UNMATCHED_KEY_OR_INDEX;
-    }
-
-    if ( ( dataType = getSqlResultByInx( genQueryOut, COL_DATA_TYPE_NAME ) ) ==
-            NULL ) {
-        rodsLog( LOG_NOTICE,
-                 "%s: getSqlResultByInx for COL_DATA_TYPE_NAME failed", __FUNCTION__);
-        return UNMATCHED_KEY_OR_INDEX;
-    }
-
-    if ( ( dataSize = getSqlResultByInx( genQueryOut, COL_DATA_SIZE ) ) == NULL ) {
-        rodsLog( LOG_NOTICE,
-                 "%s: getSqlResultByInx for COL_DATA_SIZE failed", __FUNCTION__);
-        return UNMATCHED_KEY_OR_INDEX;
-    }
-
-    if ( ( hierString = getSqlResultByInx( genQueryOut, COL_D_RESC_HIER ) ) ==
-            NULL ) {
-        rodsLog( LOG_NOTICE,
-                 "%s: getSqlResultByInx for COL_D_RESC_HIER failed", __FUNCTION__);
-        return UNMATCHED_KEY_OR_INDEX;
-    }
-
-    if ( ( filePath = getSqlResultByInx( genQueryOut, COL_D_DATA_PATH ) ) ==
-            NULL ) {
-        rodsLog( LOG_NOTICE,
-                 "%s: getSqlResultByInx for COL_D_DATA_PATH failed", __FUNCTION__);
-        return UNMATCHED_KEY_OR_INDEX;
-    }
-
-    if ( ( dataOwnerZone =
-                getSqlResultByInx( genQueryOut, COL_D_OWNER_ZONE ) ) == NULL ) {
-        rodsLog( LOG_NOTICE,
-                 "%s: getSqlResultByInx for COL_D_OWNER_ZONE failed", __FUNCTION__);
-        return UNMATCHED_KEY_OR_INDEX;
-    }
-
-    if ( ( replStatus =
-                getSqlResultByInx( genQueryOut, COL_D_REPL_STATUS ) ) == NULL ) {
-        rodsLog( LOG_NOTICE,
-                 "%s: getSqlResultByInx for COL_D_REPL_STATUS failed", __FUNCTION__);
-        return UNMATCHED_KEY_OR_INDEX;
-    }
-
-    if ( ( statusString =
-                getSqlResultByInx( genQueryOut, COL_D_DATA_STATUS ) ) == NULL ) {
-        rodsLog( LOG_NOTICE,
-                 "%s: getSqlResultByInx for COL_D_DATA_STATUS failed", __FUNCTION__);
-        return UNMATCHED_KEY_OR_INDEX;
-    }
-
-    if ( ( chksum =
-                getSqlResultByInx( genQueryOut, COL_D_DATA_CHECKSUM ) ) == NULL ) {
-        rodsLog( LOG_NOTICE,
-                 "%s: getSqlResultByInx for COL_D_DATA_CHECKSUM failed", __FUNCTION__);
-        return UNMATCHED_KEY_OR_INDEX;
-    }
-
-    if ( ( dataExpiry =
-                getSqlResultByInx( genQueryOut, COL_D_EXPIRY ) ) == NULL ) {
-        rodsLog( LOG_NOTICE,
-                 "%s: getSqlResultByInx for COL_D_EXPIRY failed", __FUNCTION__);
-        return UNMATCHED_KEY_OR_INDEX;
-    }
-
-    if ( ( dataMapId =
-                getSqlResultByInx( genQueryOut, COL_D_MAP_ID ) ) == NULL ) {
-        rodsLog( LOG_NOTICE,
-                 "%s: getSqlResultByInx for COL_D_MAP_ID failed", __FUNCTION__);
-        return UNMATCHED_KEY_OR_INDEX;
-    }
-
-    if ( ( dataComments =
-                getSqlResultByInx( genQueryOut, COL_D_COMMENTS ) ) == NULL ) {
-        rodsLog( LOG_NOTICE,
-                 "%s: getSqlResultByInx for COL_D_COMMENTS failed", __FUNCTION__);
-        return UNMATCHED_KEY_OR_INDEX;
-    }
-
-    if ( ( dataCreate =
-                getSqlResultByInx( genQueryOut, COL_D_CREATE_TIME ) ) == NULL ) {
-        rodsLog( LOG_NOTICE,
-                 "%s: getSqlResultByInx for COL_D_CREATE_TIME failed", __FUNCTION__);
-        return UNMATCHED_KEY_OR_INDEX;
-    }
-
-    if ( ( dataModify =
-                getSqlResultByInx( genQueryOut, COL_D_MODIFY_TIME ) ) == NULL ) {
-        rodsLog( LOG_NOTICE,
-                 "%s: getSqlResultByInx for COL_D_MODIFY_TIME failed", __FUNCTION__);
-        return UNMATCHED_KEY_OR_INDEX;
-    }
-
-    if ( ( dataMode =
-                getSqlResultByInx( genQueryOut, COL_DATA_MODE ) ) == NULL ) {
-        rodsLog( LOG_NOTICE,
-                 "%s: getSqlResultByInx for COL_DATA_MODE failed", __FUNCTION__);
-        return UNMATCHED_KEY_OR_INDEX;
-    }
-
-    if ((dataAccessTime = getSqlResultByInx(genQueryOut, COL_D_ACCESS_TIME)) == nullptr) {
-        log_svr::error("{}: getSqlResultByInx for COL_D_ACCESS_TIME failed.", __func__);
-        return UNMATCHED_KEY_OR_INDEX;
     }
 
     writeFlag = getWriteFlag( dataObjInp->openFlags );
 
-    for ( i = 0; i < genQueryOut->rowCnt; i++ ) {
-        dataObjInfo = ( dataObjInfo_t * ) malloc( sizeof( dataObjInfo_t ) );
-        memset( dataObjInfo, 0, sizeof( dataObjInfo_t ) );
+    for ( const auto& row : rows ) {
+        dataObjInfo = static_cast<dataObjInfo_t*>( std::malloc( sizeof( dataObjInfo_t ) ) );
+        std::memset( dataObjInfo, 0, sizeof( dataObjInfo_t ) );
 
-        tmpDataId = &dataId->value[dataId->len * i];
-        tmpCollId = &collId->value[collId->len * i];
-        tmpReplNum = &replNum->value[replNum->len * i];
-        tmpVersion = &version->value[version->len * i];
-        tmpDataType = &dataType->value[dataType->len * i];
-        tmpDataSize = &dataSize->value[dataSize->len * i];
-        tmpHierString = &hierString->value[hierString->len * i];
+        const auto& tmpDataId         = row[0].get_ref<const std::string&>();
+        const auto& tmpDataName       = row[1].get_ref<const std::string&>();
+        const auto& tmpCollName       = row[2].get_ref<const std::string&>();
+        const auto& tmpCollId         = row[3].get_ref<const std::string&>();
+        const auto& tmpReplNum        = row[4].get_ref<const std::string&>();
+        const auto& tmpVersion        = row[5].get_ref<const std::string&>();
+        const auto& tmpDataType       = row[6].get_ref<const std::string&>();
+        const auto& tmpDataSize       = row[7].get_ref<const std::string&>();
+        const auto& tmpFilePath       = row[8].get_ref<const std::string&>();
+        const auto& tmpDataOwnerName  = row[9].get_ref<const std::string&>();
+        const auto& tmpDataOwnerZone  = row[10].get_ref<const std::string&>();
+        const auto& tmpReplStatus     = row[11].get_ref<const std::string&>();
+        const auto& tmpStatusString   = row[12].get_ref<const std::string&>();
+        const auto& tmpChksum         = row[13].get_ref<const std::string&>();
+        const auto& tmpDataExpiry     = row[14].get_ref<const std::string&>();
+        const auto& tmpDataMapId      = row[15].get_ref<const std::string&>();
+        const auto& tmpDataComments   = row[16].get_ref<const std::string&>();
+        const auto& tmpDataAccessTime = row[17].get_ref<const std::string&>();
+        const auto& tmpDataCreate     = row[18].get_ref<const std::string&>();
+        const auto& tmpDataModify     = row[19].get_ref<const std::string&>();
+        const auto& tmpDataMode       = row[20].get_ref<const std::string&>();
+        const auto& tmpHierString     = row[21].get_ref<const std::string&>();
 
-        tmpFilePath = &filePath->value[filePath->len * i];
-        tmpDataOwnerName = &dataOwnerName->value[dataOwnerName->len * i];
-        tmpDataOwnerZone = &dataOwnerZone->value[dataOwnerZone->len * i];
-        tmpReplStatus = &replStatus->value[replStatus->len * i];
-        tmpStatusString = &statusString->value[statusString->len * i];
-        tmpChksum = &chksum->value[chksum->len * i];
-        tmpDataExpiry = &dataExpiry->value[dataExpiry->len * i];
-        tmpDataMapId = &dataMapId->value[dataMapId->len * i];
-        tmpDataComments = &dataComments->value[dataComments->len * i];
-        tmpDataCreate = &dataCreate->value[dataCreate->len * i];
-        tmpDataModify = &dataModify->value[dataModify->len * i];
-        tmpDataMode = &dataMode->value[dataMode->len * i];
-        tmpDataName = &dataName->value[dataName->len * i];
-        tmpCollName = &collName->value[collName->len * i];
-        tmpDataAccessTime = &dataAccessTime->value[dataAccessTime->len * i];
-
-        snprintf( dataObjInfo->objPath, MAX_NAME_LEN, "%s/%s", tmpCollName, tmpDataName );
-        rstrcpy( dataObjInfo->rescHier, tmpHierString, MAX_NAME_LEN );
+        snprintf( dataObjInfo->objPath, MAX_NAME_LEN, "%s/%s", tmpCollName.c_str(), tmpDataName.c_str() );
+        rstrcpy( dataObjInfo->rescHier, tmpHierString.c_str(), MAX_NAME_LEN );
         irods::error ret = resc_mgr.hier_to_leaf_id( tmpHierString, dataObjInfo->rescId );
         if (!ret.ok()) {
             freeDataObjInfo(dataObjInfo);
             irods::log(PASS(ret));
             return ret.code();
         }
-        std::string hier( tmpHierString );
 
         irods::hierarchy_parser parser;
         parser.set_string( tmpHierString );
@@ -399,25 +205,25 @@ getDataObjInfo(
         parser.last_resc( leaf );
         rstrcpy( dataObjInfo->rescName, leaf.c_str(), NAME_LEN );
 
-        rstrcpy( dataObjInfo->dataType, tmpDataType, NAME_LEN );
-        dataObjInfo->dataSize = strtoll( tmpDataSize, 0, 0 );
-        rstrcpy(dataObjInfo->chksum, tmpChksum, CHKSUM_LEN);
-        rstrcpy( dataObjInfo->version, tmpVersion, NAME_LEN );
-        rstrcpy( dataObjInfo->filePath, tmpFilePath, MAX_NAME_LEN );
-        rstrcpy( dataObjInfo->dataOwnerName, tmpDataOwnerName, NAME_LEN );
-        rstrcpy( dataObjInfo->dataOwnerZone, tmpDataOwnerZone, NAME_LEN );
-        dataObjInfo->replNum = atoi( tmpReplNum );
-        dataObjInfo->replStatus = atoi( tmpReplStatus );
-        rstrcpy( dataObjInfo->statusString, tmpStatusString, NAME_LEN );
-        dataObjInfo->dataId = strtoll( tmpDataId, 0, 0 );
-        dataObjInfo->collId = strtoll( tmpCollId, 0, 0 );
-        dataObjInfo->dataMapId = atoi( tmpDataMapId );
-        rstrcpy( dataObjInfo->dataComments, tmpDataComments, LONG_NAME_LEN );
-        rstrcpy( dataObjInfo->dataExpiry, tmpDataExpiry, TIME_LEN );
-        rstrcpy( dataObjInfo->dataCreate, tmpDataCreate, TIME_LEN );
-        rstrcpy( dataObjInfo->dataModify, tmpDataModify, TIME_LEN );
-        rstrcpy(dataObjInfo->dataAccessTime, tmpDataAccessTime, TIME_LEN);
-        rstrcpy( dataObjInfo->dataMode, tmpDataMode, SHORT_STR_LEN );
+        rstrcpy( dataObjInfo->dataType, tmpDataType.c_str(), NAME_LEN );
+        std::from_chars( tmpDataSize.data(), tmpDataSize.data() + tmpDataSize.size(), dataObjInfo->dataSize );
+        rstrcpy( dataObjInfo->chksum, tmpChksum.c_str(), CHKSUM_LEN );
+        rstrcpy( dataObjInfo->version, tmpVersion.c_str(), NAME_LEN );
+        rstrcpy( dataObjInfo->filePath, tmpFilePath.c_str(), MAX_NAME_LEN );
+        rstrcpy( dataObjInfo->dataOwnerName, tmpDataOwnerName.c_str(), NAME_LEN );
+        rstrcpy( dataObjInfo->dataOwnerZone, tmpDataOwnerZone.c_str(), NAME_LEN );
+        std::from_chars( tmpReplNum.data(), tmpReplNum.data() + tmpReplNum.size(), dataObjInfo->replNum );
+        std::from_chars( tmpReplStatus.data(), tmpReplStatus.data() + tmpReplStatus.size(), dataObjInfo->replStatus );
+        rstrcpy( dataObjInfo->statusString, tmpStatusString.c_str(), NAME_LEN );
+        std::from_chars( tmpDataId.data(), tmpDataId.data() + tmpDataId.size(), dataObjInfo->dataId );
+        std::from_chars( tmpCollId.data(), tmpCollId.data() + tmpCollId.size(), dataObjInfo->collId );
+        std::from_chars( tmpDataMapId.data(), tmpDataMapId.data() + tmpDataMapId.size(), dataObjInfo->dataMapId );
+        rstrcpy( dataObjInfo->dataComments, tmpDataComments.c_str(), LONG_NAME_LEN );
+        rstrcpy( dataObjInfo->dataExpiry, tmpDataExpiry.c_str(), TIME_LEN );
+        rstrcpy( dataObjInfo->dataCreate, tmpDataCreate.c_str(), TIME_LEN );
+        rstrcpy( dataObjInfo->dataModify, tmpDataModify.c_str(), TIME_LEN );
+        rstrcpy( dataObjInfo->dataAccessTime, tmpDataAccessTime.c_str(), TIME_LEN );
+        rstrcpy( dataObjInfo->dataMode, tmpDataMode.c_str(), SHORT_STR_LEN );
         dataObjInfo->writeFlag = writeFlag;
 
         dataObjInfo->next = nullptr;
@@ -425,11 +231,9 @@ getDataObjInfo(
         constexpr int is_single_object = 1;
         constexpr int prepend_object = 0;
         queueDataObjInfo(dataObjInfoHead, dataObjInfo, is_single_object, prepend_object);
-    } // for i
+    }
 
-    freeGenQueryOut( &genQueryOut );
-
-    return qcondCnt;
+    return 0;
 }
 
 // determine if a forced open is done to a resource which does not have
@@ -745,47 +549,6 @@ matchAndTrimRescGrp( dataObjInfo_t **dataObjInfoHead,
     } // while
 
     return 0;
-}
-
-/* initDataObjInfoQuery - initialize the genQueryInp based on dataObjInp.
- * returns the qcondCnt - count of sqlCondInp based on condition input.
- */
-
-int
-initDataObjInfoQuery( dataObjInp_t *dataObjInp, genQueryInp_t *genQueryInp,
-                      int ignoreCondInput ) {
-    char condStr[MAX_NAME_LEN];
-    char *tmpStr;
-    int qcondCnt = 0;
-
-    memset( genQueryInp, 0, sizeof( genQueryInp_t ) );
-
-    if ( ( tmpStr = getValByKey( &dataObjInp->condInput, QUERY_BY_DATA_ID_KW ) )
-            == NULL ) {
-        const irods::experimental::filesystem::path p{dataObjInp->objPath};
-        if (p.string_view().find('/') == std::string_view::npos) {
-            rodsLog( LOG_NOTICE,
-                     "initDataObjInfoQuery: invalid path for %s, status = %d",
-                     dataObjInp->objPath, SYS_INVALID_FILE_PATH );
-            return SYS_INVALID_FILE_PATH;
-        }
-        const auto myColl = p.parent_path_view();
-        const auto myData = p.object_name_view();
-        snprintf( condStr, MAX_NAME_LEN, "='%.*s'", static_cast<int>(myColl.size()), myColl.data() );
-        addInxVal( &genQueryInp->sqlCondInp, COL_COLL_NAME, condStr );
-        snprintf( condStr, MAX_NAME_LEN, "='%.*s'", static_cast<int>(myData.size()), myData.data() );
-        addInxVal( &genQueryInp->sqlCondInp, COL_DATA_NAME, condStr );
-    }
-    else {
-        snprintf( condStr, MAX_NAME_LEN, "='%s'", tmpStr );
-        addInxVal( &genQueryInp->sqlCondInp, COL_D_DATA_ID, condStr );
-    }
-
-    if ( const char * admin = getValByKey( &dataObjInp->condInput, ADMIN_KW ) ) {
-        addKeyVal( &genQueryInp->condInput, ADMIN_KW, admin );
-    }
-
-    return qcondCnt;
 }
 
 /* chkOrphanFile - check whether a filePath is a orphan file.

@@ -567,7 +567,7 @@ rsyncDataToDataUtil( rcComm_t *conn, rodsPath_t *srcPath,
         namespace gq2 = irods::experimental::genquery2;
         using gq2::builder::col;
 
-        const irods::experimental::filesystem::path targ_path{targPath->outPath};
+        const irods::filesystem::path targ_path{targPath->outPath};
         const auto q = gq2::builder::select({"DATA_REPL_STATUS"})
             .where(col("COLL_NAME") == targ_path.parent_path_view() &&
                    col("DATA_NAME") == targ_path.object_name_view() &&
@@ -738,7 +738,7 @@ rsyncCollToDirUtil( rcComm_t *conn, rodsPath_t *srcPath,
             }
         }
         else if ( collEnt.objType == COLL_OBJ_T ) {
-            const irods::experimental::filesystem::path coll_p{collEnt.collName};
+            const irods::filesystem::path coll_p{collEnt.collName};
             const auto child_sv = coll_p.object_name_view();
             if ( std::strchr( collEnt.collName, '/' ) == NULL ||
                  coll_p.parent_path_view().size() >= MAX_NAME_LEN ||
@@ -1070,7 +1070,7 @@ rsyncCollToCollUtil( rcComm_t *conn, rodsPath_t *srcPath,
             }
         }
         else if ( collEnt.objType == COLL_OBJ_T ) {
-            const irods::experimental::filesystem::path coll_p{collEnt.collName};
+            const irods::filesystem::path coll_p{collEnt.collName};
             const auto child_sv = coll_p.object_name_view();
             if ( std::strchr( collEnt.collName, '/' ) == NULL ||
                  coll_p.parent_path_view().size() >= MAX_NAME_LEN ||

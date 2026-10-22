@@ -25,7 +25,7 @@ namespace irods
     auto is_force_flag_required(RsComm& _comm, const DataObjInp& _input) -> bool
     {
         namespace ix = irods::experimental;
-        namespace fs = irods::experimental::filesystem;
+        namespace fs = irods::filesystem;
 
         return fs::server::exists(_comm, _input.objPath) &&
                !ix::key_value_proxy{_input.condInput}.contains(FORCE_FLAG_KW);

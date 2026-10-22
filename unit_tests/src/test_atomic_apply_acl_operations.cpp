@@ -23,7 +23,7 @@
 #include <utility>
 
 namespace ia = irods::authentication;
-namespace fs = irods::experimental::filesystem;
+namespace fs = irods::filesystem;
 namespace ua = irods::experimental::administration;
 namespace io = irods::experimental::io;
 

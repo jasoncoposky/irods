@@ -86,7 +86,7 @@ namespace
         }
 
         if (!reg_param.contains(DATA_SIZE_KW)) {
-            namespace fs = irods::experimental::filesystem;
+            namespace fs = irods::filesystem;
 
             const auto dst_size = ir::get_replica_size_from_storage(_comm,
                                                                     fs::path{dest.logical_path().data()},

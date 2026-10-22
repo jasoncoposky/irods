@@ -111,7 +111,7 @@ namespace irods::experimental::io
     ///
     /// \since 4.2.9
     inline auto make_dstream_factory(irods::connection_pool& _conn_pool,
-                                     irods::experimental::filesystem::path _logical_path)
+                                     irods::filesystem::path _logical_path)
     {
         using openmode = std::ios_base::openmode;
 
@@ -159,7 +159,7 @@ namespace irods::experimental::io
     /// \since 4.2.11
     template <typename ReplicaIdentifier>
     auto make_dstream_factory(irods::connection_pool& _conn_pool,
-                              irods::experimental::filesystem::path _logical_path,
+                              irods::filesystem::path _logical_path,
                               ReplicaIdentifier&& _replica_id)
     {
         using openmode = std::ios_base::openmode;

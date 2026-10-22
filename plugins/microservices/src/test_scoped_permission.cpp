@@ -18,7 +18,7 @@
 
 namespace
 {
-    namespace fs = irods::experimental::filesystem;
+    namespace fs = irods::filesystem;
     namespace io = irods::experimental::io;
     using sp = irods::experimental::scoped_permission;
 

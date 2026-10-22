@@ -132,9 +132,9 @@ namespace irods::experimental::replica
         template<typename rxComm>
         inline auto throw_if_path_is_not_a_data_object(
             rxComm& _comm,
-            const irods::experimental::filesystem::path& _logical_path) -> void
+            const irods::filesystem::path& _logical_path) -> void
         {
-            namespace fs = irods::experimental::filesystem;
+            namespace fs = irods::filesystem;
             const auto s = fs::NAMESPACE_IMPL::status(_comm, _logical_path, fs::status_options::basic);
             if (!fs::NAMESPACE_IMPL::is_data_object(s)) {
                 THROW(SYS_INVALID_INPUT_PARAM, "path does not point to a data object");
@@ -167,7 +167,7 @@ namespace irods::experimental::replica
         template<typename rxComm>
         inline auto throw_if_replica_logical_path_is_invalid(
             rxComm& _comm,
-            const irods::experimental::filesystem::path& _logical_path) -> void
+            const irods::filesystem::path& _logical_path) -> void
         {
             throw_if_path_is_empty(_logical_path);
 
@@ -204,7 +204,7 @@ namespace irods::experimental::replica
         template<typename rxComm>
         auto get_data_object_info_impl(
             rxComm& _comm,
-            const irods::experimental::filesystem::path& _logical_path,
+            const irods::filesystem::path& _logical_path,
             std::optional<irods::experimental::genquery2::builder::condition_builder> _extra_condition = std::nullopt) -> query_value_type
         {
             namespace gq2 = irods::experimental::genquery2;
@@ -222,7 +222,7 @@ namespace irods::experimental::replica
                                .where(std::move(cond))
                                .build();
 
-            const auto zone = irods::experimental::filesystem::zone_name(_logical_path);
+            const auto zone = irods::filesystem::zone_name(_logical_path);
             const auto rows = gq2::execute(_comm, q, zone ? std::string_view{*zone} : std::string_view{});
             if (rows.empty()) {
                 THROW(CAT_NO_ROWS_FOUND, "no replica information found");
@@ -262,7 +262,7 @@ namespace irods::experimental::replica
         auto replica_checksum_impl(
             rxComm& _comm,
             dataObjInp_t& _data_object_input,
-            const irods::experimental::filesystem::path& _logical_path,
+            const irods::filesystem::path& _logical_path,
             const verification_calculation _calculation = verification_calculation::if_empty) -> std::string
         {
             detail::throw_if_replica_logical_path_is_invalid(_comm, _logical_path);
@@ -309,9 +309,9 @@ namespace irods::experimental::replica
         template<typename rxComm>
         auto last_write_time_impl(
             rxComm& _comm,
-            const irods::experimental::filesystem::path& _logical_path,
+            const irods::filesystem::path& _logical_path,
             std::string_view _resource_hierarchy,
-            const irods::experimental::filesystem::object_time_type _new_time) -> void
+            const irods::filesystem::object_time_type _new_time) -> void
         {
             const auto seconds = _new_time.time_since_epoch();
             char time_buf[32]{};
@@ -360,7 +360,7 @@ namespace irods::experimental::replica
         template<typename rxComm>
         auto get_replica_size_from_storage_impl(
             rxComm& _comm,
-            const irods::experimental::filesystem::path& _logical_path,
+            const irods::filesystem::path& _logical_path,
             std::string_view _resource_hierarchy,
             std::string_view _physical_path) -> rodsLong_t
         {
@@ -396,7 +396,7 @@ namespace irods::experimental::replica
     template<typename rxComm>
     auto get_data_object_info(
         rxComm& _comm,
-        const irods::experimental::filesystem::path& _logical_path,
+        const irods::filesystem::path& _logical_path,
         const replica_number_type _replica_number) -> query_value_type
     {
         using irods::experimental::genquery2::builder::col;
@@ -421,7 +421,7 @@ namespace irods::experimental::replica
     template<typename rxComm>
     auto get_data_object_info(
         rxComm& _comm,
-        const irods::experimental::filesystem::path& _logical_path,
+        const irods::filesystem::path& _logical_path,
         const leaf_resource_name_type& _leaf_resource_name) -> query_value_type
     {
         using irods::experimental::genquery2::builder::col;
@@ -445,7 +445,7 @@ namespace irods::experimental::replica
     template<typename rxComm>
     auto get_data_object_info(
         rxComm& _comm,
-        const irods::experimental::filesystem::path& _logical_path) -> query_value_type
+        const irods::filesystem::path& _logical_path) -> query_value_type
     {
         return detail::get_data_object_info_impl(_comm, _logical_path);
     } // get_data_object_info
@@ -505,7 +505,7 @@ namespace irods::experimental::replica
     template<typename rxComm>
     auto replica_size(
         rxComm& _comm,
-        const irods::experimental::filesystem::path& _logical_path,
+        const irods::filesystem::path& _logical_path,
         const replica_number_type _replica_number) -> std::uintmax_t
     {
         const auto result = get_data_object_info(_comm, _logical_path, _replica_number).front();
@@ -531,7 +531,7 @@ namespace irods::experimental::replica
     template<typename rxComm>
     auto replica_size(
         rxComm& _comm,
-        const irods::experimental::filesystem::path& _logical_path,
+        const irods::filesystem::path& _logical_path,
         const leaf_resource_name_type& _leaf_resource_name) -> std::uintmax_t
     {
         const auto result = get_data_object_info(_comm, _logical_path, _leaf_resource_name).front();
@@ -557,7 +557,7 @@ namespace irods::experimental::replica
     template<typename rxComm>
     auto is_replica_empty(
         rxComm& _comm,
-        const irods::experimental::filesystem::path& _logical_path,
+        const irods::filesystem::path& _logical_path,
         const replica_number_type _replica_number) -> bool
     {
         return replica_size(_comm, _logical_path, _replica_number) == 0;
@@ -577,7 +577,7 @@ namespace irods::experimental::replica
     template<typename rxComm>
     auto is_replica_empty(
         rxComm& _comm,
-        const irods::experimental::filesystem::path& _logical_path,
+        const irods::filesystem::path& _logical_path,
         const leaf_resource_name_type& _leaf_resource_name) -> bool
     {
         return replica_size(_comm, _logical_path, _leaf_resource_name) == 0;
@@ -597,7 +597,7 @@ namespace irods::experimental::replica
     template<typename rxComm>
     auto replica_checksum(
         rxComm& _comm,
-        const irods::experimental::filesystem::path& _logical_path,
+        const irods::filesystem::path& _logical_path,
         const replica_number_type _replica_number,
         const verification_calculation _calculation = verification_calculation::if_empty) -> std::string
     {
@@ -625,7 +625,7 @@ namespace irods::experimental::replica
     template<typename rxComm>
     auto replica_checksum(
         rxComm& _comm,
-        const irods::experimental::filesystem::path& _logical_path,
+        const irods::filesystem::path& _logical_path,
         const leaf_resource_name_type& _leaf_resource_name,
         const verification_calculation _calculation = verification_calculation::if_empty) -> std::string
     {
@@ -655,10 +655,10 @@ namespace irods::experimental::replica
     template<typename rxComm>
     auto last_write_time(
         rxComm& _comm,
-        const irods::experimental::filesystem::path& _logical_path,
-        const replica_number_type _replica_number) -> irods::experimental::filesystem::object_time_type
+        const irods::filesystem::path& _logical_path,
+        const replica_number_type _replica_number) -> irods::filesystem::object_time_type
     {
-        using object_time_type = irods::experimental::filesystem::object_time_type;
+        using object_time_type = irods::filesystem::object_time_type;
 
         const auto result = get_data_object_info(_comm, _logical_path, _replica_number).front();
 
@@ -685,10 +685,10 @@ namespace irods::experimental::replica
     template<typename rxComm>
     auto last_write_time(
         rxComm& _comm,
-        const irods::experimental::filesystem::path& _logical_path,
-        const leaf_resource_name_type& _leaf_resource_name) -> irods::experimental::filesystem::object_time_type
+        const irods::filesystem::path& _logical_path,
+        const leaf_resource_name_type& _leaf_resource_name) -> irods::filesystem::object_time_type
     {
-        using object_time_type = irods::experimental::filesystem::object_time_type;
+        using object_time_type = irods::filesystem::object_time_type;
 
         const auto result = get_data_object_info(_comm, _logical_path, _leaf_resource_name).front();
 
@@ -713,9 +713,9 @@ namespace irods::experimental::replica
     template<typename rxComm>
     auto last_write_time(
         rxComm& _comm,
-        const irods::experimental::filesystem::path& _logical_path,
+        const irods::filesystem::path& _logical_path,
         const replica_number_type _replica_number,
-        const irods::experimental::filesystem::object_time_type _new_time) -> void
+        const irods::filesystem::object_time_type _new_time) -> void
     {
         const auto replica_info = get_data_object_info(_comm, _logical_path, _replica_number).front();
 
@@ -738,9 +738,9 @@ namespace irods::experimental::replica
     template<typename rxComm>
     auto last_write_time(
         rxComm& _comm,
-        const irods::experimental::filesystem::path& _logical_path,
+        const irods::filesystem::path& _logical_path,
         const leaf_resource_name_type& _leaf_resource_name,
-        const irods::experimental::filesystem::object_time_type _new_time) -> void
+        const irods::filesystem::object_time_type _new_time) -> void
     {
         const auto replica_info = get_data_object_info(_comm, _logical_path, _leaf_resource_name).front();
 
@@ -764,7 +764,7 @@ namespace irods::experimental::replica
     template<typename rxComm>
     auto to_leaf_resource(
         rxComm& _comm,
-        const irods::experimental::filesystem::path& _logical_path,
+        const irods::filesystem::path& _logical_path,
         const replica_number_type _replica_number) -> std::optional<std::string>
     {
         try {
@@ -795,7 +795,7 @@ namespace irods::experimental::replica
     template<typename rxComm>
     auto to_replica_number(
         rxComm& _comm,
-        const irods::experimental::filesystem::path& _logical_path,
+        const irods::filesystem::path& _logical_path,
         const leaf_resource_name_type& _leaf_resource_name) -> std::optional<replica_number_type>
     {
         try {
@@ -827,7 +827,7 @@ namespace irods::experimental::replica
     template<typename rxComm>
     auto replica_exists(
         rxComm& _comm,
-        const irods::experimental::filesystem::path& _logical_path,
+        const irods::filesystem::path& _logical_path,
         const leaf_resource_name_type& _leaf_resource_name) -> bool
     {
         namespace gq2 = irods::experimental::genquery2;
@@ -843,7 +843,7 @@ namespace irods::experimental::replica
                            .limit(1)
                            .build();
 
-        const auto zone = irods::experimental::filesystem::zone_name(_logical_path);
+        const auto zone = irods::filesystem::zone_name(_logical_path);
         const auto rows = gq2::execute(_comm, q, zone ? std::string_view{*zone} : std::string_view{});
         return !rows.empty();
     } // replica_exists
@@ -861,7 +861,7 @@ namespace irods::experimental::replica
     template<typename rxComm>
     auto replica_exists(
         rxComm& _comm,
-        const irods::experimental::filesystem::path& _logical_path,
+        const irods::filesystem::path& _logical_path,
         const replica_number_type& _replica_number) -> bool
     {
         namespace gq2 = irods::experimental::genquery2;
@@ -877,7 +877,7 @@ namespace irods::experimental::replica
                            .limit(1)
                            .build();
 
-        const auto zone = irods::experimental::filesystem::zone_name(_logical_path);
+        const auto zone = irods::filesystem::zone_name(_logical_path);
         const auto rows = gq2::execute(_comm, q, zone ? std::string_view{*zone} : std::string_view{});
         return !rows.empty();
     } // replica_exists
@@ -896,7 +896,7 @@ namespace irods::experimental::replica
     template<typename rxComm>
     auto replica_status(
         rxComm& _comm,
-        const irods::experimental::filesystem::path& _logical_path,
+        const irods::filesystem::path& _logical_path,
         const replica_number_type _replica_number) -> int
     {
         const auto result = get_data_object_info(_comm, _logical_path, _replica_number).front();
@@ -922,7 +922,7 @@ namespace irods::experimental::replica
     template<typename rxComm>
     auto replica_status(
         rxComm& _comm,
-        const irods::experimental::filesystem::path& _logical_path,
+        const irods::filesystem::path& _logical_path,
         const leaf_resource_name_type& _leaf_resource_name) -> int
     {
         const auto result = get_data_object_info(_comm, _logical_path, _leaf_resource_name).front();
@@ -948,7 +948,7 @@ namespace irods::experimental::replica
     template<typename rxComm>
     auto get_replica_size_from_storage(
         rxComm& _comm,
-        const irods::experimental::filesystem::path& _logical_path,
+        const irods::filesystem::path& _logical_path,
         const replica_number_type _replica_number) -> rodsLong_t
     {
         const auto result = get_data_object_info(_comm, _logical_path, _replica_number).front();
@@ -973,7 +973,7 @@ namespace irods::experimental::replica
     template<typename rxComm>
     auto get_replica_size_from_storage(
         rxComm& _comm,
-        const irods::experimental::filesystem::path& _logical_path,
+        const irods::filesystem::path& _logical_path,
         const leaf_resource_name_type& _leaf_resource_name) -> rodsLong_t
     {
         const auto result = get_data_object_info(_comm, _logical_path, _leaf_resource_name).front();
@@ -999,7 +999,7 @@ namespace irods::experimental::replica
     template<typename rxComm>
     auto get_replica_size_from_storage(
         rxComm& _comm,
-        const irods::experimental::filesystem::path& _logical_path,
+        const irods::filesystem::path& _logical_path,
         std::string_view _resource_hierarchy,
         std::string_view _physical_path) -> rodsLong_t
     {

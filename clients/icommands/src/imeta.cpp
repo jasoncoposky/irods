@@ -144,7 +144,7 @@ void printGenQueryResults(rcComm_t *Conn,
 int showDataObj(char* name, char* attrName)
 {
     namespace gq2 = irods::experimental::genquery2;
-    namespace fs = irods::experimental::filesystem;
+    namespace fs = irods::filesystem;
 
     char fullName[MAX_NAME_LEN];
     /* Fourth 'time set' column is only used in longMode */

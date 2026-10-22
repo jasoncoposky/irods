@@ -189,7 +189,7 @@ mkDirForFilePath(
     const std::string&  filePath,
     const std::string&  hier,
     int                 mode ) {
-    const irods::experimental::filesystem::path p{filePath};
+    const irods::filesystem::path p{filePath};
     if (p.string_view().find('/') == std::string_view::npos) {
         rodsLog( LOG_NOTICE,
                  "mkDirForFilePath: invalid path for %s, status = %d",

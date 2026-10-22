@@ -26,7 +26,7 @@
 TEST_CASE("replica_open and replica_close")
 {
     // clang-format off
-    namespace fs = irods::experimental::filesystem;
+    namespace fs = irods::filesystem;
     using json   = nlohmann::json;
     // clang-format on
 
@@ -223,7 +223,7 @@ TEST_CASE("replica_open and replica_close")
 
 TEST_CASE("test mtime changes on open and close replica without writing to it")
 {
-    namespace fs = irods::experimental::filesystem;
+    namespace fs = irods::filesystem;
     namespace replica = irods::experimental::replica;
     using json = nlohmann::json;
     using namespace std::chrono_literals;

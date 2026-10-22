@@ -51,7 +51,7 @@ TEST_CASE("connection pool")
                                          cp_refresh_time};
 #pragma GCC diagnostic pop
 
-        namespace fs = irods::experimental::filesystem;
+        namespace fs = irods::filesystem;
 
         {
             auto conn = conn_pool.get_connection();
@@ -90,7 +90,7 @@ TEST_CASE("connection pool")
         irods::experimental::fully_qualified_username user{env.rodsUserName, env.rodsZone};
         irods::connection_pool conn_pool{cp_size, env.rodsHost, env.rodsPort, user};
 
-        namespace fs = irods::experimental::filesystem;
+        namespace fs = irods::filesystem;
 
         {
             auto conn = conn_pool.get_connection();
@@ -103,7 +103,7 @@ TEST_CASE("connection pool")
             REQUIRE_FALSE(conn);
             REQUIRE(static_cast<rcComm_t*>(conn) == nullptr);
             REQUIRE_THROWS((void) static_cast<rcComm_t&>(conn), "Invalid connection object");
-        } //namespace irods::experimental::filesystem;
+        } //namespace irods::filesystem;
 
         // Show that the released connection is no longer managed by the
         // connection pool, but is still usable.
@@ -214,7 +214,7 @@ TEST_CASE("connection pool")
 
         // Show that the proxied connection works by accessing the home collection of
         // the proxied user.
-        namespace fs = irods::experimental::filesystem;
+        namespace fs = irods::filesystem;
         REQUIRE(fs::client::exists(conn, fmt::format("/{}/home/{}", env.rodsZone, env.rodsUserName)));
     }
 

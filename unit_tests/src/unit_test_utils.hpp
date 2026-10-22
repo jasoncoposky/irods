@@ -2,6 +2,7 @@
 #define IRODS_UNIT_TEST_UTILS_HPP
 
 #include "irods/dataObjRepl.h"
+#include "irods/dstream.hpp"
 #include "irods/filesystem/path.hpp"
 #include "irods/irods_at_scope_exit.hpp"
 #include "irods/irods_configuration_keywords.hpp"
@@ -10,6 +11,7 @@
 #include "irods/replica_close.h"
 #include "irods/resource_administration.hpp"
 #include "irods/rodsClient.h"
+#include "irods/transport/default_transport.hpp"
 
 #include <unistd.h>
 
@@ -93,28 +95,21 @@ namespace unit_test_utils
     }
 
     inline auto create_empty_replica(RcComm& _comm,
-                                     const irods::experimental::filesystem::path& _path,
+                                     const irods::filesystem::path& _path,
                                      const std::string_view _resource_hierarchy = "") -> bool
     {
-        const auto path_str = _path.c_str();
+        namespace io = irods::experimental::io;
 
-        dataObjInp_t open_inp{};
-        irods::at_scope_exit free_open_inp{[&open_inp] { clearKeyVal(&open_inp.condInput); }};
-        std::snprintf(open_inp.objPath, sizeof(open_inp.objPath), "%s", path_str);
-        open_inp.openFlags = O_CREAT | O_TRUNC | O_WRONLY;
-
-        if (!_resource_hierarchy.empty()) {
-            irods::experimental::key_value_proxy{open_inp.condInput}[RESC_HIER_STR_KW] = _resource_hierarchy;
+        io::client::default_transport tp{_comm};
+        if (_resource_hierarchy.empty()) {
+            io::odstream out{tp, _path, std::ios::out | std::ios::trunc};
+            return out.is_open();
         }
 
-        if (const auto fd = rcDataObjOpen(&_comm, &open_inp); fd > 2) {
-            openedDataObjInp_t close_inp{};
-            irods::at_scope_exit free_close_inp{[&close_inp] { clearKeyVal(&close_inp.condInput); }};
-            close_inp.l1descInx = fd;
-            return rcDataObjClose(&_comm, &close_inp) == 0;
-        }
-
-        return false;
+        const auto pos = _resource_hierarchy.rfind(';');
+        const auto leaf = (pos == std::string_view::npos) ? _resource_hierarchy : _resource_hierarchy.substr(pos + 1);
+        io::odstream out{tp, _path, io::leaf_resource_name{std::string{leaf}}, std::ios::out | std::ios::trunc};
+        return out.is_open();
     } // create_empty_replica
 
     inline auto create_local_file(const std::string_view _path,

@@ -13,14 +13,12 @@
 extern "C" {
 #endif
 
-typedef int (*SetGenQueryInpFromPhysicalPath)(genQueryInp_t* out, const char* physical_path, const char* generic_function_argument);
-
 int
-fsckObj( rcComm_t *conn, rodsArguments_t *myRodsArgs, rodsPathInp_t *rodsPathInp, SetGenQueryInpFromPhysicalPath, const char* argument_for_SetGenQueryInpFromPhysicalPath);
+fsckObj( rcComm_t *conn, rodsArguments_t *myRodsArgs, rodsPathInp_t *rodsPathInp, const char* hostname );
 int
-fsckObjDir( rcComm_t *conn, rodsArguments_t *myRodsArgs, char *inpPath, SetGenQueryInpFromPhysicalPath, const char* argument_for_SetGenQueryInpFromPhysicalPath);
+fsckObjDir( rcComm_t *conn, rodsArguments_t *myRodsArgs, char *inpPath, const char* hostname );
 int
-chkObjConsistency( rcComm_t *conn, rodsArguments_t *myRodsArgs, char *inpPath, SetGenQueryInpFromPhysicalPath, const char* argument_for_SetGenQueryInpFromPhysicalPath);
+chkObjConsistency( rcComm_t *conn, rodsArguments_t *myRodsArgs, char *inpPath, const char* hostname );
 
 #ifdef __cplusplus
 }

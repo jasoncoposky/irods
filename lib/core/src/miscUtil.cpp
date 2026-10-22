@@ -407,7 +407,7 @@ mkdirForFilePath( char* filePath ) {
         return USER__NULL_INPUT_ERR;
     }
 
-    const irods::experimental::filesystem::path p{filePath};
+    const irods::filesystem::path p{filePath};
     const auto parent_sv = p.parent_path_view();
     if ( parent_sv.empty() || std::strchr( filePath, '/' ) == NULL ) {
         const int status = SYS_INVALID_FILE_PATH;
@@ -582,38 +582,6 @@ queryDataObjInColl( queryHandle_t *queryHandle, char *collection,
 }
 
 int
-setQueryInpForData( int flags, genQueryInp_t *genQueryInp ) {
-
-    if ( genQueryInp == NULL ) {
-        return USER__NULL_INPUT_ERR;
-    }
-
-    addInxIval( &genQueryInp->selectInp, COL_COLL_NAME, 1 );
-    addInxIval( &genQueryInp->selectInp, COL_DATA_NAME, 1 );
-    addInxIval( &genQueryInp->selectInp, COL_D_DATA_ID, 1 );
-    addInxIval( &genQueryInp->selectInp, COL_DATA_MODE, 1 );
-    addInxIval( &genQueryInp->selectInp, COL_DATA_SIZE, 1 );
-    addInxIval( &genQueryInp->selectInp, COL_D_MODIFY_TIME, 1 );
-    addInxIval( &genQueryInp->selectInp, COL_D_CREATE_TIME, 1 );
-    if ( ( flags & LONG_METADATA_FG ) != 0 ||
-            ( flags & VERY_LONG_METADATA_FG ) != 0 ) {
-        addInxIval( &genQueryInp->selectInp, COL_D_RESC_NAME, 1 );
-        addInxIval( &genQueryInp->selectInp, COL_D_RESC_HIER, 1 );
-        addInxIval( &genQueryInp->selectInp, COL_D_OWNER_NAME, 1 );
-        addInxIval( &genQueryInp->selectInp, COL_DATA_REPL_NUM, 1 );
-        addInxIval( &genQueryInp->selectInp, COL_D_REPL_STATUS, 1 );
-
-        if ( ( flags & VERY_LONG_METADATA_FG ) != 0 ) {
-            addInxIval( &genQueryInp->selectInp, COL_D_DATA_PATH, 1 );
-            addInxIval( &genQueryInp->selectInp, COL_D_DATA_CHECKSUM, 1 );
-            addInxIval( &genQueryInp->selectInp, COL_DATA_TYPE_NAME, 1 );
-        }
-    }
-
-    return 0;
-}
-
-int
 printTiming( rcComm_t *conn, char *objPath, rodsLong_t fileSize,
              char *localFile, struct timeval *startTime, struct timeval *endTime ) {
     struct timeval diffTime;
@@ -627,7 +595,7 @@ printTiming( rcComm_t *conn, char *objPath, rodsLong_t fileSize,
                       objPath ? objPath : "", status );
         return status;
     }
-    const irods::experimental::filesystem::path p{objPath};
+    const irods::filesystem::path p{objPath};
     const auto file_sv = p.object_name_view();
     if ( p.parent_path_view().size() >= MAX_NAME_LEN || file_sv.size() >= MAX_NAME_LEN ) {
         return USER_STRLEN_TOOLONG;
@@ -696,7 +664,7 @@ printTime( char *objPath, struct timeval *startTime,
                       objPath ? objPath : "", status );
         return status;
     }
-    const irods::experimental::filesystem::path p{objPath};
+    const irods::filesystem::path p{objPath};
     const auto file_sv = p.object_name_view();
     if ( p.parent_path_view().size() >= MAX_NAME_LEN || file_sv.size() >= MAX_NAME_LEN ) {
         return USER_STRLEN_TOOLONG;
@@ -724,7 +692,7 @@ printNoSync( char *objPath, rodsLong_t fileSize, char *reason ) {
     float sizeInMb;
 
     if ( objPath != NULL && std::strchr( objPath, '/' ) != NULL ) {
-        const irods::experimental::filesystem::path p{objPath};
+        const irods::filesystem::path p{objPath};
         const auto file_sv = p.object_name_view();
         if ( file_sv.size() < MAX_NAME_LEN ) {
             std::memcpy( myFile, file_sv.data(), file_sv.size() );
@@ -2247,7 +2215,7 @@ iCommandProgStat( operProgress_t *operProgress ) {
         rstrcpy( myFile, operProgress->curFileName, MAX_NAME_LEN );
     }
     else {
-        const irods::experimental::filesystem::path p{operProgress->curFileName};
+        const irods::filesystem::path p{operProgress->curFileName};
         const auto file_sv = p.object_name_view();
         if ( p.parent_path_view().size() >= MAX_NAME_LEN || file_sv.size() >= MAX_NAME_LEN ) {
             const int status = USER_STRLEN_TOOLONG;

@@ -29,7 +29,7 @@
     #include <filesystem>
 #endif // __cpp_lib_filesystem
 
-namespace fs = irods::experimental::filesystem;
+namespace fs = irods::filesystem;
 
 TEST_CASE("path construction", "[constructors]")
 {

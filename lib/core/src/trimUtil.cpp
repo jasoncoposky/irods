@@ -108,7 +108,7 @@ trimDataObjUtil( rcComm_t *conn, char *srcPath,
         return status;
     }
     if ( status >= 0 && rodsArgs->verbose == True ) {
-        const irods::experimental::filesystem::path p{srcPath};
+        const irods::filesystem::path p{srcPath};
         const auto myFile = p.object_name_view();
         if ( status > 0 ) {
             printf( "%.*s - a copy trimmed\n", static_cast<int>(myFile.size()), myFile.data() );

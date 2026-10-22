@@ -51,7 +51,7 @@ using namespace std::chrono_literals;
 
 // clang-format off
 namespace adm     = irods::experimental::administration;
-namespace fs      = irods::experimental::filesystem;
+namespace fs      = irods::filesystem;
 namespace replica = irods::experimental::replica;
 // clang-format on
 
@@ -999,7 +999,7 @@ TEST_CASE("rxDataObjChksum")
 {
     namespace ix = irods::experimental;
     namespace io = irods::experimental::io;
-    namespace fs = irods::experimental::filesystem;
+    namespace fs = irods::filesystem;
 
     load_client_api_plugins();
 

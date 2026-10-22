@@ -479,7 +479,7 @@ getCollUtil( rcComm_t **myConn, char *srcColl, char *targDir,
             }
         }
         else if ( collEnt.objType == COLL_OBJ_T ) {
-            const irods::experimental::filesystem::path coll_p{collEnt.collName};
+            const irods::filesystem::path coll_p{collEnt.collName};
             if (coll_p.string_view().find('/') == std::string_view::npos) {
                 status = SYS_INVALID_FILE_PATH;
                 rodsLogError( LOG_ERROR, status,

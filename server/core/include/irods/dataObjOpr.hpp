@@ -46,10 +46,6 @@ sortDataObjInfoRandom( dataObjInfo_t **dataObjInfoHead );
 int
 requeDataObjInfoByResc( dataObjInfo_t **dataObjInfoHead, const char *preferedResc,
                         int writeFlag, int topFlag );
-
-int
-initDataObjInfoQuery( dataObjInp_t *dataObjInp, genQueryInp_t *genQueryInp,
-                      int ignoreCondInput );
 int
 chkOrphanFile( rsComm_t *rsComm, const char *filePath, const char *rescName,
                dataObjInfo_t *dataObjInfo );

@@ -24,7 +24,7 @@
 #include <iostream>
 #include <thread>
 
-namespace fs = irods::experimental::filesystem;
+namespace fs = irods::filesystem;
 namespace id = irods::experimental::data_object;
 namespace io = irods::experimental::io;
 namespace ir = irods::experimental::replica;

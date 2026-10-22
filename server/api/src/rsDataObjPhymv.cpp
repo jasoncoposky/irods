@@ -48,7 +48,7 @@ namespace
     namespace ill = irods::logical_locking;
     namespace ir = irods::experimental::replica;
     namespace id = irods::experimental::data_object;
-    namespace fs = irods::experimental::filesystem;
+    namespace fs = irods::filesystem;
     namespace rat = irods::experimental::replica_access_table;
     namespace rst = irods::replica_state_table;
 

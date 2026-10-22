@@ -91,7 +91,7 @@ namespace
 {
     // clang-format off
     namespace ill           = irods::logical_locking;
-    namespace fs            = irods::experimental::filesystem;
+    namespace fs            = irods::filesystem;
     namespace id            = irods::experimental::data_object;
     namespace ir            = irods::experimental::replica;
     namespace rat           = irods::experimental::replica_access_table;
@@ -1304,7 +1304,7 @@ namespace
 
 int rsDataObjOpen(rsComm_t *rsComm, dataObjInp_t *dataObjInp)
 {
-    namespace fs = irods::experimental::filesystem;
+    namespace fs = irods::filesystem;
     namespace lq = irods::logical_quotas;
 
     if (!dataObjInp) {

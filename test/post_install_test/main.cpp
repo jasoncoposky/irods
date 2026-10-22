@@ -10,7 +10,7 @@
 #include <chrono>
 
 namespace io = irods::experimental::io;
-namespace fs = irods::experimental::filesystem;
+namespace fs = irods::filesystem;
 
 int cleanup(irods::connection_pool::connection_proxy& _conn, const fs::path& _path);
 

@@ -6,11 +6,14 @@
 #include <irods/rodsClient.h>
 #include <irods/rodsError.h>
 
+#include <fmt/format.h>
 #include <nlohmann/json.hpp>
 
+#include <array>
 #include <charconv>
 #include <cstdio>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #define BIG_STR 200
@@ -30,82 +33,56 @@ void usage();
  */
 int
 printNice( const char *inArg, int minLen, const char *Units ) {
-    int i, n, k, len;
-    int nextComma, firstComma, commaCount;
-    char niceString[40];
-    char firstPart[10];
-    const char *numberName;
-    char blanks[] = "                                        ";
-    len = strlen( inArg );
-    nextComma = len % 3;
-    if ( inArg[0] == '-' ) {
-        nextComma = ( len - 1 ) % 3;
-    }
+    static constexpr std::array<std::string_view, 9> scale_names{
+        "",
+        "thousand",
+        "million",
+        "billion",
+        "trillion",
+        "quadrillion",
+        "quintillion",
+        "sextillion",
+        "septillion"
+    };
+
+    const std::string_view input{inArg ? inArg : ""};
+    const int len = static_cast<int>(input.size());
+    int nextComma = ( !input.empty() && input.front() == '-' ) ? ( ( len - 1 ) % 3 ) : ( len % 3 );
     if ( nextComma == 0 ) {
         nextComma = 3;
     }
-    n = 0;
-    k = 0;
-    firstComma = 0;
-    commaCount = 0;
-    for ( i = 0; i < len; i++ ) {
-        niceString[n++] = inArg[i];
-        if ( firstComma == 0 ) {
-            firstPart[k++] = inArg[i];
+
+    std::string niceString;
+    niceString.reserve(input.size() + (input.size() / 3));
+    std::string firstPart;
+    bool firstComma = false;
+    std::size_t commaCount = 0;
+
+    for ( int i = 0; i < len; i++ ) {
+        niceString.push_back(input[i]);
+        if ( !firstComma ) {
+            firstPart.push_back(input[i]);
         }
-        if ( inArg[i] != '-' ) {
+        if ( input[i] != '-' ) {
             nextComma--;
         }
         if ( nextComma == 0 && i < len - 1 ) {
-            niceString[n++] = ',';
+            niceString.push_back(',');
             nextComma = 3;
-            firstComma = 1;
+            firstComma = true;
             commaCount++;
         }
     }
-    niceString[n] = '\0';
-    firstPart[k] = '\0';
-    numberName = "";
-    if ( commaCount == 1 ) {
-        numberName = "thousand";
-    }
-    if ( commaCount == 2 ) {
-        numberName = "million";
-    }
-    if ( commaCount == 3 ) {
-        numberName = "billion";
-    }
-    if ( commaCount == 4 ) {
-        numberName = "trillion";
-    }
-    if ( commaCount == 5 ) {
-        numberName = "quadrillion";
-    }
-    if ( commaCount == 6 ) {
-        numberName = "quintillion";
-    }
-    if ( commaCount == 7 ) {
-        numberName = "sextillion";
-    }
-    if ( commaCount == 8 ) {
-        numberName = "septillion";
-    }
-    if ( commaCount > 8 ) {
-        numberName = "very many";
-    }
-    len = strlen( niceString );
-    if ( len < minLen ) {
-        i = minLen - len;
-        blanks[i] = '\0';
-        printf( "%s", blanks );
-        blanks[i] = ' ';
-    }
+
+    const std::string_view numberName = ( commaCount < scale_names.size() )
+        ? scale_names[commaCount]
+        : std::string_view{"very many"};
+
     if ( commaCount == 0 ) {
-        printf( "%s %s", niceString, Units );
+        fmt::print( "{:>{}} {}", niceString, minLen, Units );
     }
     else {
-        printf( "%s (%s %s) %s", niceString,
-                firstPart, numberName, Units );
+        fmt::print( "{:>{}} ({} {}) {}", niceString, minLen, firstPart, numberName, Units );
     }
     return 0;
 }
@@ -237,24 +214,7 @@ int
 showUserUsage( char *userName, char *usersZone ) {
     namespace gq2 = irods::experimental::genquery2;
 
-    std::size_t k = 0;
-    char header[] =
-        "Resource      User            Data-stored (bytes)";
-    const char *pad[14] = {"             ",
-                           "            ",
-                           "           ",
-                           "          ",
-                           "         ",
-                           "        ",
-                           "       ",
-                           "      ",
-                           "     ",
-                           "    ",
-                           "   ",
-                           "  ",
-                           " ",
-                           ""
-                          };
+    constexpr std::string_view header = "Resource      User            Data-stored (bytes)";
 
     auto qb = gq2::builder::select({
         "QUOTA_USAGE_MODIFY_TIME",
@@ -279,41 +239,27 @@ showUserUsage( char *userName, char *usersZone ) {
         return status;
     }
 
-    printf( "%s\n", header );
+    fmt::print( "{}\n", header );
     long long localiTime = 0;
     for ( const auto& row : rows ) {
         if ( !row.is_array() || row.size() < 5 ) {
             continue;
         }
-        for ( std::size_t j = 1; j < 5; j++ ) {
-            const auto& val = row[j].get_ref<const std::string&>();
-            const char *tResult = val.c_str();
-            if ( j == 1 ) {
-                printf( "%s ", tResult );
-                k = val.size();
-            }
-            if ( j == 2 ) {
-                j++;
-                const auto& val2 = row[j].get_ref<const std::string&>();
-                const char *tResult2 = val2.c_str();
-                if ( strncmp( tResult2, usersZone, NAME_LEN ) == 0 ) {
-                    printf( "%s", tResult );
-                    k = val.size();
-                }
-                else {
-                    printf( "%s#%s", tResult, tResult2 );
-                    k = val.size() + 1 + val2.size();
-                }
-            }
-            if ( j == 4 ) {
-                printNice( tResult, 14, "" );
-                k = val.size();
-            }
-            if ( k < 14 ) {
-                printf( "%s", pad[k] );
-            }
+        const auto& resc_name = row[1].get_ref<const std::string&>();
+        const auto& user_name = row[2].get_ref<const std::string&>();
+        const auto& user_zone = row[3].get_ref<const std::string&>();
+        const auto& usage_str = row[4].get_ref<const std::string&>();
+
+        const auto user_display = ( std::strncmp( user_zone.c_str(), usersZone, NAME_LEN ) == 0 )
+            ? user_name
+            : fmt::format( "{}#{}", user_name, user_zone );
+
+        fmt::print( "{:<13} {:<13}", resc_name, user_display );
+        printNice( usage_str.c_str(), 14, "" );
+        if ( usage_str.size() < 13 ) {
+            fmt::print( "{:<{}}", "", 13 - usage_str.size() );
         }
-        printf( "\n" );
+        fmt::print( "\n" );
 
         const auto& time_val = row[0].get_ref<const std::string&>();
         long long itime = 0;

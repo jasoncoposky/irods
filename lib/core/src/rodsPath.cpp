@@ -112,7 +112,7 @@ parseRodsPath( rodsPath_t *rodsPath, rodsEnv *myRodsEnv ) {
         return 0;
     }
 
-    namespace fs = irods::experimental::filesystem;
+    namespace fs = irods::filesystem;
     fs::path combined;
 
     if ( in_sv.starts_with("~/") ) {
@@ -416,7 +416,7 @@ int getLastPathElement(char* _logical_path, char* _last_path_element)
         return 0;
     }
 
-    namespace fs = irods::experimental::filesystem;
+    namespace fs = irods::filesystem;
 
     if (std::string_view sv = _logical_path; !sv.empty() && fs::path::preferred_separator == sv.back()) {
         sv.remove_suffix(1);
@@ -537,7 +537,7 @@ char* escape_path(const char* _path)
 int has_trailing_path_separator(const char* path)
 {
     if (std::string_view p = path; !p.empty()) {
-        namespace fs = irods::experimental::filesystem;
+        namespace fs = irods::filesystem;
         return *std::rbegin(p) == fs::path::preferred_separator;
     }
 
@@ -550,7 +550,7 @@ void remove_trailing_path_separators(char* path)
         return;
     }
 
-    namespace fs = irods::experimental::filesystem;
+    namespace fs = irods::filesystem;
 
     const fs::path p = path;
 
@@ -571,7 +571,7 @@ void remove_trailing_path_separators(char* path)
 
 int has_prefix(const char* path, const char* prefix)
 {
-    namespace fs = irods::experimental::filesystem;
+    namespace fs = irods::filesystem;
 
     const fs::path parent = prefix;
     const fs::path child = path;

@@ -3,7 +3,7 @@
 
 #include <string>
 
-namespace irods::experimental::filesystem
+namespace irods::filesystem
 {
     enum class perms
     {
@@ -28,6 +28,6 @@ namespace irods::experimental::filesystem
         perms prms;
         std::string type;
     };
-} // namespace irods::experimental::filesystem
+} // namespace irods::filesystem
 
 #endif // IRODS_FILESYSTEM_PERMISSIONS_HPP

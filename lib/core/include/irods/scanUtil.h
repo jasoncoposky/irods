@@ -20,8 +20,6 @@ scanObjDir( rcComm_t *conn, rodsArguments_t *myRodsArgs, const char *inpPath, co
 int
 scanObjCol( rcComm_t *conn, rodsArguments_t *myRodsArgs, const char *inpPath );
 int
-statPhysFile( rcComm_t *conn, genQueryOut_t *genQueryOut );
-int
 chkObjExist( rcComm_t *conn, const char *inpPath, const char *hostname );
 int
 checkIsMount( rcComm_t *conn, const char *inpPath );

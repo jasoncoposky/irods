@@ -74,7 +74,7 @@ printGenQueryResults( rcComm_t *Conn, int status, const nlohmann::json& rows,
 int
 doLs( rcComm_t *Conn, char *objPath, int longOption ) {
     namespace gq2 = irods::experimental::genquery2;
-    namespace fs = irods::experimental::filesystem;
+    namespace fs = irods::filesystem;
 
     char *columnNames[] = {
         "data_name",

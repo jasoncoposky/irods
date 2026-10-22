@@ -8,7 +8,7 @@
 #include <utility>
 #include <vector>
 
-namespace irods::experimental::filesystem
+namespace irods::filesystem
 {
     enum class object_type
     {
@@ -132,6 +132,6 @@ namespace irods::experimental::filesystem
         std::vector<entity_permission> perms_;
         bool inheritance_;
     };
-} // namespace irods::experimental::filesystem
+} // namespace irods::filesystem
 
 #endif // IRODS_FILESYSTEM_OBJECT_STATUS_HPP

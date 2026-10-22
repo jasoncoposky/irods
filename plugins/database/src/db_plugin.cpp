@@ -83,7 +83,7 @@ using log_db        = irods::experimental::log::database;
 using log_sql       = irods::experimental::log::sql;
 using leaf_bundle_t = irods::resource_manager::leaf_bundle_t;
 namespace gq2       = irods::experimental::genquery2;
-namespace fs        = irods::experimental::filesystem;
+namespace fs        = irods::filesystem;
 using gq2::builder::col;
 // clang-format on
 

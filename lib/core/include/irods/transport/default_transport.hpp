@@ -208,13 +208,13 @@ namespace irods::experimental::io::NAMESPACE_IMPL
 
         ~basic_transport() override = default;
 
-        bool open(const irods::experimental::filesystem::path& _path,
+        bool open(const irods::filesystem::path& _path,
                   std::ios_base::openmode _mode) override
         {
             return open_impl(_path, _mode, [](auto&, auto&) {});
         }
 
-        bool open(const irods::experimental::filesystem::path& _path,
+        bool open(const irods::filesystem::path& _path,
                   const replica_number& _replica_number,
                   std::ios_base::openmode _mode) override
         {
@@ -227,7 +227,7 @@ namespace irods::experimental::io::NAMESPACE_IMPL
             });
         }
 
-        bool open(const irods::experimental::filesystem::path& _path,
+        bool open(const irods::filesystem::path& _path,
                   const root_resource_name& _root_resource_name,
                   std::ios_base::openmode _mode) override
         {
@@ -237,7 +237,7 @@ namespace irods::experimental::io::NAMESPACE_IMPL
             });
         }
 
-        bool open(const irods::experimental::filesystem::path& _path,
+        bool open(const irods::filesystem::path& _path,
                   const leaf_resource_name& _leaf_resource_name,
                   std::ios_base::openmode _mode) override
         {
@@ -248,7 +248,7 @@ namespace irods::experimental::io::NAMESPACE_IMPL
         }
 
         bool open(const replica_token& _replica_token,
-                  const irods::experimental::filesystem::path& _path,
+                  const irods::filesystem::path& _path,
                   const replica_number& _replica_number,
                   std::ios_base::openmode _mode) override
         {
@@ -263,7 +263,7 @@ namespace irods::experimental::io::NAMESPACE_IMPL
         }
 
         bool open(const replica_token& _replica_token,
-                  const irods::experimental::filesystem::path& _path,
+                  const irods::filesystem::path& _path,
                   const leaf_resource_name& _leaf_resource_name,
                   std::ios_base::openmode _mode) override
         {

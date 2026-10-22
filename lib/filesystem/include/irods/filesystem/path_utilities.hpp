@@ -13,7 +13,7 @@
 #include <string_view>
 #include <system_error>
 
-namespace irods::experimental::filesystem
+namespace irods::filesystem
 {
     /// Returns whether the path element \p _c represents the preferred path separator.
     ///
@@ -93,6 +93,6 @@ namespace irods::experimental::filesystem
             throw filesystem_error{"empty path", _p, ec};
         }
     }
-} // namespace irods::experimental::filesystem
+} // namespace irods::filesystem
 
 #endif // IRODS_FILESYSTEM_PATH_UTILITIES_HPP

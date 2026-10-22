@@ -126,14 +126,14 @@ TEST_CASE("parallel transfer engine")
     auto conn_pool = irods::make_connection_pool(stream_count);
 
     // Create the sandbox collection.
-    const auto sandbox = ix::filesystem::path{env.rodsHome} / "unit_testing_sandbox";
+    const auto sandbox = irods::filesystem::path{env.rodsHome} / "unit_testing_sandbox";
 
-    if (!ix::filesystem::client::exists(conn_pool->get_connection(), sandbox)) {
-        ix::filesystem::client::create_collection(conn_pool->get_connection(), sandbox);
+    if (!irods::filesystem::client::exists(conn_pool->get_connection(), sandbox)) {
+        irods::filesystem::client::create_collection(conn_pool->get_connection(), sandbox);
     }
 
     irods::at_scope_exit remove_sandbox{[conn_pool, &sandbox] {
-        namespace fs = ix::filesystem;
+        namespace fs = irods::filesystem;
         fs::client::remove_all(conn_pool->get_connection(), sandbox, fs::remove_options::no_trash);
     }};
 
@@ -197,7 +197,7 @@ TEST_CASE("stream factory utilities")
 
     SECTION("#5851: stream factory utilities support targeting a specific replica")
     {
-        namespace fs = irods::experimental::filesystem;
+        namespace fs = irods::filesystem;
 
         const std::string_view resc_name = "5851_ufs_resc";
 

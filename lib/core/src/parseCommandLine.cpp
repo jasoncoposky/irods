@@ -40,7 +40,7 @@ parseCmdLineOpt( int argc, char **argv, const char *optString, int includeLong,
     if ( argv != NULL && argv[0] != NULL ) {
         /* set SP_OPTION to argv[0] so it can be passed to server */
         char child[MAX_NAME_LEN]{};
-        const irods::experimental::filesystem::path p{argv[0]};
+        const irods::filesystem::path p{argv[0]};
         const auto child_sv = p.object_name_view();
         if ( child_sv.size() < MAX_NAME_LEN ) {
             std::memcpy( child, child_sv.data(), child_sv.size() );

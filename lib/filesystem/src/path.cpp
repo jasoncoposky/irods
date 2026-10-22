@@ -11,7 +11,7 @@
 #include <boost/algorithm/string.hpp>
 #include <boost/container_hash/hash.hpp>
 
-namespace irods::experimental::filesystem
+namespace irods::filesystem
 {
     namespace
     {
@@ -598,4 +598,4 @@ namespace irods::experimental::filesystem
 
         return std::nullopt;
     }
-} // namespace irods::experimental::filesystem
+} // namespace irods::filesystem

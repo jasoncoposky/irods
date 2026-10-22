@@ -9,7 +9,6 @@
 #include "irods/miscUtil.h"
 #include "irods/modAVUMetadata.h"
 #include "irods/rsIcatOpr.hpp"
-#include "irods/rsGenQuery.hpp"
 #include "irods/rsModAVUMetadata.hpp"
 #include "irods/irods_resource_redirect.hpp"
 #include "irods/irods_hierarchy_parser.hpp"
@@ -24,31 +23,10 @@
 
 namespace
 {
-    namespace fs = irods::experimental::filesystem;
+    namespace fs = irods::filesystem;
     namespace gq2 = irods::experimental::genquery2;
     using gq2::builder::col;
 } // anonymous namespace
-
-int
-svrCloseQueryOut( rsComm_t *rsComm, genQueryOut_t *genQueryOut ) {
-    genQueryInp_t genQueryInp;
-    genQueryOut_t *junk = NULL;
-    int status;
-
-    if ( genQueryOut->continueInx <= 0 ) {
-        return 0;
-    }
-
-    memset( &genQueryInp, 0, sizeof( genQueryInp_t ) );
-
-    /* maxRows = 0 specifies that the genQueryOut should be closed */
-    genQueryInp.maxRows = 0;;
-    genQueryInp.continueInx = genQueryOut->continueInx;
-
-    status = rsGenQuery( rsComm, &genQueryInp, &junk );
-
-    return status;
-}
 
 int
 isData(rsComm_t *rsComm, char *objName, rodsLong_t *dataId) {

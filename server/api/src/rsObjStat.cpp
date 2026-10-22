@@ -161,7 +161,7 @@ _rsObjStat( rsComm_t *rsComm, dataObjInp_t *dataObjInp,
 int
 dataObjStat( rsComm_t *rsComm, dataObjInp_t *dataObjInp,
              rodsObjStat_t **rodsObjStatOut ) {
-    namespace fs = irods::experimental::filesystem;
+    namespace fs = irods::filesystem;
     namespace gq2 = irods::experimental::genquery2;
 
     if (!rsComm || !dataObjInp || !rodsObjStatOut) {

@@ -52,7 +52,7 @@ void usage( char *subOpt );
 
 namespace {
 
-namespace fs = irods::experimental::filesystem;
+namespace fs = irods::filesystem;
 using attrs_t = std::vector<std::pair<std::string_view, std::string_view>>;
 const attrs_t genquery_attrs = {
     {"COLL_ID", COLL_ID_KW}, // not modifiable with iadmin modrepl

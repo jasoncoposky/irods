@@ -41,7 +41,7 @@ int lsUtil(rcComm_t *conn,
         int status = 0;
         rstrcpy( zoneHint, rodsPathInp->srcPath[i].outPath, MAX_NAME_LEN );
 
-        namespace fs = irods::experimental::filesystem;
+        namespace fs = irods::filesystem;
         namespace gq2 = irods::experimental::genquery2;
         using gq2::builder::col;
 
@@ -144,7 +144,7 @@ int lsDataObjUtilLong(RcComm* conn, char* srcPath, RodsArguments* rodsArgs, GenQ
     genQueryOut_t* genQueryOut{};
     irods::at_scope_exit cleanup{[&genQueryOut] { freeGenQueryOut(&genQueryOut); }};
 
-    namespace fs = irods::experimental::filesystem;
+    namespace fs = irods::filesystem;
     namespace gq2 = irods::experimental::genquery2;
     using gq2::builder::col;
 

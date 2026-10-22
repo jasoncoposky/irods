@@ -359,7 +359,7 @@ setPathForRandomScheme( char *objPath, const char *vaultPath, char *userName,
     dir1 = myRandom & 0xf;
     dir2 = ( myRandom >> 4 ) & 0xf;
 
-    const irods::experimental::filesystem::path p{objPath ? objPath : ""};
+    const irods::filesystem::path p{objPath ? objPath : ""};
     if (!objPath || p.string_view().find('/') == std::string_view::npos) {
         rodsLog( LOG_ERROR,
                  "setPathForRandomScheme: invalid path for %s, status = %d",
@@ -1247,7 +1247,7 @@ rsMkOrphanPath( rsComm_t *rsComm, char *objPath, char *orphanPath ) {
     int len = 0;
     collInp_t collCreateInp;
 
-    const irods::experimental::filesystem::path p{objPath ? objPath : ""};
+    const irods::filesystem::path p{objPath ? objPath : ""};
     if (!objPath || p.string_view().find('/') == std::string_view::npos) {
         rodsLog( LOG_ERROR,
                  "rsMkOrphanPath: invalid path for %s, status = %d",

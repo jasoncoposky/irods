@@ -15,8 +15,8 @@
 
 namespace irods::experimental::api {
 
-    namespace fs   = irods::experimental::filesystem;
-    namespace fscl = irods::experimental::filesystem::client;
+    namespace fs   = irods::filesystem;
+    namespace fscl = irods::filesystem::client;
 
     class parallel_filesystem_operation : public base {
         public:

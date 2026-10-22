@@ -2680,7 +2680,7 @@ _rsCollRsync( rsComm_t *rsComm, dataObjInp_t *dataObjInp,
             }
         }
         else if ( collEnt->objType == COLL_OBJ_T ) {
-            const irods::experimental::filesystem::path coll_p{collEnt->collName};
+            const irods::filesystem::path coll_p{collEnt->collName};
             const auto child_sv = coll_p.object_name_view();
             if ( std::strchr( collEnt->collName, '/' ) == NULL ||
                  coll_p.parent_path_view().size() >= MAX_NAME_LEN ||

@@ -266,7 +266,7 @@ rsRsyncDataToData( rsComm_t *rsComm, dataObjInp_t *dataObjInp ) {
         clearKeyVal( &dataObjCopyInp.srcDataObjInp.condInput );
         return status;
     }
-    if (irods::experimental::filesystem::server::is_data_object(*rsComm, destObjPath)) {
+    if (irods::filesystem::server::is_data_object(*rsComm, destObjPath)) {
         /* use rsDataObjChksum because the path could be in a remote zone */
         status = rsDataObjChksum(rsComm, &dataObjCopyInp.destDataObjInp, &destChksumStr);
 

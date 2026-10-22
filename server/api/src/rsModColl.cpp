@@ -83,7 +83,7 @@ namespace
 
 auto rsModColl(rsComm_t* rsComm, collInp_t* modCollInp) -> int
 {
-    namespace fs = irods::experimental::filesystem;
+    namespace fs = irods::filesystem;
     namespace ic = irods::experimental::catalog;
     namespace ua = irods::experimental::administration;
 

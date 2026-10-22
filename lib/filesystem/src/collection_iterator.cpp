@@ -30,7 +30,7 @@
 #include <cstring>
 #include <string_view>
 
-namespace irods::experimental::filesystem::NAMESPACE_IMPL
+namespace irods::filesystem::NAMESPACE_IMPL
 {
     namespace
     {
@@ -491,4 +491,4 @@ namespace irods::experimental::filesystem::NAMESPACE_IMPL
             ctx_->close();
         }
     }
-} // namespace irods::experimental::filesystem::NAMESPACE_IMPL
+} // namespace irods::filesystem::NAMESPACE_IMPL

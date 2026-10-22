@@ -117,7 +117,7 @@ int chksumDataObjUtil(rcComm_t* conn,
         return status;
     }
 
-    const irods::experimental::filesystem::path p{dataObjInp->objPath};
+    const irods::filesystem::path p{dataObjInp->objPath};
     const auto myFile = p.object_name_view();
     status = (p.string_view().find('/') == std::string_view::npos) ? SYS_INVALID_FILE_PATH : 0;
 

@@ -13,6 +13,8 @@
 #include "irods/irods_stacktrace.hpp"
 #include "irods/irods_buffer_encryption.hpp"
 #include "irods/irods_client_server_negotiation.hpp"
+#include "irods/dstream.hpp"
+#include "irods/transport/default_transport.hpp"
 
 #include <boost/thread/thread.hpp>
 #include <boost/thread/scoped_thread.hpp>
@@ -22,6 +24,7 @@
 #include <cstring>
 #include <filesystem>
 #include <iomanip>
+#include <iostream>
 #include <fstream>
 
 int
@@ -1673,49 +1676,19 @@ getSeg( rcComm_t *conn, rodsLong_t segSize, int localFd,
 
 int
 catDataObj( rcComm_t *conn, char *objPath ) {
-    dataObjInp_t dataObjOpenInp;
-    openedDataObjInp_t dataObjCloseInp;
-    openedDataObjInp_t dataObjReadInp;
-    bytesBuf_t dataObjReadOutBBuf;
-    int l1descInx;
-    int bytesRead;
-
-
-    memset( &dataObjOpenInp, 0, sizeof( dataObjOpenInp ) );
-    rstrcpy( dataObjOpenInp.objPath, objPath, MAX_NAME_LEN );
-    dataObjOpenInp.openFlags = O_RDONLY;
-
-    l1descInx = rcDataObjOpen( conn, &dataObjOpenInp );
-    if ( l1descInx < 0 ) {
-        rodsLogError( LOG_ERROR, l1descInx,
-                      "catDataObj: rcDataObjOpen error for %s", objPath );
-        return l1descInx;
+    if ( !conn || !objPath ) {
+        return USER__NULL_INPUT_ERR;
     }
 
-    rodsEnv rods_env;
-    if ( int status = getRodsEnv( &rods_env ) ) {
-        rodsLog( LOG_ERROR, "getRodsEnv failed in %s with status %s", __FUNCTION__, status );
-        return status;
+    namespace io = irods::experimental::io;
+
+    io::client::default_transport tp{*conn};
+    io::idstream in{tp, objPath};
+    if ( !in ) {
+        rodsLog( LOG_ERROR, "catDataObj: failed to open %s", objPath );
+        return SYS_INVALID_INPUT_PARAM;
     }
-    size_t trans_buff_sz = rods_env.irodsTransBufferSizeForParaTrans * 1024 * 1024;
-    std::memset(&dataObjReadInp, 0, sizeof(dataObjReadInp));
-    dataObjReadOutBBuf.buf = malloc( trans_buff_sz + 1 );
-    dataObjReadOutBBuf.len = trans_buff_sz + 1;
-    dataObjReadInp.l1descInx = l1descInx;
-    dataObjReadInp.len = trans_buff_sz;
 
-    while ( ( bytesRead = rcDataObjRead( conn, &dataObjReadInp,
-                                         &dataObjReadOutBBuf ) ) > 0 ) {
-        char *buf = ( char * ) dataObjReadOutBBuf.buf;
-        buf[bytesRead] = '\0';
-        printf( "%s", buf );
-    }
-    free( dataObjReadOutBBuf.buf );
-    printf( "\n" );
-    memset( &dataObjCloseInp, 0, sizeof( dataObjCloseInp ) );
-    dataObjCloseInp.l1descInx = l1descInx;
-
-    rcDataObjClose( conn, &dataObjCloseInp );
-
+    std::cout << in.rdbuf() << '\n' << std::flush;
     return 0;
 }

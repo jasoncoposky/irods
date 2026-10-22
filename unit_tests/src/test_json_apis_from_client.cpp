@@ -25,7 +25,7 @@
 
 
 namespace ix = irods::experimental;
-namespace fs = irods::experimental::filesystem;
+namespace fs = irods::filesystem;
 
 using nlohmann::json;
 using namespace std::string_literals;
@@ -76,7 +76,7 @@ TEST_CASE("test atomic metadata with BinBytesBuf", "[xml]")
     REQUIRE(fs::client::create_collection(conn, sandbox));
 
     irods::at_scope_exit remove_sandbox{[&conn, &sandbox] {
-        namespace fs = ix::filesystem;
+        namespace fs = irods::filesystem;
         fs::client::remove_all(conn, sandbox, fs::remove_options::no_trash);
     }};
 

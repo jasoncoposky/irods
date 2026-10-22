@@ -30,7 +30,7 @@ namespace irods::experimental
         /// \param[in] _path A logical path representing a collection or data object.
         /// \param[in] _perm The permissions to set on the collection or data object for the client.
         ///
-        /// \exception irods::experimental::filesystem::filesystem_error
+        /// \exception irods::filesystem::filesystem_error
         scoped_permission(RsComm& _comm, const filesystem::path& _path, filesystem::perms _perm)
             : comm_{_comm}
             , path_{_path}

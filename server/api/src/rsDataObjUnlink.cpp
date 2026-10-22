@@ -376,7 +376,7 @@ int rsMvDataObjToTrash(
 int rsDataObjUnlink(rsComm_t* rsComm, dataObjInp_t* dataObjUnlinkInp)
 {
     try {
-        namespace fs = irods::experimental::filesystem;
+        namespace fs = irods::filesystem;
 
         const auto ec = rsDataObjUnlink_impl(rsComm, dataObjUnlinkInp);
         const auto parent_path = fs::path{dataObjUnlinkInp->objPath}.parent_path();

@@ -15,7 +15,7 @@
 
 TEST_CASE("data_object_modify_info")
 {
-    namespace fs = irods::experimental::filesystem;
+    namespace fs = irods::filesystem;
     namespace io = irods::experimental::io;
 
     auto& api_table = irods::get_client_api_table();

@@ -22,7 +22,7 @@
 
 #include <unistd.h>
 
-namespace fs = irods::experimental::filesystem;
+namespace fs = irods::filesystem;
 namespace io = irods::experimental::io;
 
 auto get_hostname() noexcept -> std::string;

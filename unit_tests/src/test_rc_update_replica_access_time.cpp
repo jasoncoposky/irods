@@ -30,7 +30,7 @@
 #include <tuple>
 #include <utility>
 
-namespace fs = irods::experimental::filesystem;
+namespace fs = irods::filesystem;
 namespace adm = irods::experimental::administration;
 namespace io = irods::experimental::io;
 

@@ -11,7 +11,7 @@
 #include <ostream>
 #include <optional>
 
-namespace irods::experimental::filesystem
+namespace irods::filesystem
 {
     class path
     {
@@ -410,6 +410,11 @@ namespace irods::experimental::filesystem
 
     auto zone_name_view(const path& _p) noexcept -> std::optional<std::string_view>;
     auto zone_name(const path& _p) -> std::optional<std::string>;
-} // namespace irods::experimental::filesystem
+} // namespace irods::filesystem
+
+namespace irods::experimental
+{
+    namespace filesystem = ::irods::filesystem;
+} // namespace irods::experimental
 
 #endif // IRODS_FILESYSTEM_PATH_HPP

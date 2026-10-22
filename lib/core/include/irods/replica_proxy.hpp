@@ -358,7 +358,7 @@ namespace irods::experimental::replica
             DataObjInfo& _doi,
             const std::vector<std::string>& _info) -> void
         {
-            namespace fs = irods::experimental::filesystem;
+            namespace fs = irods::filesystem;
             using index = genquery_column_index;
 
             try {
@@ -439,7 +439,7 @@ namespace irods::experimental::replica
     template<typename rxComm>
     static auto make_replica_proxy(
         rxComm& _comm,
-        const irods::experimental::filesystem::path& _logical_path,
+        const irods::filesystem::path& _logical_path,
         const replica_number_type _replica_number)
         -> std::pair<replica_proxy_t, lifetime_manager<DataObjInfo>>
     {
@@ -467,7 +467,7 @@ namespace irods::experimental::replica
     template<typename rxComm>
     static auto make_replica_proxy(
         rxComm& _comm,
-        const irods::experimental::filesystem::path& _logical_path,
+        const irods::filesystem::path& _logical_path,
         const leaf_resource_name_type _leaf_resource_name)
         -> std::pair<replica_proxy_t, lifetime_manager<DataObjInfo>>
     {
@@ -630,7 +630,7 @@ namespace irods::experimental::replica
     template<typename doi_type>
     static auto to_json(const replica_proxy<doi_type>& _proxy) -> nlohmann::json
     {
-        namespace fs = irods::experimental::filesystem;
+        namespace fs = irods::filesystem;
 
         // clang-format off
         return nlohmann::json{

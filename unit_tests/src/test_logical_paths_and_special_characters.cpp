@@ -13,7 +13,7 @@ TEST_CASE("logical paths and special characters")
 {
     using namespace std::string_literals;
 
-    namespace fs = irods::experimental::filesystem;
+    namespace fs = irods::filesystem;
 
     rodsEnv env;
     REQUIRE(getRodsEnv(&env) == 0);

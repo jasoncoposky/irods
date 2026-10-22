@@ -26,7 +26,7 @@
 #include <string_view>
 
 // clang-format off
-namespace fs      = irods::experimental::filesystem;
+namespace fs      = irods::filesystem;
 namespace replica = irods::experimental::replica;
 // clang-format on
 

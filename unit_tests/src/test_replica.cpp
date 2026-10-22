@@ -16,7 +16,7 @@
 #include <string_view>
 #include <thread>
 
-namespace fs = irods::experimental::filesystem;
+namespace fs = irods::filesystem;
 namespace io = irods::experimental::io;
 namespace replica = irods::experimental::replica;
 namespace data_object = irods::experimental::data_object;

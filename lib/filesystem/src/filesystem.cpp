@@ -61,7 +61,7 @@
 #include <utility>
 #include <vector>
 
-namespace irods::experimental::filesystem::NAMESPACE_IMPL
+namespace irods::filesystem::NAMESPACE_IMPL
 {
     namespace
     {
@@ -1952,4 +1952,4 @@ namespace irods::experimental::filesystem::NAMESPACE_IMPL
             throw filesystem_error{"cannot remove metadata", _p, ec};
         }
     }
-} // namespace irods::experimental::filesystem::NAMESPACE_IMPL
+} // namespace irods::filesystem::NAMESPACE_IMPL

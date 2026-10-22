@@ -126,7 +126,7 @@ namespace irods::experimental::metadata
 
     auto get(rxComm_t& _comm, entity_type _et, const std::string& _tgt) -> std::vector<avu>
     {
-        namespace fs = irods::experimental::filesystem;
+        namespace fs = irods::filesystem;
         namespace gq2 = irods::experimental::genquery2;
         using gq2::builder::col;
 

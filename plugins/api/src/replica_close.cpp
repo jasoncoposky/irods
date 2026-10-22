@@ -56,7 +56,7 @@
 namespace
 {
     // clang-format off
-    namespace fs  = irods::experimental::filesystem;
+    namespace fs  = irods::filesystem;
     namespace ill = irods::logical_locking;
     namespace ir  = irods::experimental::replica;
     namespace rst = irods::replica_state_table;

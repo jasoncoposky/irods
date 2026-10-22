@@ -22,7 +22,7 @@ using log_api = irods::experimental::log::api;
 
 int rsModAccessControl(rsComm_t* rsComm, modAccessControlInp_t* modAccessControlInp)
 {
-    namespace fs = irods::experimental::filesystem;
+    namespace fs = irods::filesystem;
     namespace ic = irods::experimental::catalog;
     namespace ua = irods::experimental::administration;
 

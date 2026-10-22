@@ -26,7 +26,7 @@ namespace irods
     ///
     /// \since 4.2.9
     auto find_l1desc(
-       const irods::experimental::filesystem::path& _logical_path,
+       const irods::filesystem::path& _logical_path,
        std::string_view _resource_hierarchy) -> l1desc_t*;
 }; // namespace irods
 

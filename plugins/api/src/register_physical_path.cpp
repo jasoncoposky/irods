@@ -205,7 +205,7 @@ namespace
         const std::string_view _resc,
         BytesBuf** _out)
     {
-        namespace fs = irods::experimental::filesystem;
+        namespace fs = irods::filesystem;
 
         auto phy_path_reg_cond_input = irods::experimental::make_key_value_proxy(_inp->condInput);
 
@@ -350,7 +350,7 @@ namespace
 
     auto filePathReg(RsComm* _comm, DataObjInp* _inp, const std::string_view _resc, BytesBuf** _out) -> int
     {
-        namespace fs = irods::experimental::filesystem;
+        namespace fs = irods::filesystem;
 
         auto phy_path_reg_cond_input = irods::experimental::make_key_value_proxy(_inp->condInput);
 
@@ -1244,7 +1244,7 @@ namespace
             return SYS_NO_API_PRIV;
         }
 
-        namespace fs = irods::experimental::filesystem;
+        namespace fs = irods::filesystem;
 
         // Also covers checking of empty paths.
         if (fs::path{_inp->objPath}.object_name().empty()) {

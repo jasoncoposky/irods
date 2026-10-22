@@ -40,7 +40,7 @@
 #include <chrono>
 
 namespace ix = irods::experimental;
-namespace fs = irods::experimental::filesystem;
+namespace fs = irods::filesystem;
 
 namespace
 {

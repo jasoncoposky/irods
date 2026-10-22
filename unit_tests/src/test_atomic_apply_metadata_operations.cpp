@@ -14,7 +14,7 @@
 
 using json = nlohmann::json;
 
-namespace fs = irods::experimental::filesystem;
+namespace fs = irods::filesystem;
 
 extern "C" auto load_client_api_plugins() -> void;
 

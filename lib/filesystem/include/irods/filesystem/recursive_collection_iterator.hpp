@@ -21,7 +21,7 @@
 #include <stack>
 #include <system_error>
 
-namespace irods::experimental::filesystem::NAMESPACE_IMPL
+namespace irods::filesystem::NAMESPACE_IMPL
 {
     class recursive_collection_iterator
     {
@@ -130,6 +130,6 @@ namespace irods::experimental::filesystem::NAMESPACE_IMPL
     {
         return {};
     }
-} // namespace irods::experimental::filesystem::NAMESPACE_IMPL
+} // namespace irods::filesystem::NAMESPACE_IMPL
 
 #endif // IRODS_FILESYSTEM_RECURSIVE_COLLECTION_ITERATOR_HPP_INCLUDE_HEADER

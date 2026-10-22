@@ -57,7 +57,7 @@
 namespace
 {
     // clang-format off
-    namespace fs  = irods::experimental::filesystem;
+    namespace fs  = irods::filesystem;
     namespace ic  = irods::experimental::catalog;
     namespace log = irods::experimental::log;
 

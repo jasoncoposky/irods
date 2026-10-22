@@ -11,39 +11,6 @@
 
 void usage();
 
-static int set_genquery_inp_from_physical_path_using_hostname(genQueryInp_t* genquery_inp, const char* physical_path, const char* hostname) {
-    char condStr[MAX_NAME_LEN];
-    memset(genquery_inp, 0, sizeof(*genquery_inp));
-    addInxIval(&genquery_inp->selectInp, COL_DATA_NAME, 1);
-    addInxIval(&genquery_inp->selectInp, COL_COLL_NAME, 1);
-    addInxIval(&genquery_inp->selectInp, COL_DATA_SIZE, 1);
-    addInxIval(&genquery_inp->selectInp, COL_D_DATA_CHECKSUM, 1);
-    genquery_inp->maxRows = MAX_SQL_ROWS;
-
-    snprintf(condStr, sizeof(condStr), "='%s'", physical_path);
-    addInxVal(&genquery_inp->sqlCondInp, COL_D_DATA_PATH, condStr);
-    snprintf(condStr, sizeof(condStr), "like '%s%s' || ='%s'", hostname, "%", hostname);
-    addInxVal(&genquery_inp->sqlCondInp, COL_R_LOC, condStr);
-    return 0;
-}
-
-static int set_genquery_inp_from_physical_path_using_resource_hierarchy(genQueryInp_t* genquery_inp, const char* physical_path, const char* resource_hierarchy) {
-    char condStr[MAX_NAME_LEN];
-    memset(genquery_inp, 0, sizeof(*genquery_inp));
-    addInxIval(&genquery_inp->selectInp, COL_DATA_NAME, 1);
-    addInxIval(&genquery_inp->selectInp, COL_COLL_NAME, 1);
-    addInxIval(&genquery_inp->selectInp, COL_DATA_SIZE, 1);
-    addInxIval(&genquery_inp->selectInp, COL_D_DATA_CHECKSUM, 1);
-    genquery_inp->maxRows = MAX_SQL_ROWS;
-
-    snprintf(condStr, sizeof(condStr), "='%s'", physical_path);
-    addInxVal(&genquery_inp->sqlCondInp, COL_D_DATA_PATH, condStr);
-    snprintf(condStr, sizeof(condStr), "='%s'", resource_hierarchy);
-    addInxVal(&genquery_inp->sqlCondInp, COL_D_RESC_HIER, condStr);
-    return 0;
-}
-
-
 int
 main( int argc, char **argv ) {
 
@@ -110,7 +77,7 @@ main( int argc, char **argv ) {
     }
 
     if (myRodsArgs.resource) {
-        status = fsckObj( conn, &myRodsArgs, &rodsPathInp, set_genquery_inp_from_physical_path_using_resource_hierarchy, myRodsArgs.resourceString);
+        status = fsckObj( conn, &myRodsArgs, &rodsPathInp, nullptr );
     } else {
         char hostname[LONG_NAME_LEN];
         status = gethostname(hostname, sizeof(hostname));
@@ -118,7 +85,7 @@ main( int argc, char **argv ) {
             printf("cannot resolve server name, aborting! errno [%d]\n", errno);
             return 4;
         }
-        status = fsckObj( conn, &myRodsArgs, &rodsPathInp, set_genquery_inp_from_physical_path_using_hostname, hostname);
+        status = fsckObj( conn, &myRodsArgs, &rodsPathInp, hostname );
     }
 
     printErrorStack( conn->rError );

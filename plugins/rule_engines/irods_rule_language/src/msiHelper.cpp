@@ -307,7 +307,7 @@ msiSplitPath( msParam_t *inpPath,  msParam_t *outParentColl,
                      in_str ? in_str : "", rei->status );
         }
         else {
-            const irods::experimental::filesystem::path p{in_str};
+            const irods::filesystem::path p{in_str};
             const auto parent_sv = p.parent_path_view();
             const auto child_sv = p.object_name_view();
             if ( parent_sv.size() >= MAX_NAME_LEN || child_sv.size() >= MAX_NAME_LEN ) {

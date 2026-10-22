@@ -482,7 +482,7 @@ namespace irods::experimental::catalog::access_control
 
         const bool is_modify = (_access_level.rfind("modify", 0) == 0);
         const auto zone_path = fmt::format("/{}", _user_zone);
-        irods::experimental::filesystem::path coll_path{coll_name_opt.value()};
+        irods::filesystem::path coll_path{coll_name_opt.value()};
 
         std::string ticket_id;
         int64_t uses_limit = 0;
@@ -626,7 +626,7 @@ namespace irods::experimental::catalog::access_control
             return CAT_NO_ROWS_FOUND;
         }
 
-        irods::experimental::filesystem::path coll_path{coll_name_opt.value()};
+        irods::filesystem::path coll_path{coll_name_opt.value()};
         std::string ticket_id;
         int64_t write_byte_count = 0;
         int64_t write_byte_limit = 0;

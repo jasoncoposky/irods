@@ -22,7 +22,7 @@
 #ifndef IRODS_FILESYSTEM_COLLECTION_ENTRY_CLASS_DEFINED
 #define IRODS_FILESYSTEM_COLLECTION_ENTRY_CLASS_DEFINED
 
-namespace irods::experimental::filesystem
+namespace irods::filesystem
 {
     namespace client
     {
@@ -86,13 +86,13 @@ namespace irods::experimental::filesystem
         mutable std::string owner_{};
         mutable std::string data_type_{};
     };
-} // namespace irods::experimental::filesystem
+} // namespace irods::filesystem
 
 #endif // IRODS_FILESYSTEM_COLLECTION_ENTRY_CLASS_DEFINED
 
-namespace irods::experimental::filesystem::NAMESPACE_IMPL
+namespace irods::filesystem::NAMESPACE_IMPL
 {
-    using collection_entry = ::irods::experimental::filesystem::collection_entry;
-} // namespace irods::experimental::filesystem::NAMESPACE_IMPL
+    using collection_entry = ::irods::filesystem::collection_entry;
+} // namespace irods::filesystem::NAMESPACE_IMPL
 
 #endif // IRODS_FILESYSTEM_COLLECTION_ENTRY_HPP_INCLUDE_HEADER

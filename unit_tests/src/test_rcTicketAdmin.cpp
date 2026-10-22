@@ -30,7 +30,7 @@ TEST_CASE("rcTicketAdmin")
 
         // clang-format off
         namespace adm = irods::experimental::administration;
-        namespace fs  = irods::experimental::filesystem;
+        namespace fs  = irods::filesystem;
         // clang-format on
 
         irods::experimental::client_connection conn;

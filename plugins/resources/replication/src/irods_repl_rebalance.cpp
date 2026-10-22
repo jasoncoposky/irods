@@ -99,7 +99,7 @@ namespace {
             THROW(SYS_INTERNAL_NULL_INPUT_ERR, "null comm ptr");
         }
 
-        namespace fs = irods::experimental::filesystem;
+        namespace fs = irods::filesystem;
         namespace gq2 = irods::experimental::genquery2;
         using gq2::builder::col;
 

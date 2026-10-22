@@ -2,7 +2,7 @@
 
 #include "irods/filesystem/filesystem_error.hpp"
 
-namespace irods::experimental::filesystem::NAMESPACE_IMPL
+namespace irods::filesystem::NAMESPACE_IMPL
 {
     // Constructors and destructor
 
@@ -140,4 +140,4 @@ namespace irods::experimental::filesystem::NAMESPACE_IMPL
 
         ctx_->stack.pop();
     }
-} // namespace irods::experimental::filesystem::NAMESPACE_IMPL
+} // namespace irods::filesystem::NAMESPACE_IMPL

@@ -30,19 +30,19 @@
 
 #ifndef IRODS_FILESYSTEM_COLLECTION_OPTIONS_DEFINED
 #define IRODS_FILESYSTEM_COLLECTION_OPTIONS_DEFINED
-namespace irods::experimental::filesystem
+namespace irods::filesystem
 {
     enum class collection_options
     {
         none,
         skip_permission_denied
     };
-} // namespace irods::experimental::filesystem
+} // namespace irods::filesystem
 #endif // IRODS_FILESYSTEM_COLLECTION_OPTIONS_DEFINED
 
-namespace irods::experimental::filesystem::NAMESPACE_IMPL
+namespace irods::filesystem::NAMESPACE_IMPL
 {
-    using ::irods::experimental::filesystem::collection_options;
+    using ::irods::filesystem::collection_options;
 
     class collection_iterator
     {
@@ -171,6 +171,6 @@ namespace irods::experimental::filesystem::NAMESPACE_IMPL
     {
         return {};
     }
-} // namespace irods::experimental::filesystem::NAMESPACE_IMPL
+} // namespace irods::filesystem::NAMESPACE_IMPL
 
 #endif // IRODS_FILESYSTEM_COLLECTION_ITERATOR_HPP_INCLUDE_HEADER

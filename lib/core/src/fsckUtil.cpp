@@ -24,8 +24,7 @@ using gq2::builder::col;
 int fsckObj(rcComm_t* conn,
             rodsArguments_t* myRodsArgs,
             rodsPathInp_t* rodsPathInp,
-            SetGenQueryInpFromPhysicalPath strategy,
-            const char* argument_for_SetGenQueryInpFromPhysicalPath)
+            const char* hostname)
 {
     if (rodsPathInp->numSrc != 1) {
         rodsLog(LOG_ERROR, "fsckObj: gave %i input source path, "
@@ -68,14 +67,13 @@ int fsckObj(rcComm_t* conn,
         }
     }
 
-    return fsckObjDir(conn, myRodsArgs, inpPath, strategy, argument_for_SetGenQueryInpFromPhysicalPath);
+    return fsckObjDir(conn, myRodsArgs, inpPath, hostname);
 }
 
 int fsckObjDir(rcComm_t* conn,
                rodsArguments_t* myRodsArgs,
                char* inpPath,
-               SetGenQueryInpFromPhysicalPath strategy,
-               const char* argument_for_SetGenQueryInpFromPhysicalPath)
+               const char* hostname)
 {
     fs::path srcDirPath(inpPath);
 
@@ -84,7 +82,7 @@ int fsckObjDir(rcComm_t* conn,
     }
 
     if (!fs::is_directory(srcDirPath)) {
-        return chkObjConsistency(conn, myRodsArgs, inpPath, strategy, argument_for_SetGenQueryInpFromPhysicalPath);
+        return chkObjConsistency(conn, myRodsArgs, inpPath, hostname);
     }
 
     char fullPath[MAX_PATH_ALLOWED] = "\0";
@@ -101,14 +99,14 @@ int fsckObjDir(rcComm_t* conn,
 
             if (fs::is_directory(e.path())) {
                 if (myRodsArgs->recursive == True) {
-                    const int tmp_status = fsckObjDir(conn, myRodsArgs, fullPath, strategy, argument_for_SetGenQueryInpFromPhysicalPath);
+                    const int tmp_status = fsckObjDir(conn, myRodsArgs, fullPath, hostname);
                     if (status == 0) {
                         status = tmp_status;
                     }
                 }
             }
             else {
-                const int tmp_status = chkObjConsistency(conn, myRodsArgs, fullPath, strategy, argument_for_SetGenQueryInpFromPhysicalPath);
+                const int tmp_status = chkObjConsistency(conn, myRodsArgs, fullPath, hostname);
                 if (status == 0) {
                     status = tmp_status;
                 }
@@ -129,37 +127,21 @@ int fsckObjDir(rcComm_t* conn,
 int chkObjConsistency(rcComm_t* conn,
                       rodsArguments_t* myRodsArgs,
                       char* inpPath,
-                      SetGenQueryInpFromPhysicalPath strategy,
-                      const char* argument_for_SetGenQueryInpFromPhysicalPath)
+                      const char* hostname)
 {
     const fs::path p(inpPath);
     if (fs::is_symlink(p)) {
         return 0;
     }
 
-    genQueryInp_t genQueryInp{};
-    if (strategy) {
-        strategy(&genQueryInp, inpPath, argument_for_SetGenQueryInpFromPhysicalPath);
-    }
-
-    bool use_resc_hier = (myRodsArgs && myRodsArgs->resource);
-    for (int i = 0; i < genQueryInp.sqlCondInp.len; ++i) {
-        if (genQueryInp.sqlCondInp.inx[i] == COL_D_RESC_HIER) {
-            use_resc_hier = true;
-        }
-    }
-    clearGenQueryInp(&genQueryInp);
-
-    const std::string_view arg = argument_for_SetGenQueryInpFromPhysicalPath
-                                     ? argument_for_SetGenQueryInpFromPhysicalPath
-                                     : "";
-
     auto cond = (col("DATA_PATH") == inpPath);
-    if (use_resc_hier) {
-        cond = std::move(cond) && (col("DATA_RESC_HIER") == arg);
+    if (myRodsArgs && myRodsArgs->resource) {
+        const std::string_view resc_hier = myRodsArgs->resourceString ? myRodsArgs->resourceString : "";
+        cond = std::move(cond) && (col("DATA_RESC_HIER") == resc_hier);
     }
     else {
-        cond = std::move(cond) && (col("RESC_LOC").like(fmt::format("{}%", arg)) || col("RESC_LOC") == arg);
+        const std::string_view host = hostname ? hostname : "";
+        cond = std::move(cond) && (col("RESC_LOC").like(fmt::format("{}%", host)) || col("RESC_LOC") == host);
     }
 
     const auto q = gq2::builder::select({"DATA_NAME", "COLL_NAME", "DATA_SIZE", "DATA_CHECKSUM"})

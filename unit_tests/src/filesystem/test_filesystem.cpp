@@ -63,7 +63,7 @@ TEST_CASE("filesystem")
 
     irods::experimental::client_connection conn;
 
-    namespace fs = irods::experimental::filesystem;
+    namespace fs = irods::filesystem;
 
     // clang-format off
     using idstream          = irods::experimental::io::idstream;
@@ -928,7 +928,7 @@ TEST_CASE("#8912: filesystem does not expand group membership when listing permi
 
     irods::experimental::client_connection conn;
 
-    namespace fs = irods::experimental::filesystem;
+    namespace fs = irods::filesystem;
 
     // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-array-to-pointer-decay)
     const auto sandbox = fs::path{env.rodsHome} / "unit_testing_sandbox__issue_8912";

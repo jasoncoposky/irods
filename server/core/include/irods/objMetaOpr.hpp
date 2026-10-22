@@ -18,8 +18,6 @@
 extern "C" {
 
     int
-    svrCloseQueryOut( rsComm_t *rsComm, genQueryOut_t *genQueryOut );
-    int
     isData( rsComm_t *rsComm, char *objName, rodsLong_t *dataId );
     int
     isColl( rsComm_t *rsComm, char *objName, rodsLong_t *collId );

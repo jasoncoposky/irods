@@ -367,7 +367,7 @@ msiSetDataTypeFromExt( ruleExecInfo_t *rei ) {
 
     dataObjInfo_t *dataObjInfoHead = rei->doi;
 
-    namespace fs = irods::experimental::filesystem;
+    namespace fs = irods::filesystem;
     namespace gq2 = irods::experimental::genquery2;
     using gq2::builder::col;
 

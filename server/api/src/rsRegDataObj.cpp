@@ -21,7 +21,7 @@
 
 namespace
 {
-    namespace fs = irods::experimental::filesystem;
+    namespace fs = irods::filesystem;
     using log_api = irods::experimental::log::api;
 
     int checkQuotaViolationForReg(RsComm& _rsComm, dataObjInfo_t& _dataObjInfo)

@@ -121,7 +121,7 @@ int scanObjDir(rcComm_t* conn,
 int
 scanObjCol( rcComm_t *conn, rodsArguments_t *myRodsArgs, const char *inpPath ) {
     namespace gq2 = irods::experimental::genquery2;
-    namespace ifs = irods::experimental::filesystem;
+    namespace ifs = irods::filesystem;
     using gq2::builder::col;
 
     const ifs::path logical_path{inpPath ? inpPath : ""};
@@ -199,68 +199,6 @@ scanObjCol( rcComm_t *conn, rodsArguments_t *myRodsArgs, const char *inpPath ) {
     if (rcPriv != 0) { return rcPriv; }
     if (rcStat != 0) { return rcStat; }
     if (rcOther != 0) { return rcOther; }
-
-    return 0;
-}
-
-int
-statPhysFile( rcComm_t *conn, genQueryOut_t *genQueryOut2 ) {
-
-    int rcPriv = 0, rcStat = 0, rcOther = 0;
-
-    for ( int i = 0; i < genQueryOut2->rowCnt; i++ ) {
-        sqlResult_t *dataPathStruct = getSqlResultByInx( genQueryOut2, COL_D_DATA_PATH );
-        sqlResult_t *dataSizeStruct = getSqlResultByInx( genQueryOut2, COL_DATA_SIZE );
-        sqlResult_t *locStruct = getSqlResultByInx( genQueryOut2, COL_R_LOC );
-        sqlResult_t *zoneStruct = getSqlResultByInx( genQueryOut2, COL_R_ZONE_NAME );
-        sqlResult_t *dataNameStruct = getSqlResultByInx( genQueryOut2, COL_DATA_NAME );
-        sqlResult_t *collNameStruct = getSqlResultByInx( genQueryOut2, COL_COLL_NAME );
-        sqlResult_t *rescIDStruct = getSqlResultByInx( genQueryOut2, COL_D_RESC_ID );
-        if ( dataPathStruct == NULL || dataSizeStruct == NULL || locStruct == NULL ||
-                zoneStruct == NULL || dataNameStruct == NULL || collNameStruct == NULL ||
-                rescIDStruct == NULL ) {
-            printf( "getSqlResultByInx returned null in statPhysFile." );
-            return -1;
-        }
-
-        char *dataPath = &dataPathStruct->value[dataPathStruct->len * i];
-        char *loc = &locStruct->value[locStruct->len * i];
-        char *zone = &zoneStruct->value[zoneStruct->len * i];
-        char *dataName = &dataNameStruct->value[dataNameStruct->len * i];
-        char *collName = &collNameStruct->value[collNameStruct->len * i];
-        char *rescID = &rescIDStruct->value[rescIDStruct->len * i];
-
-        /* check if the physical file does exist on the filesystem */
-        fileStatInp_t fileStatInp;
-        rstrcpy( fileStatInp.addr.hostAddr, loc, sizeof( fileStatInp.addr.hostAddr ) );
-        rstrcpy( fileStatInp.addr.zoneName, zone, sizeof( fileStatInp.addr.zoneName ) );
-        rstrcpy( fileStatInp.fileName, dataPath, sizeof( fileStatInp.fileName ) );
-        fileStatInp.rescId = strtoll( rescID, 0, 0 );
-        snprintf( fileStatInp.objPath, sizeof( fileStatInp.objPath ), "%s/%s", collName, dataName );
-        rodsStat_t *fileStatOut;
-        int status = rcFileStat( conn, &fileStatInp, &fileStatOut );
-        if ( SYS_NO_API_PRIV == status ) {
-            printf( "User must be a rodsadmin to scan iRODS data objects.\n" );
-            rcPriv = status;
-        }
-        else if ( status < 0 ) {
-            if (getIrodsErrno(status) == UNIX_FILE_STAT_ERR) {
-              printf( "Physical file %s on server %s is missing, corresponding to "
-                      "iRODS object %s/%s\n", dataPath, loc, collName, dataName );
-              rcStat = status;
-            }
-            else {
-              rcOther = status;
-            }
-        }
-    } // for each data object i = 0 to rowCnt-1
-
-    /*
-     *    Prioritize the error returned
-     */
-    if (rcPriv != 0) { return rcPriv; }
-    else if (rcStat != 0) { return rcStat; }
-    else if (rcOther!= 0) { return rcOther; }
 
     return 0;
 }

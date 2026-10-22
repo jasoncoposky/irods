@@ -61,7 +61,7 @@ extern irods::resource_manager resc_mgr;
 namespace
 {
     // clang-format off
-    namespace fs  = irods::experimental::filesystem;
+    namespace fs  = irods::filesystem;
     namespace ic  = irods::experimental::catalog;
     namespace id  = irods::experimental::data_object;
     namespace log = irods::experimental::log;

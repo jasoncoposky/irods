@@ -53,7 +53,7 @@ rcExecMyRule( rcComm_t *conn, execMyRuleInp_t *execMyRuleInp,
             char * locFilePath = getValByKey( &dataObjInp->condInput, LOCAL_PATH_KW );
             char myFile[MAX_NAME_LEN]{};
             if ( !locFilePath ) {
-                const irods::experimental::filesystem::path p{dataObjInp->objPath};
+                const irods::filesystem::path p{dataObjInp->objPath};
                 const auto file_sv = p.object_name_view();
                 if ( std::strchr( dataObjInp->objPath, '/' ) == NULL ) {
                     status = SYS_INVALID_FILE_PATH;

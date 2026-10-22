@@ -93,7 +93,7 @@ namespace
 {
     // clang-format off
     namespace ix  = irods::experimental;
-    namespace fs  = irods::experimental::filesystem;
+    namespace fs  = irods::filesystem;
     namespace log = irods::experimental::log;
 
     using json                = nlohmann::json;

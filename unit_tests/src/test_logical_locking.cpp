@@ -31,7 +31,7 @@
 
 // clang-format off
 namespace adm   = irods::experimental::administration;
-namespace fs    = irods::experimental::filesystem;
+namespace fs    = irods::filesystem;
 namespace io    = irods::experimental::io;
 namespace ir    = irods::experimental::replica;
 

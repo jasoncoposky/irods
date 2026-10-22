@@ -560,7 +560,7 @@ namespace
                 return OVERWRITE_WITHOUT_FORCE_FLAG;
             }
         }
-        catch (const irods::experimental::filesystem::filesystem_error& e) {
+        catch (const irods::filesystem::filesystem_error& e) {
             irods::experimental::log::api::error(e.what());
             return e.code().value();
         }

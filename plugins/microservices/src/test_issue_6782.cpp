@@ -23,7 +23,7 @@ namespace
     {
         IRODS_MSI_TEST_BEGIN("#6782: client and server filesystem interfaces can be used in the same translation unit")
 
-        namespace fs = irods::experimental::filesystem;
+        namespace fs = irods::filesystem;
 
         fs::path path = "/";
         path /= _rei->rsComm->myEnv.rodsZone; // NOLINT(cppcoreguidelines-pro-bounds-array-to-pointer-decay)

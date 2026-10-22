@@ -37,7 +37,7 @@
 #include <memory>
 #include <string>
 
-namespace fs = irods::experimental::filesystem;
+namespace fs = irods::filesystem;
 namespace io = irods::experimental::io;
 namespace adm = irods::experimental::administration;
 

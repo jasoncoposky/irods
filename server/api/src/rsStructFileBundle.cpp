@@ -31,7 +31,7 @@
 #include <string>
 
 // clang-format off
-namespace fs     = irods::experimental::filesystem;
+namespace fs     = irods::filesystem;
 namespace logger = irods::experimental::log;
 // clang-format on
 

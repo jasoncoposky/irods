@@ -31,7 +31,7 @@ namespace irods::experimental::collections
     struct linked_collection_info
     {
         rodsLong_t coll_id{};
-        irods::experimental::filesystem::path target_collection_path;
+        irods::filesystem::path target_collection_path;
     };
 
     struct mounted_collection_info
@@ -45,7 +45,7 @@ namespace irods::experimental::collections
     struct archive_collection_info
     {
         rodsLong_t coll_id{};
-        irods::experimental::filesystem::path archive_logical_path;
+        irods::filesystem::path archive_logical_path;
         std::filesystem::path archive_physical_path;
         std::filesystem::path cache_directory_path;
         std::string resource_hierarchy;
@@ -113,9 +113,9 @@ namespace irods::experimental::collections
 
     struct resolved_path
     {
-        irods::experimental::filesystem::path original_path;
-        irods::experimental::filesystem::path canonical_path;
-        irods::experimental::filesystem::path governing_coll;
+        irods::filesystem::path original_path;
+        irods::filesystem::path canonical_path;
+        irods::filesystem::path governing_coll;
         std::filesystem::path relative_subpath;
         bool was_link_translated{false};
         collection_info_variant info{catalog_collection_info{}};

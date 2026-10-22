@@ -53,7 +53,7 @@ using log_api = irods::experimental::log::api;
 
 namespace
 {
-    namespace fs = irods::experimental::filesystem;
+    namespace fs = irods::filesystem;
     namespace ill = irods::logical_locking;
 
     int _rsDataObjRename(

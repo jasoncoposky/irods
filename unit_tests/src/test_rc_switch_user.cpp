@@ -30,7 +30,7 @@
 // clang-format off
 namespace ia  = irods::authentication;
 namespace adm = irods::experimental::administration;
-namespace fs  = irods::experimental::filesystem;
+namespace fs  = irods::filesystem;
 namespace io  = irods::experimental::io;
 // clang-format on
 
@@ -451,7 +451,7 @@ TEST_CASE("rc_switch_user disassociates ticket from connection")
 
     // clang-format off
     namespace adm = irods::experimental::administration;
-    namespace fs  = irods::experimental::filesystem;
+    namespace fs  = irods::filesystem;
     // clang-format on
 
     irods::experimental::client_connection conn;

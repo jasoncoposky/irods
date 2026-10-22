@@ -649,35 +649,41 @@ l3Rmdir( rsComm_t *rsComm, dataObjInfo_t *dataObjInfo ) {
 
 int
 rsMvCollToTrash( rsComm_t *rsComm, collInp_t *rmCollInp ) {
-    int status;
+    int status = 0;
     char trashPath[MAX_NAME_LEN];
-    genQueryInp_t genQueryInp;
-    genQueryOut_t *genQueryOut = NULL;
     dataObjInfo_t dataObjInfo;
 
     /* check permission of files */
+    namespace gq2 = irods::experimental::genquery2;
+    using gq2::builder::col;
 
-    irods::at_scope_exit clean_genQueryInp{[&genQueryInp] { clearGenQueryInp(&genQueryInp); }};
+    auto cond = (std::strcmp(rmCollInp->collName, "/") == 0)
+        ? col("COLL_NAME").like("/%")
+        : (col("COLL_NAME") == rmCollInp->collName ||
+           col("COLL_NAME").like(fmt::format("{}/%", rmCollInp->collName)))
+              .group();
 
-    memset( &genQueryInp, 0, sizeof( genQueryInp ) );
-    status = rsQueryDataObjInCollReCur( rsComm, rmCollInp->collName,
-                                        &genQueryInp, &genQueryOut, ACCESS_DELETE_OBJECT, 0 );
+    const auto perm_q = gq2::builder::select({"DATA_ID"})
+                            .where(cond)
+                            .order_by("COLL_NAME")
+                            .order_by("DATA_NAME")
+                            .limit(1)
+                            .build();
 
-    irods::at_scope_exit free_genQueryOut{[&genQueryOut] { freeGenQueryOut(&genQueryOut); }};
+    nlohmann::json perm_rows;
+    {
+        irods::experimental::scoped_privileged_client spc{*rsComm};
+        status = gq2::try_execute( *rsComm, perm_q, perm_rows );
+    }
 
-    if ( status >= 0 && genQueryOut != NULL ) {
-        svrCloseQueryOut( rsComm, genQueryOut );
-        freeGenQueryOut( &genQueryOut );
+    if ( status >= 0 && !perm_rows.empty() ) {
+        const auto& data_id_str = perm_rows.front().at(0).get_ref<const std::string&>();
+        rodsLong_t data_id_val = 0;
+        std::from_chars(data_id_str.data(), data_id_str.data() + data_id_str.size(), data_id_val);
+        status = chl_check_data_object_access( *rsComm, data_id_val, ACCESS_DELETE_OBJECT );
+    }
 
-        namespace gq2 = irods::experimental::genquery2;
-        using gq2::builder::col;
-
-        auto cond = (std::strcmp(rmCollInp->collName, "/") == 0)
-            ? col("COLL_NAME").like("/%")
-            : (col("COLL_NAME") == rmCollInp->collName ||
-               col("COLL_NAME").like(fmt::format("{}/%", rmCollInp->collName)))
-                  .group();
-
+    if ( status >= 0 && !perm_rows.empty() ) {
         std::size_t offset = 0;
         memset( &dataObjInfo, 0, sizeof( dataObjInfo ) );
 
@@ -743,9 +749,8 @@ rsMvCollToTrash( rsComm_t *rsComm, collInp_t *rmCollInp ) {
 
     if ( status < 0 && status != CAT_NO_ROWS_FOUND ) {
         rodsLog( LOG_ERROR,
-                 "rsMvCollToTrash: rsQueryDataObjInCollReCur error for %s, stat=%d",
+                 "rsMvCollToTrash: query error for %s, stat=%d",
                  rmCollInp->collName, status );
-        freeGenQueryOut( &genQueryOut );
         return status;
     }
 

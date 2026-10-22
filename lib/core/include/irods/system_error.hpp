@@ -79,4 +79,13 @@ namespace irods::experimental
     [[nodiscard]] auto get_errno(const std::error_code& _errc) -> int;
 } // namespace irods::experimental
 
+namespace irods
+{
+    using experimental::error_category;
+    using experimental::get_errno;
+    using experimental::get_irods_error_code;
+    using experimental::irods_category;
+    using experimental::make_error_code;
+} // namespace irods
+
 #endif // IRODS_SYSTEM_ERROR_HPP

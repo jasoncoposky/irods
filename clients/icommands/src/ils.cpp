@@ -94,7 +94,7 @@ main( int argc, char **argv ) {
         status = e.code();
         fmt::print(stderr, "iRODS exception occurred: [{}]\n", e.client_display_what());
     }
-    catch (const irods::experimental::filesystem::filesystem_error& e) {
+    catch (const irods::filesystem::filesystem_error& e) {
         status = e.code().value();
         fmt::print(stderr, "iRODS filesystem error occurred: [{}]\n", e.what());
     }
