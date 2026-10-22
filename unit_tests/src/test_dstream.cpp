@@ -12,10 +12,10 @@
 #include "irods/system_error.hpp"
 #include "irods/transport/default_transport.hpp"
 
-#include <boost/filesystem.hpp>
 #include <fmt/format.h>
 
 #include <chrono>
+#include <filesystem>
 #include <ios>
 #include <limits>
 #include <string_view>
@@ -26,7 +26,7 @@ namespace fs = irods::experimental::filesystem;
 namespace io = irods::experimental::io;
 
 auto get_hostname() noexcept -> std::string;
-auto create_resource_vault(const std::string& _vault_name) -> boost::filesystem::path;
+auto create_resource_vault(const std::string& _vault_name) -> std::filesystem::path;
 
 TEST_CASE("dstream", "[iostreams]")
 {
@@ -408,21 +408,21 @@ auto get_hostname() noexcept -> std::string
     return hostname;
 }
 
-auto create_resource_vault(const std::string& _vault_name) -> boost::filesystem::path
+auto create_resource_vault(const std::string& _vault_name) -> std::filesystem::path
 {
-    namespace fs = boost::filesystem;
+    namespace fs = std::filesystem;
 
     const auto suffix = "_" + std::to_string(std::chrono::system_clock::now().time_since_epoch().count());
-    const auto vault = boost::filesystem::temp_directory_path() / (_vault_name + suffix).data();
+    const auto vault = fs::temp_directory_path() / (_vault_name + suffix).data();
 
     // Create the vault for the resource and allow the iRODS server to
     // read and write to the vault.
 
-    if (!exists(vault)) {
+    if (!fs::exists(vault)) {
         REQUIRE(fs::create_directory(vault));
     }
 
-    fs::permissions(vault, fs::perms::add_perms | fs::perms::others_read | fs::perms::others_write);
+    fs::permissions(vault, fs::perms::others_read | fs::perms::others_write, fs::perm_options::add);
 
     return vault;
 }

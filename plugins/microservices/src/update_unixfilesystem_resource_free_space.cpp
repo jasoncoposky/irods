@@ -9,7 +9,7 @@
 #include "irods/generalAdmin.h"
 #include "irods/irods_log.hpp"
 #include <sys/statvfs.h>
-#include <boost/filesystem.hpp>
+#include <filesystem>
 #include <boost/lexical_cast.hpp>
 
 extern irods::resource_manager resc_mgr;
@@ -69,15 +69,16 @@ msi_update_unixfilesystem_resource_free_space(msParam_t *resource_name_msparam, 
         return get_resource_vault_path_error.status();
     }
 
-    boost::filesystem::path path_to_stat{resource_vault_path};
-    const auto absolute_vault_path{boost::filesystem::absolute(path_to_stat)};
-    while(!boost::filesystem::exists(path_to_stat)) {
+    std::filesystem::path path_to_stat{resource_vault_path};
+    const auto absolute_vault_path{std::filesystem::absolute(path_to_stat)};
+    while (!std::filesystem::exists(path_to_stat)) {
         rodsLog(LOG_NOTICE, "[%s]: path to stat [%s] for resource [%s] doesn't exist, moving to parent", __FUNCTION__, path_to_stat.string().c_str(), resource_name_cstring);
-        path_to_stat = path_to_stat.parent_path();
-        if (path_to_stat.empty()) {
+        const auto parent = path_to_stat.parent_path();
+        if (parent == path_to_stat || parent.empty()) {
             rodsLog(LOG_ERROR, "[%s]: could not find existing path from vault path [%s] for resource [%s]", __FUNCTION__, resource_vault_path.c_str(), resource_name_cstring);
             return SYS_INVALID_RESC_INPUT;
         }
+        path_to_stat = parent;
     }
 
     // Using the root directory as a vault path is bad - do not allow it to be used for updating free space

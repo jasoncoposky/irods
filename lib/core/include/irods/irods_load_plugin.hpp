@@ -20,10 +20,10 @@
 #include <sstream>
 #include <iostream>
 #include <algorithm>
+#include <filesystem>
 #include <vector>
 
 #include <boost/static_assert.hpp>
-#include <boost/filesystem.hpp>
 
 #include <dlfcn.h>
 #include <elf.h>
@@ -32,7 +32,7 @@ namespace irods
 {
     inline error resolve_plugin_path(const std::string& _type, std::string& _path)
     {
-        namespace fs = boost::filesystem;
+        namespace fs = std::filesystem;
 
         fs::path plugin_home;
 
@@ -419,7 +419,7 @@ namespace irods
                       const std::string& _instance_name,
                       const Ts&...       _args)
     {
-        namespace fs = boost::filesystem;
+        namespace fs = std::filesystem;
 
         // resolve the plugin path
         std::string plugin_home;

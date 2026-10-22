@@ -8,7 +8,6 @@
 #include "irods/irods_at_scope_exit.hpp"
 #include "irods/thread_pool.hpp"
 
-#include <boost/filesystem.hpp>
 #include <boost/uuid/uuid.hpp>
 #include <boost/uuid/uuid_generators.hpp>
 #include <boost/uuid/uuid_io.hpp>
@@ -27,6 +26,7 @@
 #include <algorithm>
 #include <chrono>
 #include <iterator>
+#include <filesystem>
 #include <fstream>
 #include <tuple>
 #include <functional>
@@ -174,7 +174,7 @@ namespace irods::experimental::io
             , restart_handle_{_restart_handle}
             , restart_file_exists_{}
         {
-            namespace fs = boost::filesystem;
+            namespace fs = std::filesystem;
             restart_file_dir_ = fs::path{restart_handle_}.parent_path().generic_string();
 
             constexpr auto use_restart_handle = true;
@@ -192,7 +192,7 @@ namespace irods::experimental::io
             try {
                 wait();
 
-                namespace fs = boost::filesystem;
+                namespace fs = std::filesystem;
 
                 if (success() && fs::exists(restart_handle_)) {
                     fs::remove(restart_handle_);
@@ -355,13 +355,13 @@ namespace irods::experimental::io
 
         auto make_restart_handle() -> std::string
         {
-            namespace fs = boost::filesystem;
+            namespace fs = std::filesystem;
             return (fs::path{restart_file_dir_} / to_string(boost::uuids::random_generator{}())).generic_string();
         }
 
         auto create_restart_file_directory() -> void
         {
-            namespace fs = boost::filesystem;
+            namespace fs = std::filesystem;
 
             try {
                 fs::create_directories(restart_file_dir_);
@@ -749,7 +749,7 @@ namespace irods::experimental::io
     private:
         auto default_restart_file_directory() const noexcept -> std::string
         {
-            namespace fs = boost::filesystem;
+            namespace fs = std::filesystem;
             return (fs::temp_directory_path() / "irods_parallel_transfer_engine_restart_files").generic_string();
         }
 

@@ -4,12 +4,12 @@
 
 #include <fstream>
 #include <algorithm>
+#include <filesystem>
 
 #include <boost/algorithm/string.hpp>
-#include <boost/filesystem.hpp>
 #include <boost/any.hpp>
 
-namespace fs = boost::filesystem;
+namespace fs = std::filesystem;
 using json = nlohmann::json;
 
 namespace irods {

@@ -13,11 +13,8 @@
 #include <sstream>
 #include <iostream>
 #include <algorithm>
+#include <filesystem>
 #include <map>
-
-#include <boost/filesystem.hpp>
-#include <boost/filesystem/operations.hpp>
-#include <boost/filesystem/convenience.hpp>
 
 #include <fmt/format.h>
 
@@ -27,11 +24,11 @@
 // for a descriptive error message if the same canonical path shows up
 // again - with a different user path.
 void
-irods::check_for_filesystem_loop(boost::filesystem::path const & cpath,
-                                 boost::filesystem::path const & upath,
+irods::check_for_filesystem_loop(std::filesystem::path const & cpath,
+                                 std::filesystem::path const & upath,
                                  recursion_map_t &pathmap)
 {
-    namespace fs = boost::filesystem;
+    namespace fs = std::filesystem;
 
     const std::string& pathstring(cpath.string()); // Canonical path string
 
@@ -78,11 +75,11 @@ irods::check_for_filesystem_loop(boost::filesystem::path const & cpath,
 // Checks for existence of path as a symlink or a directory.
 // Will throw irods::exception if boost file system errors occur in the process.
 bool
-irods::is_path_valid_for_recursion( boost::filesystem::path const & userpath,
+irods::is_path_valid_for_recursion( std::filesystem::path const & userpath,
                                     recursion_map_t &usermap,
                                     bool dashdashlink )
 {
-    namespace fs = boost::filesystem;
+    namespace fs = std::filesystem;
 
     const fs::path normal_path = [](const fs::path& up) {
         try {
@@ -170,16 +167,16 @@ irods::is_path_valid_for_recursion( rodsArguments_t const * const rodsArgs, cons
     }
 
     recursion_map_t usermap{};
-    return irods::is_path_valid_for_recursion(boost::filesystem::path{myPath}, usermap, rodsArgs->link == True);
+    return irods::is_path_valid_for_recursion(std::filesystem::path{myPath}, usermap, rodsArgs->link == True);
 }
 
 // see .hpp for comment
 int
-irods::check_directories_for_loops( boost::filesystem::path const & dirpath,
+irods::check_directories_for_loops( std::filesystem::path const & dirpath,
                                     irods::recursion_map_t& pathmap,
                                     bool dashdashlink )
 {
-    namespace fs = boost::filesystem;
+    namespace fs = std::filesystem;
     int last_error = 0;
 
     try {
@@ -235,7 +232,7 @@ irods::scan_all_source_directories_for_loops(irods::recursion_map_t& pathmap,
                                              const std::vector<std::string>& dirvec,
                                              bool dashdashlink)
 {
-    namespace fs = boost::filesystem;
+    namespace fs = std::filesystem;
 
     int status = 0;
     int savedStatus = 0;
@@ -329,7 +326,7 @@ int
 irods::disallow_file_dir_mix_on_command_line( rodsArguments_t const * const rodsArgs,
                                                      rodsPathInp_t const * const rodsPathInp )
 {
-    namespace fs = boost::filesystem;
+    namespace fs = std::filesystem;
 
     // If the "-r" flag is not used, there's nothing to check.
     if ( rodsArgs->recursive != True )

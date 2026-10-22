@@ -14,12 +14,12 @@
 #include "irods/rodsErrorTable.h"
 #include "irods/transport/default_transport.hpp"
 
-#include <boost/filesystem.hpp>
 #include <fmt/format.h>
 #include <nlohmann/json.hpp>
 
 #include <csignal>
 #include <chrono>
+#include <filesystem>
 #include <iostream>
 #include <string>
 #include <string_view>
@@ -281,7 +281,7 @@ namespace
     auto create_resource_vault_path(const std::string& _vault_name) -> std::string
     {
         const auto suffix = "_" + std::to_string(std::chrono::system_clock::now().time_since_epoch().count());
-        const auto vault = boost::filesystem::temp_directory_path() / (_vault_name + suffix).data();
+        const auto vault = std::filesystem::temp_directory_path() / (_vault_name + suffix).data();
         return vault.string();
     } // create_resource_vault_path
 } //namespace

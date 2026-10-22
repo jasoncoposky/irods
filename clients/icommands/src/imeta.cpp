@@ -23,6 +23,7 @@
 #include <tuple>
 #include <string_view>
 #include <algorithm>
+#include <filesystem>
 
 #include <boost/program_options.hpp>
 #include <boost/optional.hpp>
@@ -1684,7 +1685,7 @@ int main( int argc, const char **argv )
 {
     signal( SIGPIPE, SIG_IGN );
 
-    utils::set_ips_display_name(boost::filesystem::path{argv[0]}.filename().c_str());
+    utils::set_ips_display_name(std::filesystem::path{argv[0]}.filename().c_str());
 
     rodsLogLevel(LOG_ERROR);
 

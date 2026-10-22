@@ -29,8 +29,6 @@
 // boost includes
 #include <boost/function.hpp>
 #include <boost/any.hpp>
-#include <boost/filesystem/operations.hpp>
-#include <boost/filesystem/path.hpp>
 
 // =-=-=-=-=-=-=-
 // system includes

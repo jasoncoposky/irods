@@ -11,11 +11,10 @@
 #include "irods/resource_administration.hpp"
 #include "irods/rodsClient.h"
 
-#include <boost/filesystem.hpp>
-
 #include <unistd.h>
 
 #include <cstddef>
+#include <filesystem>
 #include <string>
 #include <string_view>
 #include <fstream>
@@ -46,19 +45,19 @@ namespace unit_test_utils
 
     inline auto create_resource_vault(const std::string_view _vault_name) -> std::string
     {
-        namespace fs = boost::filesystem;
+        namespace fs = std::filesystem;
 
         const auto suffix = "_" + std::to_string(std::chrono::system_clock::now().time_since_epoch().count());
-        const auto vault = boost::filesystem::temp_directory_path() / (_vault_name.data() + suffix).data();
+        const auto vault = fs::temp_directory_path() / (_vault_name.data() + suffix).data();
 
         // Create the vault for the resource and allow the iRODS server to
         // read and write to the vault.
 
-        if (!exists(vault)) {
+        if (!fs::exists(vault)) {
             fs::create_directory(vault);
         }
 
-        fs::permissions(vault, fs::perms::add_perms | fs::perms::others_read | fs::perms::others_write);
+        fs::permissions(vault, fs::perms::others_read | fs::perms::others_write, fs::perm_options::add);
 
         return vault.c_str();
     }

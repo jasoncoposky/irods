@@ -11,7 +11,6 @@
 #include "irods/client_connection.hpp"
 #include "irods/transport/default_transport.hpp"
 
-#include <boost/filesystem.hpp>
 #include <fmt/format.h>
 
 #include <chrono>

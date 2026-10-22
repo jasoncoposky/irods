@@ -42,7 +42,6 @@
 
 #include "irods/logical_locking.hpp"
 
-#include <boost/filesystem.hpp>
 #include <boost/optional.hpp>
 #include <boost/system/error_code.hpp>
 
@@ -51,6 +50,7 @@
 
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <set>
 #include <string>

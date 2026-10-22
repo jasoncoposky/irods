@@ -13,8 +13,7 @@
 #include "irods/resource_administration.hpp"
 #include "unit_test_utils.hpp"
 
-#include <boost/filesystem.hpp>
-
+#include <filesystem>
 #include <string>
 #include <fstream>
 #include <iostream>
@@ -33,7 +32,7 @@ namespace adm = irods::experimental::administration;
 template <typename Stream>
 using stream_factory_functor = std::function<Stream(std::ios_base::openmode, Stream*)>;
 
-auto create_local_file(const boost::filesystem::path& _p, std::size_t _size) noexcept -> bool;
+auto create_local_file(const std::filesystem::path& _p, std::size_t _size) noexcept -> bool;
 
 constexpr auto operator ""_mb(unsigned long long _x) noexcept -> std::size_t
 {
@@ -114,12 +113,12 @@ TEST_CASE("parallel transfer engine")
     _getRodsEnv(env);
 
     // Create the local file for testing.
-    const auto local_file = boost::filesystem::current_path() / "irods_parallel_transfer_engine_test_file";
-    const auto file_from_iRODS = boost::filesystem::current_path() / "irods_parallel_transfer_engine_test_file.from_iRODS";
+    const auto local_file = std::filesystem::current_path() / "irods_parallel_transfer_engine_test_file";
+    const auto file_from_iRODS = std::filesystem::current_path() / "irods_parallel_transfer_engine_test_file.from_iRODS";
     REQUIRE(create_local_file(local_file, 50_mb));
     irods::at_scope_exit remove_local_file{[&local_file, &file_from_iRODS] {
-        boost::filesystem::remove(local_file);
-        boost::filesystem::remove(file_from_iRODS);
+        std::filesystem::remove(local_file);
+        std::filesystem::remove(file_from_iRODS);
     }};
 
     // Create the connection pool and transport factory.
@@ -147,7 +146,7 @@ TEST_CASE("parallel transfer engine")
 
     SECTION("no restart")
     {
-        const auto local_file_size = boost::filesystem::file_size(local_file);
+        const auto local_file_size = std::filesystem::file_size(local_file);
 
         // Push file from the local filesystem into iRODS.
         {
@@ -173,13 +172,13 @@ TEST_CASE("parallel transfer engine")
             parallel_transfer<io::managed_dstream, std::fstream>(dstream_fac, fstream_fac, data_object_size, stream_count, offset);
 
             // Verify the size of the sink file.
-            REQUIRE(boost::filesystem::file_size(local_file) == local_file_size);
+            REQUIRE(std::filesystem::file_size(local_file) == local_file_size);
         }
     }
 
     SECTION("with restart")
     {
-        namespace fs = boost::filesystem;
+        namespace fs = std::filesystem;
 
         const auto local_file_size = fs::file_size(local_file);
         const auto total_bytes_to_transfer = static_cast<std::int64_t>(local_file_size);
@@ -301,7 +300,7 @@ TEST_CASE("stream factory utilities")
     }
 }
 
-auto create_local_file(const boost::filesystem::path& _p, std::size_t _size) noexcept -> bool
+auto create_local_file(const std::filesystem::path& _p, std::size_t _size) noexcept -> bool
 {
     std::array<char, 1024 * 1024> buf{};
     std::fill(std::begin(buf), std::end(buf), 'K');
@@ -319,8 +318,8 @@ auto create_local_file(const boost::filesystem::path& _p, std::size_t _size) noe
 
 TEST_CASE("parallel transfer engine offline semantics", "[offline]")
 {
-    const auto src_file = boost::filesystem::temp_directory_path() / "irods_pte_offline_src.bin";
-    const auto dst_file = boost::filesystem::temp_directory_path() / "irods_pte_offline_dst.bin";
+    const auto src_file = std::filesystem::temp_directory_path() / "irods_pte_offline_src.bin";
+    const auto dst_file = std::filesystem::temp_directory_path() / "irods_pte_offline_dst.bin";
 
     REQUIRE(create_local_file(src_file, 4_mb));
     {
@@ -329,8 +328,8 @@ TEST_CASE("parallel transfer engine offline semantics", "[offline]")
     }
 
     irods::at_scope_exit cleanup{[&src_file, &dst_file] {
-        boost::filesystem::remove(src_file);
-        boost::filesystem::remove(dst_file);
+        std::filesystem::remove(src_file);
+        std::filesystem::remove(dst_file);
     }};
 
     const auto src_fac = io::make_fstream_factory(src_file.string());
@@ -339,7 +338,7 @@ TEST_CASE("parallel transfer engine offline semantics", "[offline]")
     SECTION("multi-channel fstream transfer completes and matches size")
     {
         parallel_transfer<std::fstream, std::fstream>(src_fac, dst_fac, static_cast<std::int64_t>(4_mb), 4, 0);
-        CHECK(boost::filesystem::file_size(dst_file) == 4_mb);
+        CHECK(std::filesystem::file_size(dst_file) == 4_mb);
     }
 
     SECTION("immediate stop_and_wait does not deadlock")
@@ -349,7 +348,7 @@ TEST_CASE("parallel transfer engine offline semantics", "[offline]")
 
         auto transfer = builder.number_of_channels(5).offset(0).build();
         transfer.stop_and_wait();
-        boost::filesystem::remove(transfer.restart_handle());
+        std::filesystem::remove(transfer.restart_handle());
     }
 
     SECTION("exception on secondary stream creation cleans up running tasks without deadlock")

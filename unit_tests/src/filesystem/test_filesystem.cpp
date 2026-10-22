@@ -34,7 +34,6 @@
 
 #include "unit_test_utils.hpp"
 
-#include <boost/filesystem.hpp>
 #include <fmt/format.h>
 
 #include <unistd.h>

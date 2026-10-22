@@ -4,10 +4,7 @@
 #include "irods/irods_default_paths.hpp"
 #include "irods/irods_exception.hpp"
 
-#include <boost/filesystem.hpp>
-#include <boost/filesystem/operations.hpp>
-#include <boost/filesystem/path.hpp>
-
+#include <filesystem>
 #include <vector>
 
 namespace irods
@@ -15,7 +12,7 @@ namespace irods
     error get_full_path_for_config_file(
         const std::string& _cfg_file,
         std::string&       _full_path ) {
-        namespace fs = boost::filesystem;
+        namespace fs = std::filesystem;
 
         try {
             fs::path path = get_irods_config_directory();
@@ -38,7 +35,7 @@ namespace irods
     error get_full_path_for_unmoved_configs(
         const std::string& _cfg_file,
         std::string&       _full_path ) {
-        namespace fs = boost::filesystem;
+        namespace fs = std::filesystem;
 
         try {
             fs::path path = get_irods_home_directory();

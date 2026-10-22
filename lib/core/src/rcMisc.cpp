@@ -42,10 +42,7 @@
 #include "irods/delay_rule_lock.h"
 #include "irods/delay_rule_unlock.h"
 
-#include <boost/filesystem.hpp>
 #include <boost/lexical_cast.hpp>
-#include <boost/filesystem/operations.hpp>
-#include <boost/filesystem/convenience.hpp>
 #include <boost/format.hpp>
 #include <boost/generator_iterator.hpp>
 
@@ -58,6 +55,7 @@
 #include <cstdlib>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <iostream>
 #include <iomanip>
 #include <algorithm>
@@ -103,7 +101,7 @@ namespace
 
 int
 isPath( char *myPath ) {
-    namespace fs = boost::filesystem;
+    namespace fs = std::filesystem;
 
     fs::path p( myPath );
 
@@ -117,7 +115,7 @@ isPath( char *myPath ) {
 
 rodsLong_t
 getFileSize( char *myPath ) {
-    namespace fs = boost::filesystem;
+    namespace fs = std::filesystem;
 
     fs::path p( myPath );
 
@@ -2873,7 +2871,7 @@ isHomeColl( char * myPath ) {
 
 int
 openRestartFile( char * restartFile, rodsRestart_t * rodsRestart ) {
-    namespace fs = boost::filesystem;
+    namespace fs = std::filesystem;
 
     fs::path p( restartFile );
     char buf[MAX_NAME_LEN * 3];

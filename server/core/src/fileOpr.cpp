@@ -16,16 +16,15 @@
 #include "irods/irods_resource_plugin.hpp"
 #include "irods/filesystem/path.hpp"
 
-#include <boost/filesystem.hpp>
-
 #include <algorithm>
 #include <array>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 
 namespace
 {
-    namespace fs = boost::filesystem;
+    namespace fs = std::filesystem;
 
     using log_api = irods::experimental::log::api;
 

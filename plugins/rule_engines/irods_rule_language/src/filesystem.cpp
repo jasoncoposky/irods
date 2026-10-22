@@ -23,13 +23,11 @@ char *getRuleBasePath(const char *ruleBaseName, char rulesFileName[MAX_NAME_LEN]
 }
 
 int getModifiedTime( const char *fn, time_type *timestamp ) {
-    boost::filesystem::path path( fn );
-    try {
-        time_type time = boost::filesystem::last_write_time( path );
-        time_type_set( *timestamp, time );
-        return 0;
-    } catch ( const boost::filesystem::filesystem_error& _e ) {
-        rodsLog(LOG_ERROR, "getModifiedTime: last_write_time call failed on [%s] with msg: [%s]", fn, _e.what());
+    struct stat st{};
+    if ( stat( fn, &st ) != 0 ) {
+        rodsLog(LOG_ERROR, "getModifiedTime: stat call failed on [%s] with errno: [%d]", fn, errno);
         return -1;
     }
+    time_type_set( *timestamp, st.st_mtime );
+    return 0;
 }

@@ -7,11 +7,11 @@
 
 #include "utility.hpp"
 
-#include <boost/filesystem.hpp>
 #include <boost/program_options.hpp>
 #include <fmt/format.h>
 #include <nlohmann/json.hpp>
 
+#include <filesystem>
 #include <string>
 #include <string_view>
 #include <exception>
@@ -28,7 +28,7 @@ auto canonical(const std::string_view _path, const rodsEnv& _env) -> std::option
 
 int main(int _argc, char* _argv[])
 {
-    utils::set_ips_display_name(boost::filesystem::path{_argv[0]}.filename().c_str());
+    utils::set_ips_display_name(std::filesystem::path{_argv[0]}.filename().c_str());
 
     rodsEnv env{};
 

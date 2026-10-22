@@ -3,16 +3,15 @@
 #include "irods/irods_exception.hpp"
 #include "irods/rodsErrorTable.h"
 
-#include <boost/filesystem.hpp>
-
 #include <dlfcn.h>
 
+#include <filesystem>
 #include <iterator>
 
 // If making changes to this file, equivalent changes may also be needed in
 // scripts/irods/paths.py
 
-namespace fs = boost::filesystem;
+namespace fs = std::filesystem;
 
 namespace irods
 {
@@ -30,7 +29,7 @@ namespace irods
         try {
             fs::path path{dl_info.dli_fname};
             path = fs::canonical(path);
-            path.remove_filename();
+            path = path.parent_path();
             return path;
         } catch(const fs::filesystem_error& e) {
             THROW(SYS_INTERNAL_ERR, e.what());
@@ -48,7 +47,7 @@ namespace irods
                 install_path_len--;
             }
             for (long i = 0; i < install_path_len; i++) {
-                path.remove_filename(); // Removes directories (usually usr and lib) between libirods_common.so and base of irods install
+                path = path.parent_path(); // Removes directories (usually usr and lib) between libirods_common.so and base of irods install
             }
             return path;
         } catch(const fs::filesystem_error& e) {
@@ -73,7 +72,7 @@ namespace irods
         // if install_libdir is absolute, we can't be smart about it
         if (install_libdir.is_absolute()) {
             for (auto ptr = ++install_libdir.begin(); ptr != install_libdir.end(); ptr++) {
-                path.remove_filename();
+                path = path.parent_path();
             }
             return path / install_path;
         }
@@ -81,7 +80,7 @@ namespace irods
         // if there is no common base, we can't be smart about it
         if (install_path_rel.empty()) {
             for (auto ptr = install_libdir.begin(); ptr != install_libdir.end(); ptr++) {
-                path.remove_filename();
+                path = path.parent_path();
             }
             return path / install_path;
         }

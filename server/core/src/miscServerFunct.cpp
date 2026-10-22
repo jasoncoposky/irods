@@ -43,7 +43,6 @@
 #include "irods/irods_default_paths.hpp"
 #include "irods/irods_logger.hpp"
 
-#include <boost/filesystem.hpp>
 #include <boost/thread/thread.hpp>
 #include <boost/thread/scoped_thread.hpp>
 #include <boost/lexical_cast.hpp>

@@ -2,12 +2,12 @@
 #include "irods/irods_log.hpp"
 
 #include "irods/rodsErrorTable.h"
+#include <algorithm>
+#include <cctype>
+#include <filesystem>
 #include <sstream>
 
 #include <boost/assert.hpp>
-
-
-#include <boost/filesystem.hpp>
 
 namespace irods {
 
@@ -75,8 +75,8 @@ namespace irods {
             result = false;
         }
         else {
-            boost::filesystem::path lib_path( so_name );
-            if ( !boost::filesystem::exists( lib_path ) ) {
+            std::filesystem::path lib_path( so_name );
+            if ( !std::filesystem::exists( lib_path ) ) {
                 result = false;
             }
         }
@@ -95,13 +95,13 @@ namespace irods {
             result = ERROR( -1, msg.str() );
         }
         else {
-            boost::filesystem::path so_dir( _dir_name );
-            if ( boost::filesystem::exists( so_dir ) ) {
+            std::filesystem::path so_dir( _dir_name );
+            if ( std::filesystem::exists( so_dir ) ) {
                 _list.clear();
-                for ( boost::filesystem::directory_iterator it( so_dir );
-                        result.ok() && it != boost::filesystem::directory_iterator();
+                for ( std::filesystem::directory_iterator it( so_dir );
+                        result.ok() && it != std::filesystem::directory_iterator();
                         ++it ) {
-                    boost::filesystem::path entry = it->path();
+                    std::filesystem::path entry = it->path();
                     std::string plugin_name;
                     error ret = generate_plugin_name( entry.filename().string(), plugin_name );
                     if ( ret.ok() ) {

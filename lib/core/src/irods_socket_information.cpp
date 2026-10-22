@@ -1,7 +1,7 @@
 #include <algorithm>
 #include <arpa/inet.h>
-#include <boost/filesystem.hpp>
 #include <boost/format.hpp>
+#include <filesystem>
 #include <iostream>
 #include <netinet/in.h>
 #include <sys/socket.h>
@@ -37,18 +37,18 @@ std::string socket_fd_to_remote_address(const int fd) {
 std::vector<int> get_open_socket_file_descriptors(void) {
     std::vector<int> ret;
     try {
-        const boost::filesystem::directory_iterator end;
-        boost::filesystem::directory_iterator it("/proc/self/fd");
+        const std::filesystem::directory_iterator end;
+        std::filesystem::directory_iterator it("/proc/self/fd");
         for ( ; it != end; ++it) {
-            if (boost::filesystem::is_symlink(it->path())) {
-                boost::filesystem::path symlink_contents = boost::filesystem::read_symlink(it->path());
+            if (std::filesystem::is_symlink(it->path())) {
+                std::filesystem::path symlink_contents = std::filesystem::read_symlink(it->path());
                 if (!symlink_contents.string().compare(0, 8, "socket:[")) {
                     ret.push_back(atoi(it->path().filename().string().c_str()));
                 }
             }
         }
-    } catch (const boost::filesystem::filesystem_error& e) {
-        THROW(SYS_INTERNAL_ERR, boost::format("boost::filesystem error [%s]") % e.what());
+    } catch (const std::filesystem::filesystem_error& e) {
+        THROW(SYS_INTERNAL_ERR, boost::format("std::filesystem error [%s]") % e.what());
     }
 
     return ret;

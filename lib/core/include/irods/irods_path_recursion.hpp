@@ -9,8 +9,8 @@
 #include <map>
 #include <iomanip>
 #include <chrono>
-
-#include <boost/filesystem.hpp>
+#include <filesystem>
+#include <vector>
 
 namespace irods
 {
@@ -25,7 +25,7 @@ namespace irods
     // already been examined (it's in the set<> already).
     // When the bool parameter is true, symbolic links will not be followed.
     // See the implementation for more details.
-    bool is_path_valid_for_recursion(boost::filesystem::path const &, recursion_map_t &, bool);
+    bool is_path_valid_for_recursion(std::filesystem::path const &, recursion_map_t &, bool);
 
     // Called in from places where file system loop detection is not desired/needed,
     // regardless of whether or not the recursion_map_t has been initialized by
@@ -38,8 +38,8 @@ namespace irods
     bool is_path_valid_for_recursion( rodsArguments_t const * const, const char * );
 
     // Throws an irods::exception if a file system loop was detected
-    void check_for_filesystem_loop(boost::filesystem::path const &,    // Canonical path
-                                   boost::filesystem::path const &,    // user path (just for emitting decent exception messages)
+    void check_for_filesystem_loop(std::filesystem::path const &,    // Canonical path
+                                   std::filesystem::path const &,    // user path (just for emitting decent exception messages)
                                    recursion_map_t &);
 
     // This is what the icommand xxxxUtil() function uses to scan recursively
@@ -47,7 +47,7 @@ namespace irods
     // the recursion_map_t is statically defined by the caller as needed.
     // When the bool parameter is true, symbolic links will not be followed.
     // See the implementation for more details.
-    int check_directories_for_loops( boost::filesystem::path const &, irods::recursion_map_t &, bool);
+    int check_directories_for_loops( std::filesystem::path const &, irods::recursion_map_t &, bool);
 
     // Issue 3988: For irsync and iput mostly, scan all source physical directories
     // for loops before doing any actual file transfers. Returns a 0 for success or

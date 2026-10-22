@@ -48,11 +48,11 @@
 
 #include "irods/logical_locking.hpp"
 
-#include <boost/filesystem/path.hpp>
 #include <fmt/format.h>
 
 #include <charconv>
 #include <cstring>
+#include <filesystem>
 #include <string>
 #include <string_view>
 #include <chrono>

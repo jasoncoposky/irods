@@ -5,9 +5,8 @@
 #include "irods/irods_client_api_table.hpp"
 #include "irods/irods_logger.hpp"
 
-#include <boost/filesystem.hpp>
-
 #include <algorithm>
+#include <filesystem>
 
 extern int ProcessType; // NOLINT(cppcoreguidelines-avoid-non-const-global-variables)
 
@@ -112,7 +111,7 @@ namespace irods
             return PASS( ret );
         }
 
-        namespace fs = boost::filesystem;
+        namespace fs = std::filesystem;
 
         // =-=-=-=-=-=-=-
         // iterate over the API_HOME directory entries
@@ -124,7 +123,7 @@ namespace irods
                 if (_api_tbl.is_plugin_loaded(path.c_str())) {
                     if (CLIENT_PT != ::ProcessType) {
                         log_agent::debug(
-                            "init_api_table :: API plugin [{}] has already been loaded. Skipping ...", path.stem());
+                            "init_api_table :: API plugin [{}] has already been loaded. Skipping ...", path.stem().string());
                     }
                     continue;
                 }

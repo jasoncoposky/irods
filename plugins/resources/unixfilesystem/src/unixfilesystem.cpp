@@ -26,6 +26,7 @@
 
 // =-=-=-=-=-=-=-
 // stl includes
+#include <filesystem>
 #include <iostream>
 #include <sstream>
 #include <vector>
@@ -36,7 +37,6 @@
 // boost includes
 #include <boost/function.hpp>
 #include <boost/any.hpp>
-#include <boost/filesystem.hpp>
 
 // =-=-=-=-=-=-=-
 // system includes
@@ -480,14 +480,19 @@ irods::error unix_file_getfs_freespace(irods::plugin_context& _ctx)
 irods::error stat_vault_path(
     const std::string& _path,
     struct statfs&     _sb ) {
-    namespace bfs = boost::filesystem;
+    namespace bfs = std::filesystem;
 
     bfs::path vp( _path );
 
     // walk the vault path until we find an
     // existing directory which we can stat
     while( !bfs::exists( vp ) ) {
-        vp = vp.parent_path();
+        const auto parent = vp.parent_path();
+        if ( parent == vp ) {
+            vp.clear();
+            break;
+        }
+        vp = parent;
     }
 
     if( vp.empty() ) {

@@ -34,11 +34,11 @@
 #include "irods/touch.h"
 #include "irods/transport/default_transport.hpp"
 
-#include <boost/filesystem.hpp>
 #include <fmt/format.h>
 
 #include <algorithm>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <iterator>
@@ -1197,7 +1197,7 @@ TEST_CASE("rxDataObjPut")
         addKeyVal(&put_input.condInput, VERIFY_CHKSUM_KW, file_contents.data());
 
         // Put a file into iRODS and trigger an error.
-        const auto local_file = boost::filesystem::temp_directory_path() / "eels.txt";
+        const auto local_file = std::filesystem::temp_directory_path() / "eels.txt";
         { std::ofstream{local_file.c_str()} << file_contents; }
         put_input.dataSize = file_contents.size();
         REQUIRE(rcDataObjPut(static_cast<RcComm*>(conn), &put_input, const_cast<char*>(local_file.c_str())) == USER_CHKSUM_MISMATCH);
@@ -1260,7 +1260,7 @@ TEST_CASE("rxDataObjPut")
         addKeyVal(&put_input.condInput, VERIFY_CHKSUM_KW, file_contents.data());
 
         // Put a file into iRODS and trigger an error.
-        const auto local_file = boost::filesystem::temp_directory_path() / "eels.txt";
+        const auto local_file = std::filesystem::temp_directory_path() / "eels.txt";
         REQUIRE(unit_test_utils::create_local_file(local_file.c_str(), put_input.dataSize, 'A'));
         REQUIRE(rcDataObjPut(static_cast<RcComm*>(conn), &put_input, const_cast<char*>(local_file.c_str())) == USER_CHKSUM_MISMATCH);
 

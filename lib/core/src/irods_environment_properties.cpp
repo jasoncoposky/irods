@@ -8,12 +8,12 @@
 
 #include <string>
 #include <algorithm>
+#include <filesystem>
 #include <fstream>
+#include <system_error>
 
 #include <boost/algorithm/string.hpp>
 #include <boost/lexical_cast.hpp>
-#include <boost/filesystem.hpp>
-#include <boost/system/detail/error_code.hpp>
 
 namespace irods {
     error get_json_environment_file(
@@ -86,8 +86,8 @@ namespace irods {
             return;
         }
 
-        boost::system::error_code ec{};
-        if (!boost::filesystem::exists(json_file, ec)) {
+        std::error_code ec{};
+        if (!std::filesystem::exists(json_file, ec)) {
             rodsLog(LOG_ERROR,
                     "environment_properties::capture: %s. Expected file at [%s].",
                     ec.message().c_str(),

@@ -21,7 +21,6 @@
 #include <unistd.h>
 
 #include <boost/algorithm/string.hpp>
-#include <boost/filesystem.hpp>
 #include <boost/lexical_cast.hpp>
 #include <boost/archive/iterators/base64_from_binary.hpp>
 #include <boost/archive/iterators/insert_linebreaks.hpp>
@@ -32,11 +31,12 @@
 
 #include <algorithm>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <string>
 #include <vector>
 
-namespace fs = boost::filesystem;
+namespace fs = std::filesystem;
 
 using json = nlohmann::json;
 
@@ -370,7 +370,7 @@ irods::error get_file_contents( const std::string& _fn, std::string& _cont )
 
 irods::error get_config_dir( json& _cfg_dir )
 {
-    namespace fs = boost::filesystem;
+    namespace fs = std::filesystem;
 
     _cfg_dir = json::object();
 

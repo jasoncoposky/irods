@@ -1,14 +1,15 @@
 #include "irods/getRodsEnv.h"
 #include "irods/irods_parse_command_line_options.hpp"
 #include <boost/program_options.hpp>
-#include <boost/filesystem.hpp>
 #include "irods/rodsErrorTable.h"
 #include "irods/rcMisc.h"
-namespace fs = boost::filesystem;
 
+#include <filesystem>
 #include <iostream>
 #include <string>
 #include <vector>
+
+namespace fs = std::filesystem;
 
 typedef std::vector< std::string > path_list_t;
 
