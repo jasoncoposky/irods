@@ -100,9 +100,17 @@ fi
 declare -A TU_MAP
 TUS_TO_SYNC=()
 
+in_compile_commands() {
+    local tu="$1"
+    if [ ! -f "${BUILD_DIR}/compile_commands.json" ]; then
+        return 0
+    fi
+    grep -qF "${tu}" "${BUILD_DIR}/compile_commands.json"
+}
+
 for f in "${MODIFIED_FILES[@]}"; do
     if [[ "$f" =~ \.(cpp|cxx|cc|c)$ ]]; then
-        if [ -z "${TU_MAP[$f]:-}" ]; then
+        if [ -z "${TU_MAP[$f]:-}" ] && in_compile_commands "$f"; then
             TU_MAP[$f]=1
             TUS_TO_SYNC+=("$f")
         fi
@@ -110,7 +118,7 @@ for f in "${MODIFIED_FILES[@]}"; do
         base="$(basename "$f" | cut -d. -f1)"
         # 1. Look for matching .cpp in plugins, server, lib, unit_tests
         for cpp in $(find plugins server lib unit_tests -name "${base}.cpp" 2>/dev/null); do
-            if [ -f "$cpp" ] && [ -z "${TU_MAP[$cpp]:-}" ]; then
+            if [ -f "$cpp" ] && [ -z "${TU_MAP[$cpp]:-}" ] && in_compile_commands "$cpp"; then
                 TU_MAP[$cpp]=1
                 TUS_TO_SYNC+=("$cpp")
             fi
@@ -118,7 +126,7 @@ for f in "${MODIFIED_FILES[@]}"; do
         # 2. Grep for direct includes of this header
         header_base="$(basename "$f")"
         for incl_cpp in $(git grep -l "#include .*${header_base}" -- "*.cpp" 2>/dev/null | head -n 5); do
-            if [ -f "$incl_cpp" ] && [ -z "${TU_MAP[$incl_cpp]:-}" ]; then
+            if [ -f "$incl_cpp" ] && [ -z "${TU_MAP[$incl_cpp]:-}" ] && in_compile_commands "$incl_cpp"; then
                 TU_MAP[$incl_cpp]=1
                 TUS_TO_SYNC+=("$incl_cpp")
             fi

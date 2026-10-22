@@ -11,7 +11,6 @@
 #include "irods/thread_pool.hpp"
 #include "irods/connection_pool.hpp"
 #include "irods/dispatch_processor.hpp"
-#include "irods/query_builder.hpp"
 
 // =-=-=-=-=-=-=-
 // stl includes

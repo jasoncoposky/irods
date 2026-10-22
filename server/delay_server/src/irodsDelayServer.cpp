@@ -17,7 +17,7 @@
 #include "irods/irods_get_full_path_for_config_file.hpp"
 #include "irods/irods_logger.hpp"
 #include "irods/irods_pack_table.hpp"
-#include "irods/irods_query.hpp"
+#include "irods/genquery2_builder.hpp"
 #include "irods/irods_re_structs.hpp"
 #include "irods/irods_server_properties.hpp"
 #include "irods/irods_server_state.hpp"
@@ -43,7 +43,6 @@
 #include "irods/server_utilities.hpp"
 #include "irods/thread_pool.hpp"
 
-#include <boost/filesystem.hpp>
 #include <boost/program_options.hpp>
 #include <fmt/format.h>
 #include <nlohmann/json.hpp>
@@ -735,12 +734,15 @@ namespace
             });
         };
 
-        auto qstr = fmt::format("select RULE_EXEC_ID, order_desc(RULE_EXEC_PRIORITY) "
-                                "where RULE_EXEC_TIME <= '{}' and RULE_EXEC_LOCK_HOST = '' and "
-                                "RULE_EXEC_LOCK_HOST_PID = '' and RULE_EXEC_LOCK_TIME = ''",
-                                std::time(nullptr));
+        namespace gq2 = irods::experimental::genquery2;
+        const auto q = gq2::builder::select({"DELAY_RULE_ID"})
+                           .where(gq2::builder::col("DELAY_RULE_TIME") <= std::to_string(std::time(nullptr)) &&
+                                  gq2::builder::col("DELAY_RULE_LOCK_HOST") == "" &&
+                                  gq2::builder::col("DELAY_RULE_LOCK_HOST_PID") == "" &&
+                                  gq2::builder::col("DELAY_RULE_LOCK_TIME") == "")
+                           .order_by("DELAY_RULE_PRIORITY", false);
 
-        return {std::move(qstr), job};
+        return {q, job};
     } // make_delay_queue_query_processor
 
     auto is_local_server_defined_as_delay_server_leader() -> bool

@@ -2,8 +2,9 @@
 #define IRODS_QUERY_PROCESSOR_HPP
 
 #include "irods/thread_pool.hpp"
-#include "irods/irods_query.hpp"
+#include "irods/genquery2_builder.hpp"
 #include "irods/irods_exception.hpp"
+#include "irods/rodsErrorTable.h"
 
 #include <string>
 #include <functional>
@@ -11,6 +12,7 @@
 #include <vector>
 #include <tuple>
 #include <exception>
+#include <utility>
 
 namespace irods
 {
@@ -21,9 +23,8 @@ namespace irods
         // clang-format off
         using error        = std::tuple<int, std::string>;
         using errors       = std::vector<error>;
-        using result_row   = typename query<ConnectionType>::value_type;
+        using result_row   = std::vector<std::string>;
         using job          = std::function<void (const result_row&)>;
-        using query_type   = typename query<ConnectionType>::query_type;
         // clang-format on
 
         class future
@@ -60,28 +61,21 @@ namespace irods
             std::vector<std::shared_ptr<std::promise<error>>> promises;
         }; // class future
 
-        query_processor(const std::string& _query,
+        query_processor(irods::experimental::genquery2::select _select,
                         job _job,
-                        uint32_t _limit = 0,
-                        irods::query_type _type = irods::query_type::general)
-            : query_{_query}
-            , job_{_job}
+                        uint32_t _limit = 0)
+            : select_{std::move(_select)}
+            , job_{std::move(_job)}
             , limit_{_limit}
-            , type_{_type}
         {
         }
 
-        [[deprecated("use irods::query_type")]]
-        query_processor(const std::string& _query,
+        query_processor(const irods::experimental::genquery2::builder::select_builder& _builder,
                         job _job,
-                        uint32_t _limit,
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wdeprecated"
-#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
-                        query_type _type
-#pragma GCC diagnostic pop
-            )
-            : query_processor{_query, _job, _limit, static_cast<irods::query_type>(_type)}
+                        uint32_t _limit = 0)
+            : select_{_builder.build()}
+            , job_{std::move(_job)}
+            , limit_{_limit}
         {
         }
 
@@ -91,13 +85,20 @@ namespace irods
         auto execute(thread_pool& _thread_pool, ConnectionType& _conn) -> future
         {
             future f;
-            query<ConnectionType> q{&_conn, query_, limit_, 0, type_};
+            const auto rows = irods::experimental::genquery2::execute(_conn, select_);
+            std::uint32_t count = 0;
 
-            for (auto&& r : q) {
-               auto p = std::make_shared<std::promise<error>>();
-               f.push_back(p);
+            for (const auto& json_row : rows) {
+                if (limit_ > 0 && count >= limit_) {
+                    break;
+                }
+                ++count;
 
-               thread_pool::post(_thread_pool, [this, p, r]() mutable noexcept {
+                auto r = json_row.template get<result_row>();
+                auto p = std::make_shared<std::promise<error>>();
+                f.push_back(p);
+
+                thread_pool::post(_thread_pool, [this, p, r = std::move(r)]() mutable noexcept {
                     try {
                         job_(r);
                         p->set_value({0, ""});
@@ -119,10 +120,9 @@ namespace irods
         }
 
     private:
-        std::string query_;
+        irods::experimental::genquery2::select select_;
         job job_;
         uint32_t limit_;
-        irods::query_type type_;
     }; // class query_processor
 } // namespace irods
 

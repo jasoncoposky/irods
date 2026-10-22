@@ -924,6 +924,34 @@ namespace irods::experimental::genquery2
         }
         return rows;
     }
+
+    /// Convenience overload accepting a `builder::select_builder` directly.
+    template <typename RxComm>
+    auto try_execute(RxComm& _comm,
+                     const builder::select_builder& _sb,
+                     nlohmann::json& _rows,
+                     std::string_view _zone_hint = {}) -> int
+    {
+        return try_execute(_comm, _sb.build(), _rows, _zone_hint);
+    }
+
+    /// Convenience overload accepting a `builder::select_builder` directly.
+    template <typename RxComm>
+    auto try_execute(RxComm& _comm,
+                     const builder::select_builder& _sb,
+                     std::string_view _zone_hint = {}) -> std::optional<nlohmann::json>
+    {
+        return try_execute(_comm, _sb.build(), _zone_hint);
+    }
+
+    /// Convenience overload accepting a `builder::select_builder` directly.
+    template <typename RxComm>
+    auto execute(RxComm& _comm,
+                 const builder::select_builder& _sb,
+                 std::string_view _zone_hint = {}) -> nlohmann::json
+    {
+        return execute(_comm, _sb.build(), _zone_hint);
+    }
 } // namespace irods::experimental::genquery2
 #endif
 
