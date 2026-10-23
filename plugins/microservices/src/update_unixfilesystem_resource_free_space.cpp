@@ -10,7 +10,7 @@
 #include "irods/irods_log.hpp"
 #include <sys/statvfs.h>
 #include <filesystem>
-#include <boost/lexical_cast.hpp>
+#include <string>
 
 extern irods::resource_manager resc_mgr;
 
@@ -101,7 +101,7 @@ msi_update_unixfilesystem_resource_free_space(msParam_t *resource_name_msparam, 
     } else {
         free_space_in_bytes = statvfs_buf.f_bavail * statvfs_buf.f_frsize;
     }
-    const std::string free_space_in_bytes_string = boost::lexical_cast<std::string>(free_space_in_bytes);
+    const std::string free_space_in_bytes_string = std::to_string(free_space_in_bytes);
 
     if (rei->rsComm == NULL) {
         rodsLog(LOG_ERROR, "[%s]: input rei->rsComm is NULL", __FUNCTION__);

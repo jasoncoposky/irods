@@ -11,14 +11,15 @@
 #include "irods/irods_pam_auth_object.hpp"
 #include "irods/rcConnect.h"
 
-#include <boost/lexical_cast.hpp>
 #include <fmt/format.h>
 #include <nlohmann/json.hpp>
 
 #include <sys/types.h>
 #include <sys/wait.h>
 
+#include <charconv>
 #include <string>
+#include <system_error>
 #include <termios.h>
 #include <unistd.h>
 
@@ -294,10 +295,8 @@ namespace irods::authentication
             int ttl = 0;
             if (const auto ttl_iter = req.find(irods::AUTH_TTL_KEY); ttl_iter != req.end()) {
                 if (const auto& ttl_str = ttl_iter->get_ref<const std::string&>(); !ttl_str.empty()) {
-                    try {
-                        ttl = boost::lexical_cast<int>(ttl_str);
-                    }
-                    catch (const boost::bad_lexical_cast& e) {
+                    const auto [ptr, ec] = std::from_chars(ttl_str.data(), ttl_str.data() + ttl_str.size(), ttl);
+                    if (ec != std::errc{} || ptr != ttl_str.data() + ttl_str.size()) {
                         THROW(SYS_INVALID_INPUT_PARAM, fmt::format("invalid TTL [{}]", ttl_str));
                     }
                 }

@@ -5,7 +5,6 @@
 #include "irods/irods_stacktrace.hpp"
 #include "irods/rodsLog.h"
 
-#include <boost/any.hpp>
 #include <fmt/format.h>
 #include <fmt/ranges.h>
 #include <nlohmann/json.hpp>

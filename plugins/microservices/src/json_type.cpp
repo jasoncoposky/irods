@@ -11,9 +11,9 @@
 #include "irods/process_stash.hpp"
 #include "irods/rodsErrorTable.h"
 
-#include <boost/any.hpp>
 #include <nlohmann/json.hpp>
 
+#include <any>
 #include <functional>
 #include <string>
 
@@ -47,7 +47,7 @@ namespace
             log_msi::error("Caught exception while fetching type of the JSON structure. [{}]", e.client_display_what());
             return static_cast<int>(e.code());
         }
-        catch (const boost::bad_any_cast& e) {
+        catch (const std::bad_any_cast& e) {
             log_msi::error("Caught exception while fetching type of the JSON structure. [{}]", e.what());
             return INVALID_ANY_CAST;
         }

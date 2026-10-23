@@ -9,11 +9,11 @@
 #include "irods/process_stash.hpp"
 #include "irods/rodsErrorTable.h"
 
-#include <boost/any.hpp>
 #include <boost/safe_numerics/safe_integer.hpp>
 #include <fmt/format.h>
 #include <nlohmann/json.hpp>
 
+#include <any>
 #include <concepts>
 
 namespace irods
@@ -23,7 +23,7 @@ namespace irods
     /// \param[in] _json_handle A microservice parameter containing a string which represents a JSON handle.
     ///
     /// \throws irods::exception    If the handle does not point to a valid JSON structure.
-    /// \throws boost::bad_any_cast If the object pointed to by \p _json_handle does not point to the expected type.
+    /// \throws std::bad_any_cast   If the object pointed to by \p _json_handle does not point to the expected type.
     ///
     /// \returns A reference to a JSON structure.
     ///
@@ -43,7 +43,7 @@ namespace irods
             THROW(INVALID_HANDLE, fmt::format(msg, handle));
         }
 
-        return boost::any_cast<nlohmann::json&>(*object);
+        return std::any_cast<nlohmann::json&>(*object);
     } // resolve_json_handle
 
     /// Resolves a JSON pointer to a JSON structure.

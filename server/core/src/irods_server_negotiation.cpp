@@ -148,7 +148,7 @@ namespace irods
         rei.rsComm = &_comm;
 
         std::string rule_result;
-        std::list<boost::any> params;
+        std::list<std::any> params;
         params.push_back(&rule_result);
 
         // =-=-=-=-=-=-=-
@@ -191,7 +191,7 @@ namespace irods
 
         // =-=-=-=-=-=-=-
         // get the response from CS_NEG_CLI_1_MSG
-        boost::shared_ptr< cs_neg_t > read_cs_neg;
+        std::shared_ptr< cs_neg_t > read_cs_neg;
         err = read_client_server_negotiation_message( _ptr, read_cs_neg );
         if ( !err.ok() ) {
             return PASS( err );

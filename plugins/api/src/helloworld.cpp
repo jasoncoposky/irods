@@ -6,13 +6,13 @@
 #include "irods/irods_stacktrace.hpp"
 #include "irods/irods_server_api_call.hpp"
 #include "irods/irods_re_serialization.hpp"
-#include <boost/lexical_cast.hpp>
 
 #include "irods/objStat.h"
 #include "irods/client_api_allowlist.hpp"
 
 // =-=-=-=-=-=-=-
 // stl includes
+#include <any>
 #include <sstream>
 #include <string>
 #include <iostream>
@@ -51,13 +51,13 @@ int call_helloInp_helloOut(
 
 #ifdef RODS_SERVER
 static irods::error serialize_helloInp_ptr(
-        boost::any               _p,
+        std::any               _p,
         irods::re_serialization::serialized_parameter_t& _out) {
     try {
-        helloInp_t* tmp = boost::any_cast<helloInp_t*>(_p);
+        helloInp_t* tmp = std::any_cast<helloInp_t*>(_p);
         if(tmp) {
-            _out["this"] = boost::lexical_cast<std::string>(tmp->_this);
-            _out["that"] = boost::lexical_cast<std::string>(tmp->_that);
+            _out["this"] = std::to_string(tmp->_this);
+            _out["that"] = std::string(tmp->_that);
         }
         else {
             _out["null_value"] = "null_value";
@@ -73,15 +73,15 @@ static irods::error serialize_helloInp_ptr(
 } // serialize_helloInp_ptr
 
 static irods::error serialize_helloOut_ptr_ptr(
-        boost::any               _p,
+        std::any               _p,
         irods::re_serialization::serialized_parameter_t& _out) {
     try {
-        helloOut_t** tmp = boost::any_cast<helloOut_t**>(_p);
+        helloOut_t** tmp = std::any_cast<helloOut_t**>(_p);
         if(tmp && *tmp ) {
             helloOut_t*  l = *tmp;
-            _out["this"] = boost::lexical_cast<std::string>(l->_this);
-            _out["that"] = boost::lexical_cast<std::string>(l->_that);
-            _out["value"] = boost::lexical_cast<std::string>(l->_other._value);
+            _out["this"] = std::to_string(l->_this);
+            _out["that"] = std::string(l->_that);
+            _out["value"] = std::to_string(l->_other._value);
         }
         else {
             _out["null_value"] = "null_value";

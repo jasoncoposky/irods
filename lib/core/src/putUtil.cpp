@@ -20,8 +20,6 @@
 #include "irods/irods_log.hpp"
 #include "irods/sockComm.h"
 
-#include <boost/lexical_cast.hpp>
-
 #include <cstring>
 #include <filesystem>
 #include <system_error>
@@ -114,7 +112,7 @@ setStateForResume( rcComm_t * conn, rodsRestart_t * rodsRestart,
                 int status = rcDataObjUnlink( conn, & dataObjInp );
                 if ( status < 0 ) {
                     std::string notice = std::string( "rcDataObjUnlink returned with code: " );
-                    notice.append( boost::lexical_cast<std::string>( status ) );
+                    notice.append( std::to_string( status ) );
                     irods::log( LOG_NOTICE, notice );
                 }
                 clearKeyVal( &dataObjInp.condInput );

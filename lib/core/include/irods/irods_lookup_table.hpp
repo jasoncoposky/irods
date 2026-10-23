@@ -11,11 +11,8 @@
 
 // =-=-=-=-=-=-=-
 // stl includes
+#include <any>
 #include <string>
-
-// =-=-=-=-=-=-=-
-// boost includes
-#include <boost/any.hpp>
 
 #include <fmt/format.h>
 
@@ -153,12 +150,12 @@ namespace irods
     // =-=-=-=-=-=-=-
     // partial specialization created to support templating the get/set
     // functions which need to manage exception handling etc from
-    // a boost::any_cast
+    // a std::any_cast
     template <typename KeyType, typename HashType>
-    class lookup_table<boost::any, KeyType, HashType>
+    class lookup_table<std::any, KeyType, HashType>
     {
       protected:
-        using irods_hash_map = HASH_TYPE<KeyType, boost::any, HashType>;
+        using irods_hash_map = HASH_TYPE<KeyType, std::any, HashType>;
 
         irods_hash_map table_;
 
@@ -240,10 +237,10 @@ namespace irods
 
             // attempt to any_cast property value to given type
             try {
-                _val = boost::any_cast<T>(_val_itr->second);
+                _val = std::any_cast<T>(_val_itr->second);
                 return SUCCESS();
             }
-            catch (const boost::bad_any_cast&) {
+            catch (const std::bad_any_cast&) {
                 return ERROR(KEY_TYPE_MISMATCH, fmt::format("type and property key [{}] mismatch", _key));
             }
 
@@ -270,7 +267,7 @@ namespace irods
 
     }; // class lookup_table
 
-    using plugin_property_map = lookup_table<boost::any>;
+    using plugin_property_map = lookup_table<std::any>;
 
 }; // namespace irods
 

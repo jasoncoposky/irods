@@ -41,7 +41,7 @@
 #include <string>
 #include <map>
 #include <list>
-#include <boost/lexical_cast.hpp>
+#include "irods/irods_lexical_cast.hpp"
 
 // =-=-=-=-=-=-=-
 // system includes
@@ -161,7 +161,7 @@ irods::error replUpdateObjectAndOperProperties(
     object_list_t object_list;
     // The object list is now a queue of operations and their associated objects. Their corresponding replicating operations
     // will be performed one at a time in the order in which they were put into the queue.
-    irods::file_object_ptr file_obj = boost::dynamic_pointer_cast<irods::file_object >( ( _ctx.fco() ) );
+    irods::file_object_ptr file_obj = std::dynamic_pointer_cast<irods::file_object >( ( _ctx.fco() ) );
     ret = _ctx.prop_map().get<object_list_t>( OBJECT_LIST_PROP, object_list );
     irods::object_oper oper;
     if ( !ret.ok() && ret.code() != KEY_NOT_FOUND ) {
@@ -223,7 +223,7 @@ irods::error get_selected_hierarchy(
     // Get selected hier from RESC_HIER_STR_KW, set at time of resolution
     irods::hierarchy_parser selected_parser{};
     bool resc_hier_in_keyword{};
-    irods::file_object_ptr file_obj = boost::dynamic_pointer_cast<irods::file_object>(_ctx.fco());
+    irods::file_object_ptr file_obj = std::dynamic_pointer_cast<irods::file_object>(_ctx.fco());
 
     if (!resc_hier_in_keyword) {
         auto cond_input = irods::experimental::make_key_value_proxy((KeyValPair&)file_obj->cond_input());
@@ -351,7 +351,7 @@ irods::error repl_file_registered(irods::plugin_context& _ctx)
         return PASSMSG("Error checking passed parameters.", err);
     }
 
-    irods::file_object_ptr file_obj = boost::dynamic_pointer_cast<irods::file_object >( _ctx.fco() );
+    irods::file_object_ptr file_obj = std::dynamic_pointer_cast<irods::file_object >( _ctx.fco() );
     irods::hierarchy_parser parser;
     parser.set_string( file_obj->resc_hier() );
     irods::resource_ptr child;
@@ -379,7 +379,7 @@ irods::error repl_file_unregistered(
         result = PASSMSG( msg.str(), ret );
     }
     else {
-        irods::file_object_ptr file_obj = boost::dynamic_pointer_cast< irods::file_object >( _ctx.fco() );
+        irods::file_object_ptr file_obj = std::dynamic_pointer_cast< irods::file_object >( _ctx.fco() );
         irods::hierarchy_parser parser;
         parser.set_string( file_obj->resc_hier() );
         irods::resource_ptr child;
@@ -484,7 +484,7 @@ irods::error repl_file_modified(irods::plugin_context& _ctx) {
     }
 
     // Get next resource on which to call file_modified
-    irods::file_object_ptr file_obj{boost::dynamic_pointer_cast<irods::file_object>(_ctx.fco())};
+    irods::file_object_ptr file_obj{std::dynamic_pointer_cast<irods::file_object>(_ctx.fco())};
     irods::hierarchy_parser parser{};
     parser.set_string(file_obj->resc_hier());
     irods::resource_ptr child{};
@@ -589,7 +589,7 @@ irods::error repl_file_create(
         result = PASSMSG( "repl_file_create - bad params.", ret );
     }
     else {
-        irods::file_object_ptr file_obj = boost::dynamic_pointer_cast< irods::file_object >( _ctx.fco() );
+        irods::file_object_ptr file_obj = std::dynamic_pointer_cast< irods::file_object >( _ctx.fco() );
         irods::hierarchy_parser parser;
         parser.set_string( file_obj->resc_hier() );
         irods::resource_ptr child;
@@ -628,7 +628,7 @@ irods::error repl_file_open(
         result = PASSMSG( msg.str(), ret );
     }
     else {
-        irods::file_object_ptr file_obj = boost::dynamic_pointer_cast<irods::file_object >( ( _ctx.fco() ) );
+        irods::file_object_ptr file_obj = std::dynamic_pointer_cast<irods::file_object >( ( _ctx.fco() ) );
         irods::hierarchy_parser parser;
         parser.set_string( file_obj->resc_hier() );
         irods::resource_ptr child;
@@ -669,7 +669,7 @@ irods::error repl_file_read(
         result = PASSMSG( msg.str(), ret );
     }
     else {
-        irods::file_object_ptr file_obj = boost::dynamic_pointer_cast<irods::file_object >( ( _ctx.fco() ) );
+        irods::file_object_ptr file_obj = std::dynamic_pointer_cast<irods::file_object >( ( _ctx.fco() ) );
         irods::hierarchy_parser parser;
         parser.set_string( file_obj->resc_hier() );
         irods::resource_ptr child;
@@ -714,7 +714,7 @@ irods::error repl_file_write(
         result = PASSMSG( msg.str(), ret );
     }
     else {
-        irods::file_object_ptr file_obj = boost::dynamic_pointer_cast<irods::file_object >( ( _ctx.fco() ) );
+        irods::file_object_ptr file_obj = std::dynamic_pointer_cast<irods::file_object >( ( _ctx.fco() ) );
         irods::hierarchy_parser parser;
         parser.set_string( file_obj->resc_hier() );
         irods::resource_ptr child;
@@ -749,7 +749,7 @@ irods::error repl_file_close(irods::plugin_context& _ctx)
         return PASSMSG("Bad params.", err);
     }
 
-    irods::file_object_ptr file_obj = boost::dynamic_pointer_cast<irods::file_object>(_ctx.fco());
+    irods::file_object_ptr file_obj = std::dynamic_pointer_cast<irods::file_object>(_ctx.fco());
     irods::hierarchy_parser parser;
     parser.set_string(file_obj->resc_hier());
     irods::resource_ptr child;
@@ -780,7 +780,7 @@ irods::error repl_file_unlink(
         result = PASSMSG( msg.str(), ret );
     }
     else {
-        irods::data_object_ptr data_obj = boost::dynamic_pointer_cast<irods::data_object >( _ctx.fco() );
+        irods::data_object_ptr data_obj = std::dynamic_pointer_cast<irods::data_object >( _ctx.fco() );
         irods::hierarchy_parser parser;
         parser.set_string( data_obj->resc_hier() );
         irods::resource_ptr child;
@@ -824,7 +824,7 @@ irods::error repl_file_stat(
         result = PASSMSG( msg.str(), ret );
     }
     else {
-        irods::data_object_ptr data_obj = boost::dynamic_pointer_cast< irods::data_object >( _ctx.fco() );
+        irods::data_object_ptr data_obj = std::dynamic_pointer_cast< irods::data_object >( _ctx.fco() );
         irods::hierarchy_parser parser;
         parser.set_string( data_obj->resc_hier() );
         irods::resource_ptr child;
@@ -868,7 +868,7 @@ irods::error repl_file_lseek(
         result = PASSMSG( msg.str(), ret );
     }
     else {
-        irods::file_object_ptr file_obj = boost::dynamic_pointer_cast< irods::file_object >( _ctx.fco() );
+        irods::file_object_ptr file_obj = std::dynamic_pointer_cast< irods::file_object >( _ctx.fco() );
         irods::hierarchy_parser parser;
         parser.set_string( file_obj->resc_hier() );
         irods::resource_ptr child;
@@ -910,7 +910,7 @@ irods::error repl_file_mkdir(
         result = PASSMSG( msg.str(), ret );
     }
     else {
-        irods::collection_object_ptr collection_obj = boost::dynamic_pointer_cast< irods::collection_object >( _ctx.fco() );
+        irods::collection_object_ptr collection_obj = std::dynamic_pointer_cast< irods::collection_object >( _ctx.fco() );
         irods::hierarchy_parser parser;
         parser.set_string( collection_obj->resc_hier() );
         irods::resource_ptr child;
@@ -952,7 +952,7 @@ irods::error repl_file_rmdir(
         result = PASSMSG( msg.str(), ret );
     }
     else {
-        irods::collection_object_ptr file_obj = boost::dynamic_pointer_cast< irods::collection_object >( _ctx.fco() );
+        irods::collection_object_ptr file_obj = std::dynamic_pointer_cast< irods::collection_object >( _ctx.fco() );
         irods::hierarchy_parser parser;
         parser.set_string( file_obj->resc_hier() );
         irods::resource_ptr child;
@@ -994,7 +994,7 @@ irods::error repl_file_opendir(
         result = PASSMSG( msg.str(), ret );
     }
     else {
-        irods::collection_object_ptr collection_obj = boost::dynamic_pointer_cast< irods::collection_object >( _ctx.fco() );
+        irods::collection_object_ptr collection_obj = std::dynamic_pointer_cast< irods::collection_object >( _ctx.fco() );
         irods::hierarchy_parser parser;
         parser.set_string( collection_obj->resc_hier() );
         irods::resource_ptr child;
@@ -1036,7 +1036,7 @@ irods::error repl_file_closedir(
         result = PASSMSG( msg.str(), ret );
     }
     else {
-        irods::collection_object_ptr collection_obj = boost::dynamic_pointer_cast< irods::collection_object >( _ctx.fco() );
+        irods::collection_object_ptr collection_obj = std::dynamic_pointer_cast< irods::collection_object >( _ctx.fco() );
         irods::hierarchy_parser parser;
         parser.set_string( collection_obj->resc_hier() );
         irods::resource_ptr child;
@@ -1079,7 +1079,7 @@ irods::error repl_file_readdir(
         result = PASSMSG( msg.str(), ret );
     }
     else {
-        irods::collection_object_ptr collection_obj = boost::dynamic_pointer_cast< irods::collection_object >( _ctx.fco() );
+        irods::collection_object_ptr collection_obj = std::dynamic_pointer_cast< irods::collection_object >( _ctx.fco() );
         irods::hierarchy_parser parser;
         parser.set_string( collection_obj->resc_hier() );
         irods::resource_ptr child;
@@ -1122,7 +1122,7 @@ irods::error repl_file_rename(
         result = PASSMSG( msg.str(), ret );
     }
     else {
-        irods::file_object_ptr file_obj = boost::dynamic_pointer_cast< irods::file_object >( _ctx.fco() );
+        irods::file_object_ptr file_obj = std::dynamic_pointer_cast< irods::file_object >( _ctx.fco() );
         irods::hierarchy_parser parser;
         parser.set_string( file_obj->resc_hier() );
         irods::resource_ptr child;
@@ -1165,7 +1165,7 @@ irods::error repl_file_truncate(
         result = PASSMSG( msg.str(), ret );
     }
     else {
-        irods::file_object_ptr ptr = boost::dynamic_pointer_cast< irods::file_object >( _ctx.fco() );
+        irods::file_object_ptr ptr = std::dynamic_pointer_cast< irods::file_object >( _ctx.fco() );
         irods::hierarchy_parser parser;
         parser.set_string( ptr->resc_hier() );
         irods::resource_ptr child;
@@ -1207,7 +1207,7 @@ irods::error repl_file_getfs_freespace(
         result = PASSMSG( msg.str(), ret );
     }
     else {
-        irods::file_object_ptr file_obj = boost::dynamic_pointer_cast< irods::file_object >( _ctx.fco() );
+        irods::file_object_ptr file_obj = std::dynamic_pointer_cast< irods::file_object >( _ctx.fco() );
         irods::hierarchy_parser parser;
         parser.set_string( file_obj->resc_hier() );
         irods::resource_ptr child;
@@ -1252,7 +1252,7 @@ irods::error repl_file_stage_to_cache(
         result = PASSMSG( msg.str(), ret );
     }
     else {
-        irods::file_object_ptr file_obj = boost::dynamic_pointer_cast< irods::file_object >( _ctx.fco() );
+        irods::file_object_ptr file_obj = std::dynamic_pointer_cast< irods::file_object >( _ctx.fco() );
         irods::hierarchy_parser parser;
         parser.set_string( file_obj->resc_hier() );
         irods::resource_ptr child;
@@ -1298,7 +1298,7 @@ irods::error repl_file_sync_to_arch(
         result = PASSMSG( msg.str(), ret );
     }
     else {
-        irods::file_object_ptr file_obj = boost::dynamic_pointer_cast< irods::file_object >( _ctx.fco() );
+        irods::file_object_ptr file_obj = std::dynamic_pointer_cast< irods::file_object >( _ctx.fco() );
         irods::hierarchy_parser parser;
         parser.set_string( file_obj->resc_hier() );
         irods::resource_ptr child;
@@ -1447,7 +1447,7 @@ irods::error repl_file_resolve_hierarchy(
     }
 
     // If child list property exists, use previously selected parser for the vote
-    irods::file_object_ptr file_obj = boost::dynamic_pointer_cast<irods::file_object >( ( _ctx.fco() ) );
+    irods::file_object_ptr file_obj = std::dynamic_pointer_cast<irods::file_object >( ( _ctx.fco() ) );
     const auto hier_str{getValByKey(&file_obj->cond_input(), RESC_HIER_STR_KW)};
     if (hier_str) {
         irods::hierarchy_parser selected_parser{};
@@ -1501,11 +1501,11 @@ int get_rebalance_batch_size(irods::plugin_context& _ctx) {
 
         const auto it = kvp.find(irods::REPL_LIMIT_KEY);
         if (it != kvp.end()) {
-            try {
-                return boost::lexical_cast<int>(it->second);
-            } catch (const boost::bad_lexical_cast&) {
+            int val = 0;
+            if (!irods::lexical_cast<int>(it->second, val).ok()) {
                 THROW(SYS_INVALID_INPUT_PARAM, boost::format("failed to cast string [%s] to integer") % it->second);
             }
+            return val;
         }
     }
     return DEFAULT_REBALANCE_BATCH_SIZE;
@@ -1560,7 +1560,7 @@ irods::error repl_file_notify(
         result = PASSMSG( msg.str(), ret );
     }
     else {
-        irods::file_object_ptr file_obj = boost::dynamic_pointer_cast<irods::file_object >( ( _ctx.fco() ) );
+        irods::file_object_ptr file_obj = std::dynamic_pointer_cast<irods::file_object >( ( _ctx.fco() ) );
         irods::hierarchy_parser parser;
         parser.set_string( file_obj->resc_hier() );
         irods::resource_ptr child;
@@ -1615,23 +1615,8 @@ class repl_resource : public irods::resource {
 
                 auto retry_attempts = irods::DEFAULT_RETRY_ATTEMPTS;
                 if ( kvp_map.find( irods::RETRY_ATTEMPTS_KW ) != kvp_map.end() ) {
-                    try {
-                        // boost::lexical_cast does not raise errors on negatives when casting to unsigned
-                        const int int_retry_attempts = boost::lexical_cast< int >( kvp_map[ irods::RETRY_ATTEMPTS_KW ] );
-                        if ( int_retry_attempts < 0 ) {
-                            irods::log( ERROR( SYS_INVALID_INPUT_PARAM,
-                                           boost::format(
-                                           "[%s] - [%s] for resource [%s] is < 0; using default value [%d]" ) %
-                                           __FUNCTION__ %
-                                           _inst_name %
-                                           irods::RETRY_ATTEMPTS_KW.c_str() %
-                                           irods::DEFAULT_RETRY_ATTEMPTS ) );
-                        }
-                        else {
-                            retry_attempts = static_cast< decltype( retry_attempts ) >( int_retry_attempts );
-                        }
-                    }
-                    catch ( const boost::bad_lexical_cast& ) {
+                    int int_retry_attempts = 0;
+                    if ( !irods::lexical_cast< int >( kvp_map[ irods::RETRY_ATTEMPTS_KW ], int_retry_attempts ).ok() ) {
                         irods::log( ERROR( SYS_INVALID_INPUT_PARAM,
                                         boost::format(
                                         "[%s] - failed to cast [%s] for resource [%s] to value [%s]; using default value [%d]") %
@@ -1641,28 +1626,25 @@ class repl_resource : public irods::resource {
                                         kvp_map[ irods::RETRY_ATTEMPTS_KW ] %
                                         irods::DEFAULT_RETRY_ATTEMPTS ) );
                     }
+                    else if ( int_retry_attempts < 0 ) {
+                        irods::log( ERROR( SYS_INVALID_INPUT_PARAM,
+                                       boost::format(
+                                       "[%s] - [%s] for resource [%s] is < 0; using default value [%d]" ) %
+                                       __FUNCTION__ %
+                                       _inst_name %
+                                       irods::RETRY_ATTEMPTS_KW.c_str() %
+                                       irods::DEFAULT_RETRY_ATTEMPTS ) );
+                    }
+                    else {
+                        retry_attempts = static_cast< decltype( retry_attempts ) >( int_retry_attempts );
+                    }
                 }
                 properties_.set< decltype( retry_attempts ) >( irods::RETRY_ATTEMPTS_KW, retry_attempts );
 
                 auto retry_delay_in_seconds = irods::DEFAULT_RETRY_FIRST_DELAY_IN_SECONDS;
                 if ( kvp_map.find( irods::RETRY_FIRST_DELAY_IN_SECONDS_KW ) != kvp_map.end() ) {
-                    try {
-                        // boost::lexical_cast does not raise errors on negatives when casting to unsigned
-                        const int int_retry_delay = boost::lexical_cast< int >( kvp_map[ irods::RETRY_FIRST_DELAY_IN_SECONDS_KW ] );
-                        if ( int_retry_delay <= 0 ) {
-                            irods::log( ERROR( SYS_INVALID_INPUT_PARAM,
-                                           boost::format(
-                                           "[%s] - [%s] for resource [%s] is <= 0; using default value [%d]" ) %
-                                           __FUNCTION__ %
-                                           _inst_name %
-                                           irods::RETRY_FIRST_DELAY_IN_SECONDS_KW.c_str() %
-                                           irods::DEFAULT_RETRY_FIRST_DELAY_IN_SECONDS ) );
-                        }
-                        else {
-                            retry_delay_in_seconds = static_cast< decltype( retry_delay_in_seconds ) >( int_retry_delay );
-                        }
-                    }
-                    catch ( const boost::bad_lexical_cast& ) {
+                    int int_retry_delay = 0;
+                    if ( !irods::lexical_cast< int >( kvp_map[ irods::RETRY_FIRST_DELAY_IN_SECONDS_KW ], int_retry_delay ).ok() ) {
                         irods::log( ERROR( SYS_INVALID_INPUT_PARAM,
                                         boost::format(
                                         "[%s] - failed to cast [%s] for resource [%s] to value [%s]; using default value [%d]") %
@@ -1672,13 +1654,30 @@ class repl_resource : public irods::resource {
                                         kvp_map[ irods::RETRY_FIRST_DELAY_IN_SECONDS_KW ] %
                                         irods::DEFAULT_RETRY_FIRST_DELAY_IN_SECONDS ) );
                     }
+                    else if ( int_retry_delay <= 0 ) {
+                        irods::log( ERROR( SYS_INVALID_INPUT_PARAM,
+                                       boost::format(
+                                       "[%s] - [%s] for resource [%s] is <= 0; using default value [%d]" ) %
+                                       __FUNCTION__ %
+                                       _inst_name %
+                                       irods::RETRY_FIRST_DELAY_IN_SECONDS_KW.c_str() %
+                                       irods::DEFAULT_RETRY_FIRST_DELAY_IN_SECONDS ) );
+                    }
+                    else {
+                        retry_delay_in_seconds = static_cast< decltype( retry_delay_in_seconds ) >( int_retry_delay );
+                    }
                 }
                 properties_.set< decltype( retry_delay_in_seconds ) >( irods::RETRY_FIRST_DELAY_IN_SECONDS_KW, retry_delay_in_seconds );
 
                 auto backoff_multiplier = irods::DEFAULT_RETRY_BACKOFF_MULTIPLIER;
                 if ( kvp_map.find( irods::RETRY_BACKOFF_MULTIPLIER_KW ) != kvp_map.end() ) {
                     try {
-                        backoff_multiplier = boost::lexical_cast< decltype( backoff_multiplier ) >( kvp_map[ irods::RETRY_BACKOFF_MULTIPLIER_KW ] );
+                        std::size_t pos = 0;
+                        const auto& val_str = kvp_map[ irods::RETRY_BACKOFF_MULTIPLIER_KW ];
+                        backoff_multiplier = std::stod( val_str, &pos );
+                        if ( pos != val_str.size() ) {
+                            throw std::invalid_argument{ "trailing characters" };
+                        }
                         if ( backoff_multiplier < 1 ) {
                             irods::log( ERROR( SYS_INVALID_INPUT_PARAM,
                                            boost::format(
@@ -1690,7 +1689,7 @@ class repl_resource : public irods::resource {
                             backoff_multiplier = irods::DEFAULT_RETRY_BACKOFF_MULTIPLIER;
                         }
                     }
-                    catch ( const boost::bad_lexical_cast& ) {
+                    catch ( const std::exception& ) {
                         irods::log( ERROR( SYS_INVALID_INPUT_PARAM,
                                         boost::format(
                                         "[%s] - failed to cast [%s] for resource [%s] to value [%s]; using default value [%d]") %

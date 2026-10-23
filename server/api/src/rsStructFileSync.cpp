@@ -112,7 +112,7 @@ int _rsStructFileSync( rsComm_t*           _comm,
         return ret_err.code();
     }
 
-    irods::resource_ptr resc = boost::dynamic_pointer_cast< irods::resource >( ptr );
+    irods::resource_ptr resc = std::dynamic_pointer_cast< irods::resource >( ptr );
 
     // =-=-=-=-=-=-=-
     // make the call to the "extract" interface

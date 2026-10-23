@@ -22,7 +22,7 @@ namespace irods
 {
     const std::string CRC64NVME_NAME("crc64nvme");
 
-    auto CRC64NVMEStrategy::init(boost::any& _context) const -> error
+    auto CRC64NVMEStrategy::init(std::any& _context) const -> error
     {
         // The CRC polynomial defines the feedback terms used in the CRC computation.
         // It represents the divisor polynomial in the binary polynomial division process
@@ -58,13 +58,13 @@ namespace irods
         return SUCCESS();
     }
 
-    auto CRC64NVMEStrategy::update(const std::string& data, boost::any& _context) const -> error
+    auto CRC64NVMEStrategy::update(const std::string& data, std::any& _context) const -> error
     {
         boost::crc_basic<crc_bits>* context;
         try {
-            context = boost::any_cast<boost::crc_basic<crc_bits>*>(_context);
+            context = std::any_cast<boost::crc_basic<crc_bits>*>(_context);
         }
-        catch (const boost::bad_any_cast& e) {
+        catch (const std::bad_any_cast& e) {
             return ERROR(SYS_INVALID_INPUT_PARAM,
                          "The context sent to CRC64NVMEStrategy::update was not a boost::crc_basic<crc_bits>*");
         }
@@ -77,7 +77,7 @@ namespace irods
         return SUCCESS();
     }
 
-    auto CRC64NVMEStrategy::digest(std::string& messageDigest, boost::any& _context) const -> error
+    auto CRC64NVMEStrategy::digest(std::string& messageDigest, std::any& _context) const -> error
     {
         return digest(irods::hash::options{.output_mode = irods::hash::output_mode::base64_encoded_string,
                                            .include_checksum_prefix = true},
@@ -90,14 +90,14 @@ namespace irods
         return _chksum.starts_with(CRC64NVME_CHKSUM_PREFIX);
     }
 
-    auto CRC64NVMEStrategy::digest(const hash::options& _options, boost::any& _context, std::string& _out) const
+    auto CRC64NVMEStrategy::digest(const hash::options& _options, std::any& _context, std::string& _out) const
         -> irods::error
     {
         boost::crc_basic<crc_bits>* context;
         try {
-            context = boost::any_cast<boost::crc_basic<crc_bits>*>(_context);
+            context = std::any_cast<boost::crc_basic<crc_bits>*>(_context);
         }
-        catch (const boost::bad_any_cast& e) {
+        catch (const std::bad_any_cast& e) {
             return ERROR(SYS_INVALID_INPUT_PARAM,
                          "The context sent to CRC64NVMEStrategy::digest was not a boost::crc_basic<crc_bits>*");
         }
@@ -127,5 +127,5 @@ namespace irods
         return CRC64NVME_CHKSUM_PREFIX;
     } // CRC64NVMEStrategy::checksum_prefix
 
-    void CRC64NVMEStrategy::free_context(boost::any& context) const {}
+    void CRC64NVMEStrategy::free_context(std::any& context) const {}
 } // namespace irods

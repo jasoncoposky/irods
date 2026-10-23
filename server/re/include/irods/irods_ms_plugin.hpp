@@ -48,7 +48,7 @@ namespace irods {
             ms_table_entry(
                 const std::string&, // ms name
                 unsigned int,                // num ms args
-                boost::any );       // function pointer
+                std::any );         // function pointer
 
             // =-=-=-=-=-=-=-
             // copy ctor
@@ -98,10 +98,10 @@ namespace irods {
 
                     try {
                         typedef std::function<int(types_t...)> fcn_t;
-                        fcn_t fcn = boost::any_cast<fcn_t>( operations_[ operation_name_ ] );
+                        fcn_t fcn = std::any_cast<fcn_t>( operations_[ operation_name_ ] );
                         return fcn(_t...);
                     }
-                    catch( const boost::bad_any_cast& ) {
+                    catch( const std::bad_any_cast& ) {
                         std::string msg( "failed for call - " );
                         msg += operation_name_;
                         irods::log( ERROR(

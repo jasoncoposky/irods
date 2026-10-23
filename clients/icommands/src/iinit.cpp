@@ -16,17 +16,17 @@
 #include <irods/rodsClient.h>
 #include <irods/rodsError.h>
 
-#include <boost/lexical_cast.hpp>
-
 #include <fmt/format.h>
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <charconv>
 #include <cstdio>
 #include <iostream>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <system_error>
 
 void usage( char *prog );
 
@@ -169,10 +169,12 @@ namespace
         std::getline(std::cin, response);
 
         if (!response.empty()) {
-            try {
-                _setting = boost::lexical_cast<int>(response);
+            int parsed_val{};
+            const auto [ptr, ec] = std::from_chars(response.data(), response.data() + response.size(), parsed_val);
+            if (ec == std::errc{} && ptr == response.data() + response.size()) {
+                _setting = parsed_val;
             }
-            catch (const boost::bad_lexical_cast&) {
+            else {
                 fmt::print("Entered value [{}] failed to convert to integer. Using [{}].\n", response, default_value);
                 _setting = default_value;
             }

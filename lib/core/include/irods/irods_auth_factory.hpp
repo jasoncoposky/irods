@@ -6,8 +6,7 @@
 #include "irods/irods_auth_object.hpp"
 
 // =-=-=-=-=-=-=-
-// boost includes
-#include <boost/shared_ptr.hpp>
+#include <memory>
 
 namespace irods {
 /// =-=-=-=-=-=-=-

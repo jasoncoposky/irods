@@ -20,9 +20,10 @@
 #define IRODS_REPLICA_ENABLE_SERVER_SIDE_API
 #include "irods/data_object_proxy.hpp"
 
-#include <boost/lexical_cast.hpp>
-
 #include <fmt/format.h>
+
+#include <charconv>
+#include <system_error>
 
 namespace
 {
@@ -72,13 +73,16 @@ namespace
         auto reg_param = irods::experimental::make_key_value_proxy(kvp);
         if (cond_input.contains(DATA_SIZE_KW)) {
             const auto data_size = cond_input.at(DATA_SIZE_KW).value();
-            try {
-                dest.size(boost::lexical_cast<decltype(dest.size())>(data_size));
+            decltype(dest.size()) parsed_size{};
+            const auto [ptr, ec] =
+                std::from_chars(data_size.data(), data_size.data() + data_size.size(), parsed_size);
+            if (ec == std::errc{} && ptr == data_size.data() + data_size.size()) {
+                dest.size(parsed_size);
                 reg_param[DATA_SIZE_KW] = data_size;
             }
-            catch (const boost::bad_lexical_cast&) {
+            else {
                 irods::log(LOG_ERROR, fmt::format(
-                           "[{}:{}] - bad_lexical_cast for dataSize [{}]; setting to 0",
+                           "[{}:{}] - failed to parse dataSize [{}]; setting to 0",
                            __func__, __LINE__, data_size));
                 dest.size(0);
                 reg_param.erase(DATA_SIZE_KW);

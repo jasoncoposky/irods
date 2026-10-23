@@ -6,8 +6,8 @@
 #include "irods/HashStrategy.hpp"
 #include "irods/irods_error.hpp"
 
+#include <any>
 #include <string>
-#include <boost/any.hpp>
 
 namespace irods {
 
@@ -44,7 +44,7 @@ namespace irods {
 
           private:
             const HashStrategy* _strategy;
-            boost::any          _context;
+            std::any            _context;
             error               _stored_error;
             std::string         _stored_digest;
     };

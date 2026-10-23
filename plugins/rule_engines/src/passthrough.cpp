@@ -107,7 +107,7 @@ namespace
     irods::error exec_rule(const std::string& _instance_name,
                            [[maybe_unused]] irods::default_re_ctx& _ctx,
                            const std::string& _rule_name,
-                           [[maybe_unused]] std::list<boost::any>& _rule_arguments,
+                           [[maybe_unused]] std::list<std::any>& _rule_arguments,
                            // NOLINTNEXTLINE(performance-unnecessary-value-param)
                            [[maybe_unused]] irods::callback _effect_handler)
     {
@@ -158,7 +158,7 @@ pluggable_rule_engine* plugin_factory(const std::string& _instance_name,
 
     const auto exec_rule_wrapper = [_instance_name](irods::default_re_ctx& _ctx,
                                                     const std::string& _rule_name,
-                                                    std::list<boost::any>& _rule_arguments,
+                                                    std::list<std::any>& _rule_arguments,
                                                     irods::callback _effect_handler) {
         // NOLINTNEXTLINE(performance-unnecessary-value-param)
         return exec_rule(_instance_name, _ctx, _rule_name, _rule_arguments, _effect_handler);
@@ -173,7 +173,7 @@ pluggable_rule_engine* plugin_factory(const std::string& _instance_name,
     re->add_operation("stop", operation<const std::string&>{no_op});
     re->add_operation("rule_exists", operation<const std::string&, bool&>{rule_exists_wrapper});
     re->add_operation("list_rules", operation<std::vector<std::string>&>{list_rules});
-    re->add_operation("exec_rule", operation<const std::string&, std::list<boost::any>&, irods::callback>{exec_rule_wrapper});
+    re->add_operation("exec_rule", operation<const std::string&, std::list<std::any>&, irods::callback>{exec_rule_wrapper});
     re->add_operation("exec_rule_text", operation<const std::string&, msParamArray_t*, const std::string&, irods::callback>{not_supported});
     re->add_operation("exec_rule_expression", operation<const std::string&, msParamArray_t*, irods::callback>{not_supported});
 

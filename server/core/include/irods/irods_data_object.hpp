@@ -15,7 +15,7 @@ namespace irods {
 /// =-=-=-=-=-=-=-
 /// @brief typedef for managed data object pointer
     class data_object;
-    typedef boost::shared_ptr< data_object > data_object_ptr;
+    typedef std::shared_ptr< data_object > data_object_ptr;
 
 // =-=-=-=-=-=-=-
 // base class for all object types

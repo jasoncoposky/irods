@@ -2,14 +2,12 @@
 
 #include "irods/filesystem/path_utilities.hpp"
 
-#include <iostream>
+#include <algorithm>
+#include <functional>
 #include <iomanip>
+#include <iostream>
 #include <string>
 #include <string_view>
-#include <algorithm>
-
-#include <boost/algorithm/string.hpp>
-#include <boost/container_hash/hash.hpp>
 
 namespace irods::filesystem
 {
@@ -573,8 +571,7 @@ namespace irods::filesystem
 
     auto hash_value(const path& _p) noexcept -> std::size_t
     {
-        const auto& pstr = _p.native();
-        return boost::hash_range(std::begin(pstr), std::end(pstr));
+        return std::hash<path::string_type>{}(_p.native());
     }
 
     auto zone_name_view(const path& _p) noexcept -> std::optional<std::string_view>

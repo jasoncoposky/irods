@@ -5,9 +5,7 @@
 // irods includes
 #include "irods/irods_database_object.hpp"
 
-// =-=-=-=-=-=-=-
-// boost includes
-#include <boost/shared_ptr.hpp>
+#include <memory>
 
 namespace irods {
 
@@ -60,7 +58,7 @@ namespace irods {
 
 // =-=-=-=-=-=-=-
 // helpful typedef for sock comm interface & factory
-    typedef boost::shared_ptr< postgres_object > postgres_object_ptr;
+    typedef std::shared_ptr< postgres_object > postgres_object_ptr;
 
 }; // namespace irods
 

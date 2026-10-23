@@ -1,13 +1,12 @@
 #include "irods/json_serialization.hpp"
 #include "irods/irods_at_scope_exit.hpp"
 #include "irods/irods_resource_manager.hpp"
+#include "irods/irods_lexical_cast.hpp"
 #include "irods/replica_state_table.hpp"
 #include "irods/rs_data_object_finalize.hpp"
 
 //#define IRODS_REPLICA_ENABLE_SERVER_SIDE_API
 //#include "irods/data_object_proxy.hpp"
-
-#include <boost/lexical_cast.hpp>
 
 #include <fmt/format.h>
 
@@ -61,7 +60,7 @@ namespace irods::replica_state_table
                 for (const auto& e : replica_state_json_map.at(_key).at(REPLICAS_KW)) {
                     ++index;
                     if (_replica_number ==
-                        boost::lexical_cast<int>(e.at(BEFORE_KW).at("data_repl_num").get<std::string>()))
+                        irods::lexical_cast<int>(e.at(BEFORE_KW).at("data_repl_num").get<std::string>()))
                     {
                         return index;
                     }
@@ -85,7 +84,7 @@ namespace irods::replica_state_table
                 for (const auto& e : replica_state_json_map.at(_key).at(REPLICAS_KW)) {
                     ++index;
                     if (_leaf_resource_id ==
-                        boost::lexical_cast<rodsLong_t>(e.at(BEFORE_KW).at("resc_id").get<std::string>()))
+                        irods::lexical_cast<rodsLong_t>(e.at(BEFORE_KW).at("resc_id").get<std::string>()))
                     {
                         return index;
                     }
@@ -108,7 +107,7 @@ namespace irods::replica_state_table
 
                 for (const auto& e : replica_state_json_map.at(_key).at(REPLICAS_KW)) {
                     ++index;
-                    if (resc_id == boost::lexical_cast<rodsLong_t>(e.at(BEFORE_KW).at("resc_id").get<std::string>())) {
+                    if (resc_id == irods::lexical_cast<rodsLong_t>(e.at(BEFORE_KW).at("resc_id").get<std::string>())) {
                         return index;
                     }
                 }
@@ -391,7 +390,7 @@ namespace irods::replica_state_table
         std::scoped_lock rst_lock{rst_mutex};
 
         for (const auto& e : replica_state_json_map.at(_key).at(REPLICAS_KW)) {
-            if (resc_id == boost::lexical_cast<rodsLong_t>(e.at(BEFORE_KW).at("resc_id").get<std::string>())) {
+            if (resc_id == irods::lexical_cast<rodsLong_t>(e.at(BEFORE_KW).at("resc_id").get<std::string>())) {
                 return true;
             }
         }
@@ -408,7 +407,7 @@ namespace irods::replica_state_table
         std::scoped_lock rst_lock{rst_mutex};
 
         for (const auto& e : replica_state_json_map.at(_key).at(REPLICAS_KW)) {
-            if (_replica_number == boost::lexical_cast<int>(e.at(BEFORE_KW).at("data_repl_num").get<std::string>())) {
+            if (_replica_number == irods::lexical_cast<int>(e.at(BEFORE_KW).at("data_repl_num").get<std::string>())) {
                 return true;
             }
         }
@@ -441,7 +440,7 @@ namespace irods::replica_state_table
         const auto& replica_json = [&_key, &resc_id]
         {
             for (const auto& e : replica_state_json_map.at(_key).at(REPLICAS_KW)) {
-                if (resc_id == boost::lexical_cast<rodsLong_t>(e.at(BEFORE_KW).at("resc_id").get<std::string>())) {
+                if (resc_id == irods::lexical_cast<rodsLong_t>(e.at(BEFORE_KW).at("resc_id").get<std::string>())) {
                     return e;
                 }
             }
@@ -475,7 +474,7 @@ namespace irods::replica_state_table
         const auto& replica_json = [&_key, &_replica_number]
         {
             for (const auto& e : replica_state_json_map.at(_key).at(REPLICAS_KW)) {
-                if (_replica_number == boost::lexical_cast<int>(e.at(BEFORE_KW).at("data_repl_num").get<std::string>()))
+                if (_replica_number == irods::lexical_cast<int>(e.at(BEFORE_KW).at("data_repl_num").get<std::string>()))
                 {
                     return e;
                 }

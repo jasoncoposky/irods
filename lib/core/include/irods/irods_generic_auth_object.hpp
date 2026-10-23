@@ -47,7 +47,7 @@ namespace irods {
 
     };
 
-    typedef boost::shared_ptr<generic_auth_object> generic_auth_object_ptr;
+    using generic_auth_object_ptr = std::shared_ptr<generic_auth_object>;
 
 }; // namespace irods
 

@@ -11,7 +11,7 @@
 namespace
 {
     // A mapping containing handles to heterogeneous objects.
-    std::unordered_map<std::string, boost::any> g_stash; // NOLINT(cppcoreguidelines-avoid-non-const-global-variables)
+    std::unordered_map<std::string, std::any> g_stash; // NOLINT(cppcoreguidelines-avoid-non-const-global-variables)
 
     // A mutex which protects the map from data corruption.
     std::shared_mutex g_mtx; // NOLINT(cppcoreguidelines-avoid-non-const-global-variables, cert-err58-cpp)
@@ -32,13 +32,13 @@ namespace
 
 namespace irods::process_stash
 {
-    auto insert(boost::any _value) -> std::string
+    auto insert(std::any _value) -> std::string
     {
         std::lock_guard lock{g_mtx};
         return g_stash.insert_or_assign(generate_unique_key(), std::move(_value)).first->first;
     } // insert
 
-    auto find(const std::string& _key) -> boost::any*
+    auto find(const std::string& _key) -> std::any*
     {
         {
             std::shared_lock lock{g_mtx};
@@ -56,7 +56,7 @@ namespace irods::process_stash
         return g_stash.erase(_key);
     } // erase
 
-    auto erase_if(const std::function<bool(const std::string&, const boost::any&)>& _pred) -> std::size_t
+    auto erase_if(const std::function<bool(const std::string&, const std::any&)>& _pred) -> std::size_t
     {
         std::lock_guard lock{g_mtx};
         return std::erase_if(g_stash, [&_pred](const auto& _item) {

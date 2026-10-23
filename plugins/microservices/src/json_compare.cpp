@@ -12,9 +12,9 @@
 #include "irods/process_stash.hpp"
 #include "irods/rodsErrorTable.h"
 
-#include <boost/any.hpp>
 #include <nlohmann/json.hpp>
 
+#include <any>
 #include <cstdint>
 #include <cstring>
 #include <functional>
@@ -77,7 +77,7 @@ namespace
             log_msi::error("Caught exception while comparing JSON objects. [{}]", e.client_display_what());
             return static_cast<int>(e.code());
         }
-        catch (const boost::bad_any_cast& e) {
+        catch (const std::bad_any_cast& e) {
             log_msi::error("Caught exception while comparing JSON objects. [{}]", e.what());
             return INVALID_ANY_CAST;
         }

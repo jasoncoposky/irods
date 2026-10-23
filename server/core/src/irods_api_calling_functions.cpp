@@ -1,7 +1,7 @@
 #include "irods/rcConnect.h"
 #include "irods/apiHeaderAll.h"
 #include "irods/apiHandler.hpp"
-#include <boost/any.hpp>
+#include <any>
 #include <functional>
 
 

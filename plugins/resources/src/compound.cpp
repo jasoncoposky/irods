@@ -28,10 +28,6 @@
 #include "irods/scoped_privileged_client.hpp"
 #include "irods/voting.hpp"
 
-#include <boost/lexical_cast.hpp>
-#include <boost/function.hpp>
-#include <boost/any.hpp>
-
 #include <fmt/format.h>
 
 #include <iostream>
@@ -152,7 +148,7 @@ namespace
     auto get_replica_number_and_status_for_cache_and_archive(irods::plugin_context& _ctx)
         -> std::tuple<int, int, int, int>
     {
-        irods::file_object_ptr f_ptr = boost::dynamic_pointer_cast<irods::file_object>(_ctx.fco());
+        irods::file_object_ptr f_ptr = std::dynamic_pointer_cast<irods::file_object>(_ctx.fco());
 
         // initialize replica statuses
         int cache_replica_number = REPLICA_DOES_NOT_EXIST;
@@ -251,7 +247,7 @@ namespace
         // Adding the admin keyword ensures that the stage-to-cache replication can complete. The admin may not have
         // sufficient permissions on the data object to perform the replication, so using the admin keyword is needed in
         // addition to the elevated privileges.
-        irods::file_object_ptr obj = boost::dynamic_pointer_cast<irods::file_object>(_ctx.fco());
+        irods::file_object_ptr obj = std::dynamic_pointer_cast<irods::file_object>(_ctx.fco());
         const auto* admin_kw = getValByKey(static_cast<keyValPair_t*>(&obj->cond_input()), ADMIN_KW);
 
         const auto cleanup = irods::at_scope_exit{[&obj, admin_kw] {
@@ -320,7 +316,7 @@ irods::error get_next_child(
     // =-=-=-=-=-=-=-
     // get the resource after this resource
     irods::hierarchy_parser parser;
-    boost::shared_ptr< DEST_TYPE > dst_obj = boost::dynamic_pointer_cast< DEST_TYPE >( _ctx.fco() );
+    std::shared_ptr< DEST_TYPE > dst_obj = std::dynamic_pointer_cast< DEST_TYPE >( _ctx.fco() );
     parser.set_string( dst_obj->resc_hier() );
     std::string child;
     ret = parser.next( name, child );
@@ -475,7 +471,7 @@ irods::error get_cache_resc(irods::plugin_context& _ctx, irods::resource_ptr& _r
 
     // Make sure the file object came from the cache resource.
     if (_resc != next_resc) {
-        boost::shared_ptr<DEST_TYPE> obj = boost::dynamic_pointer_cast<DEST_TYPE>(_ctx.fco());
+        std::shared_ptr<DEST_TYPE> obj = std::dynamic_pointer_cast<DEST_TYPE>(_ctx.fco());
         auto msg = fmt::format("Cannot open data object [{}]. It is stored in an archive "
                                "resource which is not directly accessible.",
                                obj->physical_path());
@@ -820,7 +816,7 @@ irods::error repl_object(
     }
     src_hier += current_name + irods::hierarchy_parser::delimiter() + src_name;
 
-    irods::file_object_ptr obj = boost::dynamic_pointer_cast< irods::file_object >( _ctx.fco() );
+    irods::file_object_ptr obj = std::dynamic_pointer_cast< irods::file_object >( _ctx.fco() );
     addKeyVal((keyValPair_t*)&obj->cond_input(), _stage_sync_kw.data(), "");
 
     int source_l1descInx{};
@@ -993,7 +989,7 @@ irods::error repl_object(
         rstrcpy( inp.cacheFilename, srcDataObjInfo->filePath,   MAX_NAME_LEN );
 
         // add object id keyword to pass down to resource plugins
-        const std::string object_id = boost::lexical_cast<std::string>(srcDataObjInfo->dataId);
+        const std::string object_id = std::to_string(srcDataObjInfo->dataId);
         addKeyVal(&inp.condInput, DATA_ID_KW, object_id.c_str());
 
         inp.mode = getFileMode(L1desc[destination_l1descInx].dataObjInp);
@@ -1571,7 +1567,7 @@ irods::error compound_file_modified(
         return PASSMSG("Failed to get the resource name.", ret);
     }
 
-    irods::file_object_ptr file_obj = boost::dynamic_pointer_cast<irods::file_object>(_ctx.fco());
+    irods::file_object_ptr file_obj = std::dynamic_pointer_cast<irods::file_object>(_ctx.fco());
     irods::hierarchy_parser sub_parser;
     sub_parser.set_string( file_obj->in_pdmo() );
     if ( !sub_parser.resc_in_hier( name ) ) {
@@ -1769,7 +1765,7 @@ irods::error open_for_prefer_archive_policy(
         rodsLog(LOG_NOTICE, "[%s] - operation not found in property map; using open.", __FUNCTION__);
     }
 
-    irods::file_object_ptr f_ptr = boost::dynamic_pointer_cast<irods::file_object>(_ctx.fco());
+    irods::file_object_ptr f_ptr = std::dynamic_pointer_cast<irods::file_object>(_ctx.fco());
 
     // =-=-=-=-=-=-=-
     // get the archive name
@@ -1866,7 +1862,7 @@ irods::error open_for_prefer_archive_policy(
         return {e};
     }
 
-    irods::data_object_ptr d_ptr = boost::dynamic_pointer_cast<irods::data_object>(f_ptr);
+    irods::data_object_ptr d_ptr = f_ptr;
     add_key_val(d_ptr, NO_CHK_COPY_LEN_KW, "prefer_archive_policy");
 
     if (const auto err = stage_to_cache(_ctx, _out_parser); !err.ok()) {
@@ -1971,7 +1967,7 @@ irods::error open_for_prefer_cache_policy(
         return PASS( ret );
     }
 
-    irods::file_object_ptr obj = boost::dynamic_pointer_cast<irods::file_object>(_ctx.fco());
+    irods::file_object_ptr obj = std::dynamic_pointer_cast<irods::file_object>(_ctx.fco());
     const char* hier = getValByKey((keyValPair_t*)&obj->cond_input(), RESC_HIER_STR_KW);
     if (hier) {
         irods::hierarchy_parser parser;
@@ -2046,7 +2042,7 @@ irods::error open_for_prefer_cache_policy(
     // In this case check the archive to see if it has a higher vote.
     float arch_check_vote = irv::vote::zero;
     irods::hierarchy_parser arch_check_parser = *_out_parser;
-    irods::file_object_ptr f_ptr = boost::dynamic_pointer_cast<irods::file_object>(_ctx.fco());
+    irods::file_object_ptr f_ptr = std::dynamic_pointer_cast<irods::file_object>(_ctx.fco());
 
     if (GOOD_REPLICA != cache_replica_status) {
         // =-=-=-=-=-=-=-
@@ -2197,7 +2193,7 @@ void replace_archive_for_replica(
     std::string archive_resc_name{};
     arch_resc->get_property<std::string>(irods::RESOURCE_NAME, archive_resc_name);
 
-    irods::file_object_ptr file_obj = boost::dynamic_pointer_cast<irods::file_object>(ctx.fco());
+    irods::file_object_ptr file_obj = std::dynamic_pointer_cast<irods::file_object>(ctx.fco());
     for (auto& r : file_obj->replicas()) {
         rodsLog(LOG_DEBUG,
             "[%s:%d] - vote:[%f],voted_hier:[%s],hier:[%s],arch:[%s]",

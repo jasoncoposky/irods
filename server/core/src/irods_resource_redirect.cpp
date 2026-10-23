@@ -133,7 +133,7 @@ namespace
         irods::hierarchy_parser parser;
         float vote{};
         std::string host_name = irods::get_server_property<std::string>(irods::KW_CFG_HOST);
-        irods::first_class_object_ptr ptr = boost::dynamic_pointer_cast<irods::first_class_object>(_file_obj);
+        irods::first_class_object_ptr ptr = _file_obj;
         err = resc->call< const std::string*, const std::string*, irods::hierarchy_parser*, float* >(
                   _comm, irods::RESOURCE_OP_RESOLVE_RESC_HIER, ptr, &_oper, &host_name, &parser, &vote );
 
@@ -417,7 +417,7 @@ namespace irods
             return {file_obj, hier};
         }
         // should not get here
-        THROW(SYS_NOT_SUPPORTED, (boost::format("operation not supported [%s]") % oper).str());
+        THROW(SYS_NOT_SUPPORTED, fmt::format("operation not supported [{}]", oper));
     } // resolve_resource_hierarchy
 
 // =-=-=-=-=-=-=-

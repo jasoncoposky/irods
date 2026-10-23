@@ -26,12 +26,12 @@ namespace irods {
             static environment_properties& instance();
 
             // Returns a copy of the underlying configuration.
-            static std::unordered_map<std::string, boost::any> copy_configuration()
+            static std::unordered_map<std::string, std::any> copy_configuration()
             {
                 return instance().config_props_.map();
             } // copy_configuration
 
-            void set_configuration(std::unordered_map<std::string, boost::any> _config)
+            void set_configuration(std::unordered_map<std::string, std::any> _config)
             {
                 config_props_.map() = std::move(_config);
             } // set_configuration
@@ -73,7 +73,7 @@ namespace irods {
 
             void remove( const std::string& _key );
 
-            std::unordered_map<std::string, boost::any>& map() {
+            std::unordered_map<std::string, std::any>& map() {
                 return config_props_.map();
             }
         private:

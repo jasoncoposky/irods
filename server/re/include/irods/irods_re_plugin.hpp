@@ -7,11 +7,11 @@
 #include "irods/irods_re_structs.hpp"
 #include "irods/irods_state_table.h"
 
-#include <boost/any.hpp>
 #include <boost/algorithm/string.hpp>
 
 #include <fmt/format.h>
 
+#include <any>
 #include <functional>
 #include <initializer_list>
 #include <iostream>
@@ -74,40 +74,40 @@ namespace irods {
     // when the rule engine interface tries to pack the parameters again, it will instead pass them on to the plugin
     class unpack {
     public:
-        unpack(std::list<boost::any> &_l);
-        std::list<boost::any> &l_;
+        unpack(std::list<std::any> &_l);
+        std::list<std::any> &l_;
     };
 
-    void var_arg_to_list(std::list<boost::any>& _l);
+    void var_arg_to_list(std::list<std::any>& _l);
 
     template<typename... As>
-    void var_arg_to_list(std::list<boost::any>& _l, unpack &&_p, As &&... _ps) {
+    void var_arg_to_list(std::list<std::any>& _l, unpack &&_p, As &&... _ps) {
         var_arg_to_list(_l, _p, std::forward<As>(_ps)...);
     }
 
     template<typename... As>
-    void var_arg_to_list(std::list<boost::any>& _l, unpack &_p, As &&... _ps) {
+    void var_arg_to_list(std::list<std::any>& _l, unpack &_p, As &&... _ps) {
         for (auto itr = begin (_p.l_) ; itr != end(_p.l_);++itr) {
-            _l.push_back(boost::any(*itr));
+            _l.push_back(std::any(*itr));
         }
         var_arg_to_list(_l, std::forward<As>(_ps)...);
 
     }
 
     template<typename A, typename... As>
-    void var_arg_to_list(std::list<boost::any>& _l,A&& _p, As&&... _ps) {
-        _l.push_back(boost::any(_p));
+    void var_arg_to_list(std::list<std::any>& _l,A&& _p, As&&... _ps) {
+        _l.push_back(std::any(_p));
         var_arg_to_list(_l, std::forward<As>(_ps)...);
     }
 
-    error list_to_var_arg(std::list<boost::any>& _l);
+    error list_to_var_arg(std::list<std::any>& _l);
 
     template<typename A, typename... As>
-    error list_to_var_arg(std::list<boost::any>& _l, A&& _p, As&&... _ps) {
+    error list_to_var_arg(std::list<std::any>& _l, A&& _p, As&&... _ps) {
         if(_l.empty()) {
             return ERROR(RE_TYPE_ERROR, "arg list mismatch");
         } else {
-            _p = boost::any_cast<A>(_l.front());
+            _p = std::any_cast<A>(_l.front());
             _l.pop_front();
             return list_to_var_arg(_l, std::forward<As>(_ps)...);
 
@@ -115,8 +115,8 @@ namespace irods {
     }
 
     template<typename... As>
-    std::list<boost::any> pack(As &&... _ps) {
-        std::list<boost::any> l;
+    std::list<std::any> pack(As &&... _ps) {
+        std::list<std::any> l;
         var_arg_to_list(l, std::forward<As>(_ps)...);
         return l;
     }
@@ -147,7 +147,7 @@ namespace irods {
         template<typename... As>
         error operator()(const std::string& _rn, As&&... _ps);
     protected:
-        boost::any callback_hdlr_;
+        std::any callback_hdlr_;
     };
 
     // serialize wraps a function so that it can be called at runtime without prior knowledge of original parameter types
@@ -160,13 +160,13 @@ namespace irods {
         template<typename... Bs>
         error operator()(Bs&&... _ps) {
             if(typeid(std::function<error(Bs...)>) == op_.type()) {
-                return boost::any_cast<std::function<error(Bs...)> >(op_)(std::forward<Bs>(_ps)...);
+                return std::any_cast<std::function<error(Bs...)> >(op_)(std::forward<Bs>(_ps)...);
             } else {
                 return ERROR(RE_TYPE_ERROR, std::string("operation ") + op_name_ + " called with wrong types of arguments");
             }
         }
     protected:
-        boost::any op_;
+        std::any op_;
         std::string op_name_;
     };
 
@@ -198,10 +198,10 @@ namespace irods {
         error setup_operation(T& _in)
         {
             try {
-                auto fcn = boost::any_cast<std::function<error(T&, const std::string&)>>(operations_["setup"]);
+                auto fcn = std::any_cast<std::function<error(T&, const std::string&)>>(operations_["setup"]);
                 return fcn(_in, instance_name_);
             }
-            catch (const boost::bad_any_cast& e) {
+            catch (const std::bad_any_cast& e) {
                 return ERROR(
                     INVALID_ANY_CAST,
                     fmt::format("failed to extract setup operation from instance [{}]: {}", instance_name_, e.what()));
@@ -216,10 +216,10 @@ namespace irods {
         error teardown_operation(T& _in)
         {
             try {
-                auto fcn = boost::any_cast<std::function<error(T&, const std::string&)>>(operations_["teardown"]);
+                auto fcn = std::any_cast<std::function<error(T&, const std::string&)>>(operations_["teardown"]);
                 return fcn(_in, instance_name_);
             }
-            catch (const boost::bad_any_cast& e) {
+            catch (const std::bad_any_cast& e) {
                 return ERROR(
                     INVALID_ANY_CAST,
                     fmt::format(
@@ -235,37 +235,37 @@ namespace irods {
 
         error start_operation(T& _in) {
             try {
-                auto fcn = boost::any_cast<std::function<error(T&,const std::string&)>>( operations_["start"] );
+                auto fcn = std::any_cast<std::function<error(T&,const std::string&)>>( operations_["start"] );
                 return fcn(_in, instance_name_);
-            } catch (const boost::bad_any_cast& e) {
-                return ERROR(INVALID_ANY_CAST, boost::format("failed to extract start operation from instance [%s] exception message [%s]") % instance_name_ % e.what());
+            } catch (const std::bad_any_cast& e) {
+                return ERROR(INVALID_ANY_CAST, fmt::format("failed to extract start operation from instance [{}] exception message [{}]", instance_name_, e.what()));
             }
         }
 
         error stop_operation(T& _in) {
             try {
-                auto fcn = boost::any_cast<std::function<error(T&,const std::string&)>>( operations_["stop"] );
+                auto fcn = std::any_cast<std::function<error(T&,const std::string&)>>( operations_["stop"] );
                 return fcn(_in,instance_name_);
-            } catch (const boost::bad_any_cast& e) {
-                return ERROR(INVALID_ANY_CAST, boost::format("failed to extract stop operation from instance [%s] exception message [%s]") % instance_name_ % e.what());
+            } catch (const std::bad_any_cast& e) {
+                return ERROR(INVALID_ANY_CAST, fmt::format("failed to extract stop operation from instance [{}] exception message [{}]", instance_name_, e.what()));
             }
         }
 
         error rule_exists(const std::string& _rn, T& _re_ctx, bool& _out) {
             try {
-                auto fcn = boost::any_cast<std::function<error(T&,const std::string&,bool&)>>( operations_["rule_exists"] );
+                auto fcn = std::any_cast<std::function<error(T&,const std::string&,bool&)>>( operations_["rule_exists"] );
                 return fcn(_re_ctx, _rn, _out);
-            } catch (const boost::bad_any_cast& e) {
-                return ERROR(INVALID_ANY_CAST, boost::format("failed to extract rule_exists operation from instance [%s] exception message [%s]") % instance_name_ % e.what());
+            } catch (const std::bad_any_cast& e) {
+                return ERROR(INVALID_ANY_CAST, fmt::format("failed to extract rule_exists operation from instance [{}] exception message [{}]", instance_name_, e.what()));
             }
         }
 
         error list_rules(T& _re_ctx, std::vector<std::string>& _rule_vec) {
             try {
-                auto fcn = boost::any_cast<std::function<error(T&,std::vector<std::string>&)>>( operations_["list_rules"] );
+                auto fcn = std::any_cast<std::function<error(T&,std::vector<std::string>&)>>( operations_["list_rules"] );
                 return fcn(_re_ctx, _rule_vec);
-            } catch ( const boost::bad_any_cast& e ) {
-                return ERROR( INVALID_ANY_CAST, boost::format( "failed to extract list_rules operation from instance [%s] exception message [%s]") % instance_name_ % e.what() );
+            } catch ( const std::bad_any_cast& e ) {
+                return ERROR( INVALID_ANY_CAST, fmt::format( "failed to extract list_rules operation from instance [{}] exception message [{}]", instance_name_, e.what() ) );
                         }
         }
 
@@ -273,10 +273,10 @@ namespace irods {
         error exec_rule(const std::string& _rn, T& _re_ctx, As&&... _ps, callback _callback) {
             try {
                 auto l = pack(std::forward<As>(_ps)...);
-                auto fcn = boost::any_cast<std::function<error(T&, const std::string&, std::list<boost::any> &, callback)>>( operations_["exec_rule"] );
+                auto fcn = std::any_cast<std::function<error(T&, const std::string&, std::list<std::any> &, callback)>>( operations_["exec_rule"] );
                 return fcn(_re_ctx, _rn, l, _callback);
-            } catch (const boost::bad_any_cast& e) {
-                return ERROR(INVALID_ANY_CAST, boost::format("failed to extract exec_rule operation from instance [%s] exception message [%s]") % instance_name_ % e.what());
+            } catch (const std::bad_any_cast& e) {
+                return ERROR(INVALID_ANY_CAST, fmt::format("failed to extract exec_rule operation from instance [{}] exception message [{}]", instance_name_, e.what()));
             }
         }
 
@@ -287,12 +287,12 @@ namespace irods {
                 const std::string& _out_desc,
                 callback           _callback) {
             try {
-                auto fcn = boost::any_cast<
+                auto fcn = std::any_cast<
                     std::function<error(T&, const std::string&, msParamArray_t*, const std::string&, callback)>>(
                         operations_["exec_rule_text"] );
                 return fcn(_re_ctx, _rt, _ms_params, _out_desc, _callback);
-            } catch (const boost::bad_any_cast& e) {
-                return ERROR(INVALID_ANY_CAST, boost::format("failed to extract exec_rule_text operation from instance [%s] exception message [%s]") % instance_name_ % e.what());
+            } catch (const std::bad_any_cast& e) {
+                return ERROR(INVALID_ANY_CAST, fmt::format("failed to extract exec_rule_text operation from instance [{}] exception message [{}]", instance_name_, e.what()));
             }
         }
 
@@ -302,18 +302,18 @@ namespace irods {
                 msParamArray_t*    _ms_params,
                 callback           _callback) {
             try {
-                auto fcn = boost::any_cast<
+                auto fcn = std::any_cast<
                     std::function<error(T&, const std::string&, msParamArray_t*, callback)>>(
                         operations_["exec_rule_expression"] );
                 return fcn(_re_ctx, _rt, _ms_params, _callback);
-            } catch (const boost::bad_any_cast& e) {
-                return ERROR(INVALID_ANY_CAST, boost::format("failed to extract exec_rule_expression operation from instance [%s] exception message [%s]") % instance_name_ % e.what());
+            } catch (const std::bad_any_cast& e) {
+                return ERROR(INVALID_ANY_CAST, fmt::format("failed to extract exec_rule_expression operation from instance [{}] exception message [{}]", instance_name_, e.what()));
             }
         }
 
     private:
         error load_operation(void *handle, std::string _fcn, std::string _key);
-        irods::lookup_table< boost::any > operations_;
+        irods::lookup_table< std::any > operations_;
         std::string instance_name_;
     };
 
@@ -843,7 +843,7 @@ namespace irods {
     template<>
     class default_microservice_manager<default_ms_ctx> {
     public:
-        error exec_microservice_adapter(std::string _msn, default_ms_ctx _ctx, std::list<boost::any>&);
+        error exec_microservice_adapter(std::string _msn, default_ms_ctx _ctx, std::list<std::any>&);
 
         template<typename... As>
         error exec_microservice(std::string _msn, default_ms_ctx _ctx, As&&... _ps) {
@@ -869,10 +869,10 @@ namespace irods {
     template<typename... As>
     error callback::operator()(const std::string& _rn,  As&& ... _ps) {
         if(callback_hdlr_.type() == typeid(rule_engine_context_manager<default_re_ctx, default_ms_ctx, AUDIT_RULE> *)) {
-            auto cb = boost::any_cast<rule_engine_context_manager<default_re_ctx, default_ms_ctx, AUDIT_RULE> *>(callback_hdlr_);
+            auto cb = std::any_cast<rule_engine_context_manager<default_re_ctx, default_ms_ctx, AUDIT_RULE> *>(callback_hdlr_);
             return cb->exec_rule(_rn, std::forward<As> (_ps)...);
         } else if (callback_hdlr_.type() == typeid(rule_engine_context_manager<default_re_ctx, default_ms_ctx, DONT_AUDIT_RULE> *)) {
-            auto cb = boost::any_cast<rule_engine_context_manager<default_re_ctx, default_ms_ctx, DONT_AUDIT_RULE> *>(callback_hdlr_);
+            auto cb = std::any_cast<rule_engine_context_manager<default_re_ctx, default_ms_ctx, DONT_AUDIT_RULE> *>(callback_hdlr_);
             return cb->exec_rule(_rn, std::forward<As> (_ps)...);
         } else {
             rodsLog(
@@ -886,16 +886,16 @@ namespace irods {
         }
     }
 
-    error convertToMsParam(boost::any &itr, msParam_t *t);
-    error convertFromMsParam(boost::any& itr, msParam_t *t);
+    error convertToMsParam(std::any &itr, msParam_t *t);
+    error convertFromMsParam(std::any& itr, msParam_t *t);
 
     template <typename T>
-    T any_extract(boost::any _p, std::function<T()> f) {
+    T any_extract(std::any _p, std::function<T()> f) {
         if(_p.type() == typeid(T*)) {
-            return *boost::any_cast<T*>(_p);
+            return *std::any_cast<T*>(_p);
 
         } else if(_p.type() == typeid(T)){
-            return boost::any_cast<T>(_p);
+            return std::any_cast<T>(_p);
 
         } else {
             // rodsLog(LOG_ERROR, (std::string("cannot convert type ") + _p.type().name() + " to " + typeid(T).name()).c_str());
@@ -904,9 +904,9 @@ namespace irods {
     }
 
     template <typename T>
-    void any_update(boost::any& _p, T _p2) {
+    void any_update(std::any& _p, T _p2) {
         if(_p.type() == typeid(T*)) {
-            *boost::any_cast<T*>(_p) = _p2;
+            *std::any_cast<T*>(_p) = _p2;
         }
     }
 

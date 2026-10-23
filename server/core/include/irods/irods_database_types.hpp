@@ -1,10 +1,8 @@
 #ifndef __IRODS_DATABASE_TYPES_HPP__
 #define __IRODS_DATABASE_TYPES_HPP__
 
-// =-=-=-=-=-=-=-
-// Boost Includes
-#include <boost/shared_ptr.hpp>
-#include <boost/any.hpp>
+#include <any>
+#include <memory>
 
 // =-=-=-=-=-=-=-
 // irods includes
@@ -19,7 +17,7 @@ namespace irods {
 // =-=-=-=-=-=-=-
 // database plugin pointer type
     class database;
-    typedef boost::shared_ptr< database > database_ptr;
+    typedef std::shared_ptr< database > database_ptr;
 
 // =-=-=-=-=-=-=-
 // fwd decl of database manager for fco resolve

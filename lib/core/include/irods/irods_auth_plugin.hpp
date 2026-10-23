@@ -6,8 +6,8 @@
 #include "irods/irods_load_plugin.hpp"
 #include <dlfcn.h>
 
+#include <any>
 #include <utility>
-#include <boost/any.hpp>
 
 namespace irods {
 

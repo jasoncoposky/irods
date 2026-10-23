@@ -104,7 +104,7 @@ namespace irods {
 
 /// =-=-=-=-=-=-=-
 /// @brief typedef for shared structured object pointer
-    typedef boost::shared_ptr< structured_object > structured_object_ptr;
+    typedef std::shared_ptr< structured_object > structured_object_ptr;
 
 }; // namespace irods
 

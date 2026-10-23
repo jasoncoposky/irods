@@ -1,9 +1,8 @@
 #ifndef __IRODS_NETWORK_TYPES_HPP__
 
 // =-=-=-=-=-=-=-
-// Boost Includes
-#include <boost/shared_ptr.hpp>
-#include <boost/any.hpp>
+#include <any>
+#include <memory>
 
 // =-=-=-=-=-=-=-
 #include "irods/irods_plugin_base.hpp"
@@ -17,7 +16,7 @@ namespace irods {
 // =-=-=-=-=-=-=-
 // network plugin pointer type
     class network;
-    typedef boost::shared_ptr< network > network_ptr;
+    using network_ptr = std::shared_ptr< network >;
 
 // =-=-=-=-=-=-=-
 // fwd decl of network manager for fco resolve

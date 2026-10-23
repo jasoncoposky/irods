@@ -7,8 +7,7 @@
 #include "irods/irods_server_properties.hpp"
 
 // =-=-=-=-=-=-=-
-// boost includes
-#include <boost/shared_ptr.hpp>
+#include <memory>
 
 // =-=-=-=-=-=-=-
 // irods includes
@@ -88,7 +87,7 @@ namespace irods
     /// @brief function which sends the negotiation message
     error read_client_server_negotiation_message(
         irods::network_object_ptr,        // socket
-        boost::shared_ptr< cs_neg_t >& ); // message payload
+        std::shared_ptr< cs_neg_t >& ); // message payload
 
     /// \brief Given a buffer, encrypt and hash it for negotiation.
     ///

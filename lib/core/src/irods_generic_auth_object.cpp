@@ -54,12 +54,12 @@ namespace irods {
                 return PASS( ret );
             }
             else {
-                _plugin = boost::dynamic_pointer_cast<plugin_base>( auth_p );
+                _plugin = auth_p;
                 return SUCCESS();
             }
         }
 
-        _plugin = boost::dynamic_pointer_cast<plugin_base>( auth_p );
+        _plugin = auth_p;
         return SUCCESS();
     }
 

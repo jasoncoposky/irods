@@ -31,7 +31,6 @@
 #include "irods/scoped_privileged_client.hpp"
 #include "irods/filesystem/path.hpp"
 
-#include <boost/lexical_cast.hpp>
 #include <boost/algorithm/string.hpp>
 
 #include <fmt/format.h>

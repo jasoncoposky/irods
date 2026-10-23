@@ -39,7 +39,7 @@ namespace irods {
             auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
             auto res = executor.execute_query(db_conn, "select name, setting from pg_settings");
             while (res.next()) {
-                properties[res.get<std::string>(0)] = boost::any(res.get<std::string>(1));
+                properties[res.get<std::string>(0)] = std::any(res.get<std::string>(1));
             }
             captured_ = true;
         }

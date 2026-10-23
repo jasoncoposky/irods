@@ -4,12 +4,11 @@
 // =-=-=-=-=-=-=-
 #include "irods/irods_network_plugin.hpp"
 
+#include <functional>
 #include <shared_mutex>
 #include <string>
 #include <tuple>
 #include <unordered_map>
-
-#include <boost/container_hash/hash.hpp>
 
 namespace irods
 {
@@ -68,7 +67,20 @@ namespace irods
             const std::string,    // plugin type
             const std::string,    // instance name
             const std::string>;   // context
-        using plugin_map_hasher = boost::hash<plugin_map_key>;
+        struct plugin_map_hasher
+        {
+            auto operator()(const plugin_map_key& _k) const noexcept -> std::size_t
+            {
+                std::size_t seed = std::hash<int>{}(std::get<0>(_k));
+                const auto combine = [&seed](const std::string& _s) noexcept {
+                    seed ^= std::hash<std::string>{}(_s) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
+                };
+                combine(std::get<1>(_k));
+                combine(std::get<2>(_k));
+                combine(std::get<3>(_k));
+                return seed;
+            }
+        };
         using plugin_lookup_table = std::unordered_map<plugin_map_key, network_ptr, plugin_map_hasher>;
 
         plugin_lookup_table plugins_;

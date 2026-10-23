@@ -13,7 +13,6 @@
 #include <system_error>
 
 #include <boost/algorithm/string.hpp>
-#include <boost/lexical_cast.hpp>
 
 namespace irods {
     error get_json_environment_file(

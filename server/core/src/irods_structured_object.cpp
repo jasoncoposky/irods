@@ -140,7 +140,7 @@ namespace irods {
                                plugin_type,
                                resc_ptr );
         if ( err.ok() ) {
-            _ptr = boost::dynamic_pointer_cast< resource >( resc_ptr );
+            _ptr = resc_ptr;
             return SUCCESS();
 
         }
@@ -190,7 +190,7 @@ namespace irods {
         resc_ptr->set_property<std::string>( RESOURCE_CREATE_TS, "create?" );
         resc_ptr->set_property<std::string>( RESOURCE_MODIFY_TS, "modify?" );
 
-        _ptr = boost::dynamic_pointer_cast< resource >( resc_ptr );
+        _ptr = resc_ptr;
         return SUCCESS();
 
     } // resolve

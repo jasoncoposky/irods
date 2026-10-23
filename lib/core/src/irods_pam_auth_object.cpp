@@ -93,7 +93,7 @@ namespace irods {
             else {
                 // =-=-=-=-=-=-=-
                 // upcast for out variable
-                _ptr = boost::dynamic_pointer_cast< plugin_base >( a_ptr );
+                _ptr = a_ptr;
                 return SUCCESS();
 
             }
@@ -102,7 +102,7 @@ namespace irods {
 
         // =-=-=-=-=-=-=-
         // upcast for out variable
-        _ptr = boost::dynamic_pointer_cast< plugin_base >( a_ptr );
+        _ptr = a_ptr;
 
         return SUCCESS();
 

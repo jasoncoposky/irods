@@ -42,7 +42,6 @@
 #include "irods/delay_rule_lock.h"
 #include "irods/delay_rule_unlock.h"
 
-#include <boost/lexical_cast.hpp>
 #include <boost/format.hpp>
 #include <boost/generator_iterator.hpp>
 

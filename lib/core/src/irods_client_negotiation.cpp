@@ -283,7 +283,7 @@ namespace irods
     {
         // =-=-=-=-=-=-=-
         // we requested a negotiation, wait for the response from CS_NEG_SVR_1_MSG
-        boost::shared_ptr< cs_neg_t > cs_neg;
+        std::shared_ptr< cs_neg_t > cs_neg;
         error err = read_client_server_negotiation_message( _ptr, cs_neg );
         if ( !err.ok() ) {
             return PASS( err );
@@ -476,7 +476,7 @@ namespace irods
     /// @brief function which sends the negotiation message
     error read_client_server_negotiation_message(
         irods::network_object_ptr      _ptr,
-        boost::shared_ptr< cs_neg_t >&  _cs_neg_msg )
+        std::shared_ptr< cs_neg_t >&  _cs_neg_msg )
     {
         // =-=-=-=-=-=-=-
         // read the message header

@@ -7,10 +7,11 @@
 #include "irods/rodsErrorTable.h"
 #include "irods/ticketAdmin.h"
 
-#include <boost/lexical_cast.hpp>
 #include <boost/range/adaptors.hpp>
 
 #include <fmt/format.h>
+
+#include <cxxabi.h>
 
 namespace
 {
@@ -39,12 +40,12 @@ namespace irods::re_serialization
     }
 
     static error serialize_float_ptr(
-            boost::any               _p,
+            std::any                 _p,
             serialized_parameter_t& _out) { 
         try {
-             float* f = boost::any_cast<float*>(_p);
+             float* f = std::any_cast<float*>(_p);
              if (f) {
-                 _out["float_pointer"] = boost::lexical_cast<std::string>(*f);
+                 _out["float_pointer"] = fmt::to_string(*f);
              }
              else {
                  _out["float_pointer"] = "nullptr";
@@ -60,10 +61,10 @@ namespace irods::re_serialization
     } // serialize_float_ptr
 
     static error serialize_const_std_string_ptr(
-            boost::any               _p,
+            std::any                 _p,
             serialized_parameter_t& _out) { 
         try {
-            const std::string* s = boost::any_cast<const std::string*>(_p);
+            const std::string* s = std::any_cast<const std::string*>(_p);
             if (s) {
                 _out["const_std_string_ptr"] = *s;
             }
@@ -81,10 +82,10 @@ namespace irods::re_serialization
     } // serialize_const_std_string_ptr
 
     static error serialize_std_string_ptr(
-            boost::any               _p,
+            std::any                 _p,
             serialized_parameter_t& _out) { 
         try {
-             std::string* s = boost::any_cast<std::string*>(_p);
+             std::string* s = std::any_cast<std::string*>(_p);
              if (s) {
                  _out["std_string_ptr"] = *s;
              }
@@ -102,10 +103,10 @@ namespace irods::re_serialization
     } // serialize_std_string_ptr
 
     static error serialize_std_string(
-            boost::any               _p,
+            std::any                 _p,
             serialized_parameter_t& _out) { 
         try {
-             _out["std_string"] = boost::any_cast<std::string>(_p);
+             _out["std_string"] = std::any_cast<std::string>(_p);
         }
         catch ( std::exception& ) {
             return ERROR(
@@ -117,10 +118,10 @@ namespace irods::re_serialization
     } // serialize_std_string
 
     static error serialize_hierarchy_parser_ptr(
-            boost::any               _p,
+            std::any                 _p,
             serialized_parameter_t& _out) { 
         try {
-            hierarchy_parser* p = boost::any_cast<hierarchy_parser*>(_p);
+            hierarchy_parser* p = std::any_cast<hierarchy_parser*>(_p);
             if (p) {
                 std::string hier;
                 p->str(hier);
@@ -140,11 +141,11 @@ namespace irods::re_serialization
     } // serialize_hierarchy_parser_ptr
 
     static error serialize_rodslong(
-            boost::any               _p,
+            std::any                 _p,
             serialized_parameter_t& _out) { 
         try {
-            rodsLong_t l = boost::any_cast<rodsLong_t>(_p);
-            _out["rodslong"] = boost::lexical_cast<std::string>(l);
+            rodsLong_t l = std::any_cast<rodsLong_t>(_p);
+            _out["rodslong"] = std::to_string(l);
         }
         catch ( std::exception& ) {
             return ERROR(
@@ -156,12 +157,12 @@ namespace irods::re_serialization
     } // serialize_rodslong
 
     static error serialize_rodslong_ptr(
-            boost::any               _p,
+            std::any                 _p,
             serialized_parameter_t& _out) { 
         try {
-            rodsLong_t* l = boost::any_cast<rodsLong_t*>(_p);
+            rodsLong_t* l = std::any_cast<rodsLong_t*>(_p);
             if (l) {
-                _out["rodslong_ptr"] = boost::lexical_cast<std::string>(*l); // NOLINT(boost-use-to-string)
+                _out["rodslong_ptr"] = std::to_string(*l);
             }
             else {
                 _out["rodslong_ptr"] = "nullptr";
@@ -177,11 +178,11 @@ namespace irods::re_serialization
     } // serialize_rodslong_ptr
 
     static error serialize_sizet(
-            boost::any               _p,
+            std::any                 _p,
             serialized_parameter_t& _out) { 
         try {
-            size_t l = boost::any_cast<size_t>(_p);
-            _out["sizet"] = boost::lexical_cast<std::string>(l);
+            size_t l = std::any_cast<size_t>(_p);
+            _out["sizet"] = std::to_string(l);
         }
         catch ( std::exception& ) {
             return ERROR(
@@ -193,11 +194,11 @@ namespace irods::re_serialization
     } // serialize_sizet
 
     static error serialize_int(
-            boost::any               _p,
+            std::any                 _p,
             serialized_parameter_t& _out) { 
         try {
-            int l = boost::any_cast<int>(_p);
-            _out["int"] = boost::lexical_cast<std::string>(l);
+            int l = std::any_cast<int>(_p);
+            _out["int"] = std::to_string(l);
         }
         catch ( std::exception& ) {
             return ERROR(
@@ -209,12 +210,12 @@ namespace irods::re_serialization
     } // serialize_int
 
     static error serialize_int_ptr(
-            boost::any               _p,
+            std::any                 _p,
             serialized_parameter_t& _out) { 
         try {
-            int* l = boost::any_cast<int*>(_p);
+            int* l = std::any_cast<int*>(_p);
             if (l) {
-                _out["int_ptr"] = boost::lexical_cast<std::string>(*l); // NOLINT(boost-use-to-string)
+                _out["int_ptr"] = std::to_string(*l);
             }
             else {
                 _out["int_ptr"] = "nullptr";
@@ -230,10 +231,10 @@ namespace irods::re_serialization
     } // serialize_rodslong_ptr
 
     static error serialize_char_ptr(
-            boost::any               _p,
+            std::any                 _p,
             serialized_parameter_t& _out) { 
         try {
-            char* l = boost::any_cast<char*>(_p);
+            char* l = std::any_cast<char*>(_p);
             if(l) {
                 _out["char_ptr"] = l;
             }
@@ -251,10 +252,10 @@ namespace irods::re_serialization
     } // serialize_char_ptr
 
     static error serialize_const_char_ptr(
-            boost::any               _p,
+            std::any                 _p,
             serialized_parameter_t& _out) { 
         try {
-            const char* l = boost::any_cast<const char*>(_p);
+            const char* l = std::any_cast<const char*>(_p);
             if(l) {
                 _out["const_char_ptr"] = l;
             }
@@ -272,10 +273,10 @@ namespace irods::re_serialization
     } // serialize_const_char_ptr
 
     static error serialize_rsComm_ptr(
-            boost::any               _p,
+            std::any                 _p,
             serialized_parameter_t& _out) { 
         try {
-            rsComm_t* l = boost::any_cast<rsComm_t*>(_p);
+            rsComm_t* l = std::any_cast<rsComm_t*>(_p);
             if (l) {
                 _out["client_addr"] = l->clientAddr;
 
@@ -284,11 +285,11 @@ namespace irods::re_serialization
                 _out["proxy_user_name"] = l->proxyUser.userName;
                 _out["proxy_rods_zone"] = l->proxyUser.rodsZone;
                 _out["proxy_user_type"] = l->proxyUser.userType;
-                _out["proxy_sys_uid"] = boost::lexical_cast<std::string>(l->proxyUser.sysUid);
+                _out["proxy_sys_uid"] = std::to_string(l->proxyUser.sysUid);
                 _out["proxy_auth_info_auth_scheme"] = l->proxyUser.authInfo.authScheme;
-                _out["proxy_auth_info_auth_flag"] = boost::lexical_cast<std::string>(l->proxyUser.authInfo.authFlag);
-                _out["proxy_auth_info_flag"] = boost::lexical_cast<std::string>(l->proxyUser.authInfo.flag);
-                _out["proxy_auth_info_ppid"] = boost::lexical_cast<std::string>(l->proxyUser.authInfo.ppid);
+                _out["proxy_auth_info_auth_flag"] = std::to_string(l->proxyUser.authInfo.authFlag);
+                _out["proxy_auth_info_flag"] = std::to_string(l->proxyUser.authInfo.flag);
+                _out["proxy_auth_info_ppid"] = std::to_string(l->proxyUser.authInfo.ppid);
                 _out["proxy_auth_info_host"] = l->proxyUser.authInfo.host;
                 _out["proxy_auth_info_auth_str"] = l->proxyUser.authInfo.authStr;
                 _out["proxy_user_other_info_user_info"] = l->proxyUser.userOtherInfo.userInfo;
@@ -299,11 +300,11 @@ namespace irods::re_serialization
                 _out["user_user_name"] = l->clientUser.userName;
                 _out["user_rods_zone"] = l->clientUser.rodsZone;
                 _out["user_user_type"] = l->clientUser.userType;
-                _out["user_sys_uid"] = boost::lexical_cast<std::string>(l->clientUser.sysUid);
+                _out["user_sys_uid"] = std::to_string(l->clientUser.sysUid);
                 _out["user_auth_info_auth_scheme"] = l->clientUser.authInfo.authScheme;
-                _out["user_auth_info_auth_flag"] = boost::lexical_cast<std::string>(l->clientUser.authInfo.authFlag);
-                _out["user_auth_info_flag"] = boost::lexical_cast<std::string>(l->clientUser.authInfo.flag);
-                _out["user_auth_info_ppid"] = boost::lexical_cast<std::string>(l->clientUser.authInfo.ppid);
+                _out["user_auth_info_auth_flag"] = std::to_string(l->clientUser.authInfo.authFlag);
+                _out["user_auth_info_flag"] = std::to_string(l->clientUser.authInfo.flag);
+                _out["user_auth_info_ppid"] = std::to_string(l->clientUser.authInfo.ppid);
                 _out["user_auth_info_host"] = l->clientUser.authInfo.host;
                 _out["user_auth_info_auth_str"] = l->clientUser.authInfo.authStr;
                 _out["user_user_other_info_user_info"] = l->clientUser.userOtherInfo.userInfo;
@@ -330,10 +331,10 @@ namespace irods::re_serialization
     } // serialize_rsComm_ptr
 
     static error serialize_plugin_context(
-            boost::any               _p,
+            std::any                 _p,
             serialized_parameter_t& _out) { 
         try {
-            plugin_context l = boost::any_cast<plugin_context>(_p);
+            plugin_context l = std::any_cast<plugin_context>(_p);
             if( l.fco().get() ) {
                 l.fco()->get_re_vars( _out );
             }
@@ -358,26 +359,16 @@ namespace irods::re_serialization
             specColl_t* _sc,
             serialized_parameter_t& _out) {
         if( _sc ) {
-            _out["coll_class"] = boost::lexical_cast<std::string>(_sc->collClass);
-            _out["type"] = boost::lexical_cast<std::string>(_sc->type);
+            _out["coll_class"] = std::to_string(static_cast<int>(_sc->collClass));
+            _out["type"] = std::to_string(static_cast<int>(_sc->type));
             _out["collection"] = _sc->collection;
             _out["obj_path"] = _sc->objPath;
             _out["resource"] = _sc->resource;
             _out["resc_hier"] = _sc->rescHier;
             _out["phy_path"] = _sc->phyPath;
             _out["cache_dir"] = _sc->cacheDir;
-            try {
-                _out["cache_dirty"] = boost::lexical_cast<std::string>(_sc->cacheDirty);
-            }
-            catch( boost::bad_lexical_cast& ) {
-                _out["cache_dirty"] = "<unconvertable>";
-            }
-            try {
-                _out["repl_num"] = boost::lexical_cast<std::string>(_sc->replNum);
-            }
-            catch( boost::bad_lexical_cast& ) {
-                _out["repl_num"] = "<unconvertable>";
-            }
+            _out["cache_dirty"] = std::to_string(_sc->cacheDirty);
+            _out["repl_num"] = std::to_string(_sc->replNum);
         }
         else {
             _out["specColl_ptr"] = "nullptr";
@@ -385,19 +376,19 @@ namespace irods::re_serialization
     } // serialize_spec_coll_info_ptr
 
     static error serialize_dataObjInp_ptr(
-            boost::any               _p,
+            std::any                 _p,
             serialized_parameter_t& _out) { 
         try {
-            dataObjInp_t* l = boost::any_cast<dataObjInp_t*>(_p);
+            dataObjInp_t* l = std::any_cast<dataObjInp_t*>(_p);
 
             if (l) {
                 _out["obj_path"]    = l->objPath;
-                _out["create_mode"] = boost::lexical_cast<std::string>(l->createMode);
-                _out["open_flags"]  = boost::lexical_cast<std::string>(l->openFlags);
-                _out["offset"]      = boost::lexical_cast<std::string>(l->offset);
-                _out["data_size"]   = boost::lexical_cast<std::string>(l->dataSize);
-                _out["num_threads"] = boost::lexical_cast<std::string>(l->numThreads);
-                _out["opr_type"]    = boost::lexical_cast<std::string>(l->oprType);
+                _out["create_mode"] = std::to_string(l->createMode);
+                _out["open_flags"]  = std::to_string(l->openFlags);
+                _out["offset"]      = std::to_string(l->offset);
+                _out["data_size"]   = std::to_string(l->dataSize);
+                _out["num_threads"] = std::to_string(l->numThreads);
+                _out["opr_type"]    = std::to_string(l->oprType);
                 if(l->specColl) {
                     serialize_spec_coll_info_ptr(
                             l->specColl,
@@ -420,11 +411,11 @@ namespace irods::re_serialization
     } // serialize_dataObjInp_ptr
 
     static error serialize_bulkOprInp_ptr(
-            boost::any               _p,
+            std::any                 _p,
             serialized_parameter_t& _out) {
 
         try {
-            auto* blk = boost::any_cast<bulkOprInp_t*>(_p);
+            auto* blk = std::any_cast<bulkOprInp_t*>(_p);
 
             if(!blk) {
                 _out["bulkOprInp_ptr"] = "nullptr";
@@ -467,10 +458,10 @@ namespace irods::re_serialization
     } // serialize_bulkOprInp_ptr
 
     static error serialize_authResponseInp_ptr(
-            boost::any               _p,
+            std::any                 _p,
             serialized_parameter_t& _out) { 
         try {
-            authResponseInp_t* l = boost::any_cast<authResponseInp_t*>(_p);
+            authResponseInp_t* l = std::any_cast<authResponseInp_t*>(_p);
             if (l) {
                 if(l->response) {
                     _out["response"] = l->response;
@@ -492,44 +483,44 @@ namespace irods::re_serialization
     } // serialize_authResponseInp_ptr
 
     static error serialize_dataObjInfo_ptr(
-            boost::any               _p,
+            std::any                 _p,
             serialized_parameter_t& _out) { 
         try {
-            dataObjInfo_t* l = boost::any_cast<dataObjInfo_t*>(_p);
+            dataObjInfo_t* l = std::any_cast<dataObjInfo_t*>(_p);
 
             if (l) {
                 _out["logical_path"] = l->objPath;
                 _out["resc_name"] = l->rescName;
                 _out["resc_hier"] = l->rescHier;
                 _out["data_type"] = l->dataType;
-                _out["data_size"] = boost::lexical_cast<std::string>(l->dataSize);
+                _out["data_size"] = std::to_string(l->dataSize);
                 _out["checksum"] = l->chksum;
                 _out["version"] = l->version;
                 _out["physical_path"] = l->filePath;
                 _out["data_owner_name"] = l->dataOwnerName;
                 _out["data_owner_zone"] = l->dataOwnerZone;
-                _out["replica_number"] = boost::lexical_cast<std::string>(l->replNum);
-                _out["replica_status"] = boost::lexical_cast<std::string>(l->replStatus);
+                _out["replica_number"] = std::to_string(l->replNum);
+                _out["replica_status"] = std::to_string(l->replStatus);
                 _out["status_string"] = l->statusString;
-                _out["data_id"] = boost::lexical_cast<std::string>(l->dataId);
-                _out["coll_id"] = boost::lexical_cast<std::string>(l->collId);
-                _out["data_map_id"] = boost::lexical_cast<std::string>(l->dataMapId);
-                _out["flags"] = boost::lexical_cast<std::string>(l->flags);
+                _out["data_id"] = std::to_string(l->dataId);
+                _out["coll_id"] = std::to_string(l->collId);
+                _out["data_map_id"] = std::to_string(l->dataMapId);
+                _out["flags"] = std::to_string(l->flags);
                 _out["data_comments"] = l->dataComments;
                 _out["data_mode"] = l->dataMode;
                 _out["data_expiry"] = l->dataExpiry;
                 _out["data_create"] = l->dataCreate;
                 _out["data_modify"] = l->dataModify;
                 _out["data_access"] = l->dataAccess;
-                _out["data_access_index"] = boost::lexical_cast<std::string>(l->dataAccessInx);
-                _out["write_flag"] = boost::lexical_cast<std::string>(l->writeFlag);
+                _out["data_access_index"] = std::to_string(l->dataAccessInx);
+                _out["write_flag"] = std::to_string(l->writeFlag);
                 _out["dest_resc_name"] = l->destRescName;
                 _out["sub_path"] = l->subPath;
-                _out["reg_uid"] = boost::lexical_cast<std::string>(l->regUid);
-                _out["other_flags"] = boost::lexical_cast<std::string>(l->otherFlags);
+                _out["reg_uid"] = std::to_string(l->regUid);
+                _out["other_flags"] = std::to_string(l->otherFlags);
                 _out["in_pdmo"] = l->in_pdmo;
-                _out["resc_id"] = boost::lexical_cast<std::string>(l->rescId);
-                _out["data_access_time"] = boost::lexical_cast<std::string>(l->dataAccessTime);
+                _out["resc_id"] = std::to_string(l->rescId);
+                _out["data_access_time"] = l->dataAccessTime;
 
                 // TODO Serialize DataObjInfo objects referenced by the "DataObjInfo::next".
                 // To do that requires namespacing due to the flat structure of the serialized
@@ -553,10 +544,10 @@ namespace irods::re_serialization
     } // serialize_dataObjInfo_ptr
 
     static error serialize_keyValPair_ptr(
-            boost::any               _p,
+            std::any                 _p,
             serialized_parameter_t& _out) { 
         try {
-            keyValPair_t* l = boost::any_cast<keyValPair_t*>(_p);
+            keyValPair_t* l = std::any_cast<keyValPair_t*>(_p);
 
             if (l) {
                 for(int i = 0; i < l->len; ++i) {
@@ -578,20 +569,20 @@ namespace irods::re_serialization
     } // serialize_keyValPair_ptr
 
     static error serialize_userInfo_ptr(
-            boost::any               _p,
+            std::any                 _p,
             serialized_parameter_t& _out) { 
         try {
-            userInfo_t* l = boost::any_cast<userInfo_t*>(_p);
+            userInfo_t* l = std::any_cast<userInfo_t*>(_p);
 
             if (l) {
                 _out["user_name"] = l->userName;
                 _out["rods_zone"] = l->rodsZone;
                 _out["user_type"] = l->userType;
-                _out["sys_uid"] = boost::lexical_cast<std::string>(l->sysUid);
+                _out["sys_uid"] = std::to_string(l->sysUid);
                 _out["auth_info_auth_scheme"] = l->authInfo.authScheme;
-                _out["auth_info_auth_flag"] = boost::lexical_cast<std::string>(l->authInfo.authFlag);
-                _out["auth_info_flag"] = boost::lexical_cast<std::string>(l->authInfo.flag);
-                _out["auth_info_ppid"] = boost::lexical_cast<std::string>(l->authInfo.ppid);
+                _out["auth_info_auth_flag"] = std::to_string(l->authInfo.authFlag);
+                _out["auth_info_flag"] = std::to_string(l->authInfo.flag);
+                _out["auth_info_ppid"] = std::to_string(l->authInfo.ppid);
                 _out["auth_info_host"] = l->authInfo.host;
                 _out["auth_info_auth_str"] = l->authInfo.authStr;
                 _out["user_other_info_user_info"] = l->userOtherInfo.userInfo;
@@ -613,19 +604,19 @@ namespace irods::re_serialization
     } // serialize_userInfo_ptr
 
     static error serialize_collInfo_ptr(
-            boost::any               _p,
+            std::any                 _p,
             serialized_parameter_t& _out) { 
         try {
-            collInfo_t* l = boost::any_cast<collInfo_t*>(_p);
+            collInfo_t* l = std::any_cast<collInfo_t*>(_p);
 
             if (l) {
-                _out["coll_id"] = boost::lexical_cast<std::string>(l->collId);
+                _out["coll_id"] = std::to_string(l->collId);
                 _out["coll_name"] = l->collName;
                 _out["coll_parent_name"] = l->collParentName;
                 _out["coll_owner_name"] = l->collOwnerName;
                 _out["coll_owner_zone"] = l->collOwnerZone;
-                _out["coll_map_id"] = boost::lexical_cast<std::string>(l->collMapId);
-                _out["coll_access_index"] = boost::lexical_cast<std::string>(l->collAccessInx);
+                _out["coll_map_id"] = std::to_string(l->collMapId);
+                _out["coll_access_index"] = std::to_string(l->collAccessInx);
                 _out["coll_comments"] = l->collComments;
                 _out["coll_inheritance"] = l->collInheritance;
                 _out["coll_expiry"] = l->collExpiry;
@@ -652,10 +643,10 @@ namespace irods::re_serialization
     } // serialize_collInfo_ptr
 
     static error serialize_collInp_ptr(
-            boost::any              _p,
+            std::any                _p,
             serialized_parameter_t& _out) { 
         try {
-            collInp_t* l = boost::any_cast<collInp_t*>(_p);
+            collInp_t* l = std::any_cast<collInp_t*>(_p);
 
             if (l) {
                 _out["coll_name"] = l->collName;
@@ -678,10 +669,10 @@ namespace irods::re_serialization
     } // serialize_collInp_ptr
 
     static error serialize_modAVUMetaInp_ptr(
-            boost::any               _p,
+            std::any                 _p,
             serialized_parameter_t& _out) { 
         try {
-            modAVUMetadataInp_t* l = boost::any_cast<modAVUMetadataInp_t*>(_p);
+            modAVUMetadataInp_t* l = std::any_cast<modAVUMetadataInp_t*>(_p);
 
             if (l) {
                 if( l->arg0 ) { _out["arg0"] = l->arg0; }
@@ -708,13 +699,13 @@ namespace irods::re_serialization
     } // serialize_modAVUMetaInp_ptr
 
     static error serialize_modAccessControlInp_ptr(
-            boost::any               _p,
+            std::any                 _p,
             serialized_parameter_t& _out) { 
         try {
-            modAccessControlInp_t* l = boost::any_cast<modAccessControlInp_t*>(_p);
+            modAccessControlInp_t* l = std::any_cast<modAccessControlInp_t*>(_p);
 
             if (l) {
-                _out["recursive_flag"] = boost::lexical_cast<std::string>(l->recursiveFlag);
+                _out["recursive_flag"] = std::to_string(l->recursiveFlag);
                 if( l->accessLevel ) { _out["access_level"] = l->accessLevel; }
                 if( l->userName ) { _out["user_name"] = l->userName; }
                 if( l->zone ) { _out["zone"] = l->zone; }
@@ -733,10 +724,10 @@ namespace irods::re_serialization
     } // serialize_modAccessControlInp_ptr
 
     static error serialize_modDataObjMeta_ptr(
-            boost::any               _p,
+            std::any                 _p,
             serialized_parameter_t& _out) { 
         try {
-            modDataObjMeta_t* l = boost::any_cast<modDataObjMeta_t*>(_p);
+            modDataObjMeta_t* l = std::any_cast<modDataObjMeta_t*>(_p);
 
             if (l) {
                 error ret = serialize_dataObjInfo_ptr(
@@ -765,10 +756,10 @@ namespace irods::re_serialization
     } // serialize_modDataObjMeta_ptr
 
     static error serialize_ruleExecSubmitInp_ptr(
-            boost::any               _p,
+            std::any                 _p,
             serialized_parameter_t& _out) { 
         try {
-            ruleExecSubmitInp_t* l = boost::any_cast<ruleExecSubmitInp_t*>(_p);
+            ruleExecSubmitInp_t* l = std::any_cast<ruleExecSubmitInp_t*>(_p);
 
             if (l) {
                 _out["rule_name"] = l->ruleName; 
@@ -801,10 +792,10 @@ namespace irods::re_serialization
     } // serialize_ruleExecSubmitInp_ptr
 
     static error serialize_dataObjCopyInp_ptr(
-            boost::any               _p,
+            std::any                 _p,
             serialized_parameter_t& _out) { 
         try {
-            dataObjCopyInp_t* l = boost::any_cast<dataObjCopyInp_t*>(_p);
+            dataObjCopyInp_t* l = std::any_cast<dataObjCopyInp_t*>(_p);
 
             if (l) {
                 serialized_parameter_t src;
@@ -847,24 +838,24 @@ namespace irods::re_serialization
     } // serialize_dataObjCopyInp_ptr
 
     static error serialize_rodsObjStat_ptr_ptr(
-            boost::any               _p,
+            std::any                 _p,
             serialized_parameter_t& _out) { 
         try {
-            rodsObjStat_t** tmp = boost::any_cast<rodsObjStat_t**>(_p);
+            rodsObjStat_t** tmp = std::any_cast<rodsObjStat_t**>(_p);
             if(tmp && *tmp) {
                 rodsObjStat_t* l = *tmp;
 
-                _out["obj_size"] = boost::lexical_cast<std::string>(l->objSize);
-                _out["obj_type"] = boost::lexical_cast<std::string>((int)l->objType);
-                _out["data_mode"] = boost::lexical_cast<std::string>(l->dataMode);
+                _out["obj_size"] = std::to_string(l->objSize);
+                _out["obj_type"] = std::to_string(static_cast<int>(l->objType));
+                _out["data_mode"] = std::to_string(l->dataMode);
                 
-                _out["data_id"] = boost::lexical_cast<std::string>(l->dataId);
-                _out["checksum"] = boost::lexical_cast<std::string>(l->chksum);
-                _out["ownerName"] = boost::lexical_cast<std::string>(l->ownerName);
-                _out["owner_zone"] = boost::lexical_cast<std::string>(l->ownerZone);
-                _out["create_time"] = boost::lexical_cast<std::string>(l->createTime);
-                _out["modify_time"] = boost::lexical_cast<std::string>(l->modifyTime);
-                _out["resc_hier"] = boost::lexical_cast<std::string>(l->rescHier);
+                _out["data_id"] = l->dataId;
+                _out["checksum"] = l->chksum;
+                _out["ownerName"] = l->ownerName;
+                _out["owner_zone"] = l->ownerZone;
+                _out["create_time"] = l->createTime;
+                _out["modify_time"] = l->modifyTime;
+                _out["resc_hier"] = l->rescHier;
 
                 if(l->specColl) {
                     serialize_spec_coll_info_ptr(
@@ -886,24 +877,23 @@ namespace irods::re_serialization
     } // serialize_rodsObjStat_ptr_ptr
 
     static error serialize_rodsObjStat_ptr(
-            boost::any               _p,
+            std::any                 _p,
             serialized_parameter_t& _out) { 
         try {
-            rodsObjStat_t* tmp = boost::any_cast<rodsObjStat_t*>(_p);
+            rodsObjStat_t* tmp = std::any_cast<rodsObjStat_t*>(_p);
 
             if (tmp) {
-                _out["obj_size"] = boost::lexical_cast<std::string>(tmp->objSize); // NOLINT(boost-use-to-string)
-                // NOLINTNEXTLINE(boost-use-to-string)
-                _out["obj_type"] = boost::lexical_cast<std::string>(static_cast<int>(tmp->objType));
-                _out["data_mode"] = boost::lexical_cast<std::string>(tmp->dataMode); // NOLINT(boost-use-to-string)
+                _out["obj_size"] = std::to_string(tmp->objSize);
+                _out["obj_type"] = std::to_string(static_cast<int>(tmp->objType));
+                _out["data_mode"] = std::to_string(tmp->dataMode);
 
-                _out["data_id"] = boost::lexical_cast<std::string>(tmp->dataId);
-                _out["checksum"] = boost::lexical_cast<std::string>(tmp->chksum);
-                _out["ownerName"] = boost::lexical_cast<std::string>(tmp->ownerName);
-                _out["owner_zone"] = boost::lexical_cast<std::string>(tmp->ownerZone);
-                _out["create_time"] = boost::lexical_cast<std::string>(tmp->createTime);
-                _out["modify_time"] = boost::lexical_cast<std::string>(tmp->modifyTime);
-                _out["resc_hier"] = boost::lexical_cast<std::string>(tmp->rescHier);
+                _out["data_id"] = tmp->dataId;
+                _out["checksum"] = tmp->chksum;
+                _out["ownerName"] = tmp->ownerName;
+                _out["owner_zone"] = tmp->ownerZone;
+                _out["create_time"] = tmp->createTime;
+                _out["modify_time"] = tmp->modifyTime;
+                _out["resc_hier"] = tmp->rescHier;
 
                 if (tmp->specColl) {
                     serialize_spec_coll_info_ptr(tmp->specColl, _out);
@@ -923,16 +913,16 @@ namespace irods::re_serialization
     } // serialize_rodsObjStat_ptr
 
     static error serialize_genQueryInp_ptr(
-            boost::any               _p,
+            std::any                 _p,
             serialized_parameter_t& _out) { 
         try {
-            genQueryInp_t* tmp = boost::any_cast<genQueryInp_t*>(_p);
+            genQueryInp_t* tmp = std::any_cast<genQueryInp_t*>(_p);
 
             if (tmp) {
-                _out["maxRows"] = boost::lexical_cast<std::string>(tmp->maxRows); // NOLINT(boost-use-to-string)
-                _out["continueInx"] = boost::lexical_cast<std::string>(tmp->continueInx); // NOLINT(boost-use-to-string)
-                _out["rowOffset"] = boost::lexical_cast<std::string>(tmp->rowOffset); // NOLINT(boost-use-to-string)
-                _out["options"] = boost::lexical_cast<std::string>(tmp->options); // NOLINT(boost-use-to-string)
+                _out["maxRows"] = std::to_string(tmp->maxRows);
+                _out["continueInx"] = std::to_string(tmp->continueInx);
+                _out["rowOffset"] = std::to_string(tmp->rowOffset);
+                _out["options"] = std::to_string(tmp->options);
 
                 for (int i = 0; i < tmp->condInput.len; ++i) {
                     // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic)
@@ -940,17 +930,17 @@ namespace irods::re_serialization
                 }
 
                 for (int i = 0; i < tmp->selectInp.len; ++i) {
-                    // NOLINTNEXTLINE(boost-use-to-string, cppcoreguidelines-pro-bounds-pointer-arithmetic)
-                    std::string index = boost::lexical_cast<std::string>(tmp->selectInp.inx[i]);
+                    // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic)
+                    std::string index = std::to_string(tmp->selectInp.inx[i]);
 
-                    // NOLINTNEXTLINE(boost-use-to-string, cppcoreguidelines-pro-bounds-pointer-arithmetic)
-                    std::string value = boost::lexical_cast<std::string>(tmp->selectInp.value[i]);
+                    // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic)
+                    std::string value = std::to_string(tmp->selectInp.value[i]);
                     _out["select_" + index] = value;
                 }
 
                 for (int i = 0; i < tmp->sqlCondInp.len; ++i) {
-                    // NOLINTNEXTLINE(boost-use-to-string, cppcoreguidelines-pro-bounds-pointer-arithmetic)
-                    std::string index = boost::lexical_cast<std::string>(tmp->sqlCondInp.inx[i]);
+                    // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic)
+                    std::string index = std::to_string(tmp->sqlCondInp.inx[i]);
 
                     // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic)
                     _out["where_" + index] = tmp->sqlCondInp.value[i];
@@ -970,30 +960,29 @@ namespace irods::re_serialization
     } // serialize_genQueryInp_ptr
 
     static error serialize_genQueryOut_ptr(
-           boost::any                  _p,
+           std::any                    _p,
            serialized_parameter_t&  _out) {
         try {
-            genQueryOut_t* tmp = boost::any_cast<genQueryOut_t*>(_p);
+            genQueryOut_t* tmp = std::any_cast<genQueryOut_t*>(_p);
 
             if (tmp) {
-                _out["rowCnt"] = boost::lexical_cast<std::string>(tmp->rowCnt); // NOLINT(boost-use-to-string)
-                _out["attriCnt"] = boost::lexical_cast<std::string>(tmp->attriCnt); // NOLINT(boost-use-to-string)
-                _out["continueInx"] = boost::lexical_cast<std::string>(tmp->continueInx); // NOLINT(boost-use-to-string)
-                // NOLINTNEXTLINE(boost-use-to-string)
-                _out["totalRowCount"] = boost::lexical_cast<std::string>(tmp->totalRowCount);
+                _out["rowCnt"] = std::to_string(tmp->rowCnt);
+                _out["attriCnt"] = std::to_string(tmp->attriCnt);
+                _out["continueInx"] = std::to_string(tmp->continueInx);
+                _out["totalRowCount"] = std::to_string(tmp->totalRowCount);
 
                 for (int i = 0; i < tmp->attriCnt; ++i) {
                     for (int j = 0; j < tmp->rowCnt; ++j) {
-                        std::string i_str = boost::lexical_cast<std::string>(i);
-                        std::string j_str = boost::lexical_cast<std::string>(j);
-                        // NOLINTNEXTLINE(boost-use-to-string, cppcoreguidelines-pro-bounds-constant-array-index)
-                        _out["attriInx_" + i_str] = boost::lexical_cast<std::string>(tmp->sqlResult[i].attriInx);
-                        // NOLINTNEXTLINE(boost-use-to-string, cppcoreguidelines-pro-bounds-constant-array-index)
-                        _out["len_" + i_str] = boost::lexical_cast<std::string>(tmp->sqlResult[i].len);
+                        std::string i_str = std::to_string(i);
+                        std::string j_str = std::to_string(j);
+                        // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-constant-array-index)
+                        _out["attriInx_" + i_str] = std::to_string(tmp->sqlResult[i].attriInx);
+                        // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-constant-array-index)
+                        _out["len_" + i_str] = std::to_string(tmp->sqlResult[i].len);
 
                         // clang-format off
                         // NOLINTNEXTLINE(bugprone-implicit-widening-of-multiplication-result, cppcoreguidelines-pro-bounds-constant-array-index, cppcoreguidelines-pro-bounds-pointer-arithmetic)
-                        _out[fmt::format("value_{}_{}", j_str, i_str)] = boost::lexical_cast<std::string>(tmp->sqlResult[i].value + j * tmp->sqlResult[i].len);
+                        _out[fmt::format("value_{}_{}", j_str, i_str)] = tmp->sqlResult[i].value + j * tmp->sqlResult[i].len;
                         // clang-format on
                     }
                 }
@@ -1012,10 +1001,10 @@ namespace irods::re_serialization
 
 
     static error serialize_char_ptr_ptr(
-            boost::any               _p,
+            std::any                 _p,
             serialized_parameter_t& _out) { 
         try {
-            char** tmp = boost::any_cast<char**>(_p);
+            char** tmp = std::any_cast<char**>(_p);
             if(tmp && *tmp ) {
                 _out["value"] = *tmp;
             }
@@ -1033,10 +1022,10 @@ namespace irods::re_serialization
     } // serialize_char_ptr_ptr
 
 
-    static irods::error serialize_openedDataObjInp_ptr(boost::any _p,
+    static irods::error serialize_openedDataObjInp_ptr(std::any _p,
                                                        serialized_parameter_t& _out) {
         try {
-            openedDataObjInp_t *ptr = boost::any_cast<openedDataObjInp_t*>(_p);
+            openedDataObjInp_t *ptr = std::any_cast<openedDataObjInp_t*>(_p);
 
             // for a valid ptr, we serialize the immediate properties + keyValPair
             if (ptr) {
@@ -1063,11 +1052,11 @@ namespace irods::re_serialization
     } // serialize_openedDataObjInp_ptr
 
 
-    static irods::error serialize_openedDataObjInp_ptr_ptr(boost::any _p,
+    static irods::error serialize_openedDataObjInp_ptr_ptr(std::any _p,
                                                            serialized_parameter_t& _out)
     {
         try {
-            openedDataObjInp_t **ptr = boost::any_cast<openedDataObjInp_t**>(_p);
+            openedDataObjInp_t **ptr = std::any_cast<openedDataObjInp_t**>(_p);
 
             // if we can, dereference and serialize
             if (ptr && *ptr) {
@@ -1087,11 +1076,11 @@ namespace irods::re_serialization
     } // serialize_openedDataObjInp_ptr_ptr
 
 
-    static irods::error serialize_bytesBuf_ptr(boost::any _p,
+    static irods::error serialize_bytesBuf_ptr(std::any _p,
                                                serialized_parameter_t& _out)
     {
         try {
-            bytesBuf_t *ptr = boost::any_cast<bytesBuf_t*>(_p);
+            bytesBuf_t *ptr = std::any_cast<bytesBuf_t*>(_p);
 
             // we serialize the length and content (nonprintable escaped)
             if (ptr) {
@@ -1123,10 +1112,10 @@ namespace irods::re_serialization
         return SUCCESS();
     } // serialize_bytesBuf_ptr
 
-    static irods::error serialize_Genquery2Input_ptr(boost::any _p, serialized_parameter_t& _out)
+    static irods::error serialize_Genquery2Input_ptr(std::any _p, serialized_parameter_t& _out)
     {
         try {
-            const auto* v = boost::any_cast<Genquery2Input*>(_p);
+            const auto* v = std::any_cast<Genquery2Input*>(_p);
 
             _out["query_string"] = v->query_string ? v->query_string : "";
             _out["zone"] = v->zone ? v->zone : "";
@@ -1135,7 +1124,7 @@ namespace irods::re_serialization
 
             return SUCCESS();
         }
-        catch (const boost::bad_any_cast& e) {
+        catch (const std::bad_any_cast& e) {
             return ERROR(INVALID_ANY_CAST,
                          fmt::format("{}: failed to cast pointer to [Genquery2Input*]: {}", __func__, e.what()));
         }
@@ -1160,14 +1149,14 @@ namespace irods::re_serialization
     // Let *v represent the vector of strings in the NREP.
     // To get the number of elements in the vector, use: *v."size". The count will be of type string.
     // To get an element via its index, use: *v."<index>". The value will be of type string.
-    static irods::error serialize_const_vector_of_strings_ptr(boost::any _p, serialized_parameter_t& _out)
+    static irods::error serialize_const_vector_of_strings_ptr(std::any _p, serialized_parameter_t& _out)
     {
         try {
             log_re::trace(__func__);
-            serialize_vector_of_strings_ptr_impl(*boost::any_cast<const std::vector<std::string>*>(_p), _out);
+            serialize_vector_of_strings_ptr_impl(*std::any_cast<const std::vector<std::string>*>(_p), _out);
             return SUCCESS();
         }
-        catch (const boost::bad_any_cast& e) {
+        catch (const std::bad_any_cast& e) {
             return ERROR(
                 INVALID_ANY_CAST,
                 fmt::format("{}: failed to cast pointer to [const std::vector<std::string>*]: {}", __func__, e.what()));
@@ -1184,14 +1173,14 @@ namespace irods::re_serialization
     // Let *v represent the vector of strings in the NREP.
     // To get the number of elements in the vector, use: *v."size". The count will be of type string.
     // To get an element via its index, use: *v."<index>". The value will be of type string.
-    static irods::error serialize_vector_of_strings_ptr(boost::any _p, serialized_parameter_t& _out)
+    static irods::error serialize_vector_of_strings_ptr(std::any _p, serialized_parameter_t& _out)
     {
         try {
             log_re::trace(__func__);
-            serialize_vector_of_strings_ptr_impl(*boost::any_cast<std::vector<std::string>*>(_p), _out);
+            serialize_vector_of_strings_ptr_impl(*std::any_cast<std::vector<std::string>*>(_p), _out);
             return SUCCESS();
         }
-        catch (const boost::bad_any_cast& e) {
+        catch (const std::bad_any_cast& e) {
             return ERROR(
                 INVALID_ANY_CAST,
                 fmt::format("{}: failed to cast pointer to [std::vector<std::string>*]: {}", __func__, e.what()));
@@ -1202,11 +1191,11 @@ namespace irods::re_serialization
         }
     } // serialize_vector_of_strings_ptr
 
-    static irods::error serialize_execMyRuleInp_ptr(boost::any _p, serialized_parameter_t& _out)
+    static irods::error serialize_execMyRuleInp_ptr(std::any _p, serialized_parameter_t& _out)
     {
         try {
             log_re::trace(__func__);
-            const auto* casted_ptr = boost::any_cast<execMyRuleInp_t*>(_p);
+            const auto* casted_ptr = std::any_cast<execMyRuleInp_t*>(_p);
             if (!casted_ptr) {
                 _out["execMyRuleInp_ptr"] = "nullptr";
                 return SUCCESS();
@@ -1214,8 +1203,8 @@ namespace irods::re_serialization
             _out["myRule"] = casted_ptr->myRule;
             _out["addr_hostAddr"] = casted_ptr->addr.hostAddr;
             _out["addr_zoneName"] = casted_ptr->addr.zoneName;
-            _out["addr_portNum"] = boost::lexical_cast<std::string>(casted_ptr->addr.portNum);
-            _out["addr_dummyInt"] = boost::lexical_cast<std::string>(casted_ptr->addr.dummyInt);
+            _out["addr_portNum"] = std::to_string(casted_ptr->addr.portNum);
+            _out["addr_dummyInt"] = std::to_string(casted_ptr->addr.dummyInt);
             serialize_keyValPair(casted_ptr->condInput, _out);
             _out["outParamDesc"] = casted_ptr->outParamDesc;
 
@@ -1224,8 +1213,8 @@ namespace irods::re_serialization
                 _out["inpParamArray"] = "nullptr";
                 return SUCCESS();
             }
-            _out["inpParamArray_len"] = boost::lexical_cast<std::string>(msparamarray_ptr->len);
-            _out["inpParamArray_oprType"] = boost::lexical_cast<std::string>(msparamarray_ptr->oprType);
+            _out["inpParamArray_len"] = std::to_string(msparamarray_ptr->len);
+            _out["inpParamArray_oprType"] = std::to_string(msparamarray_ptr->oprType);
             for (int i = 0; i < msparamarray_ptr->len; i++) {
                 std::string prefix = fmt::format("inpParamArray_{}_", i);
                 const auto* lbl = msparamarray_ptr->msParam[i]->label;
@@ -1262,7 +1251,7 @@ namespace irods::re_serialization
                 }
                 const auto* ptr = msparamarray_ptr->msParam[i]->inpOutBuf;
                 if (ptr) {
-                    _out[prefix + "inpOutBuf_len"] = boost::lexical_cast<std::string>(ptr->len);
+                    _out[prefix + "inpOutBuf_len"] = std::to_string(ptr->len);
                     std::string& str = _out[prefix + "inpOutBuf_buf"];
 
                     for (int j = 0; j < ptr->len; j++) {
@@ -1282,7 +1271,7 @@ namespace irods::re_serialization
             }
             return SUCCESS();
         }
-        catch (const boost::bad_any_cast& e) {
+        catch (const std::bad_any_cast& e) {
             return ERROR(INVALID_ANY_CAST,
                          fmt::format("{}: failed to cast pointer to [execMyRuleInp_t*]: {}", __func__, e.what()));
         }
@@ -1298,11 +1287,11 @@ namespace irods::re_serialization
         }
     } // serialize_execMyRuleInp_ptr
 
-    static irods::error serialize_structFileExtAndRegInp_ptr(boost::any _p, serialized_parameter_t& _out)
+    static irods::error serialize_structFileExtAndRegInp_ptr(std::any _p, serialized_parameter_t& _out)
     {
         try {
             log_re::trace(__func__);
-            const auto* casted_ptr = boost::any_cast<structFileExtAndRegInp_t*>(_p);
+            const auto* casted_ptr = std::any_cast<structFileExtAndRegInp_t*>(_p);
             _out["obj_path"] = casted_ptr->objPath;
             _out["collection_path"] = casted_ptr->collection;
             _out["opr_type"] = std::to_string(casted_ptr->oprType);
@@ -1310,7 +1299,7 @@ namespace irods::re_serialization
             serialize_keyValPair(casted_ptr->condInput, _out);
             return SUCCESS();
         }
-        catch (const boost::bad_any_cast& e) {
+        catch (const std::bad_any_cast& e) {
             return ERROR(
                 INVALID_ANY_CAST,
                 fmt::format("{}: failed to cast pointer to [structFileExtAndRegInp_t*]: {}", __func__, e.what()));
@@ -1321,11 +1310,11 @@ namespace irods::re_serialization
         }
     }
 
-    static irods::error serialize_msParamArray_ptr_ptr(boost::any _p, serialized_parameter_t& _out)
+    static irods::error serialize_msParamArray_ptr_ptr(std::any _p, serialized_parameter_t& _out)
     {
         try {
             log_re::trace(__func__);
-            const auto* const* casted_ptr = boost::any_cast<msParamArray_t**>(_p);
+            const auto* const* casted_ptr = std::any_cast<msParamArray_t**>(_p);
             if (!casted_ptr) {
                 _out["msParamArray_ptr_ptr"] = "nullptr";
                 return SUCCESS();
@@ -1335,8 +1324,8 @@ namespace irods::re_serialization
                 return SUCCESS();
             }
             const auto* derefed_ptr = *casted_ptr;
-            _out["len"] = boost::lexical_cast<std::string>(derefed_ptr->len);
-            _out["oprType"] = boost::lexical_cast<std::string>(derefed_ptr->oprType);
+            _out["len"] = std::to_string(derefed_ptr->len);
+            _out["oprType"] = std::to_string(derefed_ptr->oprType);
             for (int i = 0; i < derefed_ptr->len; i++) {
                 std::string prefix = std::to_string(i) + "_";
                 const auto* lbl = derefed_ptr->msParam[i]->label;
@@ -1374,7 +1363,7 @@ namespace irods::re_serialization
 
                 const auto* ptr = derefed_ptr->msParam[i]->inpOutBuf;
                 if (ptr) {
-                    _out[prefix + "inpOutBuf_len"] = boost::lexical_cast<std::string>(ptr->len);
+                    _out[prefix + "inpOutBuf_len"] = std::to_string(ptr->len);
                     std::string& str = _out[prefix + "inpOutBuf_buf"];
 
                     for (int j = 0; j < ptr->len; j++) {
@@ -1394,7 +1383,7 @@ namespace irods::re_serialization
             }
             return SUCCESS();
         }
-        catch (const boost::bad_any_cast& e) {
+        catch (const std::bad_any_cast& e) {
             return ERROR(INVALID_ANY_CAST,
                          fmt::format("{}: failed to cast pointer to [msParamArray_t**]: {}", __func__, e.what()));
         }
@@ -1411,10 +1400,10 @@ namespace irods::re_serialization
     } // serialize_msParamArray_ptr_ptr
 
     // NOLINTNEXTLINE(misc-use-anonymous-namespace)
-    static error serialize_ticketAdminInp_ptr(boost::any _p, serialized_parameter_t& _out)
+    static error serialize_ticketAdminInp_ptr(std::any _p, serialized_parameter_t& _out)
     {
         try {
-            const TicketAdminInput* inp = boost::any_cast<TicketAdminInput*>(_p);
+            const TicketAdminInput* inp = std::any_cast<TicketAdminInput*>(_p);
 
             if (inp) {
                 _out["arg1"] = inp->arg1 ? inp->arg1 : "";
@@ -1430,7 +1419,7 @@ namespace irods::re_serialization
                 _out["ticketAdminInp_ptr"] = "nullptr";
             }
         }
-        catch (const boost::bad_any_cast& e) {
+        catch (const std::bad_any_cast& e) {
             return ERROR(INVALID_ANY_CAST,
                          fmt::format("{}: failed to cast pointer to [TicketAdminInput*]: {}", __func__, e.what()));
         }
@@ -1443,11 +1432,11 @@ namespace irods::re_serialization
     } // serialize_ticketAdminInp_ptr
 
     static error serialize_ptr_to_vector_of_tuples_of_std_string_four_int64s_and_std_string(
-        boost::any _p,
+        std::any _p,
         serialized_parameter_t& _out)
     {
         try {
-            const irods::logical_quotas::quota_vector* inp = boost::any_cast<irods::logical_quotas::quota_vector*>(_p);
+            const irods::logical_quotas::quota_vector* inp = std::any_cast<irods::logical_quotas::quota_vector*>(_p);
             if (inp) {
                 _out["size"] = std::to_string(inp->size());
 
@@ -1469,7 +1458,7 @@ namespace irods::re_serialization
                 _out["vector_ptr"] = "nullptr";
             }
         }
-        catch (const boost::bad_any_cast& e) {
+        catch (const std::bad_any_cast& e) {
             return ERROR(INVALID_ANY_CAST,
                          fmt::format("{}: failed to cast pointer to [std::vector<std::tuple<std::string, std::int64_t, "
                                      "std::int64_t, std::int64_t, std::string>>*]: {}",
@@ -1489,10 +1478,10 @@ namespace irods::re_serialization
 
 #if 0
     static error serialize_XXXX_ptr(
-            boost::any               _p,
+            std::any                 _p,
             serialized_parameter_t& _out) { 
         try {
-            XXXX_t* l = boost::any_cast<XXXX_t*>(_p);
+            XXXX_t* l = std::any_cast<XXXX_t*>(_p);
         }
         catch ( std::exception& ) {
             return ERROR(
@@ -1580,7 +1569,7 @@ namespace irods::re_serialization
     }
 
     error serialize_parameter(
-        boost::any               _in_param,
+        std::any                 _in_param,
         serialized_parameter_t&  _out_param ) {
         index_t idx = std::type_index(_in_param.type());
         serialization_map_t& the_map = get_serialization_map();

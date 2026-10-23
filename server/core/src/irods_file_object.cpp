@@ -228,7 +228,7 @@ namespace irods {
                     result = PASSMSG( msg.str(), ret );
                 }
 
-                _ptr = boost::dynamic_pointer_cast< resource >( resc_ptr );
+                _ptr = resc_ptr;
             }
         }
 

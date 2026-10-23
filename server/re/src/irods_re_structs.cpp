@@ -109,9 +109,9 @@ applyRuleArg( const char *action, const char *args[MAX_NUM_OF_ARGS_IN_ACTION], i
         irods::AUDIT_RULE> re_ctx_mgr(
                                irods::re_plugin_globals->global_re_mgr,
                                rei);
-    std::list<boost::any> args2;
+    std::list<std::any> args2;
     for(int i = 0; i<argc;i++) {
-        args2.push_back(boost::any(std::string(args[i])));
+        args2.push_back(std::any(std::string(args[i])));
     }
     irods::error err = re_ctx_mgr.exec_rule(action, irods::unpack(args2));
     if(!err.ok()) {
@@ -127,7 +127,7 @@ applyRuleArg( const char *action, const char *args[MAX_NUM_OF_ARGS_IN_ACTION], i
 
 int applyRuleWithInOutVars(
     const char*            _action,
-    std::list<boost::any>& _params,
+    std::list<std::any>&   _params,
     ruleExecInfo_t*        _rei ) {
     if (!RuleExistsHelper::Instance()->checkOperation(_action)) {
         return SUCCESS().code();

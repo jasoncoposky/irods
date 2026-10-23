@@ -7,11 +7,12 @@
 #include "irods/apiHeaderAll.h"
 #include "irods/icatStructs.hpp"
 
-#include <boost/shared_ptr.hpp>
-#include <boost/any.hpp>
+#include <any>
+#include <functional>
 #include <map>
-#include <vector>
+#include <memory>
 #include <typeindex>
+#include <vector>
 
 typedef std::vector<rodsLong_t> leaf_bundle_t;
 
@@ -19,7 +20,7 @@ namespace irods {
     namespace re_serialization {
         typedef std::type_index                                          index_t;
         typedef std::map<std::string,std::string>                        serialized_parameter_t;
-        typedef std::function<error(boost::any,serialized_parameter_t&)> operation_t;
+        typedef std::function<error(std::any,serialized_parameter_t&)>   operation_t;
         typedef std::map<index_t, operation_t>                           serialization_map_t;
         
         serialization_map_t& get_serialization_map();
@@ -27,7 +28,7 @@ namespace irods {
             const index_t& _index,
             operation_t    _operation );
         error serialize_parameter(
-            boost::any               _in_param,
+            std::any                 _in_param,
             serialized_parameter_t&  _out_param );
 
     }; // re_serialization

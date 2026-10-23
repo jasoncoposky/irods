@@ -16,7 +16,6 @@
 #include "irods/rodsError.h"
 
 #include <boost/format.hpp>
-#include <boost/lexical_cast.hpp>
 #include <fmt/format.h>
 #include <fmt/ranges.h>
 
@@ -276,7 +275,7 @@ namespace {
                   leaf_bundles_to_string(_bundles));
         }
 
-        //irods::file_object_ptr file_obj{boost::dynamic_pointer_cast<irods::file_object>(_ctx.fco())};
+        //irods::file_object_ptr file_obj{std::dynamic_pointer_cast<irods::file_object>(_ctx.fco())};
 
         irods::error first_rebalance_error = SUCCESS();
         for (auto data_id_to_replicate : _data_ids_to_replicate) {

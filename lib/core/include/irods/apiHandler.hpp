@@ -15,16 +15,15 @@
 #include "irods/irods_logger.hpp"
 #include "irods/rcMisc.h"
 
-#include <boost/shared_ptr.hpp>
-#include <boost/any.hpp>
-
-#include <typeinfo>
+#include <any>
 #include <functional>
-#include <utility>
-#include <type_traits>
-#include <vector>
+#include <memory>
 #include <string>
 #include <string_view>
+#include <type_traits>
+#include <typeinfo>
+#include <utility>
+#include <vector>
 
 namespace irods
 {
@@ -48,7 +47,7 @@ namespace irods
         int            outBsFlag;      /* output bytes stream. 0 ==> no output byte
                                         * stream. 1 ==> we have an output byte stream
                                         */
-        boost::any     svrHandler;     /* the server handler. should be defined NULL for
+        std::any       svrHandler;     /* the server handler. should be defined NULL for
                                         * client */
 
         const char *   operation_name;
@@ -166,7 +165,7 @@ namespace irods
 
             try {
                 using fcn_t = std::function<int(rsComm_t*, types_t...)>;
-                fcn_t fcn = boost::any_cast<fcn_t>( operations_[ operation_name ] );
+                fcn_t fcn = std::any_cast<fcn_t>( operations_[ operation_name ] );
 #ifdef ENABLE_RE
                 irods::plugin_property_map prop_map;
                 irods::plugin_context ctx(_comm,prop_map);
@@ -270,7 +269,7 @@ namespace irods
                 return fcn(_comm, _t...);
 #endif // ENABLE_RE
             }
-            catch (const boost::bad_any_cast&) {
+            catch (const std::bad_any_cast&) {
                 std::string msg( "failed for call - " );
                 msg += operation_name;
                 irods::log(ERROR(INVALID_ANY_CAST, msg));
@@ -290,10 +289,10 @@ namespace irods
 
             try {
                 using fcn_t = std::function<int(rsComm_t*, Args...)>;
-                fcn_t fcn = boost::any_cast<fcn_t>(operations_[operation_name]);
+                fcn_t fcn = std::any_cast<fcn_t>(operations_[operation_name]);
                 return fcn(_comm, _args...);
             }
-            catch (const boost::bad_any_cast&) {
+            catch (const std::bad_any_cast&) {
                 std::string msg = "failed for call - ";
                 msg += operation_name;
                 irods::log(ERROR(INVALID_ANY_CAST, msg));
@@ -397,12 +396,12 @@ namespace irods
 #endif // ENABLE_RE
     }; // class api_entry
 
-    typedef boost::shared_ptr< api_entry > api_entry_ptr;
+    using api_entry_ptr = std::shared_ptr< api_entry >;
 
     /// =-=-=-=-=-=-=-
     /// @brief class which will hold statically compiled and dynamically loaded api handles
     class api_entry_table
-        : public lookup_table<api_entry_ptr, size_t, boost::hash<size_t>>
+        : public lookup_table<api_entry_ptr, size_t, std::hash<size_t>>
     {
       public:
         api_entry_table(apidef_t defs[], size_t size);

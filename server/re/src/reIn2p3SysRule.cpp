@@ -101,7 +101,7 @@ int checkHostAccessControl(const std::string& _user_name,
                     }
                 }
             }
-            catch ( const boost::bad_any_cast& e ) {
+            catch ( const std::bad_any_cast& e ) {
                 log_svr::error(ERROR(INVALID_ANY_CAST, e.what()).user_result());
             }
             catch ( const std::out_of_range& e ) {

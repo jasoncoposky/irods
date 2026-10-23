@@ -8,8 +8,6 @@
 #include "irods/CRC64NVMEStrategy.hpp"
 #include "irods/rodsErrorTable.h"
 
-#include <boost/container_hash/hash.hpp>
-
 #include <sstream>
 #include <unordered_map>
 
@@ -24,7 +22,7 @@ namespace irods {
         const CRC64NVMEStrategy _crc64nvme;
 
         auto make_map() {
-            std::unordered_map<const std::string, const HashStrategy*, boost::hash<const std::string>> map;
+            std::unordered_map<std::string, const HashStrategy*> map;
             map[ SHA256_NAME ] = &_sha256;
             map[ SHA512_NAME ] = &_sha512;
             map[ MD5_NAME ] = &_md5;

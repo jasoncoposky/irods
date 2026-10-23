@@ -11,11 +11,11 @@
 #include "irods/rsProcStat.hpp"
 #include "irods/irods_resource_backport.hpp"
 
-#include <boost/lexical_cast.hpp>
-
+#include <charconv>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <system_error>
 
 namespace
 {
@@ -63,10 +63,10 @@ namespace
         // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg)
         std::snprintf(procLog->remoteAddr, sizeof(procLog->remoteAddr), "%s", procTokens[5].c_str());
 
-        try {
-            procLog->startTime = boost::lexical_cast<unsigned int>(procTokens[6].c_str());
-        }
-        catch (const std::exception& e) {
+        const auto& start_time_str = procTokens[6];
+        const auto [ptr, ec] = std::from_chars(
+            start_time_str.data(), start_time_str.data() + start_time_str.size(), procLog->startTime);
+        if (ec != std::errc{} || ptr != start_time_str.data() + start_time_str.size()) {
             log_api::error("{}: Could not convert [{}] to unsigned int.", __func__, procTokens[6]);
             return INVALID_LEXICAL_CAST;
         }

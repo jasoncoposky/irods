@@ -50,7 +50,7 @@ namespace irods {
 
 /// =-=-=-=-=-=-=-
 /// @brief typedef for shared tcp object ptr
-    typedef boost::shared_ptr< tcp_object > tcp_object_ptr;
+    using tcp_object_ptr = std::shared_ptr< tcp_object >;
 
 }; // namespace irods
 

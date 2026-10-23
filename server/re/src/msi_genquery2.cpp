@@ -12,7 +12,6 @@
 #include "irods/irods_exception.hpp"
 
 #include <fmt/format.h>
-#include <boost/any.hpp>
 #include <nlohmann/json.hpp>
 
 #include <algorithm>

@@ -3,10 +3,10 @@
 #include "irods/replica_access_table.hpp"
 #include "irods/key_value_proxy.hpp"
 
-#include <boost/lexical_cast.hpp>
-
+#include <charconv>
 #include <cmath>
 #include <optional>
+#include <system_error>
 
 namespace irods::experimental::resource::voting {
 
@@ -117,7 +117,6 @@ namespace {
             return true;
         }
 
-        // do sign check on string because boost::lexical_cast will wrap negative numbers around instead of throwing when casting string to unsigned
         if (minimum_free_space_string.size() > 0 &&
             minimum_free_space_string[0] == '-') {
             rodsLog(LOG_ERROR,
@@ -129,15 +128,19 @@ namespace {
         }
 
         uintmax_t minimum_free_space = 0;
-        try {
-            minimum_free_space = boost::lexical_cast<uintmax_t>(minimum_free_space_string);
-        } catch (const boost::bad_lexical_cast&) {
-            rodsLog(LOG_ERROR,
-                "%s: invalid MINIMUM_FREE_SPACE_FOR_CREATE_IN_BYTES [%s] for resource [%s]",
-                __FUNCTION__,
-                minimum_free_space_string.c_str(),
-                resource_name.c_str());
-            return true;
+        {
+            const auto [ptr, ec] = std::from_chars(
+                minimum_free_space_string.data(),
+                minimum_free_space_string.data() + minimum_free_space_string.size(),
+                minimum_free_space);
+            if (ec != std::errc{} || ptr != minimum_free_space_string.data() + minimum_free_space_string.size()) {
+                rodsLog(LOG_ERROR,
+                    "%s: invalid MINIMUM_FREE_SPACE_FOR_CREATE_IN_BYTES [%s] for resource [%s]",
+                    __FUNCTION__,
+                    minimum_free_space_string.c_str(),
+                    resource_name.c_str());
+                return true;
+            }
         }
 
         std::string resource_free_space_string{};
@@ -151,7 +154,6 @@ namespace {
             return true;
         }
 
-        // do sign check on string because boost::lexical_cast will wrap negative numbers around instead of throwing when casting string to unsigned
         if (resource_free_space_string.size()>0 && resource_free_space_string[0] == '-') {
             rodsLog(LOG_ERROR,
                 "%s: resource free space < 0 [%s] for resource [%s]",
@@ -162,15 +164,19 @@ namespace {
         }
 
         uintmax_t resource_free_space = 0;
-        try {
-            resource_free_space = boost::lexical_cast<uintmax_t>(resource_free_space_string);
-        } catch (const boost::bad_lexical_cast&) {
-            rodsLog(LOG_ERROR,
-                "%s: invalid free space [%s] for resource [%s]",
-                __FUNCTION__,
-                resource_free_space_string.c_str(),
-                resource_name.c_str());
-            return true;
+        {
+            const auto [ptr, ec] = std::from_chars(
+                resource_free_space_string.data(),
+                resource_free_space_string.data() + resource_free_space_string.size(),
+                resource_free_space);
+            if (ec != std::errc{} || ptr != resource_free_space_string.data() + resource_free_space_string.size()) {
+                rodsLog(LOG_ERROR,
+                    "%s: invalid free space [%s] for resource [%s]",
+                    __FUNCTION__,
+                    resource_free_space_string.c_str(),
+                    resource_name.c_str());
+                return true;
+            }
         }
 
         if (minimum_free_space > resource_free_space) {
@@ -232,7 +238,7 @@ float calculate(
 
     context ctx{
         plugin_ctx,
-        boost::dynamic_pointer_cast<irods::file_object>(plugin_ctx.fco()),
+        std::dynamic_pointer_cast<irods::file_object>(plugin_ctx.fco()),
         canonical_local_hostname,
         parser
     };

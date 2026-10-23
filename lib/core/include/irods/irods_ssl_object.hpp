@@ -126,7 +126,7 @@ namespace irods {
 
 /// =-=-=-=-=-=-=-
 /// @brief typedef for shared tcp object ptr
-    typedef boost::shared_ptr< ssl_object > ssl_object_ptr;
+    using ssl_object_ptr = std::shared_ptr< ssl_object >;
 
 }; // namespace irods
 

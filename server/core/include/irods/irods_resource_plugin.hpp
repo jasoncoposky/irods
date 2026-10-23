@@ -7,9 +7,9 @@
 #include "irods/irods_resource_constants.hpp"
 #include "irods/irods_resource_types.hpp"
 
+#include <any>
 #include <iostream>
 #include <utility>
-#include <boost/any.hpp>
 
 namespace irods {
 

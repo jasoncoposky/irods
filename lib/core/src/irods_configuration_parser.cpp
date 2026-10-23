@@ -2,12 +2,13 @@
 #include "irods/irods_log.hpp"
 #include "irods/irods_exception.hpp"
 
-#include <fstream>
 #include <algorithm>
+#include <any>
 #include <filesystem>
+#include <fstream>
 
 #include <boost/algorithm/string.hpp>
-#include <boost/any.hpp>
+#include <fmt/format.h>
 
 namespace fs = std::filesystem;
 using json = nlohmann::json;
@@ -52,7 +53,7 @@ namespace irods {
     } // clear
 
     error configuration_parser::copy_and_swap(
-        const std::unordered_map<std::string, boost::any>& _rhs ) {
+        const std::unordered_map<std::string, std::any>& _rhs ) {
         // more could possibly be done here
         root_.clear();
         root_ = _rhs;
@@ -91,24 +92,24 @@ namespace irods {
                 in >> config;
             }
             catch (const json::parse_error& e) {
-                return ERROR(-1, boost::format("failed to parse json [file=%s, error=%s].") % _file % e.what());
+                return ERROR(-1, fmt::format("failed to parse json [file={}, error={}].", _file, e.what()));
             }
         }
 
         irods::error ret = SUCCESS();
         try {
             if ( root_.empty() ) {
-                root_ = boost::any_cast<std::unordered_map<std::string, boost::any>>(convert_json(config));
+                root_ = std::any_cast<std::unordered_map<std::string, std::any>>(convert_json(config));
             } else {
                 const auto json_object_any = convert_json(config);
-                const auto& json_object = boost::any_cast<const std::unordered_map<std::string, boost::any>&>(json_object_any);
+                const auto& json_object = std::any_cast<const std::unordered_map<std::string, std::any>&>(json_object_any);
                 for ( auto it = json_object.cbegin(); it != json_object.cend(); ++it ) {
                     root_[it->first] = it->second;
                 }
             }
         } catch ( const irods::exception& e ) {
             ret = irods::error(e);
-        } catch ( const boost::bad_any_cast& ) {
+        } catch ( const std::bad_any_cast& ) {
             ret = ERROR(INVALID_ANY_CAST, "configuration file did not contain a json object.");
         }
 
@@ -121,17 +122,17 @@ namespace irods {
         irods::error ret = SUCCESS();
         try {
             if ( root_.empty() ) {
-                root_ = boost::any_cast<std::unordered_map<std::string, boost::any>>(convert_json(_config));
+                root_ = std::any_cast<std::unordered_map<std::string, std::any>>(convert_json(_config));
             } else {
                 const auto json_object_any = convert_json(_config);
-                const auto& json_object = boost::any_cast<const std::unordered_map<std::string, boost::any>&>(json_object_any);
+                const auto& json_object = std::any_cast<const std::unordered_map<std::string, std::any>&>(json_object_any);
                 for ( auto it = json_object.cbegin(); it != json_object.cend(); ++it ) {
                     root_[it->first] = it->second;
                 }
             }
         } catch ( const irods::exception& e ) {
             ret = irods::error(e);
-        } catch ( const boost::bad_any_cast& ) {
+        } catch ( const std::bad_any_cast& ) {
             ret = ERROR(INVALID_ANY_CAST, "configuration file did not contain a json object.");
         }
 
@@ -139,7 +140,7 @@ namespace irods {
 
     } // load_json_object
 
-    boost::any configuration_parser::convert_json(const json& _json)
+    std::any configuration_parser::convert_json(const json& _json)
     {
         switch (_json.type()) {
             case json::value_t::string:
@@ -156,7 +157,7 @@ namespace irods {
                 return _json.get<bool>();
 
             case json::value_t::array: {
-                std::vector<boost::any> array;
+                std::vector<std::any> array;
 
                 for (auto&& jj : _json) {
                     array.push_back(convert_json(jj));
@@ -166,7 +167,7 @@ namespace irods {
             }
 
             case json::value_t::object: {
-                std::unordered_map<std::string, boost::any> object;
+                std::unordered_map<std::string, std::any> object;
 
                 //for (auto&& [k, v] : j.items()) { // Supported in later versions :(
                 for (auto it = std::begin(_json); it != std::end(_json); ++it) {
@@ -181,7 +182,7 @@ namespace irods {
 
             default:
                 const auto type = static_cast<std::uint8_t>(_json.type());
-                THROW(-1, (boost::format("unhandled type in json_typeof: %d") % type));
+                THROW(-1, fmt::format("unhandled type in json_typeof: {}", type));
         }
     } // parse_json_object
 
@@ -193,7 +194,7 @@ namespace irods {
 
     void configuration_parser::remove(const std::string& _key) {
         if ( !root_.erase(_key) ) {
-            THROW ( KEY_NOT_FOUND, (boost::format("key \"%s\" not found in map.") % _key).str() );
+            THROW ( KEY_NOT_FOUND, fmt::format("key \"{}\" not found in map.", _key) );
         }
     }
 

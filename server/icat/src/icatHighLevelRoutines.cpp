@@ -130,9 +130,8 @@ int chlOpen() {
 
     // =-=-=-=-=-=-=-
     // cast plugin and object to db and fco for call
-    irods::first_class_object_ptr ptr = boost::dynamic_pointer_cast <
-                                        irods::first_class_object > ( db_obj_ptr );
-    irods::database_ptr           db = boost::dynamic_pointer_cast <
+    irods::first_class_object_ptr ptr = db_obj_ptr;
+    irods::database_ptr           db = std::dynamic_pointer_cast <
                                        irods::database > ( db_plug_ptr );
     // =-=-=-=-=-=-=-
     // call the operation on the plugin
@@ -185,9 +184,8 @@ int chlClose() {
 
     // =-=-=-=-=-=-=-
     // cast plugin and object to db and fco for call
-    irods::first_class_object_ptr ptr = boost::dynamic_pointer_cast <
-                                        irods::first_class_object > ( db_obj_ptr );
-    irods::database_ptr           db = boost::dynamic_pointer_cast <
+    irods::first_class_object_ptr ptr = db_obj_ptr;
+    irods::database_ptr           db = std::dynamic_pointer_cast <
                                        irods::database > ( db_plug_ptr );
 
     // =-=-=-=-=-=-=-
@@ -241,9 +239,8 @@ int chlGetRcs(
 
     // =-=-=-=-=-=-=-
     // cast plugin and object to db and fco for call
-    irods::first_class_object_ptr ptr = boost::dynamic_pointer_cast <
-                                        irods::first_class_object > ( db_obj_ptr );
-    irods::database_ptr           db = boost::dynamic_pointer_cast <
+    irods::first_class_object_ptr ptr = db_obj_ptr;
+    irods::database_ptr           db = std::dynamic_pointer_cast <
                                        irods::database > ( db_plug_ptr );
 
     // =-=-=-=-=-=-=-
@@ -289,9 +286,8 @@ int chlGetLocalZone(
 
     // =-=-=-=-=-=-=-
     // cast plugin and object to db and fco for call
-    irods::first_class_object_ptr ptr = boost::dynamic_pointer_cast <
-                                        irods::first_class_object > ( db_obj_ptr );
-    irods::database_ptr           db = boost::dynamic_pointer_cast <
+    irods::first_class_object_ptr ptr = db_obj_ptr;
+    irods::database_ptr           db = std::dynamic_pointer_cast <
                                        irods::database > ( db_plug_ptr );
 
     // =-=-=-=-=-=-=-
@@ -340,9 +336,8 @@ int chlCheckAndGetObjectID(
 
     // =-=-=-=-=-=-=-
     // cast plugin and object to db and fco for call
-    irods::first_class_object_ptr ptr = boost::dynamic_pointer_cast <
-                                        irods::first_class_object > ( db_obj_ptr );
-    irods::database_ptr           db = boost::dynamic_pointer_cast <
+    irods::first_class_object_ptr ptr = db_obj_ptr;
+    irods::database_ptr           db = std::dynamic_pointer_cast <
                                        irods::database > ( db_plug_ptr );
 
     // =-=-=-=-=-=-=-
@@ -395,9 +390,8 @@ int chlUpdateRescObjCount(
 
     // =-=-=-=-=-=-=-
     // cast plugin and object to db and fco for call
-    irods::first_class_object_ptr ptr = boost::dynamic_pointer_cast <
-                                        irods::first_class_object > ( db_obj_ptr );
-    irods::database_ptr           db = boost::dynamic_pointer_cast <
+    irods::first_class_object_ptr ptr = db_obj_ptr;
+    irods::database_ptr           db = std::dynamic_pointer_cast <
                                        irods::database > ( db_plug_ptr );
 
     // =-=-=-=-=-=-=-
@@ -457,9 +451,8 @@ int chlModDataObjMeta(
 
     // =-=-=-=-=-=-=-
     // cast plugin and object to db and fco for call
-    irods::first_class_object_ptr ptr = boost::dynamic_pointer_cast <
-                                        irods::first_class_object > ( db_obj_ptr );
-    irods::database_ptr           db = boost::dynamic_pointer_cast <
+    irods::first_class_object_ptr ptr = db_obj_ptr;
+    irods::database_ptr           db = std::dynamic_pointer_cast <
                                        irods::database > ( db_plug_ptr );
 
     // =-=-=-=-=-=-=-
@@ -511,9 +504,8 @@ int chlRegDataObj(
 
     // =-=-=-=-=-=-=-
     // cast plugin and object to db and fco for call
-    irods::first_class_object_ptr ptr = boost::dynamic_pointer_cast <
-                                        irods::first_class_object > ( db_obj_ptr );
-    irods::database_ptr           db = boost::dynamic_pointer_cast <
+    irods::first_class_object_ptr ptr = db_obj_ptr;
+    irods::database_ptr           db = std::dynamic_pointer_cast <
                                        irods::database > ( db_plug_ptr );
 
     // =-=-=-=-=-=-=-
@@ -568,9 +560,8 @@ int chlRegReplica(
 
     // =-=-=-=-=-=-=-
     // cast plugin and object to db and fco for call
-    irods::first_class_object_ptr ptr = boost::dynamic_pointer_cast <
-                                        irods::first_class_object > ( db_obj_ptr );
-    irods::database_ptr           db = boost::dynamic_pointer_cast <
+    irods::first_class_object_ptr ptr = db_obj_ptr;
+    irods::database_ptr           db = std::dynamic_pointer_cast <
                                        irods::database > ( db_plug_ptr );
 
     // =-=-=-=-=-=-=-
@@ -626,9 +617,8 @@ int chlUnregDataObj(
 
     // =-=-=-=-=-=-=-
     // cast plugin and object to db and fco for call
-    irods::first_class_object_ptr ptr = boost::dynamic_pointer_cast <
-                                        irods::first_class_object > ( db_obj_ptr );
-    irods::database_ptr           db = boost::dynamic_pointer_cast <
+    irods::first_class_object_ptr ptr = db_obj_ptr;
+    irods::database_ptr           db = std::dynamic_pointer_cast <
                                        irods::database > ( db_plug_ptr );
 
     // =-=-=-=-=-=-=-
@@ -681,9 +671,8 @@ int chlRegRuleExec(
 
     // =-=-=-=-=-=-=-
     // cast plugin and object to db and fco for call
-    irods::first_class_object_ptr ptr = boost::dynamic_pointer_cast <
-                                        irods::first_class_object > ( db_obj_ptr );
-    irods::database_ptr           db = boost::dynamic_pointer_cast <
+    irods::first_class_object_ptr ptr = db_obj_ptr;
+    irods::database_ptr           db = std::dynamic_pointer_cast <
                                        irods::database > ( db_plug_ptr );
 
     // =-=-=-=-=-=-=-
@@ -737,9 +726,8 @@ int chlModRuleExec(
 
     // =-=-=-=-=-=-=-
     // cast plugin and object to db and fco for call
-    irods::first_class_object_ptr ptr = boost::dynamic_pointer_cast <
-                                        irods::first_class_object > ( db_obj_ptr );
-    irods::database_ptr           db = boost::dynamic_pointer_cast <
+    irods::first_class_object_ptr ptr = db_obj_ptr;
+    irods::database_ptr           db = std::dynamic_pointer_cast <
                                        irods::database > ( db_plug_ptr );
 
     // =-=-=-=-=-=-=-
@@ -789,9 +777,8 @@ int chlDelRuleExec(
 
     // =-=-=-=-=-=-=-
     // cast plugin and object to db and fco for call
-    irods::first_class_object_ptr ptr = boost::dynamic_pointer_cast <
-                                        irods::first_class_object > ( db_obj_ptr );
-    irods::database_ptr           db = boost::dynamic_pointer_cast <
+    irods::first_class_object_ptr ptr = db_obj_ptr;
+    irods::database_ptr           db = std::dynamic_pointer_cast <
                                        irods::database > ( db_plug_ptr );
 
     // =-=-=-=-=-=-=-
@@ -839,9 +826,8 @@ int chlAddChildResc(
 
     // =-=-=-=-=-=-=-
     // cast plugin and object to db and fco for call
-    irods::first_class_object_ptr ptr = boost::dynamic_pointer_cast <
-                                        irods::first_class_object > ( db_obj_ptr );
-    irods::database_ptr           db = boost::dynamic_pointer_cast <
+    irods::first_class_object_ptr ptr = db_obj_ptr;
+    irods::database_ptr           db = std::dynamic_pointer_cast <
                                        irods::database > ( db_plug_ptr );
 
     // =-=-=-=-=-=-=-
@@ -893,9 +879,8 @@ int chlRegResc(
 
     // =-=-=-=-=-=-=-
     // cast plugin and object to db and fco for call
-    irods::first_class_object_ptr ptr = boost::dynamic_pointer_cast <
-                                        irods::first_class_object > ( db_obj_ptr );
-    irods::database_ptr           db = boost::dynamic_pointer_cast <
+    irods::first_class_object_ptr ptr = db_obj_ptr;
+    irods::database_ptr           db = std::dynamic_pointer_cast <
                                        irods::database > ( db_plug_ptr );
 
     // =-=-=-=-=-=-=-
@@ -943,9 +928,8 @@ int chlDelChildResc(
 
     // =-=-=-=-=-=-=-
     // cast plugin and object to db and fco for call
-    irods::first_class_object_ptr ptr = boost::dynamic_pointer_cast <
-                                        irods::first_class_object > ( db_obj_ptr );
-    irods::database_ptr           db = boost::dynamic_pointer_cast <
+    irods::first_class_object_ptr ptr = db_obj_ptr;
+    irods::database_ptr           db = std::dynamic_pointer_cast <
                                        irods::database > ( db_plug_ptr );
 
     // =-=-=-=-=-=-=-
@@ -998,9 +982,8 @@ int chlDelResc(
 
     // =-=-=-=-=-=-=-
     // cast plugin and object to db and fco for call
-    irods::first_class_object_ptr ptr = boost::dynamic_pointer_cast <
-                                        irods::first_class_object > ( db_obj_ptr );
-    irods::database_ptr           db = boost::dynamic_pointer_cast <
+    irods::first_class_object_ptr ptr = db_obj_ptr;
+    irods::database_ptr           db = std::dynamic_pointer_cast <
                                        irods::database > ( db_plug_ptr );
 
     // =-=-=-=-=-=-=-
@@ -1058,9 +1041,8 @@ int chlRollback(
 
     // =-=-=-=-=-=-=-
     // cast plugin and object to db and fco for call
-    irods::first_class_object_ptr ptr = boost::dynamic_pointer_cast <
-                                        irods::first_class_object > ( db_obj_ptr );
-    irods::database_ptr           db = boost::dynamic_pointer_cast <
+    irods::first_class_object_ptr ptr = db_obj_ptr;
+    irods::database_ptr           db = std::dynamic_pointer_cast <
                                        irods::database > ( db_plug_ptr );
 
     // =-=-=-=-=-=-=-
@@ -1109,9 +1091,8 @@ int chlCommit(
 
     // =-=-=-=-=-=-=-
     // cast plugin and object to db and fco for call
-    irods::first_class_object_ptr ptr = boost::dynamic_pointer_cast <
-                                        irods::first_class_object > ( db_obj_ptr );
-    irods::database_ptr           db = boost::dynamic_pointer_cast <
+    irods::first_class_object_ptr ptr = db_obj_ptr;
+    irods::database_ptr           db = std::dynamic_pointer_cast <
                                        irods::database > ( db_plug_ptr );
 
     // =-=-=-=-=-=-=-
@@ -1157,9 +1138,8 @@ int chlDelUserRE(
 
     // =-=-=-=-=-=-=-
     // cast plugin and object to db and fco for call
-    irods::first_class_object_ptr ptr = boost::dynamic_pointer_cast <
-                                        irods::first_class_object > ( db_obj_ptr );
-    irods::database_ptr           db = boost::dynamic_pointer_cast <
+    irods::first_class_object_ptr ptr = db_obj_ptr;
+    irods::database_ptr           db = std::dynamic_pointer_cast <
                                        irods::database > ( db_plug_ptr );
 
     // =-=-=-=-=-=-=-
@@ -1210,9 +1190,8 @@ int chlRegCollByAdmin(
 
     // =-=-=-=-=-=-=-
     // cast plugin and object to db and fco for call
-    irods::first_class_object_ptr ptr = boost::dynamic_pointer_cast <
-                                        irods::first_class_object > ( db_obj_ptr );
-    irods::database_ptr           db = boost::dynamic_pointer_cast <
+    irods::first_class_object_ptr ptr = db_obj_ptr;
+    irods::database_ptr           db = std::dynamic_pointer_cast <
                                        irods::database > ( db_plug_ptr );
 
     // =-=-=-=-=-=-=-
@@ -1266,9 +1245,8 @@ int chlRegColl(
 
     // =-=-=-=-=-=-=-
     // cast plugin and object to db and fco for call
-    irods::first_class_object_ptr ptr = boost::dynamic_pointer_cast <
-                                        irods::first_class_object > ( db_obj_ptr );
-    irods::database_ptr           db = boost::dynamic_pointer_cast <
+    irods::first_class_object_ptr ptr = db_obj_ptr;
+    irods::database_ptr           db = std::dynamic_pointer_cast <
                                        irods::database > ( db_plug_ptr );
 
     // =-=-=-=-=-=-=-
@@ -1322,9 +1300,8 @@ int chlModColl(
 
     // =-=-=-=-=-=-=-
     // cast plugin and object to db and fco for call
-    irods::first_class_object_ptr ptr = boost::dynamic_pointer_cast <
-                                        irods::first_class_object > ( db_obj_ptr );
-    irods::database_ptr           db = boost::dynamic_pointer_cast <
+    irods::first_class_object_ptr ptr = db_obj_ptr;
+    irods::database_ptr           db = std::dynamic_pointer_cast <
                                        irods::database > ( db_plug_ptr );
 
     // =-=-=-=-=-=-=-
@@ -1375,9 +1352,8 @@ int chlRegZone(
 
     // =-=-=-=-=-=-=-
     // cast plugin and object to db and fco for call
-    irods::first_class_object_ptr ptr = boost::dynamic_pointer_cast <
-                                        irods::first_class_object > ( db_obj_ptr );
-    irods::database_ptr           db = boost::dynamic_pointer_cast <
+    irods::first_class_object_ptr ptr = db_obj_ptr;
+    irods::database_ptr           db = std::dynamic_pointer_cast <
                                        irods::database > ( db_plug_ptr );
 
     // =-=-=-=-=-=-=-
@@ -1433,9 +1409,8 @@ int chlModZone(
 
     // =-=-=-=-=-=-=-
     // cast plugin and object to db and fco for call
-    irods::first_class_object_ptr ptr = boost::dynamic_pointer_cast <
-                                        irods::first_class_object > ( db_obj_ptr );
-    irods::database_ptr           db = boost::dynamic_pointer_cast <
+    irods::first_class_object_ptr ptr = db_obj_ptr;
+    irods::database_ptr           db = std::dynamic_pointer_cast <
                                        irods::database > ( db_plug_ptr );
 
     // =-=-=-=-=-=-=-
@@ -1488,9 +1463,8 @@ int chlRenameColl(
 
     // =-=-=-=-=-=-=-
     // cast plugin and object to db and fco for call
-    irods::first_class_object_ptr ptr = boost::dynamic_pointer_cast <
-                                        irods::first_class_object > ( db_obj_ptr );
-    irods::database_ptr           db = boost::dynamic_pointer_cast <
+    irods::first_class_object_ptr ptr = db_obj_ptr;
+    irods::database_ptr           db = std::dynamic_pointer_cast <
                                        irods::database > ( db_plug_ptr );
 
     // =-=-=-=-=-=-=-
@@ -1542,9 +1516,8 @@ int chlModZoneCollAcl(
 
     // =-=-=-=-=-=-=-
     // cast plugin and object to db and fco for call
-    irods::first_class_object_ptr ptr = boost::dynamic_pointer_cast <
-                                        irods::first_class_object > ( db_obj_ptr );
-    irods::database_ptr           db = boost::dynamic_pointer_cast <
+    irods::first_class_object_ptr ptr = db_obj_ptr;
+    irods::database_ptr           db = std::dynamic_pointer_cast <
                                        irods::database > ( db_plug_ptr );
 
     // =-=-=-=-=-=-=-
@@ -1597,9 +1570,8 @@ int chlRenameLocalZone(
 
     // =-=-=-=-=-=-=-
     // cast plugin and object to db and fco for call
-    irods::first_class_object_ptr ptr = boost::dynamic_pointer_cast <
-                                        irods::first_class_object > ( db_obj_ptr );
-    irods::database_ptr           db = boost::dynamic_pointer_cast <
+    irods::first_class_object_ptr ptr = db_obj_ptr;
+    irods::database_ptr           db = std::dynamic_pointer_cast <
                                        irods::database > ( db_plug_ptr );
 
     // =-=-=-=-=-=-=-
@@ -1648,9 +1620,8 @@ int chlDelZone(
 
     // =-=-=-=-=-=-=-
     // cast plugin and object to db and fco for call
-    irods::first_class_object_ptr ptr = boost::dynamic_pointer_cast <
-                                        irods::first_class_object > ( db_obj_ptr );
-    irods::database_ptr           db = boost::dynamic_pointer_cast <
+    irods::first_class_object_ptr ptr = db_obj_ptr;
+    irods::database_ptr           db = std::dynamic_pointer_cast <
                                        irods::database > ( db_plug_ptr );
 
     // =-=-=-=-=-=-=-
@@ -1699,9 +1670,8 @@ int chlDelCollByAdmin(
 
     // =-=-=-=-=-=-=-
     // cast plugin and object to db and fco for call
-    irods::first_class_object_ptr ptr = boost::dynamic_pointer_cast <
-                                        irods::first_class_object > ( db_obj_ptr );
-    irods::database_ptr           db = boost::dynamic_pointer_cast <
+    irods::first_class_object_ptr ptr = db_obj_ptr;
+    irods::database_ptr           db = std::dynamic_pointer_cast <
                                        irods::database > ( db_plug_ptr );
 
     // =-=-=-=-=-=-=-
@@ -1749,9 +1719,8 @@ int chlDelColl(
 
     // =-=-=-=-=-=-=-
     // cast plugin and object to db and fco for call
-    irods::first_class_object_ptr ptr = boost::dynamic_pointer_cast <
-                                        irods::first_class_object > ( db_obj_ptr );
-    irods::database_ptr           db = boost::dynamic_pointer_cast <
+    irods::first_class_object_ptr ptr = db_obj_ptr;
+    irods::database_ptr           db = std::dynamic_pointer_cast <
                                        irods::database > ( db_plug_ptr );
 
     // =-=-=-=-=-=-=-
@@ -1807,8 +1776,8 @@ int chlCheckAuth(
 
     // =-=-=-=-=-=-=-
     // cast plugin and object to db and fco for call
-    irods::first_class_object_ptr ptr = boost::dynamic_pointer_cast <irods::first_class_object > ( db_obj_ptr );
-    irods::database_ptr           db = boost::dynamic_pointer_cast <irods::database > ( db_plug_ptr );
+    irods::first_class_object_ptr ptr = db_obj_ptr;
+    irods::database_ptr           db = std::dynamic_pointer_cast <irods::database > ( db_plug_ptr );
 
     // =-=-=-=-=-=-=-
     // call the operation on the plugin
@@ -1861,9 +1830,8 @@ int chlMakeTempPw(
 
     // =-=-=-=-=-=-=-
     // cast plugin and object to db and fco for call
-    irods::first_class_object_ptr ptr = boost::dynamic_pointer_cast <
-                                        irods::first_class_object > ( db_obj_ptr );
-    irods::database_ptr           db = boost::dynamic_pointer_cast <
+    irods::first_class_object_ptr ptr = db_obj_ptr;
+    irods::database_ptr           db = std::dynamic_pointer_cast <
                                        irods::database > ( db_plug_ptr );
 
     // =-=-=-=-=-=-=-
@@ -1913,9 +1881,8 @@ chlMakeLimitedPw(
 
     // =-=-=-=-=-=-=-
     // cast plugin and object to db and fco for call
-    irods::first_class_object_ptr ptr = boost::dynamic_pointer_cast <
-                                        irods::first_class_object > ( db_obj_ptr );
-    irods::database_ptr           db = boost::dynamic_pointer_cast <
+    irods::first_class_object_ptr ptr = db_obj_ptr;
+    irods::database_ptr           db = std::dynamic_pointer_cast <
                                        irods::database > ( db_plug_ptr );
 
     // =-=-=-=-=-=-=-
@@ -1975,9 +1942,8 @@ auto chlUpdateIrodsPamPassword(rsComm_t* _comm,
 
     // =-=-=-=-=-=-=-
     // cast plugin and object to db and fco for call
-    irods::first_class_object_ptr ptr = boost::dynamic_pointer_cast <
-                                        irods::first_class_object > ( db_obj_ptr );
-    irods::database_ptr           db = boost::dynamic_pointer_cast <
+    irods::first_class_object_ptr ptr = db_obj_ptr;
+    irods::database_ptr           db = std::dynamic_pointer_cast <
                                        irods::database > ( db_plug_ptr );
 
     // =-=-=-=-=-=-=-
@@ -2030,9 +1996,8 @@ int chlModUser(
 
     // =-=-=-=-=-=-=-
     // cast plugin and object to db and fco for call
-    irods::first_class_object_ptr ptr = boost::dynamic_pointer_cast <
-                                        irods::first_class_object > ( db_obj_ptr );
-    irods::database_ptr           db = boost::dynamic_pointer_cast <
+    irods::first_class_object_ptr ptr = db_obj_ptr;
+    irods::database_ptr           db = std::dynamic_pointer_cast <
                                        irods::database > ( db_plug_ptr );
 
     // =-=-=-=-=-=-=-
@@ -2089,9 +2054,8 @@ int chlModGroup(
 
     // =-=-=-=-=-=-=-
     // cast plugin and object to db and fco for call
-    irods::first_class_object_ptr ptr = boost::dynamic_pointer_cast <
-                                        irods::first_class_object > ( db_obj_ptr );
-    irods::database_ptr           db = boost::dynamic_pointer_cast <
+    irods::first_class_object_ptr ptr = db_obj_ptr;
+    irods::database_ptr           db = std::dynamic_pointer_cast <
                                        irods::database > ( db_plug_ptr );
 
     // =-=-=-=-=-=-=-
@@ -2147,9 +2111,8 @@ int chlModResc(
 
     // =-=-=-=-=-=-=-
     // cast plugin and object to db and fco for call
-    irods::first_class_object_ptr ptr = boost::dynamic_pointer_cast <
-                                        irods::first_class_object > ( db_obj_ptr );
-    irods::database_ptr           db = boost::dynamic_pointer_cast <
+    irods::first_class_object_ptr ptr = db_obj_ptr;
+    irods::database_ptr           db = std::dynamic_pointer_cast <
                                        irods::database > ( db_plug_ptr );
 
     // =-=-=-=-=-=-=-
@@ -2204,9 +2167,8 @@ int chlModRescDataPaths(
 
     // =-=-=-=-=-=-=-
     // cast plugin and object to db and fco for call
-    irods::first_class_object_ptr ptr = boost::dynamic_pointer_cast <
-                                        irods::first_class_object > ( db_obj_ptr );
-    irods::database_ptr           db = boost::dynamic_pointer_cast <
+    irods::first_class_object_ptr ptr = db_obj_ptr;
+    irods::database_ptr           db = std::dynamic_pointer_cast <
                                        irods::database > ( db_plug_ptr );
 
     // =-=-=-=-=-=-=-
@@ -2262,9 +2224,8 @@ int chlModRescFreeSpace(
 
     // =-=-=-=-=-=-=-
     // cast plugin and object to db and fco for call
-    irods::first_class_object_ptr ptr = boost::dynamic_pointer_cast <
-                                        irods::first_class_object > ( db_obj_ptr );
-    irods::database_ptr           db = boost::dynamic_pointer_cast <
+    irods::first_class_object_ptr ptr = db_obj_ptr;
+    irods::database_ptr           db = std::dynamic_pointer_cast <
                                        irods::database > ( db_plug_ptr );
 
     // =-=-=-=-=-=-=-
@@ -2314,9 +2275,8 @@ int chlRegUserRE(
 
     // =-=-=-=-=-=-=-
     // cast plugin and object to db and fco for call
-    irods::first_class_object_ptr ptr = boost::dynamic_pointer_cast <
-                                        irods::first_class_object > ( db_obj_ptr );
-    irods::database_ptr           db = boost::dynamic_pointer_cast <
+    irods::first_class_object_ptr ptr = db_obj_ptr;
+    irods::database_ptr           db = std::dynamic_pointer_cast <
                                        irods::database > ( db_plug_ptr );
 
     // =-=-=-=-=-=-=-
@@ -2364,8 +2324,8 @@ int chlSetAVUMetadata(
 
     // =-=-=-=-=-=-=-
     // cast plugin and object to db and fco for call
-    irods::first_class_object_ptr ptr = boost::dynamic_pointer_cast < irods::first_class_object > ( db_obj_ptr );
-    irods::database_ptr db = boost::dynamic_pointer_cast < irods::database > ( db_plug_ptr );
+    irods::first_class_object_ptr ptr = db_obj_ptr;
+    irods::database_ptr db = std::dynamic_pointer_cast < irods::database > ( db_plug_ptr );
 
     // =-=-=-=-=-=-=-
     // call the operation on the plugin
@@ -2421,8 +2381,8 @@ int chlAddAVUMetadata(
 
     // =-=-=-=-=-=-=-
     // cast plugin and object to db and fco for call
-    irods::first_class_object_ptr ptr = boost::dynamic_pointer_cast<irods::first_class_object>(db_obj_ptr);
-    irods::database_ptr db = boost::dynamic_pointer_cast<irods::database>(db_plug_ptr);
+    irods::first_class_object_ptr ptr = db_obj_ptr;
+    irods::database_ptr db = std::dynamic_pointer_cast<irods::database>(db_plug_ptr);
 
     // =-=-=-=-=-=-=-
     // call the operation on the plugin
@@ -2479,8 +2439,8 @@ int chlModAVUMetadata(
 
     // =-=-=-=-=-=-=-
     // cast plugin and object to db and fco for call
-    irods::first_class_object_ptr ptr = boost::dynamic_pointer_cast<irods::first_class_object>(db_obj_ptr);
-    irods::database_ptr db = boost::dynamic_pointer_cast<irods::database>(db_plug_ptr);
+    irods::first_class_object_ptr ptr = db_obj_ptr;
+    irods::database_ptr db = std::dynamic_pointer_cast<irods::database>(db_plug_ptr);
 
     // =-=-=-=-=-=-=-
     // call the operation on the plugin
@@ -2544,8 +2504,8 @@ int chlDeleteAVUMetadata(
 
     // =-=-=-=-=-=-=-
     // cast plugin and object to db and fco for call
-    irods::first_class_object_ptr ptr = boost::dynamic_pointer_cast<irods::first_class_object>(db_obj_ptr);
-    irods::database_ptr db = boost::dynamic_pointer_cast<irods::database>(db_plug_ptr);
+    irods::first_class_object_ptr ptr = db_obj_ptr;
+    irods::database_ptr db = std::dynamic_pointer_cast<irods::database>(db_plug_ptr);
 
     // =-=-=-=-=-=-=-
     // call the operation on the plugin
@@ -2603,8 +2563,8 @@ int chlCopyAVUMetadata(
 
     // =-=-=-=-=-=-=-
     // cast plugin and object to db and fco for call
-    irods::first_class_object_ptr ptr = boost::dynamic_pointer_cast < irods::first_class_object > ( db_obj_ptr );
-    irods::database_ptr db = boost::dynamic_pointer_cast < irods::database > ( db_plug_ptr );
+    irods::first_class_object_ptr ptr = db_obj_ptr;
+    irods::database_ptr db = std::dynamic_pointer_cast < irods::database > ( db_plug_ptr );
 
     // =-=-=-=-=-=-=-
     // call the operation on the plugin
@@ -2660,9 +2620,8 @@ int chlModAccessControlResc(
 
     // =-=-=-=-=-=-=-
     // cast plugin and object to db and fco for call
-    irods::first_class_object_ptr ptr = boost::dynamic_pointer_cast <
-                                        irods::first_class_object > ( db_obj_ptr );
-    irods::database_ptr           db = boost::dynamic_pointer_cast <
+    irods::first_class_object_ptr ptr = db_obj_ptr;
+    irods::database_ptr           db = std::dynamic_pointer_cast <
                                        irods::database > ( db_plug_ptr );
 
     // =-=-=-=-=-=-=-
@@ -2724,9 +2683,8 @@ int chlModAccessControl(
 
     // =-=-=-=-=-=-=-
     // cast plugin and object to db and fco for call
-    irods::first_class_object_ptr ptr = boost::dynamic_pointer_cast <
-                                        irods::first_class_object > ( db_obj_ptr );
-    irods::database_ptr           db = boost::dynamic_pointer_cast <
+    irods::first_class_object_ptr ptr = db_obj_ptr;
+    irods::database_ptr           db = std::dynamic_pointer_cast <
                                        irods::database > ( db_plug_ptr );
 
     // =-=-=-=-=-=-=-
@@ -2783,9 +2741,8 @@ int chlRenameObject(
 
     // =-=-=-=-=-=-=-
     // cast plugin and object to db and fco for call
-    irods::first_class_object_ptr ptr = boost::dynamic_pointer_cast <
-                                        irods::first_class_object > ( db_obj_ptr );
-    irods::database_ptr           db = boost::dynamic_pointer_cast <
+    irods::first_class_object_ptr ptr = db_obj_ptr;
+    irods::database_ptr           db = std::dynamic_pointer_cast <
                                        irods::database > ( db_plug_ptr );
 
     // =-=-=-=-=-=-=-
@@ -2837,9 +2794,8 @@ int chlMoveObject(
 
     // =-=-=-=-=-=-=-
     // cast plugin and object to db and fco for call
-    irods::first_class_object_ptr ptr = boost::dynamic_pointer_cast <
-                                        irods::first_class_object > ( db_obj_ptr );
-    irods::database_ptr           db = boost::dynamic_pointer_cast <
+    irods::first_class_object_ptr ptr = db_obj_ptr;
+    irods::database_ptr           db = std::dynamic_pointer_cast <
                                        irods::database > ( db_plug_ptr );
 
     // =-=-=-=-=-=-=-
@@ -2894,9 +2850,8 @@ int chlRegToken(
 
     // =-=-=-=-=-=-=-
     // cast plugin and object to db and fco for call
-    irods::first_class_object_ptr ptr = boost::dynamic_pointer_cast <
-                                        irods::first_class_object > ( db_obj_ptr );
-    irods::database_ptr           db = boost::dynamic_pointer_cast <
+    irods::first_class_object_ptr ptr = db_obj_ptr;
+    irods::database_ptr           db = std::dynamic_pointer_cast <
                                        irods::database > ( db_plug_ptr );
 
     // =-=-=-=-=-=-=-
@@ -2956,9 +2911,8 @@ int chlDelToken(
 
     // =-=-=-=-=-=-=-
     // cast plugin and object to db and fco for call
-    irods::first_class_object_ptr ptr = boost::dynamic_pointer_cast <
-                                        irods::first_class_object > ( db_obj_ptr );
-    irods::database_ptr           db = boost::dynamic_pointer_cast <
+    irods::first_class_object_ptr ptr = db_obj_ptr;
+    irods::database_ptr           db = std::dynamic_pointer_cast <
                                        irods::database > ( db_plug_ptr );
 
     // =-=-=-=-=-=-=-
@@ -3018,9 +2972,8 @@ int chlRegServerLoad(
 
     // =-=-=-=-=-=-=-
     // cast plugin and object to db and fco for call
-    irods::first_class_object_ptr ptr = boost::dynamic_pointer_cast <
-                                        irods::first_class_object > ( db_obj_ptr );
-    irods::database_ptr           db = boost::dynamic_pointer_cast <
+    irods::first_class_object_ptr ptr = db_obj_ptr;
+    irods::database_ptr           db = std::dynamic_pointer_cast <
                                        irods::database > ( db_plug_ptr );
 
     // =-=-=-=-=-=-=-
@@ -3087,9 +3040,8 @@ int chlPurgeServerLoad(
 
     // =-=-=-=-=-=-=-
     // cast plugin and object to db and fco for call
-    irods::first_class_object_ptr ptr = boost::dynamic_pointer_cast <
-                                        irods::first_class_object > ( db_obj_ptr );
-    irods::database_ptr           db = boost::dynamic_pointer_cast <
+    irods::first_class_object_ptr ptr = db_obj_ptr;
+    irods::database_ptr           db = std::dynamic_pointer_cast <
                                        irods::database > ( db_plug_ptr );
 
     // =-=-=-=-=-=-=-
@@ -3140,9 +3092,8 @@ int chlRegServerLoadDigest(
 
     // =-=-=-=-=-=-=-
     // cast plugin and object to db and fco for call
-    irods::first_class_object_ptr ptr = boost::dynamic_pointer_cast <
-                                        irods::first_class_object > ( db_obj_ptr );
-    irods::database_ptr           db = boost::dynamic_pointer_cast <
+    irods::first_class_object_ptr ptr = db_obj_ptr;
+    irods::database_ptr           db = std::dynamic_pointer_cast <
                                        irods::database > ( db_plug_ptr );
 
     // =-=-=-=-=-=-=-
@@ -3195,9 +3146,8 @@ int chlPurgeServerLoadDigest(
 
     // =-=-=-=-=-=-=-
     // cast plugin and object to db and fco for call
-    irods::first_class_object_ptr ptr = boost::dynamic_pointer_cast <
-                                        irods::first_class_object > ( db_obj_ptr );
-    irods::database_ptr           db = boost::dynamic_pointer_cast <
+    irods::first_class_object_ptr ptr = db_obj_ptr;
+    irods::database_ptr           db = std::dynamic_pointer_cast <
                                        irods::database > ( db_plug_ptr );
 
     // =-=-=-=-=-=-=-
@@ -3242,9 +3192,8 @@ int chlCalcUsageAndQuota(
 
     // =-=-=-=-=-=-=-
     // cast plugin and object to db and fco for call
-    irods::first_class_object_ptr ptr = boost::dynamic_pointer_cast <
-                                        irods::first_class_object > ( db_obj_ptr );
-    irods::database_ptr           db = boost::dynamic_pointer_cast <
+    irods::first_class_object_ptr ptr = db_obj_ptr;
+    irods::database_ptr           db = std::dynamic_pointer_cast <
                                        irods::database > ( db_plug_ptr );
 
     // =-=-=-=-=-=-=-
@@ -3289,8 +3238,8 @@ int chlGetGridConfigurationValue(rsComm_t*   _comm,
 
     // =-=-=-=-=-=-=-
     // cast plugin and object to db and fco for call
-    auto ptr = boost::dynamic_pointer_cast<irods::first_class_object>( db_obj_ptr );
-    auto db = boost::dynamic_pointer_cast<irods::database>( db_plug_ptr );
+    auto ptr = std::dynamic_pointer_cast<irods::first_class_object>( db_obj_ptr );
+    auto db = std::dynamic_pointer_cast<irods::database>( db_plug_ptr );
 
     // =-=-=-=-=-=-=-
     // call the operation on the plugin
@@ -3330,8 +3279,8 @@ int chlSetGridConfigurationValue(rsComm_t*   _comm,
 
     // =-=-=-=-=-=-=-
     // cast plugin and object to db and fco for call
-    auto ptr = boost::dynamic_pointer_cast<irods::first_class_object>( db_obj_ptr );
-    auto db = boost::dynamic_pointer_cast<irods::database>( db_plug_ptr );
+    auto ptr = std::dynamic_pointer_cast<irods::first_class_object>( db_obj_ptr );
+    auto db = std::dynamic_pointer_cast<irods::database>( db_plug_ptr );
 
     // =-=-=-=-=-=-=-
     // call the operation on the plugin
@@ -3378,9 +3327,8 @@ int chlSetQuota(
 
     // =-=-=-=-=-=-=-
     // cast plugin and object to db and fco for call
-    irods::first_class_object_ptr ptr = boost::dynamic_pointer_cast <
-                                        irods::first_class_object > ( db_obj_ptr );
-    irods::database_ptr           db = boost::dynamic_pointer_cast <
+    irods::first_class_object_ptr ptr = db_obj_ptr;
+    irods::database_ptr           db = std::dynamic_pointer_cast <
                                        irods::database > ( db_plug_ptr );
 
     // =-=-=-=-=-=-=-
@@ -3435,9 +3383,8 @@ int chlCheckQuota(
 
     // =-=-=-=-=-=-=-
     // cast plugin and object to db and fco for call
-    irods::first_class_object_ptr ptr = boost::dynamic_pointer_cast <
-                                        irods::first_class_object > ( db_obj_ptr );
-    irods::database_ptr           db = boost::dynamic_pointer_cast <
+    irods::first_class_object_ptr ptr = db_obj_ptr;
+    irods::database_ptr           db = std::dynamic_pointer_cast <
                                        irods::database > ( db_plug_ptr );
 
     // =-=-=-=-=-=-=-
@@ -3489,9 +3436,8 @@ chlDelUnusedAVUs(
 
     // =-=-=-=-=-=-=-
     // cast plugin and object to db and fco for call
-    irods::first_class_object_ptr ptr = boost::dynamic_pointer_cast <
-                                        irods::first_class_object > ( db_obj_ptr );
-    irods::database_ptr           db = boost::dynamic_pointer_cast <
+    irods::first_class_object_ptr ptr = db_obj_ptr;
+    irods::database_ptr           db = std::dynamic_pointer_cast <
                                        irods::database > ( db_plug_ptr );
 
     // =-=-=-=-=-=-=-
@@ -3548,9 +3494,8 @@ int chlInsRuleTable(
 
     // =-=-=-=-=-=-=-
     // cast plugin and object to db and fco for call
-    irods::first_class_object_ptr ptr = boost::dynamic_pointer_cast <
-                                        irods::first_class_object > ( db_obj_ptr );
-    irods::database_ptr           db = boost::dynamic_pointer_cast <
+    irods::first_class_object_ptr ptr = db_obj_ptr;
+    irods::database_ptr           db = std::dynamic_pointer_cast <
                                        irods::database > ( db_plug_ptr );
 
     // =-=-=-=-=-=-=-
@@ -3620,9 +3565,8 @@ int chlInsDvmTable(
 
     // =-=-=-=-=-=-=-
     // cast plugin and object to db and fco for call
-    irods::first_class_object_ptr ptr = boost::dynamic_pointer_cast <
-                                        irods::first_class_object > ( db_obj_ptr );
-    irods::database_ptr           db = boost::dynamic_pointer_cast <
+    irods::first_class_object_ptr ptr = db_obj_ptr;
+    irods::database_ptr           db = std::dynamic_pointer_cast <
                                        irods::database > ( db_plug_ptr );
 
     // =-=-=-=-=-=-=-
@@ -3683,9 +3627,8 @@ int chlInsFnmTable(
 
     // =-=-=-=-=-=-=-
     // cast plugin and object to db and fco for call
-    irods::first_class_object_ptr ptr = boost::dynamic_pointer_cast <
-                                        irods::first_class_object > ( db_obj_ptr );
-    irods::database_ptr           db = boost::dynamic_pointer_cast <
+    irods::first_class_object_ptr ptr = db_obj_ptr;
+    irods::database_ptr           db = std::dynamic_pointer_cast <
                                        irods::database > ( db_plug_ptr );
 
     // =-=-=-=-=-=-=-
@@ -3750,9 +3693,8 @@ int chlInsMsrvcTable(
 
     // =-=-=-=-=-=-=-
     // cast plugin and object to db and fco for call
-    irods::first_class_object_ptr ptr = boost::dynamic_pointer_cast <
-                                        irods::first_class_object > ( db_obj_ptr );
-    irods::database_ptr           db = boost::dynamic_pointer_cast <
+    irods::first_class_object_ptr ptr = db_obj_ptr;
+    irods::database_ptr           db = std::dynamic_pointer_cast <
                                        irods::database > ( db_plug_ptr );
 
     // =-=-=-=-=-=-=-
@@ -3821,9 +3763,8 @@ int chlVersionRuleBase(
 
     // =-=-=-=-=-=-=-
     // cast plugin and object to db and fco for call
-    irods::first_class_object_ptr ptr = boost::dynamic_pointer_cast <
-                                        irods::first_class_object > ( db_obj_ptr );
-    irods::database_ptr           db = boost::dynamic_pointer_cast <
+    irods::first_class_object_ptr ptr = db_obj_ptr;
+    irods::database_ptr           db = std::dynamic_pointer_cast <
                                        irods::database > ( db_plug_ptr );
 
     // =-=-=-=-=-=-=-
@@ -3877,9 +3818,8 @@ int chlVersionDvmBase(
 
     // =-=-=-=-=-=-=-
     // cast plugin and object to db and fco for call
-    irods::first_class_object_ptr ptr = boost::dynamic_pointer_cast <
-                                        irods::first_class_object > ( db_obj_ptr );
-    irods::database_ptr           db = boost::dynamic_pointer_cast <
+    irods::first_class_object_ptr ptr = db_obj_ptr;
+    irods::database_ptr           db = std::dynamic_pointer_cast <
                                        irods::database > ( db_plug_ptr );
 
     // =-=-=-=-=-=-=-
@@ -3933,9 +3873,8 @@ int chlVersionFnmBase(
 
     // =-=-=-=-=-=-=-
     // cast plugin and object to db and fco for call
-    irods::first_class_object_ptr ptr = boost::dynamic_pointer_cast <
-                                        irods::first_class_object > ( db_obj_ptr );
-    irods::database_ptr           db = boost::dynamic_pointer_cast <
+    irods::first_class_object_ptr ptr = db_obj_ptr;
+    irods::database_ptr           db = std::dynamic_pointer_cast <
                                        irods::database > ( db_plug_ptr );
 
     // =-=-=-=-=-=-=-
@@ -3984,9 +3923,8 @@ int chlAddSpecificQuery(
 
     // =-=-=-=-=-=-=-
     // cast plugin and object to db and fco for call
-    irods::first_class_object_ptr ptr = boost::dynamic_pointer_cast <
-                                        irods::first_class_object > ( db_obj_ptr );
-    irods::database_ptr           db = boost::dynamic_pointer_cast <
+    irods::first_class_object_ptr ptr = db_obj_ptr;
+    irods::database_ptr           db = std::dynamic_pointer_cast <
                                        irods::database > ( db_plug_ptr );
 
     // =-=-=-=-=-=-=-
@@ -4034,9 +3972,8 @@ int chlDelSpecificQuery(
 
     // =-=-=-=-=-=-=-
     // cast plugin and object to db and fco for call
-    irods::first_class_object_ptr ptr = boost::dynamic_pointer_cast <
-                                        irods::first_class_object > ( db_obj_ptr );
-    irods::database_ptr           db = boost::dynamic_pointer_cast <
+    irods::first_class_object_ptr ptr = db_obj_ptr;
+    irods::database_ptr           db = std::dynamic_pointer_cast <
                                        irods::database > ( db_plug_ptr );
 
     // =-=-=-=-=-=-=-
@@ -4090,9 +4027,8 @@ int chlSpecificQuery(
 
     // =-=-=-=-=-=-=-
     // cast plugin and object to db and fco for call
-    irods::first_class_object_ptr ptr = boost::dynamic_pointer_cast <
-                                        irods::first_class_object > ( db_obj_ptr );
-    irods::database_ptr           db = boost::dynamic_pointer_cast <
+    irods::first_class_object_ptr ptr = db_obj_ptr;
+    irods::database_ptr           db = std::dynamic_pointer_cast <
                                        irods::database > ( db_plug_ptr );
 
     // =-=-=-=-=-=-=-
@@ -4141,9 +4077,8 @@ int chlGetDistinctDataObjCountOnResource(
 
     // =-=-=-=-=-=-=-
     // cast plugin and object to db and fco for call
-    irods::first_class_object_ptr ptr = boost::dynamic_pointer_cast <
-                                        irods::first_class_object > ( db_obj_ptr );
-    irods::database_ptr           db = boost::dynamic_pointer_cast <
+    irods::first_class_object_ptr ptr = db_obj_ptr;
+    irods::database_ptr           db = std::dynamic_pointer_cast <
                                        irods::database > ( db_plug_ptr );
 
     // =-=-=-=-=-=-=-
@@ -4197,9 +4132,8 @@ int chlGetDistinctDataObjsMissingFromChildGivenParent(
 
     // =-=-=-=-=-=-=-
     // cast plugin and object to db and fco for call
-    irods::first_class_object_ptr ptr = boost::dynamic_pointer_cast <
-                                        irods::first_class_object > ( db_obj_ptr );
-    irods::database_ptr           db = boost::dynamic_pointer_cast <
+    irods::first_class_object_ptr ptr = db_obj_ptr;
+    irods::database_ptr           db = std::dynamic_pointer_cast <
                                        irods::database > ( db_plug_ptr );
 
     // =-=-=-=-=-=-=-
@@ -4255,9 +4189,8 @@ int chlGetHierarchyForResc(
 
     // =-=-=-=-=-=-=-
     // cast plugin and object to db and fco for call
-    irods::first_class_object_ptr ptr = boost::dynamic_pointer_cast <
-                                        irods::first_class_object > ( db_obj_ptr );
-    irods::database_ptr           db = boost::dynamic_pointer_cast <
+    irods::first_class_object_ptr ptr = db_obj_ptr;
+    irods::database_ptr           db = std::dynamic_pointer_cast <
                                        irods::database > ( db_plug_ptr );
 
     // =-=-=-=-=-=-=-
@@ -4309,8 +4242,8 @@ int chlModTicket(
 
     // =-=-=-=-=-=-=-
     // cast plugin and object to db and fco for call
-    irods::first_class_object_ptr ptr = boost::dynamic_pointer_cast<irods::first_class_object>(db_obj_ptr);
-    irods::database_ptr db = boost::dynamic_pointer_cast<irods::database>(db_plug_ptr);
+    irods::first_class_object_ptr ptr = db_obj_ptr;
+    irods::database_ptr db = std::dynamic_pointer_cast<irods::database>(db_plug_ptr);
 
     // =-=-=-=-=-=-=-
     // call the operation on the plugin
@@ -4351,9 +4284,8 @@ int chlGenQuery(
 
     // =-=-=-=-=-=-=-
     // cast plugin and object to db and fco for call
-    irods::first_class_object_ptr ptr = boost::dynamic_pointer_cast <
-                                        irods::first_class_object > ( db_obj_ptr );
-    irods::database_ptr           db = boost::dynamic_pointer_cast <
+    irods::first_class_object_ptr ptr = db_obj_ptr;
+    irods::database_ptr           db = std::dynamic_pointer_cast <
                                        irods::database > ( db_plug_ptr );
 
     // =-=-=-=-=-=-=-
@@ -4403,9 +4335,8 @@ int chlGenQueryAccessControlSetup(
 
     // =-=-=-=-=-=-=-
     // cast plugin and object to db and fco for call
-    irods::first_class_object_ptr ptr = boost::dynamic_pointer_cast <
-                                        irods::first_class_object > ( db_obj_ptr );
-    irods::database_ptr           db = boost::dynamic_pointer_cast <
+    irods::first_class_object_ptr ptr = db_obj_ptr;
+    irods::database_ptr           db = std::dynamic_pointer_cast <
                                        irods::database > ( db_plug_ptr );
 
     // iRODS 5 does not allow admins to disable strict ACLs, hence why call_without_policy() is used.
@@ -4445,9 +4376,8 @@ int chlGenQueryTicketSetup(
 
     // =-=-=-=-=-=-=-
     // cast plugin and object to db and fco for call
-    irods::first_class_object_ptr ptr = boost::dynamic_pointer_cast <
-                                        irods::first_class_object > ( db_obj_ptr );
-    irods::database_ptr           db = boost::dynamic_pointer_cast <
+    irods::first_class_object_ptr ptr = db_obj_ptr;
+    irods::database_ptr           db = std::dynamic_pointer_cast <
                                        irods::database > ( db_plug_ptr );
 
     // =-=-=-=-=-=-=-
@@ -4498,9 +4428,8 @@ int chlGetReplListForLeafBundles(
 
     // =-=-=-=-=-=-=-
     // cast plugin and object to db and fco for call
-    irods::first_class_object_ptr ptr = boost::dynamic_pointer_cast <
-                                        irods::first_class_object > ( db_obj_ptr );
-    irods::database_ptr           db = boost::dynamic_pointer_cast <
+    irods::first_class_object_ptr ptr = db_obj_ptr;
+    irods::database_ptr           db = std::dynamic_pointer_cast <
                                        irods::database > ( db_plug_ptr );
 
     ret = db->call<
@@ -4552,9 +4481,9 @@ int chlGetReplListForLeafBundlesOffset(rodsLong_t _count,
     // =-=-=-=-=-=-=-
     // cast plugin and object to db and fco for call
     // NOLINTNEXTLINE(misc-const-correctness)
-    irods::first_class_object_ptr ptr = boost::dynamic_pointer_cast<irods::first_class_object>(db_obj_ptr);
+    irods::first_class_object_ptr ptr = db_obj_ptr;
     // NOLINTNEXTLINE(misc-const-correctness)
-    irods::database_ptr db = boost::dynamic_pointer_cast<irods::database>(db_plug_ptr);
+    irods::database_ptr db = std::dynamic_pointer_cast<irods::database>(db_plug_ptr);
 
     ret =
         db->call<rodsLong_t, size_t, const std::vector<leaf_bundle_t>*, const std::string*, dist_child_result_t*, int>(
@@ -4587,8 +4516,8 @@ auto chl_check_permission_to_modify_data_object(RsComm& _comm, const rodsLong_t 
         return ret.code();
     }
 
-    irods::first_class_object_ptr ptr = boost::dynamic_pointer_cast<irods::first_class_object>(db_obj_ptr);
-    irods::database_ptr           db = boost::dynamic_pointer_cast<irods::database>(db_plug_ptr);
+    irods::first_class_object_ptr ptr = db_obj_ptr;
+    irods::database_ptr           db = std::dynamic_pointer_cast<irods::database>(db_plug_ptr);
 
     const auto ret = db->call<const rodsLong_t>(&_comm,
                                                 irods::DATABASE_OP_CHECK_PERMISSION_TO_MODIFY_DATA_OBJECT,
@@ -4616,8 +4545,8 @@ auto chl_check_data_object_access(RsComm& _comm, const rodsLong_t _data_id, cons
         return ret.code();
     }
 
-    irods::first_class_object_ptr ptr = boost::dynamic_pointer_cast<irods::first_class_object>(db_obj_ptr);
-    irods::database_ptr           db = boost::dynamic_pointer_cast<irods::database>(db_plug_ptr);
+    irods::first_class_object_ptr ptr = db_obj_ptr;
+    irods::database_ptr           db = std::dynamic_pointer_cast<irods::database>(db_plug_ptr);
 
     const auto ret = db->call<const rodsLong_t, const char*>(&_comm,
                                                              irods::DATABASE_OP_CHECK_DATA_OBJECT_ACCESS,
@@ -4642,8 +4571,8 @@ auto chl_update_ticket_write_byte_count(RsComm& _comm, const rodsLong_t _data_id
         return ret.code();
     }
 
-    irods::first_class_object_ptr ptr = boost::dynamic_pointer_cast<irods::first_class_object>(db_obj_ptr);
-    irods::database_ptr           db = boost::dynamic_pointer_cast<irods::database>(db_plug_ptr);
+    irods::first_class_object_ptr ptr = db_obj_ptr;
+    irods::database_ptr           db = std::dynamic_pointer_cast<irods::database>(db_plug_ptr);
 
     const auto ret = db->call<const rodsLong_t, const rodsLong_t>(&_comm,
                                                                   irods::DATABASE_OP_UPDATE_TICKET_WRITE_BYTE_COUNT,
@@ -4668,8 +4597,8 @@ auto chl_get_delay_rule_info(RsComm& _comm, const char* _rule_id, std::vector<st
         return ret.code();
     }
 
-    irods::first_class_object_ptr ptr = boost::dynamic_pointer_cast<irods::first_class_object>(db_obj_ptr);
-    irods::database_ptr db = boost::dynamic_pointer_cast<irods::database>(db_plug_ptr);
+    irods::first_class_object_ptr ptr = db_obj_ptr;
+    irods::database_ptr db = std::dynamic_pointer_cast<irods::database>(db_plug_ptr);
 
     const auto ret = db->call<const char*, std::vector<std::string>*>(
         &_comm, irods::DATABASE_OP_GET_DELAY_RULE_INFO, ptr, _rule_id, _info);
@@ -4693,8 +4622,8 @@ auto chl_data_object_finalize(RsComm& _comm, const char* _json_input) -> int
         return ret.code();
     }
 
-    irods::first_class_object_ptr ptr = boost::dynamic_pointer_cast<irods::first_class_object>(db_obj_ptr);
-    irods::database_ptr db = boost::dynamic_pointer_cast<irods::database>(db_plug_ptr);
+    irods::first_class_object_ptr ptr = db_obj_ptr;
+    irods::database_ptr db = std::dynamic_pointer_cast<irods::database>(db_plug_ptr);
 
     const auto ret = db->call(&_comm, irods::DATABASE_OP_DATA_OBJECT_FINALIZE, ptr, _json_input);
 
@@ -4722,8 +4651,8 @@ auto chl_check_auth_credentials(RsComm& _comm,
         return ret.code();
     }
 
-    irods::first_class_object_ptr ptr = boost::dynamic_pointer_cast<irods::first_class_object>(db_obj_ptr);
-    irods::database_ptr db = boost::dynamic_pointer_cast<irods::database>(db_plug_ptr);
+    irods::first_class_object_ptr ptr = db_obj_ptr;
+    irods::database_ptr db = std::dynamic_pointer_cast<irods::database>(db_plug_ptr);
 
     const auto ret =
         db->call(&_comm, irods::DATABASE_OP_CHECK_AUTH_CREDENTIALS, ptr, _username, _zone, _password, _correct);
@@ -4749,8 +4678,8 @@ auto chl_execute_genquery2_sql(RsComm& _comm, const char* _sql, const std::vecto
         return ret.code();
     }
 
-    irods::first_class_object_ptr ptr = boost::dynamic_pointer_cast<irods::first_class_object>(db_obj_ptr);
-    irods::database_ptr db = boost::dynamic_pointer_cast<irods::database>(db_plug_ptr);
+    irods::first_class_object_ptr ptr = db_obj_ptr;
+    irods::database_ptr db = std::dynamic_pointer_cast<irods::database>(db_plug_ptr);
 
     const auto ret = db->call(&_comm, irods::DATABASE_OP_EXECUTE_GENQUERY2_SQL, ptr, _sql, _values, _output);
 
@@ -4774,8 +4703,8 @@ auto chl_delay_rule_lock(RsComm& _comm, const char* _rule_id, const char* _lock_
         return ret.code();
     }
 
-    irods::first_class_object_ptr ptr = boost::dynamic_pointer_cast<irods::first_class_object>(db_obj_ptr);
-    irods::database_ptr db = boost::dynamic_pointer_cast<irods::database>(db_plug_ptr);
+    irods::first_class_object_ptr ptr = db_obj_ptr;
+    irods::database_ptr db = std::dynamic_pointer_cast<irods::database>(db_plug_ptr);
 
     const auto ret = db->call(&_comm, irods::DATABASE_OP_DELAY_RULE_LOCK, ptr, _rule_id, _lock_host, _lock_host_pid);
 
@@ -4799,8 +4728,8 @@ auto chl_delay_rule_unlock(RsComm& _comm, const char* _rule_ids) -> int
         return ret.code();
     }
 
-    irods::first_class_object_ptr ptr = boost::dynamic_pointer_cast<irods::first_class_object>(db_obj_ptr);
-    irods::database_ptr db = boost::dynamic_pointer_cast<irods::database>(db_plug_ptr);
+    irods::first_class_object_ptr ptr = db_obj_ptr;
+    irods::database_ptr db = std::dynamic_pointer_cast<irods::database>(db_plug_ptr);
 
     const auto ret = db->call(&_comm, irods::DATABASE_OP_DELAY_RULE_UNLOCK, ptr, _rule_ids);
 
@@ -4824,8 +4753,8 @@ auto chl_update_replica_access_time(RsComm& _comm, const char* _json_input, char
         return ret.code();
     }
 
-    irods::first_class_object_ptr ptr = boost::dynamic_pointer_cast<irods::first_class_object>(db_obj_ptr);
-    irods::database_ptr db = boost::dynamic_pointer_cast<irods::database>(db_plug_ptr);
+    irods::first_class_object_ptr ptr = db_obj_ptr;
+    irods::database_ptr db = std::dynamic_pointer_cast<irods::database>(db_plug_ptr);
 
     const auto ret = db->call(&_comm, irods::DATABASE_OP_UPDATE_REPLICA_ACCESS_TIME, ptr, _json_input, _output);
 
@@ -4846,9 +4775,9 @@ auto chl_check_password(RsComm* _comm, const char* _json_input, int* _valid) -> 
         return static_cast<int>(ret.code());
     }
     // NOLINTNEXTLINE(misc-const-correctness)
-    irods::first_class_object_ptr ptr = boost::dynamic_pointer_cast<irods::first_class_object>(db_obj_ptr);
+    irods::first_class_object_ptr ptr = db_obj_ptr;
     // NOLINTNEXTLINE(misc-const-correctness)
-    irods::database_ptr db = boost::dynamic_pointer_cast<irods::database>(db_plug_ptr);
+    irods::database_ptr db = std::dynamic_pointer_cast<irods::database>(db_plug_ptr);
     const auto ret = db->call(_comm, irods::DATABASE_OP_CHECK_PASSWORD, ptr, _json_input, _valid);
     return static_cast<int>(ret.code());
 } // chl_check_password
@@ -4866,9 +4795,9 @@ auto chl_check_session_token(RsComm* _comm, const char* _json_input, int* _valid
         return static_cast<int>(ret.code());
     }
     // NOLINTNEXTLINE(misc-const-correctness)
-    irods::first_class_object_ptr ptr = boost::dynamic_pointer_cast<irods::first_class_object>(db_obj_ptr);
+    irods::first_class_object_ptr ptr = db_obj_ptr;
     // NOLINTNEXTLINE(misc-const-correctness)
-    irods::database_ptr db = boost::dynamic_pointer_cast<irods::database>(db_plug_ptr);
+    irods::database_ptr db = std::dynamic_pointer_cast<irods::database>(db_plug_ptr);
     const auto ret = db->call(_comm, irods::DATABASE_OP_CHECK_SESSION_TOKEN, ptr, _json_input, _valid);
     return static_cast<int>(ret.code());
 } // chl_check_session_token
@@ -4886,9 +4815,9 @@ auto chl_make_session_token(RsComm* _comm, const char* _json_input, char** _toke
         return static_cast<int>(ret.code());
     }
     // NOLINTNEXTLINE(misc-const-correctness)
-    irods::first_class_object_ptr ptr = boost::dynamic_pointer_cast<irods::first_class_object>(db_obj_ptr);
+    irods::first_class_object_ptr ptr = db_obj_ptr;
     // NOLINTNEXTLINE(misc-const-correctness)
-    irods::database_ptr db = boost::dynamic_pointer_cast<irods::database>(db_plug_ptr);
+    irods::database_ptr db = std::dynamic_pointer_cast<irods::database>(db_plug_ptr);
     const auto ret = db->call(_comm, irods::DATABASE_OP_MAKE_SESSION_TOKEN, ptr, _json_input, _token);
     return static_cast<int>(ret.code());
 } // chl_make_session_token
@@ -4906,9 +4835,9 @@ auto chl_remove_session_tokens(RsComm* _comm, const char* _json_input) -> int
         return static_cast<int>(ret.code());
     }
     // NOLINTNEXTLINE(misc-const-correctness)
-    irods::first_class_object_ptr ptr = boost::dynamic_pointer_cast<irods::first_class_object>(db_obj_ptr);
+    irods::first_class_object_ptr ptr = db_obj_ptr;
     // NOLINTNEXTLINE(misc-const-correctness)
-    irods::database_ptr db = boost::dynamic_pointer_cast<irods::database>(db_plug_ptr);
+    irods::database_ptr db = std::dynamic_pointer_cast<irods::database>(db_plug_ptr);
     const auto ret = db->call(_comm, irods::DATABASE_OP_REMOVE_SESSION_TOKENS, ptr, _json_input);
     return static_cast<int>(ret.code());
 } // chl_remove_session_tokens
@@ -4926,9 +4855,9 @@ auto chl_remove_password(RsComm* _comm, const char* _json_input) -> int
         return static_cast<int>(ret.code());
     }
     // NOLINTNEXTLINE(misc-const-correctness)
-    irods::first_class_object_ptr ptr = boost::dynamic_pointer_cast<irods::first_class_object>(db_obj_ptr);
+    irods::first_class_object_ptr ptr = db_obj_ptr;
     // NOLINTNEXTLINE(misc-const-correctness)
-    irods::database_ptr db = boost::dynamic_pointer_cast<irods::database>(db_plug_ptr);
+    irods::database_ptr db = std::dynamic_pointer_cast<irods::database>(db_plug_ptr);
     const auto ret = db->call(_comm, irods::DATABASE_OP_REMOVE_PASSWORD, ptr, _json_input);
     return static_cast<int>(ret.code());
 } // chl_remove_password
@@ -4946,9 +4875,9 @@ auto chl_calc_logical_usage_and_quota(RsComm* _comm, const char* _coll_name) -> 
         return static_cast<int>(ret.code());
     }
     // NOLINTNEXTLINE(misc-const-correctness)
-    irods::first_class_object_ptr ptr = boost::dynamic_pointer_cast<irods::first_class_object>(db_obj_ptr);
+    irods::first_class_object_ptr ptr = db_obj_ptr;
     // NOLINTNEXTLINE(misc-const-correctness)
-    irods::database_ptr db = boost::dynamic_pointer_cast<irods::database>(db_plug_ptr);
+    irods::database_ptr db = std::dynamic_pointer_cast<irods::database>(db_plug_ptr);
     const auto ret = db->call(_comm, irods::DATABASE_OP_CALC_LOGICAL_USAGE_AND_QUOTA, ptr, _coll_name);
     return static_cast<int>(ret.code());
 } // chl_calc_logical_usage_and_quota
@@ -4967,9 +4896,9 @@ auto chl_set_logical_quota(RsComm* _comm, const char* _coll_name, const char* _b
         return static_cast<int>(ret.code());
     }
     // NOLINTNEXTLINE(misc-const-correctness)
-    irods::first_class_object_ptr ptr = boost::dynamic_pointer_cast<irods::first_class_object>(db_obj_ptr);
+    irods::first_class_object_ptr ptr = db_obj_ptr;
     // NOLINTNEXTLINE(misc-const-correctness)
-    irods::database_ptr db = boost::dynamic_pointer_cast<irods::database>(db_plug_ptr);
+    irods::database_ptr db = std::dynamic_pointer_cast<irods::database>(db_plug_ptr);
     const auto ret = db->call(_comm, irods::DATABASE_OP_SET_LOGICAL_QUOTA, ptr, _coll_name, _byte_limit, _object_limit);
     return static_cast<int>(ret.code());
 } // chl_set_logical_quota
@@ -4988,9 +4917,9 @@ auto chl_check_logical_quota(RsComm* _comm, const char* _coll_name, irods::logic
         return static_cast<int>(ret.code());
     }
     // NOLINTNEXTLINE(misc-const-correctness)
-    irods::first_class_object_ptr ptr = boost::dynamic_pointer_cast<irods::first_class_object>(db_obj_ptr);
+    irods::first_class_object_ptr ptr = db_obj_ptr;
     // NOLINTNEXTLINE(misc-const-correctness)
-    irods::database_ptr db = boost::dynamic_pointer_cast<irods::database>(db_plug_ptr);
+    irods::database_ptr db = std::dynamic_pointer_cast<irods::database>(db_plug_ptr);
     const auto ret = db->call(_comm, irods::DATABASE_OP_CHECK_LOGICAL_QUOTA, ptr, _coll_name, _quota_values);
     return static_cast<int>(ret.code());
 } // chl_check_logical_quota

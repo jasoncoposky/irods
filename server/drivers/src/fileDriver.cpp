@@ -29,7 +29,7 @@ irods::error fileCreate(
 
     // =-=-=-=-=-=-=-
     // make the call to the "create" interface
-    resc    = boost::dynamic_pointer_cast< irods::resource >( ptr );
+    resc    = std::dynamic_pointer_cast< irods::resource >( ptr );
     ret_err = resc->call( _comm, irods::RESOURCE_OP_CREATE, _object );
 
     // =-=-=-=-=-=-=-
@@ -60,7 +60,7 @@ irods::error fileOpen(
 
     // =-=-=-=-=-=-=-
     // make the call to the "open" interface
-    resc    = boost::dynamic_pointer_cast< irods::resource >( ptr );
+    resc    = std::dynamic_pointer_cast< irods::resource >( ptr );
     ret_err = resc->call( _comm, irods::RESOURCE_OP_OPEN, _object );
 
     // =-=-=-=-=-=-=-
@@ -94,7 +94,7 @@ irods::error fileRead(
 
     // =-=-=-=-=-=-=-
     // make the call to the "read" interface
-    resc    = boost::dynamic_pointer_cast< irods::resource >( ptr );
+    resc    = std::dynamic_pointer_cast< irods::resource >( ptr );
     ret_err = resc->call< void*, const int >( _comm, irods::RESOURCE_OP_READ, _object, _buf, _len );
 
     // =-=-=-=-=-=-=-
@@ -126,7 +126,7 @@ irods::error fileWrite(
 
     // =-=-=-=-=-=-=-
     // make the call to the "write" interface
-    resc    = boost::dynamic_pointer_cast< irods::resource >( ptr );
+    resc    = std::dynamic_pointer_cast< irods::resource >( ptr );
     ret_err = resc->call< const void*, const int >( _comm, irods::RESOURCE_OP_WRITE, _object, _buf, _len );
 
     // =-=-=-=-=-=-=-
@@ -158,7 +158,7 @@ irods::error fileClose(
 
     // =-=-=-=-=-=-=-
     // make the call to the "close" interface
-    resc    = boost::dynamic_pointer_cast< irods::resource >( ptr );
+    resc    = std::dynamic_pointer_cast< irods::resource >( ptr );
     ret_err = resc->call( _comm, irods::RESOURCE_OP_CLOSE, _object );
 
     // =-=-=-=-=-=-=-
@@ -188,7 +188,7 @@ irods::error fileUnlink(
 
     // =-=-=-=-=-=-=-
     // make the call to the "unlink" interface
-    resc    = boost::dynamic_pointer_cast< irods::resource >( ptr );
+    resc    = std::dynamic_pointer_cast< irods::resource >( ptr );
     ret_err = resc->call( _comm, irods::RESOURCE_OP_UNLINK, _object );
 
     // =-=-=-=-=-=-=-
@@ -219,7 +219,7 @@ irods::error fileStat(
 
     // =-=-=-=-=-=-=-
     // make the call to the "stat" interface
-    resc    = boost::dynamic_pointer_cast< irods::resource >( ptr );
+    resc    = std::dynamic_pointer_cast< irods::resource >( ptr );
     ret_err = resc->call< struct stat* >( _comm, irods::RESOURCE_OP_STAT, _object, _statbuf );
 
     // =-=-=-=-=-=-=-
@@ -251,7 +251,7 @@ irods::error fileLseek(
 
     // =-=-=-=-=-=-=-
     // make the call to the "lseek" interface
-    resc    = boost::dynamic_pointer_cast< irods::resource >( ptr );
+    resc    = std::dynamic_pointer_cast< irods::resource >( ptr );
     ret_err = resc->call< const long long, const int >( _comm, irods::RESOURCE_OP_LSEEK, _object, _offset, _whence );
 
     // =-=-=-=-=-=-=-
@@ -281,7 +281,7 @@ irods::error fileMkdir(
 
     // =-=-=-=-=-=-=-
     // make the call to the "mkdir" interface
-    resc    = boost::dynamic_pointer_cast< irods::resource >( ptr );
+    resc    = std::dynamic_pointer_cast< irods::resource >( ptr );
     ret_err = resc->call( _comm, irods::RESOURCE_OP_MKDIR, _object );
 
     // =-=-=-=-=-=-=-
@@ -313,7 +313,7 @@ irods::error fileChmod(
 
     // =-=-=-=-=-=-=-
     // make the call to the "chmod" interface
-    resc    = boost::dynamic_pointer_cast< irods::resource >( ptr );
+    resc    = std::dynamic_pointer_cast< irods::resource >( ptr );
     ret_err = resc->call( _comm, irods::RESOURCE_OP_CHMOD, _object, _mode );
 
     // =-=-=-=-=-=-=-
@@ -343,7 +343,7 @@ irods::error fileRmdir(
 
     // =-=-=-=-=-=-=-
     // make the call to the "rmdir" interface
-    resc    = boost::dynamic_pointer_cast< irods::resource >( ptr );
+    resc    = std::dynamic_pointer_cast< irods::resource >( ptr );
     ret_err = resc->call( _comm, irods::RESOURCE_OP_RMDIR, _object );
 
     // =-=-=-=-=-=-=-
@@ -373,7 +373,7 @@ irods::error fileOpendir(
 
     // =-=-=-=-=-=-=-
     // make the call to the "opendir" interface
-    resc    = boost::dynamic_pointer_cast< irods::resource >( ptr );
+    resc    = std::dynamic_pointer_cast< irods::resource >( ptr );
     ret_err = resc->call( _comm, irods::RESOURCE_OP_OPENDIR, _object );
 
     // =-=-=-=-=-=-=-
@@ -403,7 +403,7 @@ irods::error fileClosedir(
 
     // =-=-=-=-=-=-=-
     // make the call to the "closedir" interface
-    resc    = boost::dynamic_pointer_cast< irods::resource >( ptr );
+    resc    = std::dynamic_pointer_cast< irods::resource >( ptr );
     ret_err = resc->call( _comm, irods::RESOURCE_OP_CLOSEDIR, _object );
 
     // =-=-=-=-=-=-=-
@@ -434,7 +434,7 @@ irods::error fileReaddir(
 
     // =-=-=-=-=-=-=-
     // make the call to the "readdir" interface
-    resc    = boost::dynamic_pointer_cast< irods::resource >( ptr );
+    resc    = std::dynamic_pointer_cast< irods::resource >( ptr );
     ret_err = resc->call< struct rodsDirent** >( _comm, irods::RESOURCE_OP_READDIR, _object, _dirent_ptr );
 
     // =-=-=-=-=-=-=-
@@ -465,7 +465,7 @@ irods::error fileRename(
 
     // =-=-=-=-=-=-=-
     // make the call to the "rename" interface
-    resc    = boost::dynamic_pointer_cast< irods::resource >( ptr );
+    resc    = std::dynamic_pointer_cast< irods::resource >( ptr );
     ret_err = resc->call<  const char* >( _comm, irods::RESOURCE_OP_RENAME,  _object, _new_file_name.c_str() );
 
     // =-=-=-=-=-=-=-
@@ -495,7 +495,7 @@ irods::error fileGetFsFreeSpace(
 
     // =-=-=-=-=-=-=-
     // make the call to the "freespace" interface
-    resc    = boost::dynamic_pointer_cast< irods::resource >( ptr );
+    resc    = std::dynamic_pointer_cast< irods::resource >( ptr );
     ret_err = resc->call( _comm, irods::RESOURCE_OP_FREESPACE, _object );
 
     // =-=-=-=-=-=-=-
@@ -525,7 +525,7 @@ irods::error fileTruncate(
 
     // =-=-=-=-=-=-=-
     // make the call to the "truncate" interface
-    resc    = boost::dynamic_pointer_cast< irods::resource >( ptr );
+    resc    = std::dynamic_pointer_cast< irods::resource >( ptr );
     ret_err = resc->call( _comm, irods::RESOURCE_OP_TRUNCATE, _object );
 
     // =-=-=-=-=-=-=-
@@ -564,7 +564,7 @@ irods::error fileStageToCache(
 
     // =-=-=-=-=-=-=-
     // make the call to the "stagetocache" interface
-    resc    = boost::dynamic_pointer_cast< irods::resource >( ptr );
+    resc    = std::dynamic_pointer_cast< irods::resource >( ptr );
     ret_err = resc->call< const char* >( _comm, irods::RESOURCE_OP_STAGETOCACHE, _object, _cache_file_name.c_str() );
 
     // =-=-=-=-=-=-=-
@@ -603,7 +603,7 @@ irods::error fileSyncToArch(
 
     // =-=-=-=-=-=-=-
     // make the call to the "synctoarch" interface
-    resc    = boost::dynamic_pointer_cast< irods::resource >( ptr );
+    resc    = std::dynamic_pointer_cast< irods::resource >( ptr );
     ret_err = resc->call< const char* >( _comm, irods::RESOURCE_OP_SYNCTOARCH, _object, _cache_file_name.c_str() );
 
     // =-=-=-=-=-=-=-
@@ -639,7 +639,7 @@ irods::error fileRegistered(
     else {
         // =-=-=-=-=-=-=-
         // make the call to the "registered" interface
-        resc = boost::dynamic_pointer_cast< irods::resource >( ptr );
+        resc = std::dynamic_pointer_cast< irods::resource >( ptr );
         ret  = resc->call( _comm, irods::RESOURCE_OP_REGISTERED, _object );
         if ( !ret.ok() ) {
             std::stringstream msg;
@@ -674,7 +674,7 @@ irods::error fileUnregistered(
 
         // =-=-=-=-=-=-=-
         // make the call to the "open" interface
-        resc = boost::dynamic_pointer_cast< irods::resource >( ptr );
+        resc = std::dynamic_pointer_cast< irods::resource >( ptr );
         ret  = resc->call( _comm, irods::RESOURCE_OP_UNREGISTERED, _object );
         if ( !ret.ok() ) {
             std::stringstream msg;
@@ -696,7 +696,7 @@ irods::error fileModified(
     irods::error ret;
     // =-=-=-=-=-=-=-
     // downcast - this must be called on a descendant of data object
-    irods::data_object_ptr data_obj = boost::dynamic_pointer_cast< irods::data_object >( _object );
+    irods::data_object_ptr data_obj = std::dynamic_pointer_cast< irods::data_object >( _object );
     std::string resc_hier = data_obj->resc_hier();
     if ( !resc_hier.empty() ) {
         // =-=-=-=-=-=-=-
@@ -714,7 +714,7 @@ irods::error fileModified(
 
             // =-=-=-=-=-=-=-
             // make the call to the "modified" interface
-            resc = boost::dynamic_pointer_cast< irods::resource >( ptr );
+            resc = std::dynamic_pointer_cast< irods::resource >( ptr );
             ret  = resc->call( _comm, irods::RESOURCE_OP_MODIFIED, _object );
             if ( !ret.ok() ) {
                 std::stringstream msg;
@@ -742,7 +742,7 @@ irods::error fileNotify(
     irods::error ret;
     // =-=-=-=-=-=-=-
     // downcast - this must be called on a descendant of data object
-    irods::data_object_ptr data_obj = boost::dynamic_pointer_cast< irods::data_object >( _object );
+    irods::data_object_ptr data_obj = std::dynamic_pointer_cast< irods::data_object >( _object );
     std::string resc_hier = data_obj->resc_hier();
     if ( !resc_hier.empty() ) {
         // =-=-=-=-=-=-=-
@@ -759,7 +759,7 @@ irods::error fileNotify(
 
             // =-=-=-=-=-=-=-
             // make the call to the "open" interface
-            resc = boost::dynamic_pointer_cast< irods::resource >( ptr );
+            resc = std::dynamic_pointer_cast< irods::resource >( ptr );
             ret  = resc->call< const std::string* >(
                        _comm,
                        irods::RESOURCE_OP_NOTIFY,
@@ -796,7 +796,7 @@ irods::error fileChecksumFromStorageDevice(rsComm_t* _comm,
         return PASSMSG("failed to resolve resource", ret_err);
     }
 
-    resc = boost::dynamic_pointer_cast<irods::resource>(ptr);
+    resc = std::dynamic_pointer_cast<irods::resource>(ptr);
     ret_err = resc->call<const std::string*, std::string*>(
         _comm, irods::RESOURCE_OP_READ_CHECKSUM_FROM_STORAGE_DEVICE, _object, &_checksum_scheme, &_returned_checksum);
 

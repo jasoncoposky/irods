@@ -5,9 +5,9 @@
 #include "irods/irods_exception.hpp"
 #include "irods/irods_ms_plugin.hpp"
 
+#include <any>
 #include <vector>
 
-#include <boost/any.hpp>
 int actionTableLookUp( irods::ms_table_entry& _entry, char* _action );
 
 namespace irods{
@@ -15,11 +15,11 @@ namespace irods{
     // extern variable for the re plugin globals
     std::unique_ptr<struct global_re_plugin_mgr> re_plugin_globals;
 
-    void var_arg_to_list(std::list<boost::any>& _l) {
+    void var_arg_to_list(std::list<std::any>& _l) {
         (void) _l;
     }
 
-    error list_to_var_arg(std::list<boost::any>& _l) {
+    error list_to_var_arg(std::list<std::any>& _l) {
         if(! _l.empty()) {
             return ERROR(-1, "arg list mismatch");
         } else {
@@ -27,7 +27,7 @@ namespace irods{
         }
     }
 
-    unpack::unpack(std::list<boost::any> &_l) : l_(_l) {};
+    unpack::unpack(std::list<std::any> &_l) : l_(_l) {};
 
     std::vector<re_pack_inp<default_re_ctx>> init_global_re_packs() {
         const auto& re_plugin_configs = irods::get_server_property<const nlohmann::json&>(std::vector<std::string>{irods::KW_CFG_PLUGIN_CONFIGURATION, irods::KW_CFG_PLUGIN_TYPE_RULE_ENGINE});
@@ -45,14 +45,14 @@ namespace irods{
 
     template class pluggable_rule_engine<default_re_ctx>;
 
-    error convertToMsParam(boost::any &itr, msParam_t *t) {
+    error convertToMsParam(std::any &itr, msParam_t *t) {
         if(itr.type() == typeid(std::string)) {
-            fillStrInMsParam( t, const_cast<char*>( boost::any_cast<std::string>(itr).c_str() ));
+            fillStrInMsParam( t, const_cast<char*>( std::any_cast<std::string>(itr).c_str() ));
         } else if(itr.type() == typeid(std::string *)) {
-            fillStrInMsParam( t, const_cast<char*>( (*(boost::any_cast<std::string *>(itr))).c_str() ));
+            fillStrInMsParam( t, const_cast<char*>( (*(std::any_cast<std::string *>(itr))).c_str() ));
         } else if(itr.type() == typeid(msParam_t*)) {
             memset(t, 0, sizeof(*t));
-            replMsParam(boost::any_cast<msParam_t*>(itr), t);
+            replMsParam(std::any_cast<msParam_t*>(itr), t);
         } else {
             return ERROR(-1, "cannot convert parameter");
         }
@@ -60,13 +60,13 @@ namespace irods{
         return SUCCESS();
     }
 
-    error convertFromMsParam(boost::any& itr, msParam_t *t) {
+    error convertFromMsParam(std::any& itr, msParam_t *t) {
         if(std::string(t->type).compare(STR_MS_T) == 0) {
             if(itr.type() == typeid(std::string *)) {
-                *(boost::any_cast<std::string *>(itr)) = std::string(reinterpret_cast<char*>( t->inOutStruct) );
+                *(std::any_cast<std::string *>(itr)) = std::string(reinterpret_cast<char*>( t->inOutStruct) );
             }
         } else if (t->type) {
-            replMsParam(t, boost::any_cast<msParam_t*>(itr));
+            replMsParam(t, std::any_cast<msParam_t*>(itr));
         } else {
             return ERROR(-1, "type was null, cannot convert type");
         }
@@ -74,7 +74,7 @@ namespace irods{
         return SUCCESS();
     }
 
-    error default_microservice_manager<default_ms_ctx>:: exec_microservice_adapter( std::string msName, default_ms_ctx rei, std::list<boost::any> &l ) {
+    error default_microservice_manager<default_ms_ctx>:: exec_microservice_adapter( std::string msName, default_ms_ctx rei, std::list<std::any> &l ) {
         if(msName == std::string("unsafe_ms_ctx")) {
             default_ms_ctx *p;
             error err;

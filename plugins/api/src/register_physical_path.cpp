@@ -62,9 +62,10 @@
 #include "irods/filesystem.hpp"
 #define IRODS_REPLICA_ENABLE_SERVER_SIDE_API
 #include "irods/replica_proxy.hpp"
-#include <boost/lexical_cast.hpp>
 #include <fmt/format.h>
+#include <charconv>
 #include <iostream>
+#include <system_error>
 
 /* holds a struct that describes pathname match patterns
    to exclude from registration. Needs to be global due
@@ -387,13 +388,15 @@ namespace
         }
         else {
             std::string_view data_size_str = phy_path_reg_cond_input.at(DATA_SIZE_KW).value();
-
-            try {
-                destination_replica.size(boost::lexical_cast<rodsLong_t>(data_size_str));
+            rodsLong_t parsed_size{};
+            const auto [ptr, ec] =
+                std::from_chars(data_size_str.data(), data_size_str.data() + data_size_str.size(), parsed_size);
+            if (ec == std::errc{} && ptr == data_size_str.data() + data_size_str.size()) {
+                destination_replica.size(parsed_size);
             }
-            catch (boost::bad_lexical_cast&) {
+            else {
                 irods::log(LOG_ERROR, fmt::format(
-                    "[{}:{}] - bad_lexical_cast for dataSize, setting to 0 [path=[{}], size=[{}]]",
+                    "[{}:{}] - failed to parse dataSize, setting to 0 [path=[{}], size=[{}]]",
                     __FUNCTION__, __LINE__, destination_replica.logical_path(), data_size_str));
                 destination_replica.size(0);
             }

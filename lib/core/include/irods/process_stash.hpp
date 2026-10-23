@@ -3,10 +3,7 @@
 
 /// \file
 
-// Boost.Any is used instead of the implementation provided by the standard library
-// because it produces the correct results when used across shared library boundaries.
-#include <boost/any.hpp>
-
+#include <any>
 #include <functional>
 #include <string>
 #include <vector>
@@ -29,7 +26,7 @@ namespace irods::process_stash
     /// \returns A string representing the handle to the inserted object.
     ///
     /// \since 4.2.12
-    auto insert(boost::any _value) -> std::string;
+    auto insert(std::any _value) -> std::string;
 
     /// Searches the process stash for the value associated with a specific key.
     ///
@@ -42,7 +39,7 @@ namespace irods::process_stash
     /// \retval nullptr Otherwise.
     ///
     /// \since 4.2.12
-    auto find(const std::string& _key) -> boost::any*;
+    auto find(const std::string& _key) -> std::any*;
 
     /// Removes a value from the process stash.
     ///
@@ -61,13 +58,13 @@ namespace irods::process_stash
     ///
     /// \param[in] _pred \parblock The predicate to test each entry against.
     ///
-    /// \p _pred must take a std::string and boost::any by reference and return a boolean
+    /// \p _pred must take a std::string and std::any by reference and return a boolean
     /// indicating whether the entry should be removed. The arguments passed must be
     /// treated as read-only.
     ///
-    /// The std::string parameter is the handle mapped to the object stored in the boost::any.
+    /// The std::string parameter is the handle mapped to the object stored in the std::any.
     ///
-    /// The boost::any parameter is the wrapped object identified by the handle.
+    /// The std::any parameter is the wrapped object identified by the handle.
     ///
     /// If \p _pred returns \p true, the entry is removed.
     /// \endparblock
@@ -75,7 +72,7 @@ namespace irods::process_stash
     /// \returns The number of elements removed.
     ///
     /// \since 4.3.1
-    auto erase_if(const std::function<bool(const std::string&, const boost::any&)>& _pred) -> std::size_t;
+    auto erase_if(const std::function<bool(const std::string&, const std::any&)>& _pred) -> std::size_t;
 
     /// Returns all handles in the process stash.
     ///

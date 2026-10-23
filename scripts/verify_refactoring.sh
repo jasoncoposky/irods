@@ -182,9 +182,16 @@ if [ ${#TUS_TO_SYNC[@]} -gt 0 ]; then
         # Ensure root symlink points to freshest compile_commands.json
         ln -sf build/compile_commands.json compile_commands.json
     fi
-    "${INSIGHT_BIN}" ingest "${BUILD_DIR}/compile_commands.json" \
-        --db "${DB_PATH}" \
-        --files "${TUS_TO_SYNC[@]}"
+    BATCH_SIZE=25
+    TOTAL_TUS=${#TUS_TO_SYNC[@]}
+    for (( i=0; i<TOTAL_TUS; i+=BATCH_SIZE )); do
+        BATCH=("${TUS_TO_SYNC[@]:i:BATCH_SIZE}")
+        echo -e "${BLUE}Ingesting CPG batch ($((i+1))-$(( i+BATCH_SIZE < TOTAL_TUS ? i+BATCH_SIZE : TOTAL_TUS )) of ${TOTAL_TUS})...${NC}"
+        "${INSIGHT_BIN}" ingest "${BUILD_DIR}/compile_commands.json" \
+            -j 4 \
+            --db "${DB_PATH}" \
+            --files "${BATCH[@]}"
+    done
     echo -e "${GREEN}[PASS] Incremental CPG ingestion synchronized.${NC}"
 else
     echo -e "${GREEN}[PASS] CPG up to date (no translation units to sync).${NC}"
@@ -194,7 +201,7 @@ fi
 echo -e "\n${BOLD}[4/4] Verifying Dialectic Invariants via Project Insight...${NC}"
 
 echo -e "${BLUE}Checking concurrency safety (lock inversion, ABBA cycles, unprotected shared memory)...${NC}"
-CONCURRENCY_OUTPUT=$("${INSIGHT_BIN}" check --db "${DB_PATH}" --concurrency)
+CONCURRENCY_OUTPUT=$("${INSIGHT_BIN}" check "${DB_PATH}" --concurrency)
 echo "${CONCURRENCY_OUTPUT}"
 
 if echo "${CONCURRENCY_OUTPUT}" | grep -qE "[1-9][0-9]* (finding|violation)"; then
@@ -204,7 +211,7 @@ fi
 echo -e "${GREEN}[PASS] Zero concurrency violations detected.${NC}"
 
 echo -e "\n${BLUE}Checking typestate invariants (protocol order, leaked resources, invalid transitions)...${NC}"
-TYPESTATE_OUTPUT=$("${INSIGHT_BIN}" check --db "${DB_PATH}" --typestate)
+TYPESTATE_OUTPUT=$("${INSIGHT_BIN}" check "${DB_PATH}" --typestate)
 echo "${TYPESTATE_OUTPUT}"
 
 if echo "${TYPESTATE_OUTPUT}" | grep -qE "[1-9][0-9]* (finding|violation)"; then

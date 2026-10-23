@@ -18,11 +18,11 @@ namespace irods {
             std::string name() const override {
                 return ADLER32_NAME;
             }
-            error init( boost::any& context ) const override;
-            error update( const std::string& data, boost::any& context ) const override;
-            error digest( std::string& messageDigest, boost::any& context ) const override;
+            error init( std::any& context ) const override;
+            error update( const std::string& data, std::any& context ) const override;
+            error digest( std::string& messageDigest, std::any& context ) const override;
             bool isChecksum( const std::string& ) const override;
-            void free_context(boost::any& _context) const override;
+            void free_context(std::any& _context) const override;
 
             /// Produce a digest in string form based on the provided options.
             ///
@@ -33,7 +33,7 @@ namespace irods {
             /// \return irods::error Any errors that are encountered are held in the returned \p irods::error.
             ///
             /// \since 5.1.0
-            auto digest(const hash::options& _options, boost::any& _context, std::string& _out) const -> error override;
+            auto digest(const hash::options& _options, std::any& _context, std::string& _out) const -> error override;
 
             /// Return the checksum prefix for this strategy. Usually this is the strategy name followed by a colon.
             ///

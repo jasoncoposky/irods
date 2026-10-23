@@ -721,7 +721,7 @@ extern "C" {
             for( auto itr = prop_map.cbegin(); itr != prop_map.cend(); ++itr ) {
 
                 try {
-                    int val = boost::any_cast< int >( itr->second );
+                    int val = std::any_cast< int >( itr->second );
                     fprintf(
                             _fout,
                             "%s - %d\n",
@@ -729,11 +729,11 @@ extern "C" {
                             val );
                     continue;
                 }
-                catch ( const boost::bad_any_cast& ) {
+                catch ( const std::bad_any_cast& ) {
                 }
 
                 try {
-                    const std::string& val = boost::any_cast< const std::string& >( itr->second );
+                    const std::string& val = std::any_cast< const std::string& >( itr->second );
                     fprintf(
                             _fout,
                             "%s - %s\n",
@@ -741,7 +741,7 @@ extern "C" {
                             val.c_str() );
                     continue;
                 }
-                catch ( const boost::bad_any_cast& ) {
+                catch ( const std::bad_any_cast& ) {
                     fprintf(
                             stderr,
                             "failed to cast %s",

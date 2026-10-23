@@ -135,7 +135,7 @@ namespace irods {
 
         // =-=-=-=-=-=-=-
         // upcast for out variable
-        _ptr = boost::dynamic_pointer_cast< plugin_base >( net_ptr );
+        _ptr = net_ptr;
 
         return SUCCESS();
 

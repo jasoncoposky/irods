@@ -71,7 +71,7 @@ auto init_l1desc(l1desc& _l1d) -> void
 #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
     _l1d.otherDataObjInfo = nullptr;
     _l1d.replDataObjInfo = nullptr;
-    _l1d.pluginData.clear();
+    _l1d.pluginData.reset();
 #pragma GCC diagnostic pop
 } // init_l1desc
 

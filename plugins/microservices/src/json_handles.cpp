@@ -11,11 +11,11 @@
 #include "irods/process_stash.hpp"
 #include "irods/rodsErrorTable.h"
 
-#include <boost/any.hpp>
 #include <boost/safe_numerics/safe_integer.hpp>
 #include <fmt/format.h>
 #include <fmt/ranges.h>
 
+#include <any>
 #include <functional>
 #include <string>
 #include <vector>
@@ -30,7 +30,7 @@ namespace
 
         for (auto& h : irods::process_stash::handles()) {
             // NOLINTNEXTLINE(readability-implicit-bool-conversion)
-            if (boost::any_cast<const nlohmann::json>(irods::process_stash::find(h))) {
+            if (std::any_cast<const nlohmann::json>(irods::process_stash::find(h))) {
                 handles.push_back(std::move(h));
             }
         }
@@ -95,7 +95,7 @@ namespace
             log_msi::error("Caught exception while fetching all JSON handles. [{}]", e.client_display_what());
             return static_cast<int>(e.code());
         }
-        catch (const boost::bad_any_cast& e) {
+        catch (const std::bad_any_cast& e) {
             log_msi::error("Caught exception while fetching all JSON handles. [{}]", e.what());
             return INVALID_ANY_CAST;
         }

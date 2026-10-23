@@ -25,7 +25,7 @@ namespace irods {
 
     const std::string SHA1_NAME("sha1");
 
-    auto SHA1Strategy::init(boost::any& _context) const -> error
+    auto SHA1Strategy::init(std::any& _context) const -> error
     {
         EVP_MD* message_digest = EVP_MD_fetch(nullptr, SHA1_NAME.c_str(), nullptr);
 
@@ -47,9 +47,9 @@ namespace irods {
         return SUCCESS();
     }
 
-    auto SHA1Strategy::update(const std::string& data, boost::any& _context) const -> error
+    auto SHA1Strategy::update(const std::string& data, std::any& _context) const -> error
     {
-        EVP_MD_CTX* context = boost::any_cast<EVP_MD_CTX*>(_context);
+        EVP_MD_CTX* context = std::any_cast<EVP_MD_CTX*>(_context);
 
         // Hash the specified buffer of bytes and store the results in the context.
         if (0 == EVP_DigestUpdate(context, data.c_str(), data.size())) {
@@ -66,7 +66,7 @@ namespace irods {
         return SUCCESS();
     }
 
-    auto SHA1Strategy::digest(std::string& _messageDigest, boost::any& _context) const -> error
+    auto SHA1Strategy::digest(std::string& _messageDigest, std::any& _context) const -> error
     {
         return digest(irods::hash::options{.output_mode = irods::hash::output_mode::base64_encoded_string,
                                            .include_checksum_prefix = true},
@@ -79,10 +79,10 @@ namespace irods {
         return _chksum.starts_with(SHA1_CHKSUM_PREFIX);
     }
 
-    auto SHA1Strategy::digest(const hash::options& _options, boost::any& _context, std::string& _out) const
+    auto SHA1Strategy::digest(const hash::options& _options, std::any& _context, std::string& _out) const
         -> irods::error
     {
-        EVP_MD_CTX* context = boost::any_cast<EVP_MD_CTX*>(_context);
+        EVP_MD_CTX* context = std::any_cast<EVP_MD_CTX*>(_context);
 
         // Finally, retrieve the digest value from the context and place it into final_buffer. Use the _ex function here
         // so that the digest context is not automatically cleaned up with EVP_MD_CTX_reset.
@@ -112,14 +112,14 @@ namespace irods {
         return SHA1_CHKSUM_PREFIX;
     } // SHA1Strategy::checksum_prefix
 
-    void SHA1Strategy::free_context(boost::any& _context) const
+    void SHA1Strategy::free_context(std::any& _context) const
     {
         try {
-            EVP_MD_CTX* context = boost::any_cast<EVP_MD_CTX*>(_context);
+            EVP_MD_CTX* context = std::any_cast<EVP_MD_CTX*>(_context);
             EVP_MD_CTX_free(context);
             _context = nullptr;
         }
-        catch (const boost::bad_any_cast& _e) {
+        catch (const std::bad_any_cast& _e) {
         }
     }
 }; // namespace irods

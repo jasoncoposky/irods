@@ -25,12 +25,6 @@
 #include <vector>
 #include <string>
 
-// =-=-=-=-=-=-=-
-// boost includes
-#include <boost/lexical_cast.hpp>
-#include <boost/function.hpp>
-#include <boost/any.hpp>
-
 /// =-=-=-=-=-=-=-
 /// @brief Key to deferral policy requested
 const std::string DEFER_POLICY_KEY( "defer_policy" );
@@ -107,7 +101,7 @@ irods::error deferred_get_resc_for_call(irods::plugin_context& _ctx,
     }
 
     // get the object's hier string
-    boost::shared_ptr< DEST_TYPE > dst_obj = boost::dynamic_pointer_cast< DEST_TYPE >( _ctx.fco() );
+    std::shared_ptr< DEST_TYPE > dst_obj = std::dynamic_pointer_cast< DEST_TYPE >( _ctx.fco() );
     std::string hier = dst_obj->resc_hier( );
 
     // get the next child pointer given our name and the hier string

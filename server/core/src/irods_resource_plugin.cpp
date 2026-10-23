@@ -11,8 +11,6 @@
 #include <algorithm>
 #include <vector>
 
-#include <boost/lexical_cast.hpp>
-
 // =-=-=-=-=-=-=-
 // dlopen, etc
 #include <dlfcn.h>

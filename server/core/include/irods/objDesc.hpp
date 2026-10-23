@@ -11,8 +11,7 @@
 #include "irods/dataObjOpenAndStat.h"
 #include "irods/rodsConnect.h"
 
-#include <boost/any.hpp>
-
+#include <any>
 #include <string>
 
 #define NUM_L1_DESC     1026    /* number of L1Desc */
@@ -67,7 +66,7 @@ struct l1desc
     int purgeCacheFlag;
     int lockFd;
     // NOLINTBEGIN(misc-non-private-member-variables-in-classes)
-    [[deprecated]] boost::any pluginData;
+    [[deprecated]] std::any pluginData;
     [[deprecated]] dataObjInfo_t* replDataObjInfo; // if not a nullptr, repl to this dataObjInfo on close.
     // NOLINTEND(misc-non-private-member-variables-in-classes)
     rodsServerHost_t *remoteZoneHost;

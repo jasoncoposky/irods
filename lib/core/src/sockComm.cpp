@@ -77,7 +77,7 @@ irods::error sockClientStart(irods::network_object_ptr _ptr, rodsEnv* _env)
 
     // =-=-=-=-=-=-=-
     // make the call to the "read" interface
-    irods::network_ptr net = boost::dynamic_pointer_cast< irods::network >( p_ptr );
+    irods::network_ptr net = std::dynamic_pointer_cast< irods::network >( p_ptr );
     ret_err = net->call< rodsEnv* >( nullptr, irods::NETWORK_OP_CLIENT_START, _ptr, _env );
 
     // =-=-=-=-=-=-=-
@@ -110,7 +110,7 @@ irods::error sockClientStop(
 
     // =-=-=-=-=-=-=-
     // make the call to the "read" interface
-    irods::network_ptr net = boost::dynamic_pointer_cast< irods::network >( p_ptr );
+    irods::network_ptr net = std::dynamic_pointer_cast< irods::network >( p_ptr );
     ret_err = net->call< rodsEnv* >( nullptr, irods::NETWORK_OP_CLIENT_STOP, _ptr, _env );
 
     // =-=-=-=-=-=-=-
@@ -141,7 +141,7 @@ irods::error sockAgentStart(
 
     // =-=-=-=-=-=-=-
     // make the call to the "read" interface
-    irods::network_ptr net = boost::dynamic_pointer_cast< irods::network >( p_ptr );
+    irods::network_ptr net = std::dynamic_pointer_cast< irods::network >( p_ptr );
     ret_err = net->call( nullptr, irods::NETWORK_OP_AGENT_START, _ptr );
 
     // =-=-=-=-=-=-=-
@@ -172,7 +172,7 @@ irods::error sockAgentStop(
 
     // =-=-=-=-=-=-=-
     // make the call to the "read" interface
-    irods::network_ptr net = boost::dynamic_pointer_cast< irods::network >( p_ptr );
+    irods::network_ptr net = std::dynamic_pointer_cast< irods::network >( p_ptr );
     ret_err = net->call( nullptr, irods::NETWORK_OP_AGENT_STOP, _ptr );
 
     // =-=-=-=-=-=-=-
@@ -204,12 +204,11 @@ irods::error readMsgHeader(
     // =-=-=-=-=-=-=-
     // make the call to the "read" interface
     char tmp_buf[ MAX_NAME_LEN ];
-    irods::first_class_object_ptr ptr = boost::dynamic_pointer_cast< irods::first_class_object >( _ptr );
-    irods::network_ptr            net = boost::dynamic_pointer_cast< irods::network >( p_ptr );
+    irods::network_ptr net = std::dynamic_pointer_cast< irods::network >( p_ptr );
     ret_err = net->call< void*, struct timeval* >(
                   nullptr,
                   irods::NETWORK_OP_READ_HEADER,
-                  ptr,
+                  _ptr,
                   tmp_buf,
                   _time_val );
 
@@ -271,8 +270,7 @@ irods::error readMsgBody(
 
     // =-=-=-=-=-=-=-
     // make the call to the "read" interface
-    irods::first_class_object_ptr ptr = boost::dynamic_pointer_cast< irods::first_class_object >( _ptr );
-    irods::network_ptr            net = boost::dynamic_pointer_cast< irods::network >( p_ptr );
+    irods::network_ptr net = std::dynamic_pointer_cast< irods::network >( p_ptr );
     ret_err = net->call < msgHeader_t*,
     bytesBuf_t*,
     bytesBuf_t*,
@@ -281,7 +279,7 @@ irods::error readMsgBody(
     struct timeval* > (
         nullptr,
         irods::NETWORK_OP_READ_BODY,
-        ptr,
+        _ptr,
         _header,
         _input_struct_buf,
         _bs_buf,
@@ -576,12 +574,11 @@ irods::error writeMsgHeader(
 
     // =-=-=-=-=-=-=-
     // make the call to the plugin interface
-    irods::first_class_object_ptr ptr = boost::dynamic_pointer_cast< irods::first_class_object >( _ptr );
-    irods::network_ptr            net = boost::dynamic_pointer_cast< irods::network >( p_ptr );
+    irods::network_ptr net = std::dynamic_pointer_cast< irods::network >( p_ptr );
     ret = net->call< const bytesBuf_t* >(
               nullptr,
               irods::NETWORK_OP_WRITE_HEADER,
-              ptr,
+              _ptr,
               header_buf );
 
     freeBBuf( header_buf );
@@ -1310,12 +1307,11 @@ irods::error sendRodsMsg(
 
     // =-=-=-=-=-=-=-
     // make the call to the "write body" interface
-    irods::first_class_object_ptr ptr = boost::dynamic_pointer_cast< irods::first_class_object >( _ptr );
-    irods::network_ptr            net = boost::dynamic_pointer_cast< irods::network >( p_ptr );
+    irods::network_ptr net = std::dynamic_pointer_cast< irods::network >( p_ptr );
     ret_err = net->call< const char*, const bytesBuf_t*, const bytesBuf_t*, const bytesBuf_t*, int, irodsProt_t >(
                   nullptr,
                   irods::NETWORK_OP_WRITE_BODY,
-                  ptr,
+                  _ptr,
                   _msg_type,
                   _msg_buf,
                   _bs_buf,

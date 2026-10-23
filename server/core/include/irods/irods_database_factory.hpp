@@ -9,9 +9,7 @@
 #include "irods/irods_oracle_object.hpp"
 #include "irods/irods_stacktrace.hpp"
 
-// =-=-=-=-=-=-=-
-// boost includes
-#include <boost/shared_ptr.hpp>
+#include <memory>
 
 namespace irods {
 /// =-=-=-=-=-=-=-

@@ -7,8 +7,8 @@
 #include "irods/reDefines.h"
 #include "irods/ruleExecSubmit.h"
 #include "irods/reconstants.hpp"
-#include <boost/any.hpp>
 
+#include <any>
 #include <list>
 #include <map>
 #include <string>
@@ -63,7 +63,7 @@ int applyRule(
 
 int applyRuleWithInOutVars(
     const char*            _action,
-    std::list<boost::any>& _params,
+    std::list<std::any>&   _params,
     ruleExecInfo_t*        _rei );
 
 void freeCmdExecOut( execCmdOut_t *ruleExecOut );

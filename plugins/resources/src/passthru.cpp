@@ -27,7 +27,6 @@
 #include <sstream>
 #include <vector>
 #include <string>
-#include <boost/lexical_cast.hpp>
 
 // =-=-=-=-=-=-=-
 // system includes
@@ -76,7 +75,7 @@ namespace
                                       const std::string& _this_resource_name,
                                       double _weight) -> void
     {
-        irods::file_object_ptr file_obj = boost::dynamic_pointer_cast<irods::file_object>(_ctx.fco());
+        irods::file_object_ptr file_obj = std::dynamic_pointer_cast<irods::file_object>(_ctx.fco());
         for (auto& r : file_obj->replicas()) {
             // Only apply vote weight to replicas whose hierarchies contain this resource.
             if (!irods::hierarchy_parser{r.resc_hier()}.contains(_this_resource_name)) {
@@ -921,10 +920,15 @@ class passthru_resource : public irods::resource {
 
                 if ( kvp_map.find( WRITE_WEIGHT_KW ) != kvp_map.end() ) {
                     try {
-                        double write_weight = boost::lexical_cast< double >( kvp_map[ WRITE_WEIGHT_KW ] );
+                        std::size_t pos = 0;
+                        const auto& val_str = kvp_map[ WRITE_WEIGHT_KW ];
+                        const double write_weight = std::stod( val_str, &pos );
+                        if ( pos != val_str.size() ) {
+                            throw std::invalid_argument{ "trailing characters" };
+                        }
                         properties_.set< double >( WRITE_WEIGHT_KW, write_weight );
                     }
-                    catch ( const boost::bad_lexical_cast& ) {
+                    catch ( const std::exception& ) {
                         std::stringstream msg;
                         msg << "failed to cast weight for write ["
                             << kvp_map[ WRITE_WEIGHT_KW ]
@@ -938,10 +942,15 @@ class passthru_resource : public irods::resource {
 
                 if ( kvp_map.find( READ_WEIGHT_KW ) != kvp_map.end() ) {
                     try {
-                        double read_weight = boost::lexical_cast< double >( kvp_map[ READ_WEIGHT_KW ] );
+                        std::size_t pos = 0;
+                        const auto& val_str = kvp_map[ READ_WEIGHT_KW ];
+                        const double read_weight = std::stod( val_str, &pos );
+                        if ( pos != val_str.size() ) {
+                            throw std::invalid_argument{ "trailing characters" };
+                        }
                         properties_.set< double >( READ_WEIGHT_KW, read_weight );
                     }
-                    catch ( const boost::bad_lexical_cast& ) {
+                    catch ( const std::exception& ) {
                         std::stringstream msg;
                         msg << "failed to cast weight for read ["
                             << kvp_map[ READ_WEIGHT_KW ]

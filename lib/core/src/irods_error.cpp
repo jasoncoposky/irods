@@ -6,13 +6,10 @@
 #include "irods/rodsLog.h"
 
 // =-=-=-=-=-=-=-
-// boost includes
-#include <boost/lexical_cast.hpp>
-
-// =-=-=-=-=-=-=-
 // stl includes
 #include <iostream>
 #include <sstream>
+#include <string>
 
 namespace irods {
 
@@ -40,13 +37,7 @@ const char *error::status_token_     = " status [";
 
         // =-=-=-=-=-=-=-
         // only keep the file name the path back to iRODS
-        std::string line_info;
-        try { //replace with std::to_string when we have c++14
-            line_info = _file + ":" + boost::lexical_cast<std::string>( _line ) + ":" + _fcn;
-        }
-        catch ( const boost::bad_lexical_cast& ) {
-            line_info = _file + ":<unknown line number>:" + _fcn;
-        }
+        std::string line_info = _file + ":" + std::to_string( _line ) + ":" + _fcn;
 
         size_t pos = line_info.find( error::iRODS_token_ );
         if ( std::string::npos != pos ) {

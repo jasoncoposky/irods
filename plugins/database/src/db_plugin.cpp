@@ -53,7 +53,6 @@
 
 #include <boost/algorithm/string.hpp>
 #include <boost/date_time.hpp>
-#include <boost/lexical_cast.hpp>
 #include <boost/regex.hpp>
 
 #include <algorithm>
@@ -2240,7 +2239,7 @@ irods::error db_mod_data_obj_meta_op(
                 rodsLong_t resc_id;
                 resc_mgr.hier_to_leaf_id(theVal,resc_id);
 
-                update_resc_id_str = boost::lexical_cast<std::string>(resc_id);
+                update_resc_id_str = std::to_string(resc_id);
                 updateVals.push_back( update_resc_id_str.c_str() );
             }
             else {
@@ -2484,7 +2483,7 @@ irods::error db_mod_data_obj_meta_op(
         else {
             rodsLong_t id = 0;
             resc_mgr.hier_to_leaf_id( _data_obj_info->rescHier, id );
-            where_resc_id_str = boost::lexical_cast<std::string>(id);
+            where_resc_id_str = std::to_string(id);
             j = numConditions;
             whereColsAndConds[j] = "resc_id=";
             whereValues[j] = where_resc_id_str.c_str();
@@ -2728,7 +2727,7 @@ irods::error db_reg_data_obj_op(
     std::snprintf(_data_obj_info->dataOwnerName, sizeof(_data_obj_info->dataOwnerName), "%s", _ctx.comm()->clientUser.userName);
     std::snprintf(_data_obj_info->dataOwnerZone, sizeof(_data_obj_info->dataOwnerZone), "%s", _ctx.comm()->clientUser.rodsZone);
 
-    std::string resc_id_str = boost::lexical_cast<std::string>(_data_obj_info->rescId);
+    std::string resc_id_str = std::to_string(_data_obj_info->rescId);
 
     try {
         auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
@@ -3000,7 +2999,7 @@ irods::error db_reg_replica_op(
         return ERROR(CAT_SQL_ERR, e.what());
     }
 
-    std::string resc_id_str = boost::lexical_cast<std::string>(_dst_data_obj_info->rescId);
+    std::string resc_id_str = std::to_string(_dst_data_obj_info->rescId);
 
     row_values[IX_DATA_REPL_NUM] = nextRepl;
     row_values[IX_RESC_ID] = resc_id_str;
@@ -3554,15 +3553,7 @@ static irods::error extract_resource_properties_for_operations(
         return PASS(ret);
     }
 
-    try {
-        _resc_id = boost::lexical_cast<std::string>(resc_id);
-    } catch( boost::bad_lexical_cast& ) {
-        std::stringstream msg;
-        msg << "failed to cast " << resc_id;
-        return ERROR(
-                INVALID_LEXICAL_CAST,
-                msg.str());
-    }
+    _resc_id = std::to_string(resc_id);
 
     return SUCCESS();
 
@@ -11752,14 +11743,16 @@ namespace
                 // For this reason, if the server receives a zero or empty string, we don't have
                 // to modify "ticket_expiration_string" because it is already an empty string.
                 if (std::strcmp(_arg4, "") != 0 && std::strcmp(_arg4, "0") != 0) {
-                    try {
-                        // Try to parse the timestamp argument as seconds since epoch.
-                        const auto seconds_since_epoch = boost::lexical_cast<std::int64_t>(_arg4);
+                    const std::string_view arg4_sv{_arg4};
+                    std::int64_t seconds_since_epoch{};
+                    const auto [ptr, ec] =
+                        std::from_chars(arg4_sv.data(), arg4_sv.data() + arg4_sv.size(), seconds_since_epoch);
+                    if (ec == std::errc{} && ptr == arg4_sv.data() + arg4_sv.size()) {
                         ticket_expiration_string = fmt::format("{:011}", seconds_since_epoch);
                     }
-                    catch (const boost::bad_lexical_cast&) {
+                    else {
                         //
-                        // If an exception was thrown, the timestamp argument was not something that
+                        // If parsing as an integer failed, the timestamp argument was not something that
                         // represented seconds since epoch. For that reason, the client may have passed
                         // an actual timestamp, which we attempt to process here.
                         //
@@ -12371,14 +12364,16 @@ irods::error db_mod_ticket_op(
             // For this reason, if the server receives a zero or empty string, we don't have
             // to modify "ticket_expiration_string" because it is already an empty string.
             if (std::strcmp(_arg4, "") != 0 && std::strcmp(_arg4, "0") != 0) {
-                try {
-                    // Try to parse the timestamp argument as seconds since epoch.
-                    const auto seconds_since_epoch = boost::lexical_cast<std::int64_t>(_arg4);
+                const std::string_view arg4_sv{_arg4};
+                std::int64_t seconds_since_epoch{};
+                const auto [ptr, ec] =
+                    std::from_chars(arg4_sv.data(), arg4_sv.data() + arg4_sv.size(), seconds_since_epoch);
+                if (ec == std::errc{} && ptr == arg4_sv.data() + arg4_sv.size()) {
                     ticket_expiration_string = fmt::format("{:011}", seconds_since_epoch);
                 }
-                catch (const boost::bad_lexical_cast&) {
+                else {
                     //
-                    // If an exception was thrown, the timestamp argument was not something that
+                    // If parsing as an integer failed, the timestamp argument was not something that
                     // represented seconds since epoch. For that reason, the client may have passed
                     // an actual timestamp, which we attempt to process here.
                     //

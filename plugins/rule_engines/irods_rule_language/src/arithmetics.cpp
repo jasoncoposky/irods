@@ -1015,7 +1015,7 @@ Res* execAction3( char *actionName, Res** args, unsigned int nargs, int applyAll
             irods::error err;
             std::vector<std::string> args_storage;
             args_storage.reserve(nargs);
-            std::list<boost::any> args2;
+            std::list<std::any> args2;
             for(unsigned int i = 0; i < nargs; i++) {
                 args_storage.emplace_back(args[i]->text);
                 args2.emplace_back(&args_storage.back());

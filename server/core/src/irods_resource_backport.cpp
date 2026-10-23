@@ -4,8 +4,8 @@
 #include "irods/irods_string_tokenize.hpp"
 #include "irods/irods_hierarchy_parser.hpp"
 #include "irods/irods_stacktrace.hpp"
-#include <boost/lexical_cast.hpp>
 #include <boost/algorithm/string.hpp>
+#include <string>
 
 namespace irods {
 
@@ -210,9 +210,9 @@ namespace irods {
             return ERROR( UNMATCHED_KEY_OR_INDEX, msg.str() );
         }
 
-        addKeyVal(_kvp, RESC_ID_KW,     boost::lexical_cast<std::string>(id).c_str());
-        addKeyVal(_kvp, QUOTA_LIMIT_KW, boost::lexical_cast<std::string>(quota).c_str());
-        addKeyVal(_kvp, RESC_STATUS_KW, boost::lexical_cast<std::string>(status).c_str());
+        addKeyVal(_kvp, RESC_ID_KW,     std::to_string(id).c_str());
+        addKeyVal(_kvp, QUOTA_LIMIT_KW, std::to_string(quota).c_str());
+        addKeyVal(_kvp, RESC_STATUS_KW, std::to_string(status).c_str());
 
         addKeyVal(_kvp, FREE_SPACE_KW,      freespace.c_str());
         addKeyVal(_kvp, RESC_ZONE_KW,       zone.c_str());

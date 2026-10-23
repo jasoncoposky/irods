@@ -12,10 +12,10 @@
 #include "irods/rodsErrorTable.h"
 #include "irods/version.hpp"
 
-#include <boost/any.hpp>
 #include <fmt/format.h>
 #include <nlohmann/json.hpp>
 
+#include <any>
 #include <cctype>
 #include <functional>
 #include <memory>
@@ -99,7 +99,7 @@ namespace irods::authentication
             }
 
             using fcn_t = std::function<json(RxComm&, const json&)>;
-            auto op = boost::any_cast<fcn_t&>(operations_[n]);
+            auto op = std::any_cast<fcn_t&>(operations_[n]);
 
             return op(_comm, req);
         } // call

@@ -121,7 +121,7 @@ static int parse_program_options(
         try {
             _rods_args.replNumValue = ( char* )global_prog_ops_var_map[ "repl_num" ].as<std::string>().c_str();
         }
-        catch ( const boost::bad_any_cast& ) {
+        catch ( const std::exception& ) {
             return INVALID_ANY_CAST;
         }
     }
@@ -130,7 +130,7 @@ static int parse_program_options(
         try {
             _rods_args.numberValue = global_prog_ops_var_map[ "num_threads" ].as<int>();
         }
-        catch ( const boost::bad_any_cast& ) {
+        catch ( const std::exception& ) {
             return INVALID_ANY_CAST;
         }
     }
@@ -145,7 +145,7 @@ static int parse_program_options(
         try {
             _rods_args.resourceString = ( char* )global_prog_ops_var_map[ "dest_resc" ].as< std::string >().c_str();
         }
-        catch ( const boost::bad_any_cast& ) {
+        catch ( const std::exception& ) {
             return INVALID_ANY_CAST;
         }
     }
@@ -154,7 +154,7 @@ static int parse_program_options(
         try {
             _rods_args.ticketString = ( char* )global_prog_ops_var_map[ "ticket" ].as< std::string >().c_str();
         }
-        catch ( const boost::bad_any_cast& ) {
+        catch ( const std::exception& ) {
             return INVALID_ANY_CAST;
         }
     }
@@ -174,7 +174,7 @@ static int parse_program_options(
         try {
             _rods_args.dataTypeString = ( char* )global_prog_ops_var_map[ "data_type" ].as< std::string >().c_str();
         }
-        catch ( const boost::bad_any_cast& ) {
+        catch ( const std::exception& ) {
             return INVALID_ANY_CAST;
         }
     }
@@ -183,7 +183,7 @@ static int parse_program_options(
         try {
             _rods_args.restartFileString = ( char* )global_prog_ops_var_map[ "restart_file" ].as< std::string >().c_str();
         }
-        catch ( const boost::bad_any_cast& ) {
+        catch ( const std::exception& ) {
             return INVALID_ANY_CAST;
         }
     }
@@ -195,7 +195,7 @@ static int parse_program_options(
         try {
             _rods_args.lfrestartFileString = ( char* )global_prog_ops_var_map[ "lfrestart" ].as< std::string >().c_str();
         }
-        catch ( const boost::bad_any_cast& ) {
+        catch ( const std::exception& ) {
             return INVALID_ANY_CAST;
         }
     }
@@ -204,7 +204,7 @@ static int parse_program_options(
         try {
             _rods_args.retriesValue = global_prog_ops_var_map[ "retries" ].as< int >();
         }
-        catch ( const boost::bad_any_cast& ) {
+        catch ( const std::exception& ) {
             return INVALID_ANY_CAST;
         }
     }
@@ -216,7 +216,7 @@ static int parse_program_options(
         try {
             _rods_args.kv_pass_string = ( char* )global_prog_ops_var_map[ "kv_pass" ].as< std::string >().c_str();
         }
-        catch ( const boost::bad_any_cast& ) {
+        catch ( const std::exception& ) {
             return INVALID_ANY_CAST;
         }
     }
@@ -224,7 +224,7 @@ static int parse_program_options(
         try {
             _rods_args.metadata_string = ( char* )global_prog_ops_var_map[ "metadata" ].as< std::string >().c_str();
         }
-        catch ( const boost::bad_any_cast& ) {
+        catch ( const std::exception& ) {
             return INVALID_ANY_CAST;
         }
     }
@@ -232,7 +232,7 @@ static int parse_program_options(
         try {
             _rods_args.acl_string = ( char* )global_prog_ops_var_map[ "acl" ].as< std::string >().c_str();
         }
-        catch ( const boost::bad_any_cast& ) {
+        catch ( const std::exception& ) {
             return INVALID_ANY_CAST;
         }
     }

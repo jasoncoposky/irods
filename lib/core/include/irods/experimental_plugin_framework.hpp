@@ -351,7 +351,7 @@ namespace irods::experimental::api {
 
             using fcn_t = std::function<json(COMM_T*, const json&)>;
 
-            auto op = boost::any_cast<fcn_t&>(operations_[n]);
+            auto op = std::any_cast<fcn_t&>(operations_[n]);
 
             return op(comm, req);
 
@@ -367,7 +367,7 @@ namespace irods::experimental::api {
 
             using fcn_t = std::function<json(COMM_T*, const json&)>;
 
-            auto op = boost::any_cast<fcn_t&>(operations_[n]);
+            auto op = std::any_cast<fcn_t&>(operations_[n]);
 
             std::function<void(void)> f = [=]() -> void {
                 op(comm, req);

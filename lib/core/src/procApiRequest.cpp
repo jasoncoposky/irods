@@ -16,8 +16,6 @@
 
 #include <iostream>
 
-#include <boost/shared_ptr.hpp>
-
 #include "irods/irods_threads.hpp"
 
 namespace

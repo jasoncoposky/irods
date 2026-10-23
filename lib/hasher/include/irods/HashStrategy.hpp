@@ -6,11 +6,10 @@
 #include "irods/irods_error.hpp"
 #include "irods/hash_types.hpp"
 
+#include <any>
 #include <cstdint>
 #include <string>
 #include <string_view>
-
-#include <boost/any.hpp>
 
 namespace irods {
 
@@ -20,11 +19,11 @@ namespace irods {
             virtual ~HashStrategy() {};
 
             virtual std::string name() const = 0;
-            virtual error init( boost::any& context ) const = 0;
-            virtual error update( const std::string&, boost::any& context ) const = 0;
-            virtual error digest( std::string& messageDigest, boost::any& context ) const = 0;
+            virtual error init( std::any& context ) const = 0;
+            virtual error update( const std::string&, std::any& context ) const = 0;
+            virtual error digest( std::string& messageDigest, std::any& context ) const = 0;
             virtual bool isChecksum( const std::string& ) const = 0;
-            virtual void free_context(boost::any& _context) const = 0;
+            virtual void free_context(std::any& _context) const = 0;
 
             /// Produce a digest in string form based on the provided options.
             ///
@@ -35,7 +34,7 @@ namespace irods {
             /// \return irods::error Any errors that are encountered are held in the returned \p irods::error.
             ///
             /// \since 5.1.0
-            virtual auto digest(const hash::options& _options, boost::any& _context, std::string& _out) const
+            virtual auto digest(const hash::options& _options, std::any& _context, std::string& _out) const
                 -> irods::error = 0;
 
             /// Return the checksum prefix for this strategy. Usually this is the strategy name followed by a colon.

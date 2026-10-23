@@ -20,11 +20,8 @@
 #include "irods/irods_stacktrace.hpp"
 #include "irods/irods_kvp_string_parser.hpp"
 #include "irods/irods_client_server_negotiation.hpp"
+#include "irods/irods_lexical_cast.hpp"
 #include "irods/irods_logger.hpp"
-
-// =-=-=-=-=-=-=-
-// boost includes
-#include <boost/lexical_cast.hpp>
 
 // =-=-=-=-=-=-=-
 // stl includes
@@ -67,7 +64,7 @@ irods::error pam_auth_client_start(irods::plugin_context& _ctx,
     }
 
     // simply cache the context string for a rainy day... or to pass to the auth client call later.
-    irods::pam_auth_object_ptr ptr = boost::dynamic_pointer_cast<irods::pam_auth_object>(_ctx.fco());
+    irods::pam_auth_object_ptr ptr = std::dynamic_pointer_cast<irods::pam_auth_object>(_ctx.fco());
     ptr->context(_context);
 
     std::string password = kvp[ irods::AUTH_PASSWORD_KEY ];
@@ -149,7 +146,7 @@ irods::error pam_auth_client_request(
 
     // =-=-=-=-=-=-=-
     // get the auth object
-    irods::pam_auth_object_ptr ptr = boost::dynamic_pointer_cast <
+    irods::pam_auth_object_ptr ptr = std::dynamic_pointer_cast <
                                      irods::pam_auth_object > ( _ctx.fco() );
     // =-=-=-=-=-=-=-
     // get the context string
@@ -324,7 +321,7 @@ irods::error pam_auth_agent_request(
     // =-=-=-=-=-=-=-
     // simply cache the context string for a rainy day...
     // or to pass to the auth client call later.
-    irods::pam_auth_object_ptr ptr = boost::dynamic_pointer_cast <
+    irods::pam_auth_object_ptr ptr = std::dynamic_pointer_cast <
                                          irods::pam_auth_object > ( _ctx.fco() );
     std::string context = ptr->context( );
 
@@ -397,7 +394,7 @@ irods::error pam_auth_agent_request(
     std::string ttl_str   = kvp[ irods::AUTH_TTL_KEY      ];
     int ttl = 0;
     if ( !ttl_str.empty() ) {
-        ttl = boost::lexical_cast<int>( ttl_str );
+        ttl = irods::lexical_cast<int>( ttl_str );
     }
 
     // =-=-=-=-=-=-=-

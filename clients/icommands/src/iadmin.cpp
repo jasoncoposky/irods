@@ -21,10 +21,12 @@
 
 #include <algorithm>
 #include <array>
+#include <charconv>
 #include <cstdio>
 #include <iostream>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <variant>
 #include <vector>
 
@@ -32,7 +34,6 @@
 #include <unistd.h>
 
 #include <boost/date_time.hpp>
-#include <boost/lexical_cast.hpp>
 #include <fmt/compile.h>
 #include <fmt/format.h>
 #include <nlohmann/json.hpp>
@@ -109,13 +110,14 @@ auto get_data_object_value(
 {
     data_object_option_t v;
     if ("data_id" == option) {
-        try {
-            v = boost::lexical_cast<data_id_t>(input.data());
-        } catch (const boost::bad_lexical_cast&) {
+        data_id_t parsed_id{};
+        const auto [ptr, ec] = std::from_chars(input.data(), input.data() + input.size(), parsed_id);
+        if (ec != std::errc{} || ptr != input.data() + input.size()) {
             std::stringstream msg;
             msg << "Invalid input [" << input << "] for data_id.";
             throw std::invalid_argument(msg.str());
         }
+        v = parsed_id;
     }
     else if ("logical_path" == option) {
         const auto logical_path = fs::path{input.data()}.lexically_normal();
@@ -137,16 +139,17 @@ auto get_replica_value(
 {
     repl_option_t v;
     if ("replica_number" == option) {
-        try {
-            v = boost::lexical_cast<replica_number_t>(input.data());
-            if (veryVerbose) {
-                std::cout << __func__ << ": cast [" << std::get<replica_number_t>(v) << "]";
-                std::cout << " from [" << input.data() << "]" << std::endl;
-            }
-        } catch (const boost::bad_lexical_cast&) {
+        replica_number_t parsed_repl_num{};
+        const auto [ptr, ec] = std::from_chars(input.data(), input.data() + input.size(), parsed_repl_num);
+        if (ec != std::errc{} || ptr != input.data() + input.size()) {
             std::stringstream msg;
             msg << "Invalid input [" << input << "] for replica_number.";
             throw std::invalid_argument(msg.str());
+        }
+        v = parsed_repl_num;
+        if (veryVerbose) {
+            std::cout << __func__ << ": cast [" << std::get<replica_number_t>(v) << "]";
+            std::cout << " from [" << input.data() << "]" << std::endl;
         }
     }
     else if ("resource_hierarchy" == option) {

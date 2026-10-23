@@ -25,16 +25,12 @@
 
 // =-=-=-=-=-=-=-
 // stl includes
+#include <any>
+#include <functional>
 #include <iostream>
 #include <sstream>
 #include <vector>
 #include <string>
-
-// =-=-=-=-=-=-=-
-// boost includes
-#include <boost/lexical_cast.hpp>
-#include <boost/function.hpp>
-#include <boost/any.hpp>
 
 #include "irods/private/re/configuration.hpp"
 #include "irods/irods_server_properties.hpp"
@@ -52,7 +48,7 @@ namespace irods
 
 using json = nlohmann::json;
 
-typedef std::function< irods::error (irods::callback, std::list<boost::any>&) > pep_opr_t;
+typedef std::function< irods::error (irods::callback, std::list<std::any>&) > pep_opr_t;
 
 static std::map< std::string, pep_opr_t > static_policy_enforcement_points;
 
@@ -90,14 +86,14 @@ userInfo_t get_uoio(ruleExecInfo_t& _rei) {
     return *uoio;
 }
 
-static std::string get_string_array_from_array( const boost::any& _array ) {
+static std::string get_string_array_from_array( const std::any& _array ) {
     std::string str_array;
     try {
-        for( const auto& elem : boost::any_cast< const std::vector< boost::any >& >( _array ) ) {
+        for( const auto& elem : std::any_cast< const std::vector< std::any >& >( _array ) ) {
             try {
-                str_array += boost::any_cast< const std::string& >( elem );
+                str_array += std::any_cast< const std::string& >( elem );
             }
-            catch ( const boost::bad_any_cast& ) {
+            catch ( const std::bad_any_cast& ) {
                 rodsLog(
                     LOG_ERROR,
                     "%s - failed to cast rule base file name entry to string",
@@ -110,7 +106,7 @@ static std::string get_string_array_from_array( const boost::any& _array ) {
 
         str_array = str_array.substr( 0, str_array.size() - 1 );
         return str_array;
-    } catch ( const boost::bad_any_cast& ) {
+    } catch ( const std::bad_any_cast& ) {
         THROW(
             INVALID_ANY_CAST,
             "failed to any_cast to vector" );
@@ -120,18 +116,18 @@ static std::string get_string_array_from_array( const boost::any& _array ) {
 // =-=-=-=-=-=-=-
 // implementations of static policy enforcement points from legacy core.re
 
-irods::error printHello( irods::callback _cb, std::list<boost::any>& ) {
+irods::error printHello( irods::callback _cb, std::list<std::any>& ) {
 // printHello { print_hello; }
     return _cb(std::string("print_hello"));
 }
 
-irods::error acPreConnect( irods::callback _cb, std::list<boost::any>& _params ) {
+irods::error acPreConnect( irods::callback _cb, std::list<std::any>& _params ) {
 // acPreConnect(*OUT) { *OUT="CS_NEG_DONT_CARE"; }
     for( auto itr : _params ) {
         if(itr.type() == typeid(std::string*)) {
             try {
-                *boost::any_cast<std::string*>(itr) = "CS_NEG_REFUSE";
-            } catch (const boost::bad_any_cast& e) {
+                *std::any_cast<std::string*>(itr) = "CS_NEG_REFUSE";
+            } catch (const std::bad_any_cast& e) {
                 rodsLog(LOG_ERROR, "Bad any cast in acPreConnect, [%s]", e.what());
                 return ERROR(
                     INVALID_ANY_CAST,
@@ -143,7 +139,7 @@ irods::error acPreConnect( irods::callback _cb, std::list<boost::any>& _params )
     return SUCCESS();
 }
 
-irods::error acCreateUser( irods::callback _cb, std::list<boost::any>& ) {
+irods::error acCreateUser( irods::callback _cb, std::list<std::any>& ) {
 /*
 acCreateUser {
     acPreProcForCreateUser;
@@ -196,13 +192,13 @@ acCreateUserF1 {
     return ret;
 }
 
-irods::error acCreateDefaultCollections( irods::callback _cb, std::list<boost::any>& ) {
+irods::error acCreateDefaultCollections( irods::callback _cb, std::list<std::any>& ) {
 // acCreateDefaultCollections { acCreateUserZoneCollections; }
     irods::error ret = _cb(std::string("acCreateUserZoneCollections"));
     return ret;
 }
 
-irods::error acCreateUserZoneCollections( irods::callback _cb, std::list<boost::any>& ) {
+irods::error acCreateUserZoneCollections( irods::callback _cb, std::list<std::any>& ) {
 //  acCreateUserZoneCollections {
 //  acCreateCollByAdmin("/"++$rodsZoneProxy++"/home", $otherUserName);
 //  acCreateCollByAdmin("/"++$rodsZoneProxy++"/trash/home", $otherUserName); }
@@ -233,7 +229,7 @@ irods::error acCreateUserZoneCollections( irods::callback _cb, std::list<boost::
     return ret;
 }
 
-irods::error acCreateCollByAdmin( irods::callback _cb, std::list<boost::any>& _params) {
+irods::error acCreateCollByAdmin( irods::callback _cb, std::list<std::any>& _params) {
 //  acCreateCollByAdmin(*parColl, *childColl) {
 //    msiCreateCollByAdmin(*parColl, *childColl); }
     std::string parent_coll;
@@ -241,7 +237,7 @@ irods::error acCreateCollByAdmin( irods::callback _cb, std::list<boost::any>& _p
     int i = 0;
     for (auto& param: _params) {
         try {
-            std::string tmp = boost::any_cast<std::string>(param);
+            std::string tmp = std::any_cast<std::string>(param);
 
             if (i == 0) {
                 parent_coll = tmp;
@@ -250,7 +246,7 @@ irods::error acCreateCollByAdmin( irods::callback _cb, std::list<boost::any>& _p
             }
 
             i++;
-        } catch (const boost::bad_any_cast& e) {
+        } catch (const std::bad_any_cast& e) {
             rodsLog(LOG_ERROR, "Bad any cast on param %d in acCreateCollByAdmin", i);
         }
     }
@@ -259,7 +255,7 @@ irods::error acCreateCollByAdmin( irods::callback _cb, std::list<boost::any>& _p
     return ret;
 }
 
-irods::error acDeleteUser( irods::callback _cb, std::list<boost::any>& ) {
+irods::error acDeleteUser( irods::callback _cb, std::list<std::any>& ) {
 /*
 acDeleteUser {
     acPreProcForDeleteUser;
@@ -291,14 +287,14 @@ acDeleteUserF1 {
     return ret;
 }
 
-irods::error acDeleteDefaultCollections( irods::callback _cb, std::list<boost::any>& ) {
+irods::error acDeleteDefaultCollections( irods::callback _cb, std::list<std::any>& ) {
 //acDeleteDefaultCollections {
 //    acDeleteUserZoneCollections; }
     irods::error ret = _cb(std::string("acDeleteUserZoneCollections"));
     return ret;
 }
 
-irods::error acDeleteUserZoneCollections( irods::callback _cb, std::list<boost::any>& ) {
+irods::error acDeleteUserZoneCollections( irods::callback _cb, std::list<std::any>& ) {
 //acDeleteUserZoneCollections {
 //    acDeleteCollByAdminIfPresent("/"++$rodsZoneProxy++"/home",$otherUserName);
 //    acDeleteCollByAdminIfPresent("/"++$rodsZoneProxy++"/trash/home",$otherUserName); }
@@ -329,7 +325,7 @@ irods::error acDeleteUserZoneCollections( irods::callback _cb, std::list<boost::
     return ret;
 }
 
-irods::error acDeleteCollByAdminIfPresent( irods::callback _cb, std::list<boost::any>& _params ) {
+irods::error acDeleteCollByAdminIfPresent( irods::callback _cb, std::list<std::any>& _params ) {
 //acDeleteCollByAdminIfPresent(*parColl, *childColl) {
 //    *status=errormsg(msiDeleteCollByAdmin(*parColl,*childColl), *msg);
 //    if (*status != 0 && *status != -808000) {
@@ -339,7 +335,7 @@ irods::error acDeleteCollByAdminIfPresent( irods::callback _cb, std::list<boost:
     int i = 0;
     for (auto& param: _params) {
         try {
-            std::string tmp = boost::any_cast<std::string>(param);
+            std::string tmp = std::any_cast<std::string>(param);
 
             if (i == 0) {
                 parent_coll = tmp;
@@ -348,7 +344,7 @@ irods::error acDeleteCollByAdminIfPresent( irods::callback _cb, std::list<boost:
             }
 
             i++;
-        } catch (const boost::bad_any_cast& e) {
+        } catch (const std::bad_any_cast& e) {
             rodsLog(LOG_ERROR, "Bad any cast on param [%d] in acDeleteCollByAdminIfPresent", i);
         }
     }
@@ -362,7 +358,7 @@ irods::error acDeleteCollByAdminIfPresent( irods::callback _cb, std::list<boost:
     return SUCCESS();
 }
 
-irods::error acDeleteCollByAdmin( irods::callback _cb, std::list<boost::any>& _params) {
+irods::error acDeleteCollByAdmin( irods::callback _cb, std::list<std::any>& _params) {
 //acDeleteCollByAdmin(*parColl,*childColl) {
 //    msiDeleteCollByAdmin(*parColl,*childColl); }
     std::string parent_coll;
@@ -370,7 +366,7 @@ irods::error acDeleteCollByAdmin( irods::callback _cb, std::list<boost::any>& _p
     int i = 0;
     for (auto& param: _params) {
         try {
-            std::string tmp = boost::any_cast<std::string>(param);
+            std::string tmp = std::any_cast<std::string>(param);
 
             if (i == 0) {
                 parent_coll = tmp;
@@ -379,7 +375,7 @@ irods::error acDeleteCollByAdmin( irods::callback _cb, std::list<boost::any>& _p
             }
 
             i++;
-        } catch (const boost::bad_any_cast& e) {
+        } catch (const std::bad_any_cast& e) {
             rodsLog(LOG_ERROR, "Bad any cast on param [%d] in acDeleteCollByAdmin", i);
         }
     }
@@ -388,7 +384,7 @@ irods::error acDeleteCollByAdmin( irods::callback _cb, std::list<boost::any>& _p
     return ret;
 }
 
-irods::error acRenameLocalZone( irods::callback _cb, std::list<boost::any>& ) {
+irods::error acRenameLocalZone( irods::callback _cb, std::list<std::any>& ) {
 //  msiRenameLocalZoneCollection ::: msiRollback;
 //  msiRenameLocalZone ::: msiRenameLocalZone;
 //  msiCommit;
@@ -409,19 +405,19 @@ irods::error acRenameLocalZone( irods::callback _cb, std::list<boost::any>& ) {
     return ret;
 }
 
-irods::error acGetUserByDN( irods::callback, std::list<boost::any>& ) {
+irods::error acGetUserByDN( irods::callback, std::list<std::any>& ) {
     return SUCCESS();
 }
 
-irods::error acTicketPolicy( irods::callback, std::list<boost::any>& ) {
+irods::error acTicketPolicy( irods::callback, std::list<std::any>& ) {
     return SUCCESS();
 }
 
-irods::error acCheckPasswordStrength( irods::callback, std::list<boost::any>& ) {
+irods::error acCheckPasswordStrength( irods::callback, std::list<std::any>& ) {
     return SUCCESS();
 }
 
-irods::error acSetRescSchemeForCreate( irods::callback _cb, std::list<boost::any>& ) {
+irods::error acSetRescSchemeForCreate( irods::callback _cb, std::list<std::any>& ) {
 //msiSetDefaultResc("demoResc","null");
 /*
     props.capture_if_needed();
@@ -443,7 +439,7 @@ irods::error acSetRescSchemeForCreate( irods::callback _cb, std::list<boost::any
     return _cb(std::string("msiSetDefaultResc"), resc_name, std::string("null"));
 }
 
-irods::error acSetRescSchemeForRepl( irods::callback _cb, std::list<boost::any>& ) {
+irods::error acSetRescSchemeForRepl( irods::callback _cb, std::list<std::any>& ) {
 //msiSetDefaultResc("demoResc","null");
 /*
     irods::server_properties& props = irods::server_properties::instance();
@@ -466,246 +462,246 @@ irods::error acSetRescSchemeForRepl( irods::callback _cb, std::list<boost::any>&
     return _cb(std::string("msiSetDefaultResc"), resc_name, std::string("null"));
 }
 
-irods::error acPreprocForDataObjOpen( irods::callback, std::list<boost::any>& ) {
+irods::error acPreprocForDataObjOpen( irods::callback, std::list<std::any>& ) {
     return SUCCESS();
 }
 
-irods::error acSetMultiReplPerResc( irods::callback, std::list<boost::any>& ) {
+irods::error acSetMultiReplPerResc( irods::callback, std::list<std::any>& ) {
     return SUCCESS();
 }
 
-irods::error acPostProcForPut( irods::callback, std::list<boost::any>& ) {
+irods::error acPostProcForPut( irods::callback, std::list<std::any>& ) {
     return SUCCESS();
 }
 
-irods::error acPostProcForCopy( irods::callback, std::list<boost::any>& ) {
+irods::error acPostProcForCopy( irods::callback, std::list<std::any>& ) {
     return SUCCESS();
 }
 
-irods::error acPostProcForFilePathReg( irods::callback, std::list<boost::any>& ) {
+irods::error acPostProcForFilePathReg( irods::callback, std::list<std::any>& ) {
     return SUCCESS();
 }
 
-irods::error acPostProcForCreate( irods::callback, std::list<boost::any>& ) {
+irods::error acPostProcForCreate( irods::callback, std::list<std::any>& ) {
     return SUCCESS();
 }
 
-irods::error acPostProcForOpen( irods::callback, std::list<boost::any>& ) {
+irods::error acPostProcForOpen( irods::callback, std::list<std::any>& ) {
     return SUCCESS();
 }
 
-irods::error acPostProcForPhymv( irods::callback, std::list<boost::any>& ) {
+irods::error acPostProcForPhymv( irods::callback, std::list<std::any>& ) {
     return SUCCESS();
 }
 
-irods::error acPostProcForRepl( irods::callback, std::list<boost::any>& ) {
+irods::error acPostProcForRepl( irods::callback, std::list<std::any>& ) {
     return SUCCESS();
 }
 
-irods::error acSetNumThreads( irods::callback _cb, std::list<boost::any>& ) {
+irods::error acSetNumThreads( irods::callback _cb, std::list<std::any>& ) {
 //msiSetNumThreads("default","64","default");
     return _cb(std::string("msiSetNumThreads"), std::string("default"), std::string("64"), std::string("default"));
 }
 
-irods::error acDataDeletePolicy( irods::callback, std::list<boost::any>& ) {
+irods::error acDataDeletePolicy( irods::callback, std::list<std::any>& ) {
     return SUCCESS();
 }
 
-irods::error acPostProcForDelete( irods::callback, std::list<boost::any>& ) {
+irods::error acPostProcForDelete( irods::callback, std::list<std::any>& ) {
     return SUCCESS();
 }
 
-irods::error acSetChkFilePathPerm( irods::callback _cb, std::list<boost::any>& ) {
+irods::error acSetChkFilePathPerm( irods::callback _cb, std::list<std::any>& ) {
 //msiSetChkFilePathPerm("disallowPathReg");
     return _cb(std::string("msiSetChkFilePathPerm"), std::string("disallowPathReg"));
 }
 
-irods::error acTrashPolicy( irods::callback, std::list<boost::any>& ) {
+irods::error acTrashPolicy( irods::callback, std::list<std::any>& ) {
     return SUCCESS();
 }
 
-irods::error acSetPublicUserPolicy( irods::callback, std::list<boost::any>& ) {
+irods::error acSetPublicUserPolicy( irods::callback, std::list<std::any>& ) {
     return SUCCESS();
 }
 
-irods::error acChkHostAccessControl( irods::callback, std::list<boost::any>& ) {
+irods::error acChkHostAccessControl( irods::callback, std::list<std::any>& ) {
     return SUCCESS();
 }
 
-irods::error acSetVaultPathPolicy( irods::callback _cb, std::list<boost::any>& ) {
+irods::error acSetVaultPathPolicy( irods::callback _cb, std::list<std::any>& ) {
     //msiSetGraftPathScheme("no","1");
     return _cb(std::string("msiSetGraftPathScheme"), std::string("no"), std::string("1"));
 }
 
-irods::error acPreprocForCollCreate( irods::callback, std::list<boost::any>& ) {
+irods::error acPreprocForCollCreate( irods::callback, std::list<std::any>& ) {
     return SUCCESS();
 }
 
-irods::error acPostProcForCollCreate( irods::callback, std::list<boost::any>& ) {
+irods::error acPostProcForCollCreate( irods::callback, std::list<std::any>& ) {
     return SUCCESS();
 }
 
-irods::error acPreprocForRmColl( irods::callback, std::list<boost::any>& ) {
+irods::error acPreprocForRmColl( irods::callback, std::list<std::any>& ) {
     return SUCCESS();
 }
 
-irods::error acPostProcForRmColl( irods::callback, std::list<boost::any>& ) {
+irods::error acPostProcForRmColl( irods::callback, std::list<std::any>& ) {
     return SUCCESS();
 }
 
-irods::error acPreProcForModifyUser( irods::callback, std::list<boost::any>& ) {
+irods::error acPreProcForModifyUser( irods::callback, std::list<std::any>& ) {
     return SUCCESS();
 }
 
-irods::error acPostProcForModifyUser( irods::callback, std::list<boost::any>& ) {
+irods::error acPostProcForModifyUser( irods::callback, std::list<std::any>& ) {
     return SUCCESS();
 }
 
-irods::error acPreProcForModifyAVUMetadata( irods::callback, std::list<boost::any>& ) {
+irods::error acPreProcForModifyAVUMetadata( irods::callback, std::list<std::any>& ) {
     return SUCCESS();
 }
 
-irods::error acPostProcForModifyAVUMetadata( irods::callback, std::list<boost::any>& ) {
+irods::error acPostProcForModifyAVUMetadata( irods::callback, std::list<std::any>& ) {
     return SUCCESS();
 }
 
-irods::error acPreProcForCreateUser( irods::callback, std::list<boost::any>& ) {
+irods::error acPreProcForCreateUser( irods::callback, std::list<std::any>& ) {
     return SUCCESS();
 }
 
-irods::error acPostProcForCreateUser( irods::callback, std::list<boost::any>& ) {
+irods::error acPostProcForCreateUser( irods::callback, std::list<std::any>& ) {
     return SUCCESS();
 }
 
-irods::error acPreProcForDeleteUser( irods::callback, std::list<boost::any>& ) {
+irods::error acPreProcForDeleteUser( irods::callback, std::list<std::any>& ) {
     return SUCCESS();
 }
 
-irods::error acPostProcForDeleteUser( irods::callback, std::list<boost::any>& ) {
+irods::error acPostProcForDeleteUser( irods::callback, std::list<std::any>& ) {
     return SUCCESS();
 }
 
-irods::error acPreProcForCreateResource( irods::callback, std::list<boost::any>& ) {
+irods::error acPreProcForCreateResource( irods::callback, std::list<std::any>& ) {
     return SUCCESS();
 }
 
-irods::error acPostProcForCreateResource( irods::callback, std::list<boost::any>& ) {
+irods::error acPostProcForCreateResource( irods::callback, std::list<std::any>& ) {
     return SUCCESS();
 }
 
-irods::error acPreProcForCreateToken( irods::callback, std::list<boost::any>& ) {
+irods::error acPreProcForCreateToken( irods::callback, std::list<std::any>& ) {
     return SUCCESS();
 }
 
-irods::error acPostProcForCreateToken( irods::callback, std::list<boost::any>& ) {
+irods::error acPostProcForCreateToken( irods::callback, std::list<std::any>& ) {
     return SUCCESS();
 }
 
-irods::error acPreProcForModifyUserGroup( irods::callback, std::list<boost::any>& ) {
+irods::error acPreProcForModifyUserGroup( irods::callback, std::list<std::any>& ) {
     return SUCCESS();
 }
 
-irods::error acPostProcForModifyUserGroup( irods::callback, std::list<boost::any>& ) {
+irods::error acPostProcForModifyUserGroup( irods::callback, std::list<std::any>& ) {
     return SUCCESS();
 }
 
-irods::error acPreProcForDeleteResource( irods::callback, std::list<boost::any>& ) {
+irods::error acPreProcForDeleteResource( irods::callback, std::list<std::any>& ) {
     return SUCCESS();
 }
 
-irods::error acPostProcForDeleteResource( irods::callback, std::list<boost::any>& ) {
+irods::error acPostProcForDeleteResource( irods::callback, std::list<std::any>& ) {
     return SUCCESS();
 }
 
-irods::error acPreProcForDeleteToken( irods::callback, std::list<boost::any>& ) {
+irods::error acPreProcForDeleteToken( irods::callback, std::list<std::any>& ) {
     return SUCCESS();
 }
 
-irods::error acPostProcForDeleteToken( irods::callback, std::list<boost::any>& ) {
+irods::error acPostProcForDeleteToken( irods::callback, std::list<std::any>& ) {
     return SUCCESS();
 }
 
-irods::error acPreProcForModifyResource( irods::callback, std::list<boost::any>& ) {
+irods::error acPreProcForModifyResource( irods::callback, std::list<std::any>& ) {
     return SUCCESS();
 }
 
-irods::error acPostProcForModifyResource( irods::callback, std::list<boost::any>& ) {
+irods::error acPostProcForModifyResource( irods::callback, std::list<std::any>& ) {
     return SUCCESS();
 }
 
-irods::error acPreProcForModifyCollMeta( irods::callback, std::list<boost::any>& ) {
+irods::error acPreProcForModifyCollMeta( irods::callback, std::list<std::any>& ) {
     return SUCCESS();
 }
 
-irods::error acPostProcForModifyCollMeta( irods::callback, std::list<boost::any>& ) {
+irods::error acPostProcForModifyCollMeta( irods::callback, std::list<std::any>& ) {
     return SUCCESS();
 }
 
-irods::error acPreProcForModifyDataObjMeta( irods::callback, std::list<boost::any>& ) {
+irods::error acPreProcForModifyDataObjMeta( irods::callback, std::list<std::any>& ) {
     return SUCCESS();
 }
 
-irods::error acPostProcForModifyDataObjMeta( irods::callback, std::list<boost::any>& ) {
+irods::error acPostProcForModifyDataObjMeta( irods::callback, std::list<std::any>& ) {
     return SUCCESS();
 }
 
-irods::error acPreProcForModifyAccessControl( irods::callback, std::list<boost::any>& ) {
+irods::error acPreProcForModifyAccessControl( irods::callback, std::list<std::any>& ) {
     return SUCCESS();
 }
 
-irods::error acPostProcForModifyAccessControl( irods::callback, std::list<boost::any>& ) {
+irods::error acPostProcForModifyAccessControl( irods::callback, std::list<std::any>& ) {
     return SUCCESS();
 }
 
-irods::error acPreProcForObjRename( irods::callback, std::list<boost::any>& ) {
+irods::error acPreProcForObjRename( irods::callback, std::list<std::any>& ) {
     return SUCCESS();
 }
 
-irods::error acPostProcForObjRename( irods::callback, std::list<boost::any>& ) {
+irods::error acPostProcForObjRename( irods::callback, std::list<std::any>& ) {
     return SUCCESS();
 }
 
-irods::error acPreProcForGenQuery( irods::callback, std::list<boost::any>& ) {
+irods::error acPreProcForGenQuery( irods::callback, std::list<std::any>& ) {
     return SUCCESS();
 }
 
-irods::error acPostProcForGenQuery( irods::callback, std::list<boost::any>& ) {
+irods::error acPostProcForGenQuery( irods::callback, std::list<std::any>& ) {
     return SUCCESS();
 }
 
-irods::error acRescQuotaPolicy( irods::callback _cb, std::list<boost::any>& ) {
+irods::error acRescQuotaPolicy( irods::callback _cb, std::list<std::any>& ) {
     return _cb(std::string("msiSetRescQuotaPolicy"), std::string("off"));
 }
 
-irods::error acBulkPutPostProcPolicy ( irods::callback _cb, std::list<boost::any>& ) {
+irods::error acBulkPutPostProcPolicy ( irods::callback _cb, std::list<std::any>& ) {
     return _cb(std::string("msiSetBulkPutPostProcPolicy"), std::string("off"));
 }
 
-irods::error acPostProcForTarFileReg( irods::callback, std::list<boost::any>& ) {
+irods::error acPostProcForTarFileReg( irods::callback, std::list<std::any>& ) {
     return SUCCESS();
 }
 
-irods::error acPostProcForDataObjWrite( irods::callback, std::list<boost::any>& ) {
+irods::error acPostProcForDataObjWrite( irods::callback, std::list<std::any>& ) {
     return SUCCESS();
 }
 
-irods::error acPostProcForDataObjRead( irods::callback, std::list<boost::any>& ) {
+irods::error acPostProcForDataObjRead( irods::callback, std::list<std::any>& ) {
     return SUCCESS();
 }
 
-irods::error acPreProcForExecCmd( irods::callback, std::list<boost::any>& ) {
+irods::error acPreProcForExecCmd( irods::callback, std::list<std::any>& ) {
     return SUCCESS();
 }
 
-irods::error acPreProcForServerPortal( irods::callback, std::list<boost::any>& ) {
+irods::error acPreProcForServerPortal( irods::callback, std::list<std::any>& ) {
     return SUCCESS();
 }
 
-irods::error acPostProcForServerPortal( irods::callback, std::list<boost::any>& ) {
+irods::error acPostProcForServerPortal( irods::callback, std::list<std::any>& ) {
     return SUCCESS();
 }
 
-irods::error acPreProcForWriteSessionVariable( irods::callback, std::list<boost::any>& _params ) {
+irods::error acPreProcForWriteSessionVariable( irods::callback, std::list<std::any>& _params ) {
 //acPreProcForWriteSessionVariable(*var) {
 //  ON(*var == "status") {
 //    succeed;
@@ -718,7 +714,7 @@ irods::error acPreProcForWriteSessionVariable( irods::callback, std::list<boost:
     int i = 0;
     for (auto& param: _params) {
         try {
-            std::string tmp = boost::any_cast<std::string>(param);
+            std::string tmp = std::any_cast<std::string>(param);
 
             if (i == 0) {
                 session_var = tmp;
@@ -726,7 +722,7 @@ irods::error acPreProcForWriteSessionVariable( irods::callback, std::list<boost:
             }
 
             i++;
-        } catch (const boost::bad_any_cast& e) {
+        } catch (const std::bad_any_cast& e) {
             rodsLog(LOG_ERROR, "Bad any cast on param [%d] in acPreProcForWriteSessionVar", i);
         }
     }
@@ -738,11 +734,11 @@ irods::error acPreProcForWriteSessionVariable( irods::callback, std::list<boost:
     }
 }
 
-irods::error acPostProcForParallelTransferReceived( irods::callback, std::list<boost::any>& ) {
+irods::error acPostProcForParallelTransferReceived( irods::callback, std::list<std::any>& ) {
     return SUCCESS();
 }
 
-irods::error acPostProcForDataCopyReceived( irods::callback, std::list<boost::any>& ) {
+irods::error acPostProcForDataCopyReceived( irods::callback, std::list<std::any>& ) {
     return SUCCESS();
 }
 
@@ -880,9 +876,9 @@ namespace
     } // collapse_error_stack
 
     void invoke_policy(
-        ruleExecInfo_t*        _rei,
-        const std::string&     _action,
-        std::list<boost::any>& _args)
+        ruleExecInfo_t*      _rei,
+        const std::string&   _action,
+        std::list<std::any>& _args)
     {
         irods::rule_engine_context_manager<
             irods::unit,
@@ -986,10 +982,10 @@ namespace
                          : std::string{};
         std::string ov{};
 
-        std::list<boost::any> arguments;
-        arguments.push_back(boost::any(&ps));
-        arguments.push_back(boost::any(&cs));
-        arguments.push_back(boost::any(&ov));
+        std::list<std::any> arguments;
+        arguments.push_back(std::any(&ps));
+        arguments.push_back(std::any(&cs));
+        arguments.push_back(std::any(&ov));
         invoke_policy(_rei, p2i, arguments);
 
         return SUCCESS();
@@ -1020,9 +1016,9 @@ irods::error list_rules(irods::default_re_ctx&, std::vector<std::string>& rule_v
 
 irods::error exec_rule(
     irods::default_re_ctx&,
-    const std::string&     _rn,
-    std::list<boost::any>& _ps,
-    irods::callback        _eff_hdlr)
+    const std::string&   _rn,
+    std::list<std::any>& _ps,
+    irods::callback      _eff_hdlr)
 {
     ruleExecInfo_t * rei{};
     irods::error err;
@@ -1032,7 +1028,7 @@ irods::error exec_rule(
     }
 
     if(rule_is_irods_policy_enqueue_rule(_rn)) {
-        auto* p = boost::any_cast<std::string*>(*_ps.begin());
+        auto* p = std::any_cast<std::string*>(*_ps.begin());
         return enqueue_rule(rei, json::parse(*p));
     }
 
@@ -1204,7 +1200,7 @@ irods::pluggable_rule_engine<irods::default_re_ctx>* plugin_factory( const std::
             std::function<irods::error(irods::default_re_ctx&, std::vector<std::string>&)>( list_rules ) );
 
     re->add_operation( "exec_rule",
-            std::function<irods::error(irods::default_re_ctx&,const std::string&,std::list<boost::any>&,irods::callback)>( exec_rule ) );
+            std::function<irods::error(irods::default_re_ctx&,const std::string&,std::list<std::any>&,irods::callback)>( exec_rule ) );
 
     re->add_operation( "exec_rule_text",
             std::function<irods::error(irods::default_re_ctx&,const std::string&,msParamArray_t*,const std::string&,irods::callback)>( exec_rule_text ) );

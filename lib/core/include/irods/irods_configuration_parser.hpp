@@ -7,15 +7,13 @@
 #include "irods/irods_error.hpp"
 #include "irods/rodsErrorTable.h"
 
-#include <vector>
+#include <any>
 #include <string>
 #include <string_view>
-
 #include <unordered_map>
-#include <boost/format.hpp>
-#include <boost/any.hpp>
-#include <boost/optional.hpp>
+#include <vector>
 
+#include <fmt/format.h>
 #include <nlohmann/json.hpp>
 
 namespace irods
@@ -48,8 +46,8 @@ namespace irods
         template <typename T>
         T& set(const std::string& _key, const T& _val)
         {
-            root_[_key] = boost::any(_val);
-            return boost::any_cast<T&>(root_[_key]);
+            root_[_key] = std::any(_val);
+            return std::any_cast<T&>(root_[_key]);
         } // set
 
         template <typename T>
@@ -59,41 +57,41 @@ namespace irods
                 THROW(SYS_INVALID_INPUT_PARAM, "\"set\" requires at least one key");
             }
 
-            boost::optional<boost::any&> cur_val;
+            std::any* cur_val = nullptr;
             for (const auto& key : _keys) {
                 if (!cur_val) {
-                    cur_val.reset(root_[key]);
+                    cur_val = &root_[key];
                     continue;
                 }
 
-                if (cur_val->empty()) {
-                    *cur_val = std::unordered_map<std::string, boost::any>();
+                if (!cur_val->has_value()) {
+                    *cur_val = std::unordered_map<std::string, std::any>();
                 }
 
                 try {
-                    cur_val.reset(boost::any_cast<std::unordered_map<std::string, boost::any>&>(*cur_val)[key]);
+                    cur_val = &(std::any_cast<std::unordered_map<std::string, std::any>&>(*cur_val)[key]);
                 }
-                catch (const boost::bad_any_cast&) {
+                catch (const std::bad_any_cast&) {
                     THROW(INVALID_ANY_CAST, "value was not a map");
                 }
             }
 
             *cur_val = _val;
 
-            return boost::any_cast<T&>(*cur_val);
+            return std::any_cast<T&>(*cur_val);
         } // set with path
 
         template <typename T>
         T& get(const std::string& _key)
         {
             try {
-                return boost::any_cast<T&>(root_.at(_key));
+                return std::any_cast<T&>(root_.at(_key));
             }
-            catch (const boost::bad_any_cast&) {
-                THROW(INVALID_ANY_CAST, (boost::format("value at %s was incorrect type") % _key).str());
+            catch (const std::bad_any_cast&) {
+                THROW(INVALID_ANY_CAST, fmt::format("value at {} was incorrect type", _key));
             }
             catch (const std::out_of_range&) {
-                THROW (KEY_NOT_FOUND, (boost::format("key \"%s\" not found in map.") % _key).str());
+                THROW(KEY_NOT_FOUND, fmt::format("key \"{}\" not found in map.", _key));
             }
         } // get
 
@@ -104,30 +102,30 @@ namespace irods
                 THROW(SYS_INVALID_INPUT_PARAM, "\"get\" requires at least one key");
             }
 
-            boost::optional<boost::any&> cur_val;
+            std::any* cur_val = nullptr;
             for (const auto& key : _keys) {
                 try {
                     if (!cur_val) {
-                        cur_val.reset(root_.at(key));
+                        cur_val = &root_.at(key);
                         continue;
                     }
 
                     try {
-                        cur_val.reset(boost::any_cast<std::unordered_map<std::string, boost::any>&>(*cur_val).at(key));
+                        cur_val = &(std::any_cast<std::unordered_map<std::string, std::any>&>(*cur_val).at(key));
                     }
-                    catch (const boost::bad_any_cast&) {
+                    catch (const std::bad_any_cast&) {
                         THROW(INVALID_ANY_CAST, "value was not a map");
                     }
                 }
                 catch (const std::out_of_range&) {
-                    THROW(KEY_NOT_FOUND, (boost::format("key \"%s\" not found in map.") % key).str());
+                    THROW(KEY_NOT_FOUND, fmt::format("key \"{}\" not found in map.", key));
                 }
             }
 
             try {
-                return boost::any_cast<T&>(*cur_val);
+                return std::any_cast<T&>(*cur_val);
             }
-            catch (const boost::bad_any_cast&) {
+            catch (const std::bad_any_cast&) {
                 THROW(INVALID_ANY_CAST, "value was incorrect type");
             }
         } // get with path
@@ -137,7 +135,7 @@ namespace irods
         {
             auto find_it = root_.find(_key);
             if (find_it == root_.end()) {
-                THROW(KEY_NOT_FOUND, (boost::format("key \"%s\" not found in map.") % _key).str());
+                THROW(KEY_NOT_FOUND, fmt::format("key \"{}\" not found in map.", _key));
             }
             T val = find_it->second;
             root_.erase(find_it);
@@ -146,7 +144,7 @@ namespace irods
 
         void remove(const std::string& _key);
 
-        std::unordered_map<std::string, boost::any>& map()
+        std::unordered_map<std::string, std::any>& map()
         {
             return root_;
         }
@@ -155,12 +153,12 @@ namespace irods
         error load_json_object(const std::string& _filename);
         error load_json_object(const nlohmann::json& _json);
 
-        boost::any convert_json(const nlohmann::json& _json);
+        std::any convert_json(const nlohmann::json& _json);
 
-        error copy_and_swap(const std::unordered_map<std::string, boost::any>& _object_to_swap_in);
+        error copy_and_swap(const std::unordered_map<std::string, std::any>& _object_to_swap_in);
 
         std::string file_name_;                             // full path to file
-        std::unordered_map<std::string, boost::any> root_;  // root config object
+        std::unordered_map<std::string, std::any> root_;    // root config object
     }; // class configuration_parser
 
     std::string to_env( const std::string& );

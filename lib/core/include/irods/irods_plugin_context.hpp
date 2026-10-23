@@ -3,8 +3,9 @@
 
 // =-=-=-=-=-=-=-
 // stl includes
+#include <memory>
 #include <string>
-#include <boost/pointer_cast.hpp>
+#include <utility>
 
 // =-=-=-=-=-=-=-
 #include "irods/rodsErrorTable.h"
@@ -84,7 +85,7 @@ namespace irods {
             template < typename OBJ_TYPE >
             error valid() {
                 // trap case of incorrect type for first class object
-                return boost::dynamic_pointer_cast< OBJ_TYPE >( fco_.get() ) == NULL ?
+                return dynamic_cast< OBJ_TYPE* >( fco_.get() ) == nullptr ?
                        ERROR( INVALID_DYNAMIC_CAST, "invalid type for fco cast" ) :
                        valid();
 

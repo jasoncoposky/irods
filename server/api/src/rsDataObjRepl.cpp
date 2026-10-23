@@ -79,8 +79,6 @@
 #include <fmt/format.h>
 #include <fmt/ranges.h>
 
-#include <boost/make_shared.hpp>
-
 namespace
 {
     namespace ill = irods::logical_locking;

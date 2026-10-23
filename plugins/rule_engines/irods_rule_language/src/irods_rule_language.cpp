@@ -25,12 +25,11 @@
 #include "irods/msiHelper.hpp"
 #include "irods/irods_logger.hpp"
 
-#include <boost/lexical_cast.hpp>
-#include <boost/function.hpp>
-#include <boost/any.hpp>
 #include <fmt/format.h>
 #include <nlohmann/json.hpp>
 
+#include <any>
+#include <functional>
 #include <iostream>
 #include <sstream>
 #include <vector>
@@ -170,7 +169,7 @@ static irods::error setup(irods::default_re_ctx&, const std::string& _instance_n
     catch (const nlohmann::json::exception& e) {
         return ERROR(SYS_INVALID_INPUT_PARAM, e.what());
     }
-    catch (const boost::bad_any_cast& e) {
+    catch (const std::bad_any_cast& e) {
         return ERROR(INVALID_ANY_CAST, e.what());
     }
     catch (const std::out_of_range& e) {
@@ -217,7 +216,7 @@ static irods::error list_rules(irods::default_re_ctx&, std::vector<std::string>&
 // NOLINTNEXTLINE(misc-use-anonymous-namespace)
 static irods::error exec_rule(irods::default_re_ctx&,
                               const std::string& _rn,
-                              std::list<boost::any>& _ps,
+                              std::list<std::any>& _ps,
                               irods::callback _eff_hdlr)
 {
     if(ruleEngineConfig.ruleEngineStatus == UNINITIALIZED) {
@@ -302,7 +301,7 @@ static irods::error exec_rule(irods::default_re_ctx&,
         } else if(itr->type() == typeid(std::string*)) {
             msParam_t *msParam = getMsParamByLabel(&(ar.msParamArray), arg);
             if(msParam != NULL) {
-                *boost::any_cast<std::string*>(*itr) = reinterpret_cast<char *>(msParam->inOutStruct);
+                *std::any_cast<std::string*>(*itr) = reinterpret_cast<char *>(msParam->inOutStruct);
             } else {
                 rodsLog(LOG_ERROR, "no output parameter");
             }
@@ -444,7 +443,7 @@ extern "C" irods::pluggable_rule_engine<irods::default_re_ctx>* plugin_factory(c
             std::function<irods::error(irods::default_re_ctx&,std::vector<std::string>&)>( list_rules ) );
 
     re->add_operation( "exec_rule",
-            std::function<irods::error(irods::default_re_ctx&,const std::string&,std::list<boost::any>&,irods::callback)>( exec_rule ) );
+            std::function<irods::error(irods::default_re_ctx&,const std::string&,std::list<std::any>&,irods::callback)>( exec_rule ) );
 
     re->add_operation( "exec_rule_text",
             std::function<irods::error(irods::default_re_ctx&,const std::string&,msParamArray_t*,const std::string&,irods::callback)>( exec_rule_text ) );

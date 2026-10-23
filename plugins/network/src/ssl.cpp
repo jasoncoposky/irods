@@ -439,7 +439,7 @@ irods::error ssl_read_msg_header(irods::plugin_context& _ctx,
 
     // =-=-=-=-=-=-=-
     // extract the useful bits from the context
-    irods::ssl_object_ptr ssl_obj = boost::dynamic_pointer_cast< irods::ssl_object >( _ctx.fco() );
+    irods::ssl_object_ptr ssl_obj = std::dynamic_pointer_cast< irods::ssl_object >( _ctx.fco() );
     int socket_handle = ssl_obj->socket_handle();
 
     // =-=-=-=-=-=-=-
@@ -505,7 +505,7 @@ irods::error ssl_client_stop(irods::plugin_context& _ctx,
     }
 
     // extract the useful bits from the context
-    irods::ssl_object_ptr ssl_obj = boost::dynamic_pointer_cast< irods::ssl_object >( _ctx.fco() );
+    irods::ssl_object_ptr ssl_obj = std::dynamic_pointer_cast< irods::ssl_object >( _ctx.fco() );
     SSL*     ssl = ssl_obj->ssl();
     SSL_CTX* ctx = ssl_obj->ssl_ctx();
 
@@ -542,7 +542,7 @@ irods::error ssl_client_start(irods::plugin_context& _ctx,
     }
 
     // extract the useful bits from the context
-    irods::ssl_object_ptr ssl_obj = boost::dynamic_pointer_cast< irods::ssl_object >( _ctx.fco() );
+    irods::ssl_object_ptr ssl_obj = std::dynamic_pointer_cast< irods::ssl_object >( _ctx.fco() );
 
     // set up SSL on our side of the socket
     SSL_CTX* ctx = ssl_init_context( NULL, NULL );
@@ -654,7 +654,7 @@ irods::error ssl_agent_start(irods::plugin_context& _ctx)
     }
 
     // extract the useful bits from the context
-    irods::ssl_object_ptr ssl_obj = boost::dynamic_pointer_cast< irods::ssl_object >( _ctx.fco() );
+    irods::ssl_object_ptr ssl_obj = std::dynamic_pointer_cast< irods::ssl_object >( _ctx.fco() );
 
     SSL_CTX* ctx{};
     try {
@@ -768,7 +768,7 @@ irods::error ssl_agent_stop(irods::plugin_context& _ctx)
     }
 
     // extract the useful bits from the context
-    irods::ssl_object_ptr ssl_obj = boost::dynamic_pointer_cast< irods::ssl_object >( _ctx.fco() );
+    irods::ssl_object_ptr ssl_obj = std::dynamic_pointer_cast< irods::ssl_object >( _ctx.fco() );
     SSL*     ssl = ssl_obj->ssl();
     SSL_CTX* ctx = ssl_obj->ssl_ctx();
 
@@ -808,7 +808,7 @@ irods::error ssl_write_msg_header(irods::plugin_context& _ctx,
     }
 
     // extract the useful bits from the context
-    irods::ssl_object_ptr ssl_obj = boost::dynamic_pointer_cast< irods::ssl_object >( _ctx.fco() );
+    irods::ssl_object_ptr ssl_obj = std::dynamic_pointer_cast< irods::ssl_object >( _ctx.fco() );
 
     // convert host byte order to network byte order
     int header_length = htonl( _header->len );
@@ -851,7 +851,7 @@ irods::error ssl_send_rods_msg(
     }
 
     // extract the useful bits from the context
-    irods::ssl_object_ptr ssl_obj = boost::dynamic_pointer_cast< irods::ssl_object >( _ctx.fco() );
+    irods::ssl_object_ptr ssl_obj = std::dynamic_pointer_cast< irods::ssl_object >( _ctx.fco() );
 
     // initialize a new header
     msgHeader_t msg_header;
@@ -872,7 +872,7 @@ irods::error ssl_send_rods_msg(
     }
 
     // send the header
-    irods::network_object_ptr net_obj = boost::dynamic_pointer_cast< irods::network_object >( _ctx.fco() );
+    irods::network_object_ptr net_obj = std::dynamic_pointer_cast< irods::network_object >( _ctx.fco() );
     if (const auto err = writeMsgHeader(net_obj, &msg_header); !err.ok()) {
         return PASSMSG("Write message header failed.", err);
     }
@@ -947,7 +947,7 @@ irods::error ssl_read_msg_body(
     }
 
     // extract the useful bits from the context
-    irods::ssl_object_ptr ssl_obj = boost::dynamic_pointer_cast< irods::ssl_object >( _ctx.fco() );
+    irods::ssl_object_ptr ssl_obj = std::dynamic_pointer_cast< irods::ssl_object >( _ctx.fco() );
     int socket_handle = ssl_obj->socket_handle();
 
     // trap header ptr

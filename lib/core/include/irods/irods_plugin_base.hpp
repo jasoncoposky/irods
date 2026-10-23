@@ -1,9 +1,10 @@
 #ifndef IRODS_PLUGIN_BASE_HPP
 #define IRODS_PLUGIN_BASE_HPP
 
+#include <any>
+#include <functional>
+#include <memory>
 #include <string>
-
-#include <boost/function.hpp>
 
 #include "irods/irods_re_structs.hpp"
 #include "irods/rcConnect.h"
@@ -165,7 +166,7 @@ namespace irods
                 adapted_func_type adapted_fcn = [this, &_operation_name](plugin_context& _ctx, std::string* _out_param, types_t... _t) {
                     _ctx.rule_results( *_out_param );
                     typedef std::function<error(plugin_context&,types_t...)> fcn_t;
-                    fcn_t& fcn = boost::any_cast< fcn_t& >( operations_[ _operation_name ] );
+                    fcn_t& fcn = std::any_cast< fcn_t& >( operations_[ _operation_name ] );
                     error ret = fcn( _ctx, _t... );
                     *_out_param = _ctx.rule_results();
                     return ret;
@@ -282,7 +283,7 @@ namespace irods
                 return adapted_fcn( ctx, &out_param, std::forward<types_t>(_t)... );
 #endif // ENABLE_RE
             }
-            catch (const boost::bad_any_cast&) {
+            catch (const std::bad_any_cast&) {
                 std::string msg( "failed for call - " );
                 msg += _operation_name;
                 return ERROR(INVALID_ANY_CAST, msg);
@@ -303,14 +304,14 @@ namespace irods
                 ctx.rule_results(out_param);
 
                 using func_type =  std::function<error(plugin_context&, Args...)>;
-                func_type& f = boost::any_cast<func_type&>(operations_[_operation_name]);
+                func_type& f = std::any_cast<func_type&>(operations_[_operation_name]);
                 auto err = f(ctx, _args...);
 
                 out_param = ctx.rule_results();
 
                 return err;
             }
-            catch (const boost::bad_any_cast&) {
+            catch (const std::bad_any_cast&) {
                 std::string msg = "failed for call - ";
                 msg += _operation_name;
                 return ERROR(INVALID_ANY_CAST, msg);
@@ -362,7 +363,7 @@ namespace irods
 
         // =-=-=-=-=-=-=-
         /// @brief operations to be loaded from the plugin
-        lookup_table< boost::any > operations_;
+        lookup_table< std::any > operations_;
 
         maintenance_operation_t start_operation_;
         maintenance_operation_t stop_operation_;
@@ -426,7 +427,7 @@ namespace irods
 
     // =-=-=-=-=-=-=-
     // helpful typedef for sock comm interface & factory
-    typedef boost::shared_ptr<plugin_base> plugin_ptr;
+    using plugin_ptr = std::shared_ptr<plugin_base>;
 } // namespace irods
 
 #endif // IRODS_PLUGIN_BASE_HPP

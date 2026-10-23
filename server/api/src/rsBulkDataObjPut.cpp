@@ -23,8 +23,6 @@
 #include "irods/irods_random.hpp"
 #include "irods/key_value_proxy.hpp"
 
-#include <boost/lexical_cast.hpp>
-
 #include <fmt/format.h>
 
 #include <cstring>
@@ -670,15 +668,9 @@ fillBulkDataObjRegInp( const char * rescName, const char* rescHier, char * objPa
         return ret.code();
     }
 
-    try {
-        std::string resc_id_str = boost::lexical_cast<std::string>(resc_id);
-        snprintf( &bulkDataObjRegInp->sqlResult[9].value[MAX_NAME_LEN * rowCnt],
-                  MAX_NAME_LEN, "%s", resc_id_str.c_str() );
-    }
-    catch( boost::bad_lexical_cast& ) {
-        log_api::error("failed to cast [{}d] to a string", resc_id);
-        return SYS_INVALID_INPUT_PARAM;
-    }
+    const std::string resc_id_str = std::to_string(resc_id);
+    snprintf(&bulkDataObjRegInp->sqlResult[9].value[MAX_NAME_LEN * rowCnt],
+             MAX_NAME_LEN, "%s", resc_id_str.c_str());
 
     bulkDataObjRegInp->rowCnt++;
 

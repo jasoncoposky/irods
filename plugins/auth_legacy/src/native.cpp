@@ -68,7 +68,7 @@ irods::error native_auth_client_start(irods::plugin_context& _ctx,
         return ERROR(SYS_INVALID_INPUT_PARAM, "Null rcConn_t pointer.");
     }
 
-    irods::native_auth_object_ptr ptr = boost::dynamic_pointer_cast<irods::native_auth_object>(_ctx.fco());
+    irods::native_auth_object_ptr ptr = std::dynamic_pointer_cast<irods::native_auth_object>(_ctx.fco());
     ptr->rcComm(_comm);
     ptr->user_name(_comm->proxyUser.userName);
     ptr->zone_name(_comm->proxyUser.rodsZone);
@@ -90,7 +90,7 @@ irods::error native_auth_establish_context(irods::plugin_context& _ctx)
     memset( md5_buf, 0, sizeof( md5_buf ) );
 
     // get the native auth object
-    irods::native_auth_object_ptr ptr = boost::dynamic_pointer_cast<irods::native_auth_object >( _ctx.fco() );
+    irods::native_auth_object_ptr ptr = std::dynamic_pointer_cast<irods::native_auth_object >( _ctx.fco() );
 
     // copy the challenge into the md5 buffer
     strncpy( md5_buf, ptr->request_result().c_str(), CHALLENGE_LEN );
@@ -232,7 +232,7 @@ irods::error native_auth_client_request(
         return ERROR( 0, "Challenge attribute is blank." );
     }
 
-    irods::native_auth_object_ptr ptr = boost::dynamic_pointer_cast<irods::native_auth_object >( _ctx.fco() );
+    irods::native_auth_object_ptr ptr = std::dynamic_pointer_cast<irods::native_auth_object >( _ctx.fco() );
     ptr->request_result( std::string( auth_request->challenge, CHALLENGE_LEN ) );
 
     free( auth_request->challenge );
@@ -266,7 +266,7 @@ irods::error native_auth_agent_request(irods::plugin_context& _ctx)
     get64RandomBytes( buf );
 
     // get the auth object
-    irods::native_auth_object_ptr ptr = boost::dynamic_pointer_cast<irods::native_auth_object >( _ctx.fco() );
+    irods::native_auth_object_ptr ptr = std::dynamic_pointer_cast<irods::native_auth_object >( _ctx.fco() );
 
     // cache the challenge
     ptr->request_result( buf );
@@ -298,7 +298,7 @@ irods::error native_auth_client_response(irods::plugin_context& _ctx,
     }
 
     // get the auth object
-    irods::native_auth_object_ptr ptr = boost::dynamic_pointer_cast<irods::native_auth_object>(_ctx.fco());
+    irods::native_auth_object_ptr ptr = std::dynamic_pointer_cast<irods::native_auth_object>(_ctx.fco());
 
     // build the response string
     char response[ RESPONSE_LEN + 2 ];

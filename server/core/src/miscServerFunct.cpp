@@ -45,16 +45,17 @@
 
 #include <boost/thread/thread.hpp>
 #include <boost/thread/scoped_thread.hpp>
-#include <boost/lexical_cast.hpp>
 
 #include <fmt/format.h>
 
 #include <sys/wait.h>
 
+#include <any>
 #include <cstring>
 #include <iomanip>
 #include <fstream>
 #include <filesystem>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -381,7 +382,7 @@ svrPortalPutGet( rsComm_t *rsComm ) {
     int i;
     int numThreads;
     portalTransferInp_t myInput[MAX_NUM_CONFIG_TRAN_THR];
-    boost::shared_ptr<boost::thread> tid[MAX_NUM_CONFIG_TRAN_THR];
+    std::shared_ptr<boost::thread> tid[MAX_NUM_CONFIG_TRAN_THR];
     int oprType;
     int flags = 0;
     int retVal = 0;
@@ -2761,10 +2762,7 @@ irods::error add_global_re_params_to_kvp_for_dynpep(
 
     try {
         addKeyVal(&_kvp, irods::CLIENT_USER_PRIV_KW.c_str(),
-            boost::lexical_cast<std::string>(irods::get_server_property<const int>(irods::CLIENT_USER_PRIV_KW)).c_str());
-    } catch ( boost::bad_lexical_cast& _e ) {
-        // can't actually fail to cast an int to a string
-        addKeyVal(&_kvp, irods::CLIENT_USER_PRIV_KW.c_str(), "0");
+            std::to_string(irods::get_server_property<const int>(irods::CLIENT_USER_PRIV_KW)).c_str());
     } catch ( const irods::exception& e ) {
         addKeyVal(&_kvp, irods::CLIENT_USER_PRIV_KW.c_str(), "0");
     }
@@ -2783,10 +2781,7 @@ irods::error add_global_re_params_to_kvp_for_dynpep(
 
     try {
         addKeyVal(&_kvp, irods::PROXY_USER_PRIV_KW.c_str(),
-            boost::lexical_cast<std::string>(irods::get_server_property<const int>(irods::PROXY_USER_PRIV_KW)).c_str());
-    } catch ( boost::bad_lexical_cast& _e ) {
-        // can't actually fail to cast an int to a string
-        addKeyVal(&_kvp, irods::PROXY_USER_PRIV_KW.c_str(), "0");
+            std::to_string(irods::get_server_property<const int>(irods::PROXY_USER_PRIV_KW)).c_str());
     } catch ( const irods::exception& e ) {
         addKeyVal(&_kvp, irods::PROXY_USER_PRIV_KW.c_str(), "0");
     }
@@ -2816,7 +2811,7 @@ irods::error get_default_rule_plugin_instance(std::string& _instance_name)
     catch (const irods::exception& e) {
         return irods::error(e);
     }
-    catch (const boost::bad_any_cast& e) {
+    catch (const std::bad_any_cast& e) {
         return ERROR(INVALID_ANY_CAST, e.what());
     }
     catch (const std::out_of_range& e) {
@@ -2837,7 +2832,7 @@ irods::error list_rule_plugin_instances(std::vector<std::string>& _instance_name
     catch (const irods::exception& e) {
         return irods::error(e);
     }
-    catch (const boost::bad_any_cast& e) {
+    catch (const std::bad_any_cast& e) {
         return ERROR(INVALID_ANY_CAST, e.what());
     }
     catch (const std::out_of_range& e) {

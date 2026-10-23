@@ -50,20 +50,20 @@ namespace irods {
 
 
     error
-    ADLER32Strategy::init( boost::any& _context ) const {
+    ADLER32Strategy::init( std::any& _context ) const {
         _context = adler32_init();
         return SUCCESS();
     }
 
     error
-    ADLER32Strategy::update( const std::string& data, boost::any& _context ) const {
+    ADLER32Strategy::update( const std::string& data, std::any& _context ) const {
 
-        _context = adler32_update(boost::any_cast<adler32_parts>(_context), reinterpret_cast<const unsigned char*>(data.c_str()), data.size());
+        _context = adler32_update(std::any_cast<adler32_parts>(_context), reinterpret_cast<const unsigned char*>(data.c_str()), data.size());
         return SUCCESS();
     }
 
     error
-    ADLER32Strategy::digest( std::string& _messageDigest, boost::any& _context ) const {
+    ADLER32Strategy::digest( std::string& _messageDigest, std::any& _context ) const {
         return digest(
             irods::hash::options{.output_mode = irods::hash::output_mode::hex_string, .include_checksum_prefix = true},
             _context,
@@ -75,14 +75,14 @@ namespace irods {
         return _chksum.starts_with(ADLER32_CHKSUM_PREFIX);
     }
 
-    auto ADLER32Strategy::digest(const hash::options& _options, boost::any& _context, std::string& _out) const
+    auto ADLER32Strategy::digest(const hash::options& _options, std::any& _context, std::string& _out) const
         -> irods::error
     {
         if (irods::hash::output_mode::hex_string != _options.output_mode) {
             return ERROR(SYS_NOT_IMPLEMENTED, "Only hex string output is supported for this strategy.");
         }
 
-        const std::uint32_t result = adler32_final(boost::any_cast<adler32_parts>(_context));
+        const std::uint32_t result = adler32_final(std::any_cast<adler32_parts>(_context));
 
         std::stringstream ss;
         if (_options.include_checksum_prefix) {
@@ -100,5 +100,5 @@ namespace irods {
         return ADLER32_CHKSUM_PREFIX;
     } // ADLER32Strategy::checksum_prefix
 
-    void ADLER32Strategy::free_context(boost::any& context) const {}
+    void ADLER32Strategy::free_context(std::any& context) const {}
 }; // namespace irods

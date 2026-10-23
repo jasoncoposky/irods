@@ -2,9 +2,8 @@
 
 #include "irods/process_stash.hpp"
 
-#include <boost/any.hpp>
-
 #include <algorithm>
+#include <any>
 #include <iterator>
 #include <string>
 
@@ -43,14 +42,14 @@ TEST_CASE("process_stash basic operations")
 
     // Show that the handles map to the data which generated them.
     auto* p = irods::process_stash::find(h1);
-    CHECK(boost::any_cast<int&>(*p) == an_integer);
+    CHECK(std::any_cast<int&>(*p) == an_integer);
 
     p = irods::process_stash::find(h2);
-    CHECK(boost::any_cast<std::string&>(*p) == a_string);
+    CHECK(std::any_cast<std::string&>(*p) == a_string);
 
     p = irods::process_stash::find(h3);
-    CHECK(boost::any_cast<pod&>(*p).x == a_pod.x);
-    CHECK(boost::any_cast<pod&>(*p).y == a_pod.y);
+    CHECK(std::any_cast<pod&>(*p).x == a_pod.x);
+    CHECK(std::any_cast<pod&>(*p).y == a_pod.y);
 
     // Show that the handles can be used to erase data in the stash.
     CHECK(irods::process_stash::erase(h1));
