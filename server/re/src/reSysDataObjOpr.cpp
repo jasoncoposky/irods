@@ -28,6 +28,7 @@
 #include <fmt/format.h>
 
 #include <algorithm>
+#include <charconv>
 #include <cstring>
 #include <initializer_list>
 
@@ -481,7 +482,8 @@ msiSetNumThreads( msParam_t *xsizePerThrInMbStr, msParam_t *xmaxNumThrStr,
             rei->rsComm->windowSize = 0;
         }
         else {
-            rei->rsComm->windowSize = atoi( windowSizeStr );
+            rei->rsComm->windowSize = 0;
+            std::from_chars(windowSizeStr, windowSizeStr + std::strlen(windowSizeStr), rei->rsComm->windowSize);
         }
     }
 
@@ -503,7 +505,9 @@ msiSetNumThreads( msParam_t *xsizePerThrInMbStr, msParam_t *xmaxNumThrStr,
         sizePerThr = size_per_tran_thr;
     }
     else {
-        sizePerThr = atoi( sizePerThrInMbStr ) * ( 1024 * 1024 );
+        int size_per_thr_mb = 0;
+        std::from_chars(sizePerThrInMbStr, sizePerThrInMbStr + std::strlen(sizePerThrInMbStr), size_per_thr_mb);
+        sizePerThr = size_per_thr_mb * ( 1024 * 1024 );
         if ( sizePerThr <= 0 ) {
             rodsLog( LOG_ERROR,
                      "msiSetNumThreads: Bad input sizePerThrInMb %s", sizePerThrInMbStr );
@@ -523,7 +527,8 @@ msiSetNumThreads( msParam_t *xsizePerThrInMbStr, msParam_t *xmaxNumThrStr,
         maxNumThr = def_num_thr;
     }
     else {
-        maxNumThr = atoi( maxNumThrStr );
+        maxNumThr = 0;
+        std::from_chars(maxNumThrStr, maxNumThrStr + std::strlen(maxNumThrStr), maxNumThr);
         if ( maxNumThr < 0 ) {
             rodsLog( LOG_ERROR,
                      "msiSetNumThreads: Bad input maxNumThr %s", maxNumThrStr );
@@ -989,7 +994,8 @@ msiSetGraftPathScheme( msParam_t *xaddUserName, msParam_t *xtrimDirCnt,
         return SYS_INPUT_PERM_OUT_OF_RANGE;
     }
     else {
-        trimDirCnt = atoi( trimDirCntStr );
+        trimDirCnt = 0;
+        std::from_chars(trimDirCntStr, trimDirCntStr + std::strlen(trimDirCntStr), trimDirCnt);
     }
 
     rei->status = 0;
@@ -1286,7 +1292,8 @@ msiSetReplComment( msParam_t *inpParam1, msParam_t *inpParam2,
 
     /* parse inpParam1: data object ID */
     if ( ( dataIdStr = parseMspForStr( inpParam1 ) ) != NULL )  {
-        dataObjInfo.dataId = ( rodsLong_t ) atoll( dataIdStr );
+        dataObjInfo.dataId = 0;
+        std::from_chars(dataIdStr, dataIdStr + std::strlen(dataIdStr), dataObjInfo.dataId);
     }
     else {
         dataObjInfo.dataId = 0;
@@ -1334,7 +1341,7 @@ msiSetReplComment( msParam_t *inpParam1, msParam_t *inpParam2,
         }
         else {
             rodsLog( LOG_ERROR,
-                     "msiSetReplComment: rsModDataObjMeta failed for object ID %d, status = %d",
+                     "msiSetReplComment: rsModDataObjMeta failed for object ID %lld, status = %d",
                      dataObjInfo.dataId, rei->status );
         }
     }

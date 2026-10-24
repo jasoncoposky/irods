@@ -37,6 +37,7 @@
 #include "irods/rsStructFileExtAndReg.hpp"
 #include "irods/rs_replica_truncate.hpp"
 
+#include <charconv>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -423,7 +424,9 @@ msiDataObjLseek( msParam_t *inpParam1, msParam_t *inpParam2,
     if ( strcmp( inpParam1->type, STR_MS_T ) == 0 ) {
         /* str input */
         memset( &dataObjLseekInp, 0, sizeof( dataObjLseekInp ) );
-        dataObjLseekInp.l1descInx = atoi( ( char* )inpParam1->inOutStruct );
+        if (const auto* inx_str = static_cast<const char*>(inpParam1->inOutStruct); inx_str) {
+            std::from_chars(inx_str, inx_str + std::strlen(inx_str), dataObjLseekInp.l1descInx);
+        }
         myDataObjLseekInp = &dataObjLseekInp;
     }
     else if ( strcmp( inpParam1->type, INT_MS_T ) == 0 ) {
@@ -449,8 +452,13 @@ msiDataObjLseek( msParam_t *inpParam1, msParam_t *inpParam2,
         else if ( strcmp( inpParam2->type, STR_MS_T ) == 0 ) {
             /* str input */
             if ( strcmp( ( char * ) inpParam2->inOutStruct, "null" ) != 0 ) {
-                myDataObjLseekInp->offset = strtoll( ( char* )inpParam2->inOutStruct,
-                                                     0, 0 );
+                const auto* offset_str = static_cast<const char*>(inpParam2->inOutStruct);
+                int base = 10;
+                if (offset_str[0] == '0' && (offset_str[1] == 'x' || offset_str[1] == 'X')) {
+                    offset_str += 2;
+                    base = 16;
+                }
+                std::from_chars(offset_str, offset_str + std::strlen(offset_str), myDataObjLseekInp->offset, base);
             }
         }
         else if ( strcmp( inpParam2->type, DOUBLE_MS_T ) == 0 ) {
@@ -480,7 +488,8 @@ msiDataObjLseek( msParam_t *inpParam1, msParam_t *inpParam2,
                 myDataObjLseekInp->whence = SEEK_END;
             }
             else if ( strcmp( ( char * ) inpParam3->inOutStruct, "null" ) != 0 ) {
-                myDataObjLseekInp->whence = atoi( ( char* )inpParam3->inOutStruct );
+                const auto* whence_str = static_cast<const char*>(inpParam3->inOutStruct);
+                std::from_chars(whence_str, whence_str + std::strlen(whence_str), myDataObjLseekInp->whence);
             }
         }
         else if ( strcmp( inpParam3->type, INT_MS_T ) == 0 ) {

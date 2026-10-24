@@ -8,7 +8,24 @@
 #include "irods/private/re/reFuncDefs.hpp"
 #include "irods/filesystem/path.hpp"
 
+#include <charconv>
 #include <cstring>
+
+namespace
+{
+    auto parse_int(const char* _str) noexcept -> int
+    {
+        if (!_str) {
+            return 0;
+        }
+        while (*_str == ' ' || *_str == '\t') {
+            ++_str;
+        }
+        int val = 0;
+        std::from_chars(_str, _str + std::strlen(_str), val);
+        return val;
+    }
+} // anonymous namespace
 
 /**
  * \fn msiGetStdoutInExecCmdOut (msParam_t *inpExecCmdOut, msParam_t *outStr, ruleExecInfo_t *rei)
@@ -685,7 +702,7 @@ msiSubstr( msParam_t *stringIn,  msParam_t *offset, msParam_t *length,
         return rei->status;
     }
     else {
-        intOffset = atoi( ( char * ) offset->inOutStruct );
+        intOffset = parse_int( static_cast<const char*>( offset->inOutStruct ) );
     }
 
     if ( length == NULL ) {
@@ -703,7 +720,7 @@ msiSubstr( msParam_t *stringIn,  msParam_t *offset, msParam_t *length,
         intLength = -1;
     }
     else {
-        intLength = atoi( ( char * ) length->inOutStruct );
+        intLength = parse_int( static_cast<const char*>( length->inOutStruct ) );
     }
 
     if ( intOffset >= 0 ) {
@@ -799,7 +816,7 @@ msiExit( msParam_t *inpParam1, msParam_t *inpParam2, ruleExecInfo_t *rei ) {
 
     if ( strcmp( inpParam1->type, STR_MS_T ) == 0 && strcmp( inpParam2->type, STR_MS_T ) == 0 ) {
         snprintf( errMsg, ERR_MSG_LEN, "%s\n", ( char * ) inpParam2->inOutStruct );
-        status = atoi( ( char * ) inpParam1->inOutStruct );
+        status = parse_int( static_cast<const char*>( inpParam1->inOutStruct ) );
         addRErrorMsg( &rsComm->rError, status, errMsg );
         return status;
     }

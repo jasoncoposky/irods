@@ -43,6 +43,9 @@ getDataObjInfoIncSpecColl( rsComm_t *rsComm, dataObjInp_t *dataObjInp,
 // irods includes
 #include "irods/irods_get_full_path_for_config_file.hpp"
 
+#include <charconv>
+#include <cstring>
+
 #define GC_BEGIN Region *_rnew = make_region(0, NULL), *_rnew2 = NULL;
 #define GC_REGION _rnew
 #define GC_ON(env) \
@@ -1398,7 +1401,17 @@ Res *smsi_double( Node** params, int, Node* node, ruleExecInfo_t*, int, Env*, rE
     Res *val = params[0], *res = newRes( r );
     if ( TYPE( val ) == T_STRING ) {
         res->exprType = newSimpType( T_DOUBLE, r );
-        RES_DOUBLE_VAL_LVAL( res ) = atof( val->text );
+        double dval = 0.0;
+        if (const char* s = val->text; s) {
+            while (*s == ' ' || *s == '\t' || *s == '\n' || *s == '\r') {
+                ++s;
+            }
+            if (*s == '+') {
+                ++s;
+            }
+            std::from_chars(s, s + std::strlen(s), dval);
+        }
+        RES_DOUBLE_VAL_LVAL( res ) = dval;
     }
     else if ( TYPE( val ) == T_DATETIME ) {
         res->exprType = newSimpType( T_DOUBLE, r );
@@ -1419,7 +1432,17 @@ Res *smsi_int( Node** params, int, Node* node, ruleExecInfo_t*, int, Env*, rErro
     Res *val = params[0], *res = newRes( r );
     if ( TYPE( val ) == T_STRING ) {
         res->exprType = newSimpType( T_INT, r );
-        RES_INT_VAL_LVAL( res ) = atoi( val->text );
+        int ival = 0;
+        if (const char* s = val->text; s) {
+            while (*s == ' ' || *s == '\t' || *s == '\n' || *s == '\r') {
+                ++s;
+            }
+            if (*s == '+') {
+                ++s;
+            }
+            std::from_chars(s, s + std::strlen(s), ival);
+        }
+        RES_INT_VAL_LVAL( res ) = ival;
     }
     else if ( TYPE( val ) == T_DOUBLE ) {
         res->exprType = newSimpType( T_INT, r );

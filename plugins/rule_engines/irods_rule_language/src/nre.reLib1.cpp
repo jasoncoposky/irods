@@ -17,9 +17,12 @@
 #include "irods/irods_re_plugin.hpp"
 #include "irods/rsEndTransaction.hpp"
 #include "irods/genquery2_builder.hpp"
+#include "irods/irods_at_scope_exit.hpp"
 #include "irods/rs_genquery2.hpp"
 
 #include <fmt/format.h>
+#include <charconv>
+#include <cstring>
 #include <string>
 #include <string_view>
 
@@ -378,10 +381,12 @@ initRuleStruct( const char* inst_name, rsComm_t *svrComm, const char *irbSet, co
         readICatUserLogging( svrComm->clientUser.userName, &ruleEngineConfig.logging, svrComm );
     }
 
-    if ( getenv( RETESTFLAG ) != NULL ) {
-        reTestFlag = atoi( getenv( RETESTFLAG ) );
-        if ( getenv( RELOOPBACKFLAG ) != NULL ) {
-            reLoopBackFlag = atoi( getenv( RELOOPBACKFLAG ) );
+    if ( const char* env_val = getenv( RETESTFLAG ); env_val != NULL ) {
+        reTestFlag = 0;
+        std::from_chars(env_val, env_val + std::strlen(env_val), reTestFlag);
+        if ( const char* lb_val = getenv( RELOOPBACKFLAG ); lb_val != NULL ) {
+            reLoopBackFlag = 0;
+            std::from_chars(lb_val, lb_val + std::strlen(lb_val), reLoopBackFlag);
         }
         else {
             reLoopBackFlag = 0;
@@ -395,11 +400,13 @@ initRuleStruct( const char* inst_name, rsComm_t *svrComm, const char *irbSet, co
         GlobalAllRuleExecFlag = 9;
     }
 
-    if ( getenv( GLOBALREDEBUGFLAG ) != NULL ) {
-        GlobalREDebugFlag = atoi( getenv( GLOBALREDEBUGFLAG ) );
+    if ( const char* dbg_val = getenv( GLOBALREDEBUGFLAG ); dbg_val != NULL ) {
+        GlobalREDebugFlag = 0;
+        std::from_chars(dbg_val, dbg_val + std::strlen(dbg_val), GlobalREDebugFlag);
     }
-    if ( getenv( GLOBALREAUDITFLAG ) != NULL ) {
-        GlobalREAuditFlag = atoi( getenv( GLOBALREAUDITFLAG ) );
+    if ( const char* aud_val = getenv( GLOBALREAUDITFLAG ); aud_val != NULL ) {
+        GlobalREAuditFlag = 0;
+        std::from_chars(aud_val, aud_val + std::strlen(aud_val), GlobalREAuditFlag);
     }
     if ( GlobalREAuditFlag == 0 ) {
         GlobalREAuditFlag = GlobalREDebugFlag;
@@ -784,6 +791,7 @@ readDVarStructFromFile( char *dvarBaseName, rulevardef_t *inRuleVarDef ) {
                  dvarsFileName );
         return DVARMAP_FILE_READ_ERROR;
     }
+    const auto close_file = irods::at_scope_exit{[file] { std::fclose(file); }};
     buf[MAX_DVAR_LENGTH - 1] = '\0';
     while ( fgets( buf, MAX_DVAR_LENGTH - 1, file ) != NULL ) {
         if ( buf[strlen( buf ) - 1] == '\n' ) {
@@ -799,14 +807,14 @@ readDVarStructFromFile( char *dvarBaseName, rulevardef_t *inRuleVarDef ) {
         rSplitStr( l3, l1, MAX_DVAR_LENGTH, l2, MAX_DVAR_LENGTH, '|' );
         inRuleVarDef->var2CMap[i] = strdup( l1 ); /** var2CMap **/
         if ( strlen( l2 ) > 0 ) {
-            inRuleVarDef->varId[i] = atoll( l2 );    /** varId **/
+            inRuleVarDef->varId[i] = 0;
+            std::from_chars( l2, l2 + std::strlen( l2 ), inRuleVarDef->varId[i] );    /** varId **/
         }
         else {
             inRuleVarDef->varId[i] = i;    /** ruleId **/
         }
         i++;
     }
-    fclose( file );
     inRuleVarDef->MaxNumOfDVars = ( long int )  i;
     return 0;
 }
@@ -846,6 +854,7 @@ readFuncMapStructFromFile( char *fmapBaseName, rulefmapdef_t* inRuleFuncMapDef )
                  fmapsFileName );
         return FMAP_FILE_READ_ERROR;
     }
+    const auto close_file = irods::at_scope_exit{[file] { std::fclose(file); }};
     buf[MAX_FMAP_LENGTH - 1] = '\0';
     while ( fgets( buf, MAX_FMAP_LENGTH - 1, file ) != NULL ) {
         if ( buf[strlen( buf ) - 1] == '\n' ) {
@@ -859,14 +868,14 @@ readFuncMapStructFromFile( char *fmapBaseName, rulefmapdef_t* inRuleFuncMapDef )
         rSplitStr( l0, l1, MAX_FMAP_LENGTH, l2, MAX_FMAP_LENGTH, '|' );
         inRuleFuncMapDef->func2CMap[i] = strdup( l1 ); /** func2CMap **/
         if ( strlen( l2 ) > 0 ) {
-            inRuleFuncMapDef->fmapId[i] = atoll( l2 );    /** fmapId **/
+            inRuleFuncMapDef->fmapId[i] = 0;
+            std::from_chars( l2, l2 + std::strlen( l2 ), inRuleFuncMapDef->fmapId[i] );    /** fmapId **/
         }
         else {
             inRuleFuncMapDef->fmapId[i] = i;    /** fmapId **/
         }
         i++;
     }
-    fclose( file );
     inRuleFuncMapDef->MaxNumOfFMaps = ( long int ) i;
     if ( inRuleFuncMapDef == &coreRuleFuncMapDef ) {
         createFuncMapDefIndex( &coreRuleFuncMapDef, &coreRuleFuncMapDefIndex );

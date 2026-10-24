@@ -20,6 +20,9 @@ const static std::map<const std::string, const int> irods_error_name_map = irods
 #include "irods/private/re/typing.hpp"
 #include "irods/irods_re_plugin.hpp"
 
+#include <charconv>
+#include <cstring>
+
 //    #include "irods/irods_ms_plugin.hpp"
 //    irods::ms_table MicrosTable;
 //    extern int NumOfAction;
@@ -58,6 +61,38 @@ namespace
 
         std::memset(_p, 0, sizeof(MsParam));
     } // clear_ms_param
+
+    auto parse_int(const char* _str) noexcept -> int
+    {
+        if (!_str) {
+            return 0;
+        }
+        while (*_str == ' ' || *_str == '\t' || *_str == '\n' || *_str == '\r') {
+            ++_str;
+        }
+        if (*_str == '+') {
+            ++_str;
+        }
+        int val = 0;
+        std::from_chars(_str, _str + std::strlen(_str), val);
+        return val;
+    }
+
+    auto parse_double(const char* _str) noexcept -> double
+    {
+        if (!_str) {
+            return 0.0;
+        }
+        while (*_str == ' ' || *_str == '\t' || *_str == '\n' || *_str == '\r') {
+            ++_str;
+        }
+        if (*_str == '+') {
+            ++_str;
+        }
+        double val = 0.0;
+        std::from_chars(_str, _str + std::strlen(_str), val);
+        return val;
+    }
 } // anonymous namespace
 
 /* utilities */
@@ -196,11 +231,11 @@ Res* evaluateExpression3( Node *expr, int applyAll, int force, ruleExecInfo_t *r
             break;
         case TK_INT:
             res->exprType = newSimpType( T_INT, r );
-            RES_INT_VAL_LVAL( res ) = atoi( expr->text );
+            RES_INT_VAL_LVAL( res ) = parse_int( expr->text );
             break;
         case TK_DOUBLE:
             res->exprType = newSimpType( T_DOUBLE, r );
-            RES_DOUBLE_VAL_LVAL( res ) = atof( expr->text );
+            RES_DOUBLE_VAL_LVAL( res ) = parse_double( expr->text );
             break;
         case TK_STRING:
             res = newStringRes( r, expr->text );
@@ -365,7 +400,7 @@ Res* processCoercion( Node *node, Res *res, ExprType *type, Hashtable *tvarEnv, 
                 nres = newIntRes( r, RES_BOOL_VAL( res ) );
                 break;
             case T_STRING:
-                nres = newIntRes( r, atoi( res->text ) );
+                nres = newIntRes( r, parse_int( res->text ) );
                 break;
             default:
                 break;
@@ -380,7 +415,7 @@ Res* processCoercion( Node *node, Res *res, ExprType *type, Hashtable *tvarEnv, 
                 nres = newDoubleRes( r, RES_BOOL_VAL( res ) );
                 break;
             case T_STRING:
-                nres = newDoubleRes( r, atof( res->text ) );
+                nres = newDoubleRes( r, parse_double( res->text ) );
                 break;
             default:
                 break;

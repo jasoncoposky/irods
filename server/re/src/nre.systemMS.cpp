@@ -18,6 +18,7 @@
 #include "irods/irods_re_structs.hpp"
 #include "irods/irods_ms_plugin.hpp"
 
+#include <charconv>
 #include <cstring>
 #include <ctime>
 #include <optional>
@@ -551,10 +552,15 @@ msiFreeBuffer( msParam_t* memoryParam, ruleExecInfo_t *rei ) {
 int
 msiSleep( msParam_t* secPtr, msParam_t* microsecPtr,  ruleExecInfo_t* ) {
 
-    int sec, microsec;
+    int sec = 0;
+    int microsec = 0;
 
-    sec = atoi( ( char * ) secPtr->inOutStruct );
-    microsec = atoi( ( char * ) microsecPtr->inOutStruct );
+    if (const auto* sec_str = static_cast<const char*>(secPtr->inOutStruct); sec_str) {
+        std::from_chars(sec_str, sec_str + std::strlen(sec_str), sec);
+    }
+    if (const auto* usec_str = static_cast<const char*>(microsecPtr->inOutStruct); usec_str) {
+        std::from_chars(usec_str, usec_str + std::strlen(usec_str), microsec);
+    }
 
     rodsSleep( sec, microsec );
     return 0;

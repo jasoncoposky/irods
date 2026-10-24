@@ -9,6 +9,8 @@
 
 #include <fmt/format.h>
 
+#include <charconv>
+#include <cstring>
 #include <cxxabi.h>
 
 namespace
@@ -434,7 +436,10 @@ namespace irods::re_serialization
 
             std::vector<int> offset_int{};
             for (int i = 0; i < blk->attriArray.rowCnt; ++i) {
-                offset_int.push_back(atoi(&offset->value[offset->len * i]));
+                const char* val_str = &offset->value[offset->len * i];
+                int val = 0;
+                std::from_chars(val_str, val_str + std::strlen(val_str), val);
+                offset_int.push_back(val);
             }
 
             for(auto i = 0; i < blk->attriArray.rowCnt; ++i) {
