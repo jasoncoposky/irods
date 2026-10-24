@@ -2,6 +2,7 @@
 
 #include "irods/apiHeaderAll.h"
 #include "irods/dataObjOpr.hpp"
+#include "irods/irods_at_scope_exit.hpp"
 #include "irods/irods_file_object.hpp"
 #include "irods/irods_log.hpp"
 #include "irods/irods_logger.hpp"
@@ -43,17 +44,19 @@ namespace
                   char *collection,
                   int oprType)
     {
-        structFileOprInp_t structFileOprInp;
+        structFileOprInp_t structFileOprInp{};
+        specColl_t specColl{};
         int status = 0;
         char *dataType; // JMC - backport 4633
 
         dataType = dataObjInfo->dataType;
 
-        std::memset(&structFileOprInp, 0, sizeof(structFileOprInp));
+        const auto clear_cond = irods::at_scope_exit{[&structFileOprInp] {
+            clearKeyVal(&structFileOprInp.condInput);
+        }};
         addKeyVal( &structFileOprInp.condInput, RESC_HIER_STR_KW, dataObjInfo->rescHier );
 
-        structFileOprInp.specColl = ( specColl_t* )malloc( sizeof( specColl_t ) );
-        memset( structFileOprInp.specColl, 0, sizeof( specColl_t ) );
+        structFileOprInp.specColl = &specColl;
         structFileOprInp.specColl->type = TAR_STRUCT_FILE_T;
 
         /* collection and objPath are only important for reg CollInfo2 */
@@ -63,7 +66,6 @@ namespace
         rstrcpy( structFileOprInp.specColl->resource, dataObjInfo->rescName, NAME_LEN );
         rstrcpy( structFileOprInp.specColl->phyPath, dataObjInfo->filePath, MAX_NAME_LEN );
         rstrcpy( structFileOprInp.specColl->rescHier, dataObjInfo->rescHier, MAX_NAME_LEN );
-        addKeyVal( &structFileOprInp.condInput, RESC_HIER_STR_KW, dataObjInfo->rescHier );
 
         rstrcpy( structFileOprInp.specColl->cacheDir, phyBunDir, MAX_NAME_LEN );
         structFileOprInp.specColl->cacheDirty = 1;
@@ -77,8 +79,6 @@ namespace
         }
 
         status = rsStructFileSync( rsComm, &structFileOprInp );
-
-        free( structFileOprInp.specColl );
 
         if ( status < 0 ) {
             rodsLog( LOG_ERROR,
@@ -101,6 +101,9 @@ namespace
         // =-=-=-=-=-=-=-
         // create an empty data obj
         dataObjInp_t dataObjInp{};
+        const auto clear_data_obj_cond = irods::at_scope_exit{[&dataObjInp] {
+            clearKeyVal(&dataObjInp.condInput);
+        }};
         dataObjInp.openFlags = O_WRONLY;
 
         // =-=-=-=-=-=-=-
@@ -165,8 +168,10 @@ namespace
 
         // =-=-=-=-=-=-=-
         // check object permissions / stat
-        chkObjPermAndStat_t chkObjPermAndStatInp;
-        memset( &chkObjPermAndStatInp, 0, sizeof( chkObjPermAndStatInp ) );
+        chkObjPermAndStat_t chkObjPermAndStatInp{};
+        const auto clear_chk_cond = irods::at_scope_exit{[&chkObjPermAndStatInp] {
+            clearKeyVal(&chkObjPermAndStatInp.condInput);
+        }};
         rstrcpy( chkObjPermAndStatInp.objPath, structFileBundleInp->collection, MAX_NAME_LEN );
         chkObjPermAndStatInp.flags = CHK_COLL_FOR_BUNDLE_OPR;
         addKeyVal( &chkObjPermAndStatInp.condInput, RESC_NAME_KW,     L1desc[l1descInx].dataObjInfo->rescName );
@@ -202,8 +207,10 @@ namespace
 
         // =-=-=-=-=-=-=-
         // build a collection open input structure
-        collInp_t collInp;
-        std::memset(&collInp, 0, sizeof(collInp));
+        collInp_t collInp{};
+        const auto clear_coll_cond = irods::at_scope_exit{[&collInp] {
+            clearKeyVal(&collInp.condInput);
+        }};
         collInp.flags = RECUR_QUERY_FG | VERY_LONG_METADATA_FG | NO_TRIM_REPL_FG | INCLUDE_CONDINPUT_IN_QUERY;
         rstrcpy( collInp.collName, structFileBundleInp->collection, MAX_NAME_LEN );
         addKeyVal( &collInp.condInput, RESC_ID_KW, resc_id_str.c_str() );
@@ -219,6 +226,9 @@ namespace
             rodsLog( LOG_ERROR, "rsStructFileBundle: rsOpenCollection of %s error. status = %d",
                      collInp.collName, handleInx );
             rmdir( phyBunDir );
+            openedDataObjInp_t dataObjCloseInp{};
+            dataObjCloseInp.l1descInx = l1descInx;
+            rsDataObjClose( rsComm, &dataObjCloseInp );
             return handleInx;
         }
 

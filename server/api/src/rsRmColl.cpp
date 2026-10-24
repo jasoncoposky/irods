@@ -37,6 +37,7 @@
 #include "irods/rs_genquery2.hpp"
 
 #include <fmt/format.h>
+#include <charconv>
 #include <chrono>
 #include <cstring>
 
@@ -269,8 +270,8 @@ _rsPhyRmColl( rsComm_t *rsComm, collInp_t *rmCollInp,
     int status;
     collInp_t openCollInp;
     int handleInx;
-    dataObjInp_t dataObjInp;
-    collInp_t tmpCollInp;
+    dataObjInp_t dataObjInp{};
+    collInp_t tmpCollInp{};
     int rmtrashFlag = 0;
     int savedStatus = 0;
     int fileCntPerStatOut = FILE_CNT_PER_STAT_OUT;
@@ -290,8 +291,18 @@ _rsPhyRmColl( rsComm_t *rsComm, collInp_t *rmCollInp,
         return handleInx;
     }
 
-    memset( &dataObjInp, 0, sizeof( dataObjInp ) );
-    memset( &tmpCollInp, 0, sizeof( tmpCollInp ) );
+    bool coll_closed = false;
+    const auto close_coll = irods::at_scope_exit{[rsComm, &handleInx, &coll_closed] {
+        if (!coll_closed) {
+            rsCloseCollection(rsComm, &handleInx);
+        }
+    }};
+
+    const auto clear_conds = irods::at_scope_exit{[&dataObjInp, &tmpCollInp] {
+        clearKeyVal(&dataObjInp.condInput);
+        clearKeyVal(&tmpCollInp.condInput);
+    }};
+
     /* catch the UNREG_OPR */
     dataObjInp.oprType = tmpCollInp.oprType = rmCollInp->oprType;
 
@@ -300,11 +311,13 @@ _rsPhyRmColl( rsComm_t *rsComm, collInp_t *rmCollInp,
             /* when a collection is moved, the modfiyTime of the object in
               * the collection does not change. So, we'll depend on the
               * modfiyTime of the collection */
-            int ageLimit = atoi( tmpValue ) * 60;
-            int modifyTime =
-                atoi( CollHandle[handleInx].rodsObjStat->modifyTime );
+            int ageLimit = 0;
+            std::from_chars(tmpValue, tmpValue + std::strlen(tmpValue), ageLimit);
+            ageLimit *= 60;
+            int modifyTime = 0;
+            const auto* mtime_str = CollHandle[handleInx].rodsObjStat->modifyTime;
+            std::from_chars(mtime_str, mtime_str + std::strlen(mtime_str), modifyTime);
             if ( ( time( 0 ) - modifyTime ) < ageLimit ) {
-                rsCloseCollection( rsComm, &handleInx );
                 return 0;
             }
         }
@@ -313,11 +326,6 @@ _rsPhyRmColl( rsComm_t *rsComm, collInp_t *rmCollInp,
     }
     addKeyVal( &dataObjInp.condInput, FORCE_FLAG_KW, "" );
     addKeyVal( &tmpCollInp.condInput, FORCE_FLAG_KW, "" );
-
-    if ( ( tmpValue = getValByKey( &rmCollInp->condInput, AGE_KW ) ) != NULL ) {
-        addKeyVal( &dataObjInp.condInput, AGE_KW, tmpValue );
-        addKeyVal( &tmpCollInp.condInput, AGE_KW, tmpValue );
-    }
 
     if ( collOprStat != NULL && *collOprStat == NULL ) {
         *collOprStat = ( collOprStat_t* )malloc( sizeof( collOprStat_t ) );
@@ -449,6 +457,7 @@ _rsPhyRmColl( rsComm_t *rsComm, collInp_t *rmCollInp,
         collEnt = NULL;
     }
     rsCloseCollection( rsComm, &handleInx );
+    coll_closed = true;
 
     if ( ( rmtrashFlag > 0 && ( isTrashHome( rmCollInp->collName ) > 0 || // JMC - backport 4561
                                 isOrphanPath( rmCollInp->collName ) == is_ORPHAN_HOME ) )   ||
@@ -476,9 +485,6 @@ _rsPhyRmColl( rsComm_t *rsComm, collInp_t *rmCollInp,
     if ( status < 0 ) {
         savedStatus = status;
     }
-
-    clearKeyVal( &tmpCollInp.condInput );
-    clearKeyVal( &dataObjInp.condInput );
 
     return savedStatus;
 }

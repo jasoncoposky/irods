@@ -58,6 +58,7 @@ isData(rsComm_t *rsComm, char *objName, rodsLong_t *dataId) {
     }
 
     if (nullptr != dataId) {
+        *dataId = 0;
         const auto& id_str = rows.front().at(0).get_ref<const std::string&>();
         std::from_chars(id_str.data(), id_str.data() + id_str.size(), *dataId);
     }
@@ -134,6 +135,7 @@ isCollAllKinds( rsComm_t *rsComm, char *objName, rodsLong_t *collId ) {
     rstrcpy( dataObjInp.objPath, objName, MAX_NAME_LEN );
     status = collStatAllKinds( rsComm, &dataObjInp, &rodsObjStatOut );
     if ( status >= 0 && collId != NULL && NULL != rodsObjStatOut ) { // JMC cppcheck - nullptr
+        *collId = 0;
         std::from_chars(rodsObjStatOut->dataId, rodsObjStatOut->dataId + std::strlen(rodsObjStatOut->dataId), *collId);
     }
     return status;
@@ -160,6 +162,7 @@ isColl( rsComm_t *rsComm, char *objName, rodsLong_t *collId ) {
     }
 
     if ( collId != NULL ) {
+        *collId = 0;
         const auto& id_str = rows.front().at(0).get_ref<const std::string&>();
         std::from_chars(id_str.data(), id_str.data() + id_str.size(), *collId);
     }

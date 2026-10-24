@@ -2,6 +2,7 @@
 
 #include "irods/apiHeaderAll.h"
 #include "irods/dataObjOpr.hpp"
+#include "irods/irods_at_scope_exit.hpp"
 #include "irods/irods_resource_backport.hpp"
 #include "irods/irods_stacktrace.hpp"
 #include "irods/miscServerFunct.hpp"
@@ -128,8 +129,8 @@ int
 regUnbunPhySubfiles( rsComm_t *rsComm, const char *_resc_name, char *phyBunDir,
                      int rmBunCopyFlag ) {
     char subfilePath[MAX_NAME_LEN];
-    dataObjInp_t dataObjInp;
-    dataObjInp_t dataObjUnlinkInp;
+    dataObjInp_t dataObjInp{};
+    dataObjInp_t dataObjUnlinkInp{};
     int status = 0;
     int savedStatus = 0;
 
@@ -142,9 +143,13 @@ regUnbunPhySubfiles( rsComm_t *rsComm, const char *_resc_name, char *phyBunDir,
                  phyBunDir, errno );
         return UNIX_FILE_OPENDIR_ERR - errno;
     }
-    std::memset(&dataObjInp, 0, sizeof(dataObjInp));
+
+    const auto clear_conds = irods::at_scope_exit{[&dataObjInp, &dataObjUnlinkInp] {
+        clearKeyVal(&dataObjInp.condInput);
+        clearKeyVal(&dataObjUnlinkInp.condInput);
+    }};
+
     if ( rmBunCopyFlag > 0 ) {
-        std::memset(&dataObjUnlinkInp, 0, sizeof(dataObjUnlinkInp));
         addKeyVal( &dataObjUnlinkInp.condInput, ADMIN_KW, "" );
     }
 
@@ -179,6 +184,10 @@ regUnbunPhySubfiles( rsComm_t *rsComm, const char *_resc_name, char *phyBunDir,
             unlink( subfilePath );
             continue;
         }
+        const auto free_doi = irods::at_scope_exit{[&dataObjInfoHead] {
+            freeAllDataObjInfo(dataObjInfoHead);
+            dataObjInfoHead = nullptr;
+        }};
         requeDataObjInfoByResc( &dataObjInfoHead, BUNDLE_RESC, 1, 1 );
         bunDataObjInfo = NULL;
         if ( strcmp( dataObjInfoHead->rescName, BUNDLE_RESC ) != 0 ) {
@@ -220,10 +229,7 @@ regUnbunPhySubfiles( rsComm_t *rsComm, const char *_resc_name, char *phyBunDir,
                 savedStatus = status;
             }
         }
-        freeAllDataObjInfo( dataObjInfoHead );
-
     }
-    clearKeyVal( &dataObjInp.condInput );
     if ( status >= 0 && savedStatus < 0 ) {
         return savedStatus;
     }
