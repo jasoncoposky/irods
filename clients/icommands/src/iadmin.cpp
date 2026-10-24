@@ -1058,16 +1058,18 @@ auto list_logical_quotas(const char* _coll_name = nullptr) -> int
         const std::string objects_over_string = std::to_string(quotaEntry.over_objects);
 
         std::string modify_ts_string = "?";
-        try {
-            const std::time_t tt = std::strtoll(quotaEntry.modify_time, nullptr, 10);
+        std::time_t tt = 0;
+        const std::string_view mtime_sv{quotaEntry.modify_time};
+        const auto [ptr, ec] = std::from_chars(mtime_sv.data(), mtime_sv.data() + mtime_sv.size(), tt);
+        if (ec == std::errc{} && ptr == mtime_sv.data() + mtime_sv.size()) {
             std::tm utc_tm{};
             gmtime_r(&tt, &utc_tm);
             std::ostringstream ss;
             ss << std::put_time(&utc_tm, "%Y-%m-%d.%H:%M:%S");
             modify_ts_string = ss.str();
         }
-        catch (const std::exception& e) {
-            fmt::print(stderr, "Timestamp conversion error: {}", e.what());
+        else {
+            fmt::print(stderr, "Timestamp conversion error: invalid integer");
         }
 
         fmt::print("Collection name: {}\nMaximum bytes: {}\nMaximum objects: {}\nBytes over: {}\nObjects over: "

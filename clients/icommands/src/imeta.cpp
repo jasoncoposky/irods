@@ -763,6 +763,7 @@ modCopyAVUMetadata( char *arg0, char *arg1, char *arg2, char *arg3,
                     char *arg4, char *arg5, char *arg6, char *arg7 )
 {
     modAVUMetadataInp_t modAVUMetadataInp{};
+    const auto clear_cond = irods::at_scope_exit{[&modAVUMetadataInp] { clearKeyVal(&modAVUMetadataInp.condInput); }};
     char fullName1[MAX_NAME_LEN];
     char fullName2[MAX_NAME_LEN];
 
@@ -837,18 +838,15 @@ modCopyAVUMetadata( char *arg0, char *arg1, char *arg2, char *arg3,
     }
 
     if ( status == CAT_UNKNOWN_FILE ) {
-        char tempName[MAX_NAME_LEN] = "/";
-        int len;
+        const auto tempName = fmt::format("/{}", myEnv.rodsZone);
         int isRemote = 0;
-        strncat( tempName, myEnv.rodsZone, MAX_NAME_LEN - strlen( tempName ) );
-        len = strlen( tempName );
-        if ( strncmp( tempName, fullName1, len ) != 0 ) {
+        if ( std::strncmp( tempName.c_str(), fullName1, tempName.size() ) != 0 ) {
             std::cerr << "Error: "
                       << "Cannot copy metadata from a remote zone."
                       << std::endl;
             isRemote = 1;
         }
-        if ( strncmp( tempName, fullName2, len ) != 0 ) {
+        if ( std::strncmp( tempName.c_str(), fullName2, tempName.size() ) != 0 ) {
             std::cerr << "Error: "
                       << "Cannot copy metadata to a remote zone."
                       << std::endl;
@@ -874,6 +872,7 @@ modAVUMetadata(char *arg0, char *arg1, char *arg2, char *arg3,
                char *arg4, char *arg5, char *arg6, char *arg7, char *arg8)
 {
     modAVUMetadataInp_t modAVUMetadataInp{};
+    const auto clear_cond = irods::at_scope_exit{[&modAVUMetadataInp] { clearKeyVal(&modAVUMetadataInp.condInput); }};
     char fullName[MAX_NAME_LEN];
 
     if ( strcmp( arg1, "-R" ) == 0 || strcmp( arg1, "-r" ) == 0 ||

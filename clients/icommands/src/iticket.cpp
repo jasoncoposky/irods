@@ -103,17 +103,12 @@ printResultsAndSubQuery( rcComm_t *Conn, int status, const nlohmann::json& rows,
 
                     if (*descriptions[j] != '\0') {
                         if (strstr( descriptions[j], "time") != 0) {
-                            char localTime[TIME_LEN];
-
                             if (strcmp(tResult, "0") == 0 || *tResult == '\0') {
-                                strcpy(localTime, "none");
+                                printf("%s: none\n", descriptions[j]);
                             }
                             else {
-                                const auto ts = to_utc_timestamp(val);
-                                strcpy(localTime, ts.data());
+                                printf("%s: %s\n", descriptions[j], to_utc_timestamp(val).c_str());
                             }
-
-                            printf("%s: %s\n", descriptions[j], localTime);
                         }
                         else {
                             printf("%s: %s\n", descriptions[j], tResult);
@@ -350,12 +345,13 @@ int
 doTicketOp( const char *arg1, const char *arg2, const char *arg3,
             const char *arg4, const char *arg5 ) {
     ticketAdminInp_t ticketAdminInp{};
+    const auto clear_cond = irods::at_scope_exit{[&ticketAdminInp] { clearKeyVal(&ticketAdminInp.condInput); }};
 
-    ticketAdminInp.arg1 = strdup( arg1 );
-    ticketAdminInp.arg2 = strdup( arg2 );
-    ticketAdminInp.arg3 = strdup( arg3 );
-    ticketAdminInp.arg4 = strdup( arg4 );
-    ticketAdminInp.arg5 = strdup( arg5 );
+    ticketAdminInp.arg1 = const_cast<char*>(arg1);
+    ticketAdminInp.arg2 = const_cast<char*>(arg2);
+    ticketAdminInp.arg3 = const_cast<char*>(arg3);
+    ticketAdminInp.arg4 = const_cast<char*>(arg4);
+    ticketAdminInp.arg5 = const_cast<char*>(arg5);
     ticketAdminInp.arg6 = "";
 
     if (run_as_admin) {
@@ -364,12 +360,6 @@ doTicketOp( const char *arg1, const char *arg2, const char *arg3,
 
     const int status = rcTicketAdmin( Conn, &ticketAdminInp );
     lastCommandStatus = status;
-
-    free( ticketAdminInp.arg1 );
-    free( ticketAdminInp.arg2 );
-    free( ticketAdminInp.arg3 );
-    free( ticketAdminInp.arg4 );
-    free( ticketAdminInp.arg5 );
 
     if ( status < 0 ) {
         if ( Conn->rError ) {

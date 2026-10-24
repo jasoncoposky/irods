@@ -1,6 +1,8 @@
 #include "utility.hpp"
 #include <irods/filesystem/path.hpp>
 #include <irods/genquery2_builder.hpp>
+#include <irods/irods_at_scope_exit.hpp>
+#include <irods/rcMisc.h>
 #include <irods/rodsClient.h>
 #include <irods/rodsError.h>
 #include <irods/irods_client_api_table.hpp>
@@ -11,6 +13,7 @@
 
 #include <charconv>
 #include <cstdio>
+#include <cstring>
 #include <string>
 #include <vector>
 
@@ -200,6 +203,7 @@ doMod( rcComm_t *Conn, char *objPath, char *time ) {
     dataObjInfo_t dataObjInfo;
 
     memset( &regParam, 0, sizeof( regParam ) );
+    const auto clear_reg = irods::at_scope_exit{[&regParam] { clearKeyVal(&regParam); }};
     addKeyVal( &regParam, DATA_EXPIRY_KW, time );
 
     memset( &dataObjInfo, 0, sizeof( dataObjInfo ) );
@@ -225,6 +229,7 @@ doModDatatype( rcComm_t *Conn, char *objPath, char *dataType ) {
     dataObjInfo_t dataObjInfo;
 
     memset( &regParam, 0, sizeof( regParam ) );
+    const auto clear_reg = irods::at_scope_exit{[&regParam] { clearKeyVal(&regParam); }};
     addKeyVal( &regParam, DATA_TYPE_KW, dataType );
 
     memset( &dataObjInfo, 0, sizeof( dataObjInfo ) );
@@ -250,6 +255,7 @@ doModComment( rcComm_t *Conn, char *objPath, int numRepl, char *theComment ) {
     dataObjInfo_t dataObjInfo;
 
     memset( &regParam, 0, sizeof( regParam ) );
+    const auto clear_reg = irods::at_scope_exit{[&regParam] { clearKeyVal(&regParam); }};
     addKeyVal( &regParam, DATA_COMMENTS_KW, theComment );
 
     memset( &dataObjInfo, 0, sizeof( dataObjInfo ) );
@@ -405,7 +411,9 @@ main( int argc, char **argv ) {
                 status = doModComment( Conn, objPath, -1, cmdToken[3] );
             }
             else {
-                status = doModComment( Conn, objPath, atoi( cmdToken[3] ), cmdToken[4] );
+                int repl_num = 0;
+                std::from_chars(cmdToken[3], cmdToken[3] + std::strlen(cmdToken[3]), repl_num);
+                status = doModComment( Conn, objPath, repl_num, cmdToken[4] );
             }
 
             didOne = 1;
