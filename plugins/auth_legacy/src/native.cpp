@@ -216,27 +216,25 @@ irods::error native_auth_client_request(
     }
 
     authRequestOut_t* auth_request = NULL;
+    const auto free_auth_req = irods::at_scope_exit{[&auth_request] {
+        if (auth_request) {
+            std::free(auth_request->challenge);
+            std::free(auth_request);
+        }
+    }};
     int status = rcAuthRequest( _comm, &auth_request );
     if ( status < 0 ) {
-        if ( auth_request ) {
-            free( auth_request->challenge );
-            free( auth_request );
-        }
         return ERROR( status, "Call to rcAuthRequest failed." );
     }
     else if ( !auth_request ) {
         return ERROR( SYS_NULL_INPUT, "Call to rcAuthRequest resulted in a null authRequest." );
     }
     else if ( !auth_request->challenge ) {
-        free( auth_request );
         return ERROR( 0, "Challenge attribute is blank." );
     }
 
     irods::native_auth_object_ptr ptr = std::dynamic_pointer_cast<irods::native_auth_object >( _ctx.fco() );
     ptr->request_result( std::string( auth_request->challenge, CHALLENGE_LEN ) );
-
-    free( auth_request->challenge );
-    free( auth_request );
 
     return SUCCESS();
 
@@ -345,6 +343,12 @@ irods::error native_auth_agent_response(
     char *bufp;
     authCheckInp_t authCheckInp;
     authCheckOut_t *authCheckOut = NULL;
+    const auto free_auth_check = irods::at_scope_exit{[&authCheckOut] {
+        if (authCheckOut) {
+            std::free(authCheckOut->serverResponse);
+            std::free(authCheckOut);
+        }
+    }};
     rodsServerHost_t *rodsServerHost;
 
     char digest[RESPONSE_LEN + 2];
@@ -404,7 +408,7 @@ irods::error native_auth_agent_response(
                     getZoneServerId( userZone, serverId );
                     len = strlen( serverId );
                     if ( len <= 0 ) {
-                        rodsLog( LOG_NOTICE, "rsAuthResponse: Warning, cannot authenticate the remote server, no RemoteZoneSID defined in server_config.json", status );
+                        rodsLog( LOG_NOTICE, "rsAuthResponse: Warning, cannot authenticate the remote server, no RemoteZoneSID defined in server_config.json" );
                         if ( requireServerAuth ) {
                             ret = ERROR( REMOTE_SERVER_SID_NOT_DEFINED, "Authentication disallowed, no RemoteZoneSID defined" );
                         }
@@ -552,12 +556,6 @@ irods::error native_auth_agent_response(
         ret = ERROR( status, "rcAuthCheck failed." );
     }
 
-    if ( authCheckOut != NULL ) {
-        if ( authCheckOut->serverResponse != NULL ) {
-            free( authCheckOut->serverResponse );
-        }
-        free( authCheckOut );
-    }
     return ret;
 } // native_auth_agent_response
 

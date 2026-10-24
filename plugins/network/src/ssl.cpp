@@ -92,7 +92,8 @@ static auto ssl_load_dh_params(SSL_CTX* ctx, const char* file) -> int
         return -1;
     }
 
-    if (SSL_CTX_set0_tmp_dh_pkey(ctx, pkey) < 0) {
+    if (SSL_CTX_set0_tmp_dh_pkey(ctx, pkey) <= 0) {
+        EVP_PKEY_free(pkey);
         return -1;
     }
 
@@ -508,6 +509,12 @@ irods::error ssl_client_stop(irods::plugin_context& _ctx,
     irods::ssl_object_ptr ssl_obj = std::dynamic_pointer_cast< irods::ssl_object >( _ctx.fco() );
     SSL*     ssl = ssl_obj->ssl();
     SSL_CTX* ctx = ssl_obj->ssl_ctx();
+    const auto free_ssl = irods::at_scope_exit{[&ssl_obj, ssl, ctx] {
+        SSL_free(ssl);
+        SSL_CTX_free(ctx);
+        ssl_obj->ssl(nullptr);
+        ssl_obj->ssl_ctx(nullptr);
+    }};
 
     /* shut down the SSL connection. First SSL_shutdown() sends "close notify" */
     int status = SSL_shutdown( ssl );
@@ -521,13 +528,6 @@ irods::error ssl_client_stop(irods::plugin_context& _ctx,
     if (status != 1) {
         return ERROR(SSL_SHUTDOWN_ERROR, err_str.c_str());
     }
-
-    /* clean up the SSL state */
-    SSL_free( ssl );
-    SSL_CTX_free( ctx );
-
-    ssl_obj->ssl( 0 );
-    ssl_obj->ssl_ctx( 0 );
 
     return SUCCESS();
 
@@ -698,6 +698,8 @@ irods::error ssl_agent_start(irods::plugin_context& _ctx)
     if (const auto ec = SSL_accept(ssl); ec < 1) {
         std::string err_str = "error calling SSL_accept";
         ssl_build_error_string( err_str );
+        SSL_free( ssl );
+        SSL_CTX_free( ctx );
         return ERROR(SSL_HANDSHAKE_ERROR, err_str.c_str());
     }
 
@@ -732,6 +734,7 @@ irods::error ssl_agent_start(irods::plugin_context& _ctx)
 
     // call interface to read message body
     bytesBuf_t msg_buf{};
+    const auto clear_msg_buf = irods::at_scope_exit{[&msg_buf] { clearBBuf(&msg_buf); }};
     if (const auto err = readMsgBody(ssl_obj, &msg_header, &msg_buf, 0, 0, XML_PROT, NULL); !err.ok()) {
         return PASSMSG("Read message body failed.", err);
     }
@@ -771,6 +774,12 @@ irods::error ssl_agent_stop(irods::plugin_context& _ctx)
     irods::ssl_object_ptr ssl_obj = std::dynamic_pointer_cast< irods::ssl_object >( _ctx.fco() );
     SSL*     ssl = ssl_obj->ssl();
     SSL_CTX* ctx = ssl_obj->ssl_ctx();
+    const auto free_ssl = irods::at_scope_exit{[&ssl_obj, ssl, ctx] {
+        SSL_free(ssl);
+        SSL_CTX_free(ctx);
+        ssl_obj->ssl(nullptr);
+        ssl_obj->ssl_ctx(nullptr);
+    }};
 
     // shut down the SSL connection. Might need to call SSL_shutdown()
     // twice to allow the protocol to notify and then complete
@@ -787,12 +796,6 @@ irods::error ssl_agent_stop(irods::plugin_context& _ctx)
             return ERROR(SSL_SHUTDOWN_ERROR, err_str.c_str());
         }
     }
-
-    // clean up the SSL state
-    SSL_free( ssl );
-    SSL_CTX_free( ctx );
-    ssl_obj->ssl( 0 );
-    ssl_obj->ssl_ctx( 0 );
 
     rodsLog( LOG_DEBUG, "sslShutdown: shut down SSL connection" );
 

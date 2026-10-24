@@ -1,4 +1,5 @@
 #include "irods/generalAdmin.h"
+#include "irods/irods_at_scope_exit.hpp"
 #include "irods/irods_collection_object.hpp"
 #include "irods/irods_file_object.hpp"
 #include "irods/irods_hierarchy_parser.hpp"
@@ -20,6 +21,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <charconv>
 #include <cstring>
 #include <iostream>
 #include <sstream>
@@ -120,6 +122,22 @@ namespace
             pos = delim_pos + 1;
         }
         return out;
+    }
+
+    template <typename T = int>
+    auto parse_int(std::string_view _s) -> T
+    {
+        while (!_s.empty() && std::isspace(static_cast<unsigned char>(_s.front()))) {
+            _s.remove_prefix(1);
+        }
+        if (!_s.empty() && _s.front() == '+') {
+            _s.remove_prefix(1);
+        }
+        T val{};
+        if (!_s.empty()) {
+            std::from_chars(_s.data(), _s.data() + _s.size(), val);
+        }
+        return val;
     }
 } // anonymous namespace
 
@@ -257,7 +275,8 @@ irods::error univ_mss_file_stat(
     const char *delim2 = "-";
     const char *delim3 = ".";
     execCmdOut_t *execCmdOut = NULL;
-    struct tm mytm;
+    const auto free_exec_out = irods::at_scope_exit{[&execCmdOut] { freeCmdExecOut(execCmdOut); }};
+    struct tm mytm{};
     time_t myTime;
 
     const auto escaped_filename = escape_single_quotes(_ctx, filename);
@@ -273,25 +292,25 @@ irods::error univ_mss_file_stat(
         if ( execCmdOut->stdoutBuf.buf != NULL ) {
             const std::string outputStr(static_cast<char*>(execCmdOut->stdoutBuf.buf), execCmdOut->stdoutBuf.len);
             const std::vector<std::string> output_tokens = split_string( outputStr, delim1 );
-            _statbuf->st_dev = atoi( output_tokens[0].c_str() );
-            _statbuf->st_ino = atoi( output_tokens[1].c_str() );
-            _statbuf->st_mode = atoi( output_tokens[2].c_str() );
-            _statbuf->st_nlink = atoi( output_tokens[3].c_str() );
-            _statbuf->st_uid = atoi( output_tokens[4].c_str() );
-            _statbuf->st_gid = atoi( output_tokens[5].c_str() );
-            _statbuf->st_rdev = atoi( output_tokens[6].c_str() );
-            _statbuf->st_size = atoll( output_tokens[7].c_str() );
-            _statbuf->st_blksize = atoi( output_tokens[8].c_str() );
-            _statbuf->st_blocks = atoi( output_tokens[9].c_str() );
+            _statbuf->st_dev = parse_int<decltype(_statbuf->st_dev)>( output_tokens[0] );
+            _statbuf->st_ino = parse_int<decltype(_statbuf->st_ino)>( output_tokens[1] );
+            _statbuf->st_mode = parse_int<decltype(_statbuf->st_mode)>( output_tokens[2] );
+            _statbuf->st_nlink = parse_int<decltype(_statbuf->st_nlink)>( output_tokens[3] );
+            _statbuf->st_uid = parse_int<decltype(_statbuf->st_uid)>( output_tokens[4] );
+            _statbuf->st_gid = parse_int<decltype(_statbuf->st_gid)>( output_tokens[5] );
+            _statbuf->st_rdev = parse_int<decltype(_statbuf->st_rdev)>( output_tokens[6] );
+            _statbuf->st_size = parse_int<decltype(_statbuf->st_size)>( output_tokens[7] );
+            _statbuf->st_blksize = parse_int<decltype(_statbuf->st_blksize)>( output_tokens[8] );
+            _statbuf->st_blocks = parse_int<decltype(_statbuf->st_blocks)>( output_tokens[9] );
             for ( i = 0; i < 3; i++ ) {
                 const std::vector<std::string> date_tokens = split_string( output_tokens[10 + i], delim2 );
-                mytm.tm_year = atoi( date_tokens[0].c_str() ) - 1900;
-                mytm.tm_mon = atoi( date_tokens[1].c_str() ) - 1;
-                mytm.tm_mday = atoi( date_tokens[2].c_str() );
+                mytm.tm_year = parse_int( date_tokens[0] ) - 1900;
+                mytm.tm_mon = parse_int( date_tokens[1] ) - 1;
+                mytm.tm_mday = parse_int( date_tokens[2] );
                 const std::vector<std::string> time_tokens = split_string( date_tokens[3], delim3 );
-                mytm.tm_hour = atoi( time_tokens[0].c_str() );
-                mytm.tm_min = atoi( time_tokens[1].c_str() );
-                mytm.tm_sec = atoi( time_tokens[2].c_str() );
+                mytm.tm_hour = parse_int( time_tokens[0] );
+                mytm.tm_min = parse_int( time_tokens[1] );
+                mytm.tm_sec = parse_int( time_tokens[2] );
                 myTime = mktime( &mytm );
                 switch ( i ) {
                 case 0:
@@ -313,12 +332,10 @@ irods::error univ_mss_file_stat(
         msg << "univ_mss_file_stat - failed for [";
         msg << filename;
         msg << "]";
-        freeCmdExecOut( execCmdOut );
         return ERROR( status, msg.str() );
 
     }
 
-    freeCmdExecOut( execCmdOut );
     return CODE( status );
 
 } // univ_mss_file_stat
@@ -696,6 +713,7 @@ irods::error univ_mss_file_sync_to_arch(
     err = univ_mss_file_mkdir( context );
 
     execCmdOut_t* execCmdOut = NULL;
+    const auto free_exec_out = irods::at_scope_exit{[&execCmdOut] { freeCmdExecOut(execCmdOut); }};
 
     // =-=-=-=-=-=-=-
     // get the script property
@@ -738,7 +756,6 @@ irods::error univ_mss_file_sync_to_arch(
         msg << execCmdOut->stderrBuf.buf;
         msg << "]  status [";
         msg << execCmdOut->status << "]";
-        freeCmdExecOut( execCmdOut );
         return ERROR( status, msg.str() );
     }
 

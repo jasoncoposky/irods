@@ -202,8 +202,8 @@ static irods::error unix_file_copy(
     const irods::at_scope_exit close_fds{
         [&]()
         {
-            if (inFd > 0) close(inFd);
-            if (outFd > 0) close(outFd);
+            if (inFd >= 0) close(inFd);
+            if (outFd >= 0) close(outFd);
         }
     };
 

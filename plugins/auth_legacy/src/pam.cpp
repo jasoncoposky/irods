@@ -14,6 +14,7 @@
 #include "irods/icatHighLevelRoutines.hpp"
 
 // =-=-=-=-=-=-=-
+#include "irods/irods_at_scope_exit.hpp"
 #include "irods/irods_auth_plugin.hpp"
 #include "irods/irods_auth_constants.hpp"
 #include "irods/irods_pam_auth_object.hpp"
@@ -211,6 +212,7 @@ irods::error pam_auth_client_request(
     // =-=-=-=-=-=-=-
     // make the call to our auth request
     authPluginReqOut_t* req_out = 0;
+    const auto free_req_out = irods::at_scope_exit{[&req_out] { std::free(req_out); }};
     int status = rcAuthPluginRequest( _comm, &req_in, &req_out );
 
     // =-=-=-=-=-=-=-
@@ -230,7 +232,6 @@ irods::error pam_auth_client_request(
         // and cache the result in our auth object
         ptr->request_result( req_out->result_ );
         status = obfSavePw( 0, 0, 0, req_out->result_ );
-        free( req_out );
         if (status < 0) {
             return ERROR(status, "obfSavePw failed");
         }
@@ -256,6 +257,8 @@ int run_pam_auth_check(
     }
     pid = fork();
     if ( pid == -1 ) {
+        close( p2cp[0] );
+        close( p2cp[1] );
         irods::experimental::log::authentication::error("{}: fork() error: errno=[{}]", __func__, errno);
         return SYS_FORK_ERROR;
     }
@@ -265,6 +268,7 @@ int run_pam_auth_check(
            This is still the parent.  Write the message to the child and
            then wait for the exit and status.
         */
+        close( p2cp[0] );
         if ( write( p2cp[1], _password.c_str(), _password.size() ) == -1 ) {
             int errsv = errno;
             irods::log( ERROR( errsv, "Error writing from parent to child." ) );
@@ -279,6 +283,7 @@ int run_pam_auth_check(
             int errsv = errno;
             irods::log( ERROR( errsv, "Error duplicating the file descriptor." ) );
         }
+        close( p2cp[0] );
         close( p2cp[1] );
         const auto binary = irods::get_irods_sbin_directory() / "irodsPamAuthCheck";
         i = execl(binary.c_str(),
@@ -340,6 +345,7 @@ irods::error pam_auth_agent_request(
         // =-=-=-=-=-=-=-
         // manufacture structures for the redirected call
         authPluginReqOut_t* req_out = 0;
+        const auto free_req_out = irods::at_scope_exit{[&req_out] { std::free(req_out); }};
         authPluginReqInp_t  req_inp;
         strncpy( req_inp.auth_scheme_, irods::AUTH_PAM_SCHEME.c_str(), irods::AUTH_PAM_SCHEME.size() + 1 );
         strncpy( req_inp.context_, context.c_str(), context.size() + 1 );

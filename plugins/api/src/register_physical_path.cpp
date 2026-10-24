@@ -310,7 +310,8 @@ namespace
         rstrcpy(dataObjInfo->objPath, dataObjInp->objPath, MAX_NAME_LEN);
 
         if (kvp.contains(DATA_ID_KW)) {
-            dataObjInfo->dataId = std::atoll(kvp.at(DATA_ID_KW).value().data());
+            const auto data_id_str = kvp.at(DATA_ID_KW).value();
+            std::from_chars(data_id_str.data(), data_id_str.data() + data_id_str.size(), dataObjInfo->dataId);
         }
 
         if (kvp.contains(RESC_NAME_KW)) {

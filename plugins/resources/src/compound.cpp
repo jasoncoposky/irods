@@ -30,6 +30,8 @@
 
 #include <fmt/format.h>
 
+#include <charconv>
+#include <cstring>
 #include <iostream>
 #include <sstream>
 #include <string>
@@ -885,7 +887,9 @@ irods::error repl_object(
         // set object id if provided
         char *id_str = getValByKey(&file_obj->cond_input(), DATA_ID_KW);
         if (id_str) {
-            file_obj->id(strtol(id_str, NULL, 10));
+            rodsLong_t id{};
+            std::from_chars(id_str, id_str + std::strlen(id_str), id);
+            file_obj->id(id);
         }
 
         dataObjInfo_t* destDataObjInfo = L1desc[destination_l1descInx].dataObjInfo;
@@ -950,7 +954,9 @@ irods::error repl_object(
         // set object id if provided
         char *id_str = getValByKey(&file_obj->cond_input(), DATA_ID_KW);
         if (id_str) {
-            file_obj->id(strtol(id_str, NULL, 10));
+            rodsLong_t id{};
+            std::from_chars(id_str, id_str + std::strlen(id_str), id);
+            file_obj->id(id);
         }
 
         addKeyVal(&L1desc[destination_l1descInx].dataObjInfo->condInput, NO_COMPUTE_KW, "");
