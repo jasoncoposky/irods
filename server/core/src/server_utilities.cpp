@@ -1,6 +1,7 @@
 #include "irods/server_utilities.hpp"
 
 #include "irods/dataObjInpOut.h"
+#include "irods/irods_at_scope_exit.hpp"
 #include "irods/key_value_proxy.hpp"
 #include "irods/irods_logger.hpp"
 
@@ -87,6 +88,13 @@ namespace irods
             return -1;
         }
 
+        bool keep_fd_open = false;
+        const auto close_fd = irods::at_scope_exit{[fd, &keep_fd_open] {
+            if (!keep_fd_open) {
+                close(fd);
+            }
+        }};
+
         // Get the current open flags for the open file descriptor.
         const auto flags = fcntl(fd, F_GETFD);
         if (flags == -1) {
@@ -130,6 +138,7 @@ namespace irods
             return -1;
         }
 
+        keep_fd_open = true;
         return 0;
     } // create_pid_file
 

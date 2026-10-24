@@ -2072,6 +2072,7 @@ reconnManager( rsComm_t *rsComm ) {
         irods::error ret = irods::network_factory( rsComm, net_obj );
         if ( !ret.ok() ) {
             irods::log( PASS( ret ) );
+            close( newSock );
             return;
         }
 
@@ -2096,6 +2097,9 @@ reconnManager( rsComm_t *rsComm ) {
 
         std::unique_lock<std::mutex> boost_lock( *rsComm->thread_ctx->lock );
         rsComm->clientState = reconnMsg->procState;
+        if ( rsComm->reconnectedSock > 0 ) {
+            close( rsComm->reconnectedSock );
+        }
         rsComm->reconnectedSock = newSock;
         /* need to check agentState */
         while ( rsComm->agentState == SENDING_STATE ) {

@@ -26,6 +26,7 @@
 #include "irods/key_value_proxy.hpp"
 #include "irods/replica_proxy.hpp"
 
+#include <charconv>
 #include <cstring>
 
 int
@@ -296,7 +297,7 @@ fillL1desc( int l1descInx, dataObjInp_t *dataObjInp,
 
     const auto open_type{getValByKey(condInput, OPEN_TYPE_KW)};
     if (open_type) {
-        L1desc[l1descInx].openType = std::atoi(open_type);
+        std::from_chars(open_type, open_type + std::strlen(open_type), L1desc[l1descInx].openType);
     }
 
     if ( dataObjInp != NULL ) {

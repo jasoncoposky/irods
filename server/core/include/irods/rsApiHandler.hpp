@@ -47,6 +47,4 @@ int _svrSendCollOprStat(rsComm_t* rsComm, collOprStat_t* collOprStat);
 
 int svrSendZoneCollOprStat(rsComm_t* rsComm, rcComm_t* conn, collOprStat_t* collOprStat, int retval);
 
-void readTimeoutHandler(int sig);
-
 #endif // IRODS_RS_API_HANDLER_HPP

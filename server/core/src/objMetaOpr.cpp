@@ -10,6 +10,7 @@
 #include "irods/modAVUMetadata.h"
 #include "irods/rsIcatOpr.hpp"
 #include "irods/rsModAVUMetadata.hpp"
+#include "irods/irods_at_scope_exit.hpp"
 #include "irods/irods_resource_redirect.hpp"
 #include "irods/irods_hierarchy_parser.hpp"
 #include "irods/filesystem/path.hpp"
@@ -127,15 +128,13 @@ isCollAllKinds( rsComm_t *rsComm, char *objName, rodsLong_t *collId ) {
     dataObjInp_t dataObjInp;
     int status;
     rodsObjStat_t *rodsObjStatOut = NULL;
+    const auto free_stat = irods::at_scope_exit{[&rodsObjStatOut] { freeRodsObjStat(rodsObjStatOut); }};
 
     std::memset(&dataObjInp, 0, sizeof(dataObjInp));
     rstrcpy( dataObjInp.objPath, objName, MAX_NAME_LEN );
     status = collStatAllKinds( rsComm, &dataObjInp, &rodsObjStatOut );
     if ( status >= 0 && collId != NULL && NULL != rodsObjStatOut ) { // JMC cppcheck - nullptr
-        *collId = strtoll( rodsObjStatOut->dataId, 0, 0 );
-    }
-    if ( rodsObjStatOut != NULL ) {
-        freeRodsObjStat( rodsObjStatOut );
+        std::from_chars(rodsObjStatOut->dataId, rodsObjStatOut->dataId + std::strlen(rodsObjStatOut->dataId), *collId);
     }
     return status;
 }

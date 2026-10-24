@@ -29,6 +29,7 @@
 
 #include <fmt/format.h>
 
+#include <charconv>
 #include <cstring>
 
 namespace
@@ -535,7 +536,7 @@ specCollSubStat( rsComm_t *rsComm, specColl_t *specColl,
             memset( myDataObjInfo, 0, sizeof( dataObjInfo_t ) );
             replSpecColl( curSpecColl, &myDataObjInfo->specColl );
             rstrcpy( myDataObjInfo->objPath, newPath, MAX_NAME_LEN );
-            myDataObjInfo->dataId = strtoll( rodsObjStatOut->dataId, 0, 0 );
+            std::from_chars(rodsObjStatOut->dataId, rodsObjStatOut->dataId + std::strlen(rodsObjStatOut->dataId), myDataObjInfo->dataId);
             rstrcpy( myDataObjInfo->dataOwnerName, rodsObjStatOut->ownerName, NAME_LEN );
             rstrcpy( myDataObjInfo->dataOwnerZone, rodsObjStatOut->ownerZone, NAME_LEN );
             rstrcpy( myDataObjInfo->dataCreate,    rodsObjStatOut->createTime, TIME_LEN );

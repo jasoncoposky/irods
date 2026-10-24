@@ -17,12 +17,11 @@
 #include "irods/client_api_allowlist.hpp"
 #include "irods/key_value_proxy.hpp"
 
-#include <csetjmp>
 #include <mutex>
-jmp_buf Jenv;
 
 // =-=-=-=-=-=-=-
 // irods includes
+#include "irods/irods_at_scope_exit.hpp"
 #include "irods/irods_network_factory.hpp"
 #include "irods/irods_server_api_table.hpp"
 #include "irods/irods_threads.hpp"
@@ -90,7 +89,7 @@ int rsApiHandler(rsComm_t*   rsComm,
     }
 
     if (apiInx < 0) {
-        rodsLog(LOG_ERROR, "rsApiHandler: apiTableLookup of apiNumber %d failed", apiNumber);
+        log_agent::error("rsApiHandler: apiTableLookup of apiNumber {} failed", apiNumber);
         // cannot use sendApiReply because it does not know apiInx
         sendRodsMsg( net_obj, RODS_API_REPLY_T, NULL, NULL, NULL,
                      apiInx, rsComm->irodsProt );
@@ -118,8 +117,7 @@ int rsApiHandler(rsComm_t*   rsComm,
 
     status = chkApiPermission( rsComm, apiInx );
     if ( status < 0 ) {
-        rodsLog( LOG_NOTICE,
-                 "rsApiHandler: User has no permission for apiNumber %d", apiNumber );
+        log_agent::info("rsApiHandler: User has no permission for apiNumber {}", apiNumber);
         sendApiReply( rsComm, apiInx, status, myOutStruct, &myOutBsBBuf );
         return status;
     }
@@ -128,30 +126,46 @@ int rsApiHandler(rsComm_t*   rsComm,
 
     /* some sanity check */
     if ( inputStructBBuf->len > 0 && RsApiTable[apiInx]->inPackInstruct == NULL ) {
-        rodsLog( LOG_NOTICE,
-                 "rsApiHandler: input struct error 1 for apiNumber %d", apiNumber );
+        log_agent::info("rsApiHandler: input struct error 1 for apiNumber {}", apiNumber);
         sendApiReply( rsComm, apiInx, SYS_API_INPUT_ERR, myOutStruct,
                       &myOutBsBBuf );
         return SYS_API_INPUT_ERR;
     }
 
     if ( inputStructBBuf->len <= 0 && RsApiTable[apiInx]->inPackInstruct != NULL ) {
-        rodsLog( LOG_NOTICE,
-                 "rsApiHandler: input struct error 2 for apiNumber %d", apiNumber );
+        log_agent::info("rsApiHandler: input struct error 2 for apiNumber {}", apiNumber);
         sendApiReply( rsComm, apiInx, SYS_API_INPUT_ERR, myOutStruct,
                       &myOutBsBBuf );
         return SYS_API_INPUT_ERR;
     }
 
     if ( bsBBuf->len > 0 && RsApiTable[apiInx]->inBsFlag <= 0 ) {
-        rodsLog( LOG_NOTICE,
-                 "rsApiHandler: input byte stream error for apiNumber %d", apiNumber );
+        log_agent::info("rsApiHandler: input byte stream error for apiNumber {}", apiNumber);
         sendApiReply( rsComm, apiInx, SYS_API_INPUT_ERR, myOutStruct,
                       &myOutBsBBuf );
         return SYS_API_INPUT_ERR;
     }
 
-    char *myInStruct = NULL;
+    char *myInStruct = nullptr;
+    const auto clear_structs = irods::at_scope_exit{[&RsApiTable, apiInx, &myInStruct, &myOutStruct] {
+        if (myInStruct) {
+            if (RsApiTable[apiInx] && RsApiTable[apiInx]->clearInStruct) {
+                RsApiTable[apiInx]->clearInStruct(myInStruct);
+            }
+
+            std::free(myInStruct);
+            myInStruct = nullptr;
+        }
+
+        if (myOutStruct) {
+            if (RsApiTable[apiInx] && RsApiTable[apiInx]->clearOutStruct) {
+                RsApiTable[apiInx]->clearOutStruct(myOutStruct);
+            }
+
+            std::free(myOutStruct);
+            myOutStruct = nullptr;
+        }
+    }};
 
     if ( inputStructBBuf->len > 0 ) {
         log_agent::debug("Unpacking byte buffer based on packing instruction [{}]", RsApiTable[apiInx]->inPackInstruct);
@@ -159,8 +173,8 @@ int rsApiHandler(rsComm_t*   rsComm,
                                ( char* )RsApiTable[apiInx]->inPackInstruct, RodsPackTable, rsComm->irodsProt,
                                rsComm->cliVersion.relVersion);
         if ( status < 0 ) {
-            rodsLog( LOG_NOTICE, "rsApiHandler: unpackStruct error for apiNumber %d, status = %d",
-                     apiNumber, status );
+            log_agent::info("rsApiHandler: unpackStruct error for apiNumber {}, status = {}",
+                              apiNumber, status);
             sendApiReply( rsComm, apiInx, status, myOutStruct, &myOutBsBBuf );
             return status;
         }
@@ -170,7 +184,7 @@ int rsApiHandler(rsComm_t*   rsComm,
 
     irods::api_entry_ptr api_entry = RsApiTable[apiInx];
     if ( !api_entry.get() ) {
-        rodsLog( LOG_ERROR, "Null handler encountered for api number %d in rsApiHandler.", apiNumber );
+        log_agent::error("Null handler encountered for api number {} in rsApiHandler.", apiNumber);
         return SYS_API_INPUT_ERR;
     }
 
@@ -236,25 +250,6 @@ int rsApiHandler(rsComm_t*   rsComm,
 
     if (retVal != SYS_NO_HANDLER_REPLY_MSG) {
         status = sendAndProcApiReply(rsComm, apiInx, retVal, myOutStruct, &myOutBsBBuf);
-    }
-
-    // clear the incoming packing instruction
-    if (myInStruct) {
-        if (RsApiTable[apiInx]->clearInStruct) {
-            RsApiTable[apiInx]->clearInStruct(myInStruct);
-        }
-
-        std::free(myInStruct);
-        myInStruct = nullptr;
-    }
-
-    if (myOutStruct) {
-        if (RsApiTable[apiInx]->clearOutStruct) {
-            RsApiTable[apiInx]->clearOutStruct(myOutStruct);
-        }
-
-        std::free(myOutStruct);
-        myOutStruct = nullptr;
     }
 
     if (retVal >= 0 && status < 0) {
@@ -401,9 +396,9 @@ chkApiVersion( int apiInx ) {
     irods::api_entry_table& RsApiTable = irods::get_server_api_table();
     if ( ( cliApiVersion = getenv( SP_API_VERSION ) ) != NULL ) {
         if ( strcmp( cliApiVersion, RsApiTable[apiInx]->apiVersion ) != 0 ) {
-            rodsLog( LOG_ERROR,
-                     "chkApiVersion:Client's API Version %s does not match Server's %s",
-                     cliApiVersion, RsApiTable[apiInx]->apiVersion );
+            log_agent::error(
+                "chkApiVersion:Client's API Version {} does not match Server's {}",
+                cliApiVersion, RsApiTable[apiInx]->apiVersion);
             return USER_API_VERSION_MISMATCH;
         }
     }
@@ -438,37 +433,37 @@ static
 int
 apply_acPostProcForParallelTransferReceived(rsComm_t *rsComm) {
     if (rsComm == NULL) {
-        rodsLog(LOG_ERROR, "apply_acPostProcForParallelTransferReceived: NULL rsComm");
+        log_agent::error("apply_acPostProcForParallelTransferReceived: NULL rsComm");
         return SYS_INTERNAL_NULL_INPUT_ERR;
     }
     if (rsComm->portalOpr == NULL) {
-        rodsLog(LOG_ERROR, "apply_acPostProcForParallelTransferReceived: NULL rsComm->portalOpr");
+        log_agent::error("apply_acPostProcForParallelTransferReceived: NULL rsComm->portalOpr");
         return SYS_INTERNAL_NULL_INPUT_ERR;
     }
 
     const int l3_index = rsComm->portalOpr->dataOprInp.destL3descInx;
     if (l3_index < 3 || l3_index >= NUM_FILE_DESC) {
-        rodsLog(LOG_ERROR, "apply_acPostProcForParallelTransferReceived: bad l3 descriptor index %d", l3_index);
+        log_agent::error("apply_acPostProcForParallelTransferReceived: bad l3 descriptor index {}", l3_index);
         return SYS_FILE_DESC_OUT_OF_RANGE;
     }
 
     const char* resource_hierarchy = FileDesc[l3_index].rescHier;
     if (resource_hierarchy == NULL) {
-        rodsLog(LOG_ERROR, "apply_acPostProcForParallelTransferReceived: NULL resource_hierarchy");
+        log_agent::error("apply_acPostProcForParallelTransferReceived: NULL resource_hierarchy");
         return SYS_INTERNAL_NULL_INPUT_ERR;
     }
 
     irods::hierarchy_parser hierarchy_parser;
     irods::error err = hierarchy_parser.set_string(resource_hierarchy);
     if (!err.ok()) {
-        rodsLog(LOG_ERROR, "apply_acPostProcForParallelTransferReceived: set_string error [%s]", err.result().c_str());
+        log_agent::error("apply_acPostProcForParallelTransferReceived: set_string error [{}]", err.result());
         return err.status();
     }
 
     std::string leaf_resource;
     err = hierarchy_parser.last_resc(leaf_resource);
     if (!err.ok()) {
-        rodsLog(LOG_ERROR, "apply_acPostProcForParallelTransferReceived: last_resc error [%s]", err.result().c_str());
+        log_agent::error("apply_acPostProcForParallelTransferReceived: last_resc error [{}]", err.result());
         return err.status();
     }
 
@@ -500,8 +495,7 @@ handlePortalOpr( rsComm_t * rsComm ) {
         }
         break;
     default:
-        rodsLog( LOG_NOTICE,
-                 "handlePortalOpr: Invalid portal oprType: %d", oprType );
+        log_agent::info("handlePortalOpr: Invalid portal oprType: {}", oprType);
         status = SYS_INVALID_PORTAL_OPR;
         break;
     }
@@ -512,11 +506,12 @@ int
 readAndProcClientMsg( rsComm_t * rsComm, int flags ) {
     int status = 0;
     msgHeader_t myHeader;
-    bytesBuf_t inputStructBBuf, bsBBuf, errorBBuf;
-
-    std::memset(&inputStructBBuf, 0, sizeof(BytesBuf));
-    std::memset(&bsBBuf, 0, sizeof(BytesBuf));
-    std::memset(&errorBBuf, 0, sizeof(BytesBuf));
+    bytesBuf_t inputStructBBuf{}, bsBBuf{}, errorBBuf{};
+    const auto clear_bufs = irods::at_scope_exit{[&inputStructBBuf, &bsBBuf, &errorBBuf] {
+        clearBBuf(&inputStructBBuf);
+        clearBBuf(&bsBBuf);
+        clearBBuf(&errorBBuf);
+    }};
 
     svrChkReconnAtReadStart( rsComm );
     /* everything else are set in readMsgBody */
@@ -562,16 +557,16 @@ readAndProcClientMsg( rsComm_t * rsComm, int flags ) {
                 }
 
                 if ( isL1descInuse() && retryCnt < MAX_READ_HEADER_RETRY ) {
-                    rodsLogError( LOG_ERROR, status,
-                                  "readAndProcClientMsg:readMsgHeader error. status = %d",  ret.code() );
+                    log_agent::error(
+                        "readAndProcClientMsg:readMsgHeader error. status = {}", ret.code());
                     retryCnt++;
                     continue;
                 }
 
                 if ( ret.code() == USER_SOCK_CONNECT_TIMEDOUT ) {
-                    rodsLog( LOG_ERROR,
-                             "readAndProcClientMsg: readMsgHeader by pid %d timedout",
-                             getpid() );
+                    log_agent::error(
+                        "readAndProcClientMsg: readMsgHeader by pid {} timedout",
+                        getpid());
                     return  ret.code();
                 }
             }
@@ -596,9 +591,9 @@ readAndProcClientMsg( rsComm_t * rsComm, int flags ) {
             int savedStatus = ret.code();
             /* try again. the socket might have changed */
             std::unique_lock< std::mutex > boost_lock( *rsComm->thread_ctx->lock );
-            rodsLog( LOG_DEBUG,
-                     "readAndProcClientMsg: svrSwitchConnect. cliState = %d,agState=%d",
-                     rsComm->clientState, rsComm->agentState );
+            log_agent::debug(
+                "readAndProcClientMsg: svrSwitchConnect. cliState = {},agState={}",
+                rsComm->clientState, rsComm->agentState);
             svrSwitchConnect( rsComm );
             boost_lock.unlock();
             ret = readMsgHeader( net_obj, &myHeader, NULL );
@@ -628,10 +623,6 @@ readAndProcClientMsg( rsComm_t * rsComm, int flags ) {
     if ( strcmp( myHeader.type, RODS_API_REQ_T ) == 0 ) {
         status = rsApiHandler(rsComm, myHeader.intInfo, &inputStructBBuf, &bsBBuf);
 
-        clearBBuf( &inputStructBBuf );
-        clearBBuf( &bsBBuf );
-        clearBBuf( &errorBBuf );
-
         if ( ( flags & RET_API_STATUS ) != 0 ) {
             return status;
         }
@@ -640,19 +631,19 @@ readAndProcClientMsg( rsComm_t * rsComm, int flags ) {
         }
     }
     else if ( strcmp( myHeader.type, RODS_DISCONNECT_T ) == 0 ) {
-        rodsLog( LOG_DEBUG, "readAndProcClientMsg: received disconnect msg from client" );
+        log_agent::debug("readAndProcClientMsg: received disconnect msg from client");
         return DISCONN_STATUS;
     }
     else if ( strcmp( myHeader.type, RODS_RECONNECT_T ) == 0 ) {
-        rodsLog( LOG_NOTICE, "readAndProcClientMsg: received reconnect msg from client" );
+        log_agent::info("readAndProcClientMsg: received reconnect msg from client");
         /* call itself again. be careful */
         status = readAndProcClientMsg( rsComm, flags );
         return status;
     }
     else {
-        rodsLog( LOG_NOTICE,
-                 "agentMain: msg type %s not support by server",
-                 myHeader.type );
+        log_agent::info(
+            "agentMain: msg type {} not support by server",
+            myHeader.type);
         return USER_MSG_TYPE_NO_SUPPORT;
     }
 }
@@ -681,8 +672,8 @@ sendAndRecvBranchMsg( rsComm_t * rsComm, int apiInx, int status,
     retval = sendAndProcApiReply( rsComm, apiInx, status,
                                   myOutStruct, myOutBsBBuf );
     if ( retval < 0 ) {
-        rodsLog( LOG_ERROR,
-                 "sendAndRecvBranchMsg: sendAndProcApiReply error. status = %d", retval );
+        log_agent::error(
+            "sendAndRecvBranchMsg: sendAndProcApiReply error. status = {}", retval);
         rsComm->apiInx = savedApiInx;
         return retval;
     }
@@ -712,9 +703,9 @@ svrSendCollOprStat( rsComm_t * rsComm, collOprStat_t * collOprStat ) {
     status = _svrSendCollOprStat( rsComm, collOprStat );
 
     if ( status != SYS_CLI_TO_SVR_COLL_STAT_REPLY ) {
-        rodsLog( LOG_ERROR,
-                 "svrSendCollOprStat: client reply %d != %d.",
-                 status, SYS_CLI_TO_SVR_COLL_STAT_REPLY );
+        log_agent::error(
+            "svrSendCollOprStat: client reply {} != {}.",
+            status, SYS_CLI_TO_SVR_COLL_STAT_REPLY);
         return UNMATCHED_KEY_OR_INDEX;
     }
     else {
@@ -730,9 +721,9 @@ _svrSendCollOprStat( rsComm_t * rsComm, collOprStat_t * collOprStat ) {
     auto* p = static_cast<void*>(collOprStat);
     status = sendAndProcApiReply(rsComm, rsComm->apiInx, SYS_SVR_TO_CLI_COLL_STAT, p, nullptr);
     if ( status < 0 ) {
-        rodsLogError( LOG_ERROR, status,
-                      "svrSendCollOprStat: sendAndProcApiReply failed. status = %d",
-                      status );
+        log_agent::error(
+            "svrSendCollOprStat: sendAndProcApiReply failed. status = {}",
+            status);
         return status;
     }
 
@@ -744,8 +735,8 @@ _svrSendCollOprStat( rsComm_t * rsComm, collOprStat_t * collOprStat ) {
     }
 
     if ( status < 0 ) {
-        rodsLogError( LOG_ERROR, status,
-                      "_svrSendCollOprStat: read handshake failed. [%s] status = %d", rsComm->negotiation_results, status );
+        log_agent::error(
+            "_svrSendCollOprStat: read handshake failed. [{}] status = {}", rsComm->negotiation_results, status);
     }
     return ntohl( myBuf );
 }
@@ -771,21 +762,4 @@ svrSendZoneCollOprStat( rsComm_t * rsComm, rcComm_t * conn,
         }
     }
     return status;
-}
-
-void
-readTimeoutHandler( int ) {
-    alarm( 0 );
-    if ( isL1descInuse() ) {
-        rodsLog( LOG_ERROR,
-                 "readTimeoutHandler: read header by %d timed out. L1desc is busy.",
-                 getpid() );
-        longjmp( Jenv, L1DESC_INUSE );
-    }
-    else {
-        rodsLog( LOG_ERROR,
-                 "readTimeoutHandler: read header by %d has timed out.",
-                 getpid() );
-        longjmp( Jenv, READ_HEADER_TIMED_OUT );
-    }
 }

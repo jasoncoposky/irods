@@ -574,7 +574,9 @@ getCopiesFromCond( keyValPair_t *condInput ) {
         return ALL_COPIES;
     }
     else {
-        return atoi( myValue );
+        int copies = 0;
+        std::from_chars(myValue, myValue + std::strlen(myValue), copies);
+        return copies;
     }
 }
 

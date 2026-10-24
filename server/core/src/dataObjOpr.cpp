@@ -38,6 +38,7 @@
 
 #include <algorithm>
 #include <charconv>
+#include <cstring>
 #include <filesystem>
 #include <string_view>
 
@@ -719,7 +720,7 @@ int matchDataObjInfoByCondInput( dataObjInfo_t **dataObjInfoHead,
     }
 
     if ( ( tmpStr = getValByKey( condInput, REPL_NUM_KW ) ) != NULL ) {
-        replNum = atoi( tmpStr );
+        std::from_chars(tmpStr, tmpStr + std::strlen(tmpStr), replNum);
         replNumCond = 1;
     }
     else {
