@@ -33,7 +33,12 @@ cpUtil( rcComm_t *conn, rodsEnv *myRodsEnv, rodsArguments_t *myRodsArgs,
     dataObjCopyInp_t dataObjCopyInp;
     irods::at_scope_exit cleanup_dataObjCopyInp{[&dataObjCopyInp] { clearDataObjCopyInp(&dataObjCopyInp); }};
 
-    rodsRestart_t rodsRestart;
+    rodsRestart_t rodsRestart{};
+    const auto close_restart = irods::at_scope_exit{[&rodsRestart] {
+        if (rodsRestart.fd > 0) {
+            close(rodsRestart.fd);
+        }
+    }};
     initCondForCp( myRodsEnv, myRodsArgs, &dataObjCopyInp, &rodsRestart );
 
     /* initialize the progress struct */
@@ -80,7 +85,6 @@ cpUtil( rcComm_t *conn, rodsEnv *myRodsEnv, rodsArguments_t *myRodsArgs,
                                  targPath->outPath, myRodsEnv, myRodsArgs, &dataObjCopyInp,
                                  &rodsRestart );
             if ( rodsRestart.fd > 0 && status < 0 ) {
-                close( rodsRestart.fd );
                 return status;
             }
             if ( dataObjCopyInp.srcDataObjInp.specColl != NULL &&
@@ -109,9 +113,6 @@ cpUtil( rcComm_t *conn, rodsEnv *myRodsEnv, rodsArguments_t *myRodsArgs,
         }
     }
 
-    if ( rodsRestart.fd > 0 ) {
-        close( rodsRestart.fd );
-    }
     return savedStatus;
 }
 
@@ -304,10 +305,10 @@ cpCollUtil( rcComm_t *conn, char *srcColl, char *targColl,
                  srcColl, status );
         return status;
     }
+    const auto close_coll = irods::at_scope_exit{[&collHandle] { rclCloseCollection(&collHandle); }};
     while ( ( status = rclReadCollection( conn, &collHandle, &collEnt ) ) >= 0 ) {
         if (!irods::is_valid_collection_entry(collEnt)) {
             rodsLogError(LOG_ERROR, INVALID_OBJECT_NAME, "cpCollUtil: Invalid name for collection entry");
-            rclCloseCollection(&collHandle);
             return INVALID_OBJECT_NAME;
         }
 
@@ -385,7 +386,6 @@ cpCollUtil( rcComm_t *conn, char *srcColl, char *targColl,
             }
         }
     }
-    rclCloseCollection( &collHandle );
 
     if ( savedStatus < 0 ) {
         return savedStatus;

@@ -8,6 +8,8 @@
 #include "irods/miscUtil.h"
 #include "irods/replUtil.h"
 #include "irods/rcGlobalExtern.h"
+#include "irods/irods_at_scope_exit.hpp"
+#include "irods/rcMisc.h"
 
 #include <cstring>
 
@@ -20,8 +22,14 @@ replUtil( rcComm_t *conn, rodsEnv *myRodsEnv, rodsArguments_t *myRodsArgs,
         return USER__NULL_INPUT_ERR;
     }
 
-    dataObjInp_t dataObjInp;
-    rodsRestart_t rodsRestart;
+    dataObjInp_t dataObjInp{};
+    rodsRestart_t rodsRestart{};
+    const auto cleanup = irods::at_scope_exit{[&dataObjInp, &rodsRestart] {
+        clearDataObjInp(&dataObjInp);
+        if (rodsRestart.fd > 0) {
+            close(rodsRestart.fd);
+        }
+    }};
     initCondForRepl( myRodsEnv, myRodsArgs, &dataObjInp, &rodsRestart );
 
     int savedStatus = 0;
@@ -76,7 +84,6 @@ replUtil( rcComm_t *conn, rodsEnv *myRodsEnv, rodsArguments_t *myRodsArgs,
             status = replCollUtil( conn, rodsPathInp->srcPath[i].outPath,
                                    myRodsEnv, myRodsArgs, &dataObjInp, &rodsRestart );
             if ( rodsRestart.fd > 0 && status < 0 ) {
-                close( rodsRestart.fd );
                 return status;
             }
         }
@@ -263,12 +270,13 @@ replCollUtil( rcComm_t *conn, char *srcColl, rodsEnv *myRodsEnv,
         rodsLog( LOG_ERROR,
                  "replCollUtil: rclOpenCollection of %s error. status = %d",
                  srcColl, status );
+        clearKeyVal( &collHandle.dataObjInp.condInput );
         return status;
     }
+    const auto close_coll = irods::at_scope_exit{[&collHandle] { rclCloseCollection(&collHandle); }};
     if ( collHandle.rodsObjStat->specColl != NULL &&
             collHandle.rodsObjStat->specColl->collClass != LINKED_COLL ) {
         /* no repl for mounted coll */
-        rclCloseCollection( &collHandle );
         return 0;
     }
     while ( ( status = rclReadCollection( conn, &collHandle, &collEnt ) ) >= 0 ) {
@@ -333,7 +341,6 @@ replCollUtil( rcComm_t *conn, char *srcColl, rodsEnv *myRodsEnv,
             }
         }
     }
-    rclCloseCollection( &collHandle );
 
     if ( savedStatus < 0 ) {
         return savedStatus;

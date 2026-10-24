@@ -196,6 +196,11 @@ putUtil( rcComm_t **myConn, rodsEnv *myRodsEnv,
 
     status = initCondForPut( conn, myRodsEnv, myRodsArgs, &dataObjOprInp,
                              &bulkOprInp, &rodsRestart );
+    const auto close_restart = irods::at_scope_exit{[&rodsRestart] {
+        if (rodsRestart.fd > 0) {
+            close(rodsRestart.fd);
+        }
+    }};
 
     if ( status < 0 ) {
         return status;
@@ -326,10 +331,6 @@ putUtil( rcComm_t **myConn, rodsEnv *myRodsEnv,
             savedStatus = status;
             break;
         }
-    }
-
-    if ( rodsRestart.fd > 0 ) {
-        close( rodsRestart.fd );
     }
 
     if ( savedStatus < 0 ) {
@@ -906,6 +907,7 @@ bulkPutDirUtil( rcComm_t **myConn, char *srcDir, char *targColl,
     rstrcpy( bulkOprInp->objPath, targColl, MAX_NAME_LEN );
     bulkOprInfo.bytesBuf.len = 0;
     bulkOprInfo.bytesBuf.buf = malloc( BULK_OPR_BUF_SIZE );
+    const auto clear_bulk_buf = irods::at_scope_exit{[&bulkOprInfo] { clearBBuf(&bulkOprInfo.bytesBuf); }};
 
     status = putDirUtil( myConn, srcDir, targColl, myRodsEnv, rodsArgs,
                          dataObjOprInp, bulkOprInp, rodsRestart, &bulkOprInfo );
@@ -931,11 +933,6 @@ bulkPutDirUtil( rcComm_t **myConn, char *srcDir, char *targColl,
                           bulkOprInfo.phyBunDir );
         }
         clearBulkOprInfo( &bulkOprInfo );
-        if ( bulkOprInfo.bytesBuf.buf != NULL ) {
-            free( bulkOprInfo.bytesBuf.buf );
-            bulkOprInfo.bytesBuf.buf = NULL;
-        }
-
     }
     return status;
 }
@@ -981,6 +978,7 @@ bulkPutFileUtil( rcComm_t *conn, char *srcPath, char *targPath,
                  "bulkPutFileUtilcannot open file %s, status = %d", srcPath, status );
         return status;
     }
+    const auto close_in = irods::at_scope_exit{[in_fd] { close(in_fd); }};
 
     status = myRead( in_fd, bufPtr, srcSize, &bytesRead, NULL );
     if ( status != srcSize ) {
@@ -994,7 +992,6 @@ bulkPutFileUtil( rcComm_t *conn, char *srcPath, char *targPath,
         }
         return status;
     }
-    close( in_fd );
     rstrcpy( bulkOprInfo->cachedTargPath, targPath, MAX_NAME_LEN );
     bulkOprInfo->count++;
     bulkOprInfo->size += srcSize;

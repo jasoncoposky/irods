@@ -6,6 +6,8 @@
 #include "irods/miscUtil.h"
 #include "irods/checksum.h"
 #include "irods/rcGlobalExtern.h"
+#include "irods/irods_at_scope_exit.hpp"
+#include "irods/rcMisc.h"
 
 int
 regUtil( rcComm_t *conn, rodsEnv *myRodsEnv, rodsArguments_t *myRodsArgs,
@@ -14,7 +16,8 @@ regUtil( rcComm_t *conn, rodsEnv *myRodsEnv, rodsArguments_t *myRodsArgs,
         return USER__NULL_INPUT_ERR;
     }
 
-    dataObjInp_t dataObjOprInp;
+    dataObjInp_t dataObjOprInp{};
+    const auto clear_inp = irods::at_scope_exit{[&dataObjOprInp] { clearDataObjInp(&dataObjOprInp); }};
     initCondForReg( myRodsEnv, myRodsArgs, &dataObjOprInp );
 
     int savedStatus = 0;

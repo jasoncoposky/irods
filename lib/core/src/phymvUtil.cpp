@@ -9,6 +9,8 @@
 #include "irods/miscUtil.h"
 #include "irods/phymvUtil.h"
 #include "irods/rcGlobalExtern.h"
+#include "irods/irods_at_scope_exit.hpp"
+#include "irods/rcMisc.h"
 
 int
 phymvUtil( rcComm_t *conn, rodsEnv *myRodsEnv, rodsArguments_t *myRodsArgs,
@@ -17,7 +19,8 @@ phymvUtil( rcComm_t *conn, rodsEnv *myRodsEnv, rodsArguments_t *myRodsArgs,
         return USER__NULL_INPUT_ERR;
     }
 
-    dataObjInp_t dataObjInp;
+    dataObjInp_t dataObjInp{};
+    const auto clear_inp = irods::at_scope_exit{[&dataObjInp] { clearDataObjInp(&dataObjInp); }};
     initCondForPhymv( myRodsEnv, myRodsArgs, &dataObjInp );
 
     int savedStatus = 0;
@@ -177,10 +180,10 @@ phymvCollUtil( rcComm_t *conn, char *srcColl, rodsEnv *myRodsEnv,
                  srcColl, status );
         return status;
     }
+    const auto close_coll = irods::at_scope_exit{[&collHandle] { rclCloseCollection(&collHandle); }};
     if ( collHandle.rodsObjStat->specColl != NULL &&
             collHandle.rodsObjStat->specColl->collClass != LINKED_COLL ) {
         /* no trim for mounted coll */
-        rclCloseCollection( &collHandle );
         return 0;
     }
     while ( ( status = rclReadCollection( conn, &collHandle, &collEnt ) ) >= 0 ) {
@@ -211,7 +214,6 @@ phymvCollUtil( rcComm_t *conn, char *srcColl, rodsEnv *myRodsEnv,
             }
         }
     }
-    rclCloseCollection( &collHandle );
 
     if ( savedStatus < 0 ) {
         return savedStatus;

@@ -6,16 +6,20 @@
 #include "irods/bunUtil.h"
 #include "irods/miscUtil.h"
 #include "irods/rcGlobalExtern.h"
+#include "irods/irods_at_scope_exit.hpp"
+#include "irods/rcMisc.h"
 
 int
 bunUtil( rcComm_t *conn, rodsEnv *myRodsEnv, rodsArguments_t *myRodsArgs,
          rodsPathInp_t *rodsPathInp ) {
     rodsPath_t *collPath, *structFilePath;
-    structFileExtAndRegInp_t structFileExtAndRegInp;
+    structFileExtAndRegInp_t structFileExtAndRegInp{};
 
     if ( rodsPathInp == NULL ) {
         return USER__NULL_INPUT_ERR;
     }
+
+    const auto clear_cond = irods::at_scope_exit{[&structFileExtAndRegInp] { clearKeyVal(&structFileExtAndRegInp.condInput); }};
 
     int savedStatus = initCondForBunOpr( myRodsEnv, myRodsArgs, &structFileExtAndRegInp );
     if ( savedStatus < 0 ) {

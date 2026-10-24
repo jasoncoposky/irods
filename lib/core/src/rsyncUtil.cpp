@@ -18,11 +18,28 @@
 
 #include <sys/time.h>
 
+#include <charconv>
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <sstream>
+
+namespace
+{
+    auto parse_int(const char* _str, int _default = 0) noexcept -> int
+    {
+        if (!_str) {
+            return _default;
+        }
+        while (*_str == ' ' || *_str == '\t') {
+            ++_str;
+        }
+        int val = _default;
+        std::from_chars(_str, _str + std::strlen(_str), val);
+        return val;
+    }
+} // anonymous namespace
 
 static int CurrentTime = 0;
 
@@ -203,7 +220,7 @@ rsyncDataToFileUtil( rcComm_t *conn, rodsPath_t *srcPath,
     if ( myRodsArgs->age == True ) {
         if ( srcPath->rodsObjStat != NULL ) {
             if ( ageExceeded( myRodsArgs->agevalue,
-                              atoi( srcPath->rodsObjStat->modifyTime ),
+                              parse_int( srcPath->rodsObjStat->modifyTime ),
                               srcPath->outPath, srcPath->size ) ) {
                 return 0;
             }
@@ -541,7 +558,7 @@ rsyncDataToDataUtil( rcComm_t *conn, rodsPath_t *srcPath,
     if ( myRodsArgs->age == True ) {
         if ( srcPath->rodsObjStat != NULL ) {
             if ( ageExceeded( myRodsArgs->agevalue,
-                              atoi( srcPath->rodsObjStat->modifyTime ),
+                              parse_int( srcPath->rodsObjStat->modifyTime ),
                               srcPath->outPath, srcPath->size ) ) {
                 return 0;
             }
@@ -691,6 +708,7 @@ rsyncCollToDirUtil( rcComm_t *conn, rodsPath_t *srcPath,
                  srcColl, status );
         return status;
     }
+    const auto close_coll = irods::at_scope_exit{[&collHandle] { rclCloseCollection(&collHandle); }};
 
     memset( &mySrcPath, 0, sizeof( mySrcPath ) );
     memset( &myTargPath, 0, sizeof( myTargPath ) );
@@ -700,14 +718,13 @@ rsyncCollToDirUtil( rcComm_t *conn, rodsPath_t *srcPath,
     while ( ( status = rclReadCollection( conn, &collHandle, &collEnt ) ) >= 0 ) {
         if (!irods::is_valid_collection_entry(collEnt)) {
             rodsLogError(LOG_ERROR, INVALID_OBJECT_NAME, "rsyncCollToDirUtil: Invalid name for collection entry");
-            rclCloseCollection(&collHandle);
             return INVALID_OBJECT_NAME;
         }
 
         if ( collEnt.objType == DATA_OBJ_T ) {
             if ( rodsArgs->age == True ) {
                 if ( ageExceeded( rodsArgs->agevalue,
-                                  atoi( collEnt.modifyTime ),
+                                  parse_int( collEnt.modifyTime ),
                                   collEnt.dataName, collEnt.dataSize ) ) {
                     continue;
                 }
@@ -776,7 +793,6 @@ rsyncCollToDirUtil( rcComm_t *conn, rodsPath_t *srcPath,
             }
         }
     }
-    rclCloseCollection( &collHandle );
 
     if ( savedStatus < 0 ) {
         return savedStatus;
@@ -1003,6 +1019,7 @@ rsyncCollToCollUtil( rcComm_t *conn, rodsPath_t *srcPath,
                  srcColl, status );
         return status;
     }
+    const auto close_coll = irods::at_scope_exit{[&collHandle] { rclCloseCollection(&collHandle); }};
 
     if ( dataObjOprInp->specColl != NULL ) {
         if ( rodsArgs->verbose == True ) {
@@ -1027,14 +1044,13 @@ rsyncCollToCollUtil( rcComm_t *conn, rodsPath_t *srcPath,
     while ( ( status = rclReadCollection( conn, &collHandle, &collEnt ) ) >= 0 ) {
         if (!irods::is_valid_collection_entry(collEnt)) {
             rodsLogError(LOG_ERROR, INVALID_OBJECT_NAME, "rsyncCollToCollUtil: Invalid name for collection entry");
-            rclCloseCollection(&collHandle);
             return INVALID_OBJECT_NAME;
         }
 
         if ( collEnt.objType == DATA_OBJ_T ) {
             if ( rodsArgs->age == True ) {
                 if ( ageExceeded( rodsArgs->agevalue,
-                                  atoi( collEnt.modifyTime ),
+                                  parse_int( collEnt.modifyTime ),
                                   collEnt.dataName, collEnt.dataSize ) ) {
                     continue;
                 }
@@ -1107,7 +1123,6 @@ rsyncCollToCollUtil( rcComm_t *conn, rodsPath_t *srcPath,
 
         }
     }
-    rclCloseCollection( &collHandle );
 
     if ( savedStatus < 0 ) {
         return savedStatus;

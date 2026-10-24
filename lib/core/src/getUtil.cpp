@@ -64,6 +64,11 @@ auto getUtil(rcComm_t** myConn, rodsEnv* myRodsEnv, rodsArguments_t* myRodsArgs,
     dataObjInp_t dataObjOprInp{};
     const auto clear_cond_input = irods::at_scope_exit{[&dataObjOprInp] { clearKeyVal(&dataObjOprInp.condInput); }};
     initCondForGet( conn, myRodsArgs, &dataObjOprInp, &rodsRestart );
+    const auto close_restart = irods::at_scope_exit{[&rodsRestart] {
+        if (rodsRestart.fd > 0) {
+            close(rodsRestart.fd);
+        }
+    }};
 
     if ( rodsPathInp->resolved == False ) {
         status = resolveRodsTarget( conn, rodsPathInp, 1 );
@@ -157,9 +162,6 @@ auto getUtil(rcComm_t** myConn, rodsEnv* myRodsEnv, rodsArguments_t* myRodsArgs,
         }
     }
 
-    if ( rodsRestart.fd > 0 ) {
-        close( rodsRestart.fd );
-    }
     if ( savedStatus < 0 ) {
         status = savedStatus;
     }
@@ -429,10 +431,10 @@ getCollUtil( rcComm_t **myConn, char *srcColl, char *targDir,
                  srcColl, status );
         return status;
     }
+    const auto close_coll = irods::at_scope_exit{[&collHandle] { rclCloseCollection(&collHandle); }};
     while ( ( status = rclReadCollection( conn, &collHandle, &collEnt ) ) >= 0 ) {
         if (!irods::is_valid_collection_entry(collEnt)) {
             rodsLogError(LOG_ERROR, INVALID_OBJECT_NAME, "getCollUtil: Invalid name for collection entry");
-            rclCloseCollection(&collHandle);
             return INVALID_OBJECT_NAME;
         }
 
@@ -514,7 +516,6 @@ getCollUtil( rcComm_t **myConn, char *srcColl, char *targDir,
             }
         }
     }
-    rclCloseCollection( &collHandle );
 
     if ( savedStatus < 0 ) {
         return savedStatus;

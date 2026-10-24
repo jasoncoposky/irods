@@ -13,6 +13,7 @@
 #include <nlohmann/json.hpp>
 
 #include <cstdio>
+#include <cstdlib>
 #include <string>
 
 static int ChksumCnt = 0;
@@ -93,6 +94,7 @@ int chksumDataObjUtil(rcComm_t* conn,
     rstrcpy(dataObjInp->objPath, srcPath, MAX_NAME_LEN);
 
     char* chksumStr = nullptr;
+    const auto free_chksum = irods::at_scope_exit{[&chksumStr] { std::free(chksumStr); }};
     int status = rcDataObjChksum(conn, dataObjInp, &chksumStr);
 
     ChksumCnt++;
@@ -124,7 +126,6 @@ int chksumDataObjUtil(rcComm_t* conn,
     if (0 == status && rodsArgs->silent == False) {
         if (chksumStr) {
             printf("    %.*s    %s\n", static_cast<int>(myFile.size()), myFile.data(), chksumStr);
-            free(chksumStr);
         }
 
         if (rodsArgs->verbose == True) {
@@ -156,6 +157,7 @@ int chksumCollUtil(rcComm_t* conn,
     int savedStatus = 0;
     char srcChildPath[MAX_NAME_LEN];
     collHandle_t collHandle{};
+    const auto close_coll = irods::at_scope_exit{[&collHandle] { rclCloseCollection(&collHandle); }};
     collEnt_t collEnt;
     int queryFlags = 0;
 
@@ -174,7 +176,6 @@ int chksumCollUtil(rcComm_t* conn,
         collHandle.rodsObjStat->specColl->collClass != LINKED_COLL)
     {
         /* no trim for mounted coll */
-        rclCloseCollection( &collHandle );
         return 0;
     }
 
