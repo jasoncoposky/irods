@@ -20,14 +20,6 @@ namespace irods {
 
     } // exception
 
-    exception::exception(
-        const int64_t        _code,
-        const boost::format& _message,
-        const std::string&   _file_name,
-        const uint32_t       _line_number,
-        const std::string&   _function_name ) :
-        exception::exception(_code, boost::str(_message), _file_name, _line_number, _function_name) {}
-
     exception::exception( const exception& _rhs ) :
         std::exception( _rhs ),
         code_( _rhs.code_ ),

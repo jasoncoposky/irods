@@ -9,7 +9,8 @@
 #include <irods/rodsError.h>
 #include <irods/rodsPath.h>
 
-#include <boost/format.hpp>
+#include <fmt/args.h>
+#include <fmt/printf.h>
 
 #include <cstdio>
 #include <iostream>
@@ -94,16 +95,16 @@ usage() {
     printReleaseInfo( "iquest" );
 }
 
-void
-printFormatted( char *format, char *args[], int nargs ) {
+void printFormatted(char* format, char* args[], int nargs)
+{
     try {
-        boost::format formatter( format );
-        for ( int i = 0; i < nargs; i++ ) {
-            formatter % args[i];
+        fmt::dynamic_format_arg_store<fmt::printf_context> store;
+        for (int i = 0; i < nargs; i++) {
+            store.push_back(args[i]);
         }
-        std::cout << formatter;
+        std::cout << fmt::vsprintf(format, store);
     }
-    catch ( const boost::io::format_error& _e ) {
+    catch (const fmt::format_error& _e) {
         std::cout << _e.what() << std::endl;
     }
 }

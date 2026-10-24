@@ -14,6 +14,7 @@
 
 // =-=-=-=-=-=-=-
 // stl includes
+#include <algorithm>
 #include <cctype>
 #include <sstream>
 #include <string>
@@ -22,6 +23,7 @@
 #include <unistd.h>
 #include <thread>
 
+#include <fmt/format.h>
 #include <nlohmann/json.hpp>
 using json = nlohmann::json;
 
@@ -96,8 +98,7 @@ namespace irods::experimental::api {
             if(!p.contains(n)) {
                 THROW(
                     SYS_INVALID_INPUT_PARAM,
-                    boost::format("missing [%s] parameter")
-                    % n);
+                    fmt::format("missing [{}] parameter", n));
             }
 
             return p.at(n).get<T>();
@@ -346,7 +347,7 @@ namespace irods::experimental::api {
         {
             if(operations_.find(n) == operations_.end()) {
                 THROW(SYS_INVALID_INPUT_PARAM,
-                      boost::format("call operation :: missing operation[%s]") % n);
+                      fmt::format("call operation :: missing operation[{}]", n));
             }
 
             using fcn_t = std::function<json(COMM_T*, const json&)>;
@@ -362,7 +363,7 @@ namespace irods::experimental::api {
         {
             if(operations_.find(n) == operations_.end()) {
                 THROW(SYS_INVALID_INPUT_PARAM,
-                      boost::format("call operation :: missing operation[%s]") % n);
+                      fmt::format("call operation :: missing operation[{}]", n));
             }
 
             using fcn_t = std::function<json(COMM_T*, const json&)>;

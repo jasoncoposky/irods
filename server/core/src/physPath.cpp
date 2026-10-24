@@ -1001,8 +1001,8 @@ syncDataObjPhyPathS( rsComm_t *rsComm, dataObjInp_t *dataObjInp,
 
     if (status < 0) { 
         const auto err{ERROR(status,
-                             (boost::format("getFilePathName err for [%s]") %
-                              dataObjInfo->objPath).str().c_str())};
+                             fmt::format("getFilePathName err for [{}]",
+                              dataObjInfo->objPath))};
         irods::log(err);
         return err.code();
     }   

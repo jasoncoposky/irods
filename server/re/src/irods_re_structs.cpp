@@ -26,6 +26,8 @@
 #define IRODS_IO_TRANSPORT_ENABLE_SERVER_SIDE_API
 #include "irods/transport/default_transport.hpp"
 
+#include <fmt/format.h>
+
 #include <list>
 #include <optional>
 
@@ -490,7 +492,7 @@ getTaggedValues(const char *str) {
         if (str[1] == '/') {
             std::string& last_tag = std::get<0>(tag_stack.back());
             if ( last_tag.size() != static_cast<std::size_t>(tag_end - str - 2) || strncmp(last_tag.c_str(), str + 2, last_tag.size())  != 0 ) {
-                THROW( INPUT_ARG_NOT_WELL_FORMED_ERR, boost::format("unterminated tag: [%s]") % last_tag);
+                THROW( INPUT_ARG_NOT_WELL_FORMED_ERR, fmt::format("unterminated tag: [{}]", last_tag));
             }
             ret_map[last_tag].emplace_back(std::get<1>(tag_stack.back()), str);
             tag_stack.pop_back();
@@ -501,7 +503,7 @@ getTaggedValues(const char *str) {
     }
     if ( !tag_stack.empty() ) {
         std::string& last_tag = std::get<0>(tag_stack.back());
-        THROW( INPUT_ARG_NOT_WELL_FORMED_ERR, boost::format("unterminated tag: [%s]") % last_tag);
+        THROW( INPUT_ARG_NOT_WELL_FORMED_ERR, fmt::format("unterminated tag: [{}]", last_tag));
     }
     return ret_map;
 }

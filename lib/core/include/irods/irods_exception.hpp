@@ -6,7 +6,6 @@
 #include <string>
 #include <sstream>
 #include <vector>
-#include <boost/format.hpp>
 
 #include "irods/irods_stacktrace.hpp"
 
@@ -20,12 +19,6 @@ namespace irods {
                 const std::string& _file_name,
                 const uint32_t     _line_number,
                 const std::string& _function_name );
-            exception(
-                const int64_t        _code,
-                const boost::format& _message,
-                const std::string&   _file_name,
-                const uint32_t       _line_number,
-                const std::string&   _function_name );
             exception( const exception& );
             virtual ~exception() throw();
 

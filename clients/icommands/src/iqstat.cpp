@@ -10,7 +10,7 @@
 #include <irods/user_administration.hpp>
 
 #include <boost/algorithm/string/trim.hpp>
-#include <boost/format.hpp>
+#include <fmt/format.h>
 #include <nlohmann/json.hpp>
 
 #include <cstdint>
@@ -182,7 +182,7 @@ auto show_RuleExec( char *userName,
     const bool has_rule_id = (ruleName != nullptr && *ruleName != '\0');
     std::string diagnostic;
     if (has_rule_id) {
-        diagnostic = (boost::format( " (and matching key '%s')" ) % ruleName).str();
+        diagnostic = fmt::format( " (and matching key '{}')", ruleName );
     }
 
     if (!allFlag && has_rule_id) {

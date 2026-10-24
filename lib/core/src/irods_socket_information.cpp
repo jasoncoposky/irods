@@ -1,6 +1,6 @@
 #include <algorithm>
 #include <arpa/inet.h>
-#include <boost/format.hpp>
+#include <fmt/format.h>
 #include <filesystem>
 #include <iostream>
 #include <netinet/in.h>
@@ -19,7 +19,7 @@ std::string socket_fd_to_remote_address(const int fd) {
         if (errno == ENOTCONN) {
             return "";
         }
-        THROW(SYS_INTERNAL_ERR, boost::format("getpeername of fd [%d] failed with errno [%d]") % fd % errno);
+        THROW(SYS_INTERNAL_ERR, fmt::format("getpeername of fd [{}] failed with errno [{}]", fd, errno));
     }
 
     char ipstr[INET6_ADDRSTRLEN] = {};
@@ -48,7 +48,7 @@ std::vector<int> get_open_socket_file_descriptors(void) {
             }
         }
     } catch (const std::filesystem::filesystem_error& e) {
-        THROW(SYS_INTERNAL_ERR, boost::format("std::filesystem error [%s]") % e.what());
+        THROW(SYS_INTERNAL_ERR, fmt::format("std::filesystem error [{}]", e.what()));
     }
 
     return ret;

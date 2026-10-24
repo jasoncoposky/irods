@@ -182,7 +182,7 @@ irods::error tcp_read_msg_header(
     }
 
     if (bytes_read != sizeof(header_length)) {
-        return ERROR(SYS_HEADER_READ_LEN_ERR, boost::format("only read [%d] of [%d]") % bytes_read % sizeof(header_length));
+        return ERROR(SYS_HEADER_READ_LEN_ERR, fmt::format("only read [{}] of [{}]", bytes_read, sizeof(header_length)));
     }
 
     header_length = ntohl( header_length );
@@ -211,7 +211,7 @@ irods::error tcp_read_msg_header(
     }
 
     if (bytes_read != header_length) {
-        return ERROR(SYS_HEADER_READ_LEN_ERR, boost::format("only read [%d] of [%d]") % bytes_read % header_length);
+        return ERROR(SYS_HEADER_READ_LEN_ERR, fmt::format("only read [{}] of [{}]", bytes_read, header_length));
     }
 
     return SUCCESS();
@@ -413,7 +413,7 @@ irods::error read_bytes_buf(
     if (bytes_read != _length) {
         free(_buffer->buf);
         _buffer->buf = nullptr;
-        return ERROR(SYS_READ_MSG_BODY_LEN_ERR, boost::format("only read [%d] of [%d]") % bytes_read % _length);
+        return ERROR(SYS_READ_MSG_BODY_LEN_ERR, fmt::format("only read [{}] of [{}]", bytes_read, _length));
     }
 
     return SUCCESS();

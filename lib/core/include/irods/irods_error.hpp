@@ -13,8 +13,6 @@
 #include "irods/rodsType.h"
 #include "irods/irods_exception.hpp"
 
-#include <boost/format.hpp>
-
 namespace irods {
 /// =-=-=-=-=-=-=-
 /// @brief error stack object which holds error history
@@ -27,13 +25,6 @@ namespace irods {
                 bool,          // status
                 long long,     // error code
                 std::string,   // message
-                std::string,   // file name
-                int,           // line number
-                std::string ); // function
-            error(
-                bool,          // status
-                long long,     // error code
-                boost::format, // message
                 std::string,   // file name
                 int,           // line number
                 std::string ); // function

@@ -1,5 +1,5 @@
 #include "irods/rodsErrorTable.h"
-#include <boost/format.hpp>
+#include <fmt/format.h>
 #include <iostream>
 
 // The matcher class
@@ -20,7 +20,7 @@ public:
     // be written as if it were stating a fact (in the output it will be
     // preceded by the value under test).
     virtual std::string describe() const override {
-        return (boost::format("is equal to %lld") % rhs_).str();
+        return fmt::format("is equal to {}", static_cast<long long>(rhs_));
     }
 };
 

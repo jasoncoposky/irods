@@ -35,6 +35,7 @@
 
 // =-=-=-=-=-=-=-
 // stl includes
+#include <fmt/format.h>
 #include <iostream>
 #include <sstream>
 #include <vector>
@@ -231,9 +232,9 @@ irods::error get_selected_hierarchy(
             const auto hier_str = cond_input.at(SELECTED_HIERARCHY_KW).value();
             if (hier_str.empty()) {
                 return ERROR(SYS_INTERNAL_NULL_INPUT_ERR,
-                             (boost::format(
-                              "[%s] - No hierarchy string found in keywords for file object.") %
-                              __FUNCTION__).str().c_str());
+                             fmt::format(
+                              "[{}] - No hierarchy string found in keywords for file object.",
+                              __FUNCTION__));
             }
             selected_parser.set_string(hier_str.data());
             resc_hier_in_keyword = selected_parser.resc_in_hier(name);
@@ -245,9 +246,9 @@ irods::error get_selected_hierarchy(
             const auto hier_str{getValByKey(&L1desc[file_obj->l1_desc_idx()].dataObjInp->condInput, RESC_HIER_STR_KW)};
             if (!hier_str) {
                 return ERROR(SYS_INTERNAL_NULL_INPUT_ERR,
-                             (boost::format(
-                              "[%s] - No hierarchy string found in keywords for file object.") %
-                              __FUNCTION__).str().c_str());
+                             fmt::format(
+                              "[{}] - No hierarchy string found in keywords for file object.",
+                              __FUNCTION__));
             }
             selected_parser.set_string(hier_str);
             resc_hier_in_keyword = selected_parser.resc_in_hier(name);
@@ -259,16 +260,16 @@ irods::error get_selected_hierarchy(
         const auto& selected_hier = file_obj->resc_hier();
         if (selected_hier.empty()) {
             return ERROR(SYS_INTERNAL_NULL_INPUT_ERR,
-                         (boost::format(
-                          "[%s] - file object does not have a resource hierarchy.") %
-                          __FUNCTION__).str().c_str());
+                         fmt::format(
+                          "[{}] - file object does not have a resource hierarchy.",
+                          __FUNCTION__));
         }
         selected_parser.set_string(selected_hier);
         if (!selected_parser.resc_in_hier(name)) {
             return ERROR(HIERARCHY_ERROR,
-                         (boost::format(
-                          "[%s] - Replicating a file object which does not exist in this hierarchy.") %
-                          __FUNCTION__).str().c_str());
+                         fmt::format(
+                          "[{}] - Replicating a file object which does not exist in this hierarchy.",
+                          __FUNCTION__));
         }
     }
 
@@ -305,17 +306,17 @@ irods::error replicate_create_write_operation(irods::plugin_context& _ctx) {
     ret = selected_parser.str(child);
     if (!ret.ok()) {
         return PASSMSG(
-                   (boost::format(
-                    "[%s] - Failed to get the hierarchy string from the parser.") %
-                    __FUNCTION__).str(), ret );
+                   fmt::format(
+                    "[{}] - Failed to get the hierarchy string from the parser.",
+                    __FUNCTION__), ret );
     }
     std::string root_resc{};
     ret = selected_parser.first_resc(root_resc);
     if (!ret.ok()) {
         return PASSMSG(
-                   (boost::format(
-                    "[%s] - Failed to get the root resource from the parser.") %
-                    __FUNCTION__).str(), ret );
+                   fmt::format(
+                    "[{}] - Failed to get the root resource from the parser.",
+                    __FUNCTION__), ret );
     }
 
     std::string name{};
@@ -329,9 +330,9 @@ irods::error replicate_create_write_operation(irods::plugin_context& _ctx) {
     ret = replicator.replicate(_ctx, child_list, object_list_to_repl);
     if (!ret.ok()) {
         return PASSMSG(
-                   (boost::format(
-                    "[%s] - Failed to replicate the create/write operation to the siblings.") %
-                    __FUNCTION__).str(), ret );
+                   fmt::format(
+                    "[{}] - Failed to replicate the create/write operation to the siblings.",
+                    __FUNCTION__), ret );
     }
 
     ret = _ctx.prop_map().set<object_list_t>(OBJECT_LIST_PROP, object_list_to_repl);
@@ -528,8 +529,8 @@ irods::error repl_file_modified(irods::plugin_context& _ctx) {
     const auto open_type_str{getValByKey(&file_obj->cond_input(), OPEN_TYPE_KW)};
     if (nullptr == open_type_str) {
         irods::log(LOG_DEBUG,
-                   (boost::format("[%s] - no OPEN_TYPE_KW value provided") %
-                    __FUNCTION__).str());
+                   fmt::format("[{}] - no OPEN_TYPE_KW value provided",
+                    __FUNCTION__));
         return SUCCESS();
     }
 
@@ -548,8 +549,8 @@ irods::error repl_file_modified(irods::plugin_context& _ctx) {
     }
     catch (const std::invalid_argument&) {
         return ERROR(SYS_INVALID_INPUT_PARAM,
-                     (boost::format("[%s] - invalid OPEN_TYPE_KW value provided:[%s]") %
-                      __FUNCTION__ % open_type_str).str());
+                     fmt::format("[{}] - invalid OPEN_TYPE_KW value provided:[{}]",
+                      __FUNCTION__, open_type_str));
     }
 
     // Create child list and list of operations to replicate - then, replicate
@@ -563,9 +564,9 @@ irods::error repl_file_modified(irods::plugin_context& _ctx) {
     }
     ret = replicate_create_write_operation(_ctx);
     if (!ret.ok()) {
-        return PASSMSG((boost::format(
-                    "[%s] - Failed to replicate create/write operation for object: \"%s\".") %
-                    __FUNCTION__ % file_obj->logical_path()).str(), ret);
+        return PASSMSG(fmt::format(
+                    "[{}] - Failed to replicate create/write operation for object: \"{}\".",
+                    __FUNCTION__, file_obj->logical_path()), ret);
     }
 
     // set object list property back to empty so leftover items are not considered in future plugin operations
@@ -1441,9 +1442,9 @@ irods::error repl_file_resolve_hierarchy(
     float*                   _out_vote ) {
     if (nullptr == _operation || nullptr == _curr_host || nullptr == _inout_parser || nullptr == _out_vote) {
         return ERROR(SYS_INVALID_INPUT_PARAM,
-                     (boost::format(
-                      "[%s]: null parameters passed to redirect") %
-                      __FUNCTION__).str().c_str() );
+                     fmt::format(
+                      "[{}]: null parameters passed to redirect",
+                      __FUNCTION__));
     }
 
     // If child list property exists, use previously selected parser for the vote
@@ -1503,7 +1504,7 @@ int get_rebalance_batch_size(irods::plugin_context& _ctx) {
         if (it != kvp.end()) {
             int val = 0;
             if (!irods::lexical_cast<int>(it->second, val).ok()) {
-                THROW(SYS_INVALID_INPUT_PARAM, boost::format("failed to cast string [%s] to integer") % it->second);
+                THROW(SYS_INVALID_INPUT_PARAM, fmt::format("failed to cast string [{}] to integer", it->second));
             }
             return val;
         }
@@ -1618,22 +1619,22 @@ class repl_resource : public irods::resource {
                     int int_retry_attempts = 0;
                     if ( !irods::lexical_cast< int >( kvp_map[ irods::RETRY_ATTEMPTS_KW ], int_retry_attempts ).ok() ) {
                         irods::log( ERROR( SYS_INVALID_INPUT_PARAM,
-                                        boost::format(
-                                        "[%s] - failed to cast [%s] for resource [%s] to value [%s]; using default value [%d]") %
-                                        __FUNCTION__ %
-                                        irods::RETRY_ATTEMPTS_KW %
-                                        _inst_name %
-                                        kvp_map[ irods::RETRY_ATTEMPTS_KW ] %
-                                        irods::DEFAULT_RETRY_ATTEMPTS ) );
+                                        fmt::format(
+                                        "[{}] - failed to cast [{}] for resource [{}] to value [{}]; using default value [{}]",
+                                        __FUNCTION__,
+                                        irods::RETRY_ATTEMPTS_KW,
+                                        _inst_name,
+                                        kvp_map[ irods::RETRY_ATTEMPTS_KW ],
+                                        irods::DEFAULT_RETRY_ATTEMPTS ) ) );
                     }
                     else if ( int_retry_attempts < 0 ) {
                         irods::log( ERROR( SYS_INVALID_INPUT_PARAM,
-                                       boost::format(
-                                       "[%s] - [%s] for resource [%s] is < 0; using default value [%d]" ) %
-                                       __FUNCTION__ %
-                                       _inst_name %
-                                       irods::RETRY_ATTEMPTS_KW.c_str() %
-                                       irods::DEFAULT_RETRY_ATTEMPTS ) );
+                                       fmt::format(
+                                       "[{}] - [{}] for resource [{}] is < 0; using default value [{}]",
+                                       __FUNCTION__,
+                                       _inst_name,
+                                       irods::RETRY_ATTEMPTS_KW,
+                                       irods::DEFAULT_RETRY_ATTEMPTS ) ) );
                     }
                     else {
                         retry_attempts = static_cast< decltype( retry_attempts ) >( int_retry_attempts );
@@ -1646,22 +1647,22 @@ class repl_resource : public irods::resource {
                     int int_retry_delay = 0;
                     if ( !irods::lexical_cast< int >( kvp_map[ irods::RETRY_FIRST_DELAY_IN_SECONDS_KW ], int_retry_delay ).ok() ) {
                         irods::log( ERROR( SYS_INVALID_INPUT_PARAM,
-                                        boost::format(
-                                        "[%s] - failed to cast [%s] for resource [%s] to value [%s]; using default value [%d]") %
-                                        __FUNCTION__ %
-                                        irods::RETRY_FIRST_DELAY_IN_SECONDS_KW.c_str() %
-                                        _inst_name %
-                                        kvp_map[ irods::RETRY_FIRST_DELAY_IN_SECONDS_KW ] %
-                                        irods::DEFAULT_RETRY_FIRST_DELAY_IN_SECONDS ) );
+                                        fmt::format(
+                                        "[{}] - failed to cast [{}] for resource [{}] to value [{}]; using default value [{}]",
+                                        __FUNCTION__,
+                                        irods::RETRY_FIRST_DELAY_IN_SECONDS_KW,
+                                        _inst_name,
+                                        kvp_map[ irods::RETRY_FIRST_DELAY_IN_SECONDS_KW ],
+                                        irods::DEFAULT_RETRY_FIRST_DELAY_IN_SECONDS ) ) );
                     }
                     else if ( int_retry_delay <= 0 ) {
                         irods::log( ERROR( SYS_INVALID_INPUT_PARAM,
-                                       boost::format(
-                                       "[%s] - [%s] for resource [%s] is <= 0; using default value [%d]" ) %
-                                       __FUNCTION__ %
-                                       _inst_name %
-                                       irods::RETRY_FIRST_DELAY_IN_SECONDS_KW.c_str() %
-                                       irods::DEFAULT_RETRY_FIRST_DELAY_IN_SECONDS ) );
+                                       fmt::format(
+                                       "[{}] - [{}] for resource [{}] is <= 0; using default value [{}]",
+                                       __FUNCTION__,
+                                       _inst_name,
+                                       irods::RETRY_FIRST_DELAY_IN_SECONDS_KW,
+                                       irods::DEFAULT_RETRY_FIRST_DELAY_IN_SECONDS ) ) );
                     }
                     else {
                         retry_delay_in_seconds = static_cast< decltype( retry_delay_in_seconds ) >( int_retry_delay );
@@ -1680,24 +1681,24 @@ class repl_resource : public irods::resource {
                         }
                         if ( backoff_multiplier < 1 ) {
                             irods::log( ERROR( SYS_INVALID_INPUT_PARAM,
-                                           boost::format(
-                                           "[%s] - [%s] for resource [%s] is < 1; using default value [%d]" ) %
-                                           __FUNCTION__ %
-                                           _inst_name %
-                                           irods::RETRY_BACKOFF_MULTIPLIER_KW.c_str() %
-                                           irods::DEFAULT_RETRY_BACKOFF_MULTIPLIER ) );
+                                           fmt::format(
+                                           "[{}] - [{}] for resource [{}] is < 1; using default value [{}]",
+                                           __FUNCTION__,
+                                           _inst_name,
+                                           irods::RETRY_BACKOFF_MULTIPLIER_KW,
+                                           irods::DEFAULT_RETRY_BACKOFF_MULTIPLIER ) ) );
                             backoff_multiplier = irods::DEFAULT_RETRY_BACKOFF_MULTIPLIER;
                         }
                     }
                     catch ( const std::exception& ) {
                         irods::log( ERROR( SYS_INVALID_INPUT_PARAM,
-                                        boost::format(
-                                        "[%s] - failed to cast [%s] for resource [%s] to value [%s]; using default value [%d]") %
-                                        __FUNCTION__ %
-                                        irods::RETRY_BACKOFF_MULTIPLIER_KW.c_str() %
-                                        _inst_name %
-                                        kvp_map[ irods::RETRY_BACKOFF_MULTIPLIER_KW ] %
-                                        irods::DEFAULT_RETRY_BACKOFF_MULTIPLIER ) );
+                                        fmt::format(
+                                        "[{}] - failed to cast [{}] for resource [{}] to value [{}]; using default value [{}]",
+                                        __FUNCTION__,
+                                        irods::RETRY_BACKOFF_MULTIPLIER_KW,
+                                        _inst_name,
+                                        kvp_map[ irods::RETRY_BACKOFF_MULTIPLIER_KW ],
+                                        irods::DEFAULT_RETRY_BACKOFF_MULTIPLIER ) ) );
                     }
                 }
                 properties_.set< decltype( backoff_multiplier ) >( irods::RETRY_BACKOFF_MULTIPLIER_KW, backoff_multiplier );

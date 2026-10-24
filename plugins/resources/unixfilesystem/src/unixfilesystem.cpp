@@ -561,8 +561,8 @@ irods::error unix_file_create(irods::plugin_context& _ctx)
             irods::kvp_map_t::iterator itr = kvp.begin();
             for ( ; itr != kvp.end(); ++ itr ) {
                 irods::experimental::log::resource::debug(
-                        (boost::format("unix_file_create_plugin - kv_pass :: key [%s] - value [%s]") %
-                         itr->first % itr->second).str());
+                        fmt::format("unix_file_create_plugin - kv_pass :: key [{}] - value [{}]",
+                         itr->first, itr->second));
             } // for itr
         }
     }
@@ -659,8 +659,8 @@ irods::error unix_file_open(irods::plugin_context& _ctx)
             irods::kvp_map_t::iterator itr = kvp.begin();
             for ( ; itr != kvp.end(); ++ itr ) {
                 irods::experimental::log::resource::debug(
-                        (boost::format("unix_file_open_plugin - kv_pass :: key [%s] - value [%s]") %
-                         itr->first % itr->second).str());
+                        fmt::format("unix_file_open_plugin - kv_pass :: key [{}] - value [{}]",
+                         itr->first, itr->second));
             } // for itr
         }
     }
@@ -1201,8 +1201,8 @@ irods::error unix_file_resolve_hierarchy(
     irods::file_object_ptr file_obj = std::dynamic_pointer_cast<irods::file_object>(_ctx.fco());
     if (getValByKey(&file_obj->cond_input(), RECURSIVE_OPR__KW)) {
         irods::experimental::log::resource::debug(
-            (boost::format("%s: %s found in cond_input for file_obj") %
-            __FUNCTION__ % RECURSIVE_OPR__KW).str());
+            fmt::format("{}: {} found in cond_input for file_obj",
+            __FUNCTION__, RECURSIVE_OPR__KW));
     }
 
     _out_parser->add_child(irods::get_resource_name(_ctx));

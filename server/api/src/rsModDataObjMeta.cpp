@@ -10,7 +10,7 @@
 #include "irods/key_value_proxy.hpp"
 #include "irods/replica_state_table.hpp"
 
-#include <boost/format.hpp>
+#include <fmt/format.h>
 
 #include <cstring>
 
@@ -325,9 +325,9 @@ int _call_file_modified_for_modification(
         }
         ret = fileModified(rsComm, file_obj);
         if (!ret.ok()) {
-            irods::log(PASSMSG((boost::format(
-                       "[%s] - Failed to signal the resource that the data object \"%s\"") %
-                       __FUNCTION__ % dataObjInfo->objPath).str(), ret));
+            irods::log(PASSMSG(fmt::format(
+                       "[{}] - Failed to signal the resource that the data object \"{}\"",
+                       __FUNCTION__, dataObjInfo->objPath), ret));
             status = ret.code();
         }
     }

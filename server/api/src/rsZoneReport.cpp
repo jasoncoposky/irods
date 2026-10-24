@@ -16,8 +16,6 @@
 
 #include <nlohmann/json.hpp>
 
-#include <boost/format.hpp>
-
 using json = nlohmann::json;
 
 int _rsZoneReport( rsComm_t* _comm, bytesBuf_t** _bbuf );

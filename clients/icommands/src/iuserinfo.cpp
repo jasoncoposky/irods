@@ -6,6 +6,7 @@
 #include <irods/rodsClient.h>
 #include <irods/rodsError.h>
 
+#include <fmt/format.h>
 #include <nlohmann/json.hpp>
 
 #include <cstdio>
@@ -183,8 +184,8 @@ main( int argc, char **argv ) {
         status = showUser(argv[myRodsArgs.optind]);
     }
     else {
-        const std::string user_name = (boost::format("%s#%s") %
-                                       myEnv.rodsUserName % myEnv.rodsZone).str();
+        const std::string user_name = fmt::format("{}#{}",
+                                       myEnv.rodsUserName, myEnv.rodsZone);
         status = showUser(user_name.c_str());
     }
 

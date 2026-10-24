@@ -15,7 +15,6 @@
 #include "irods/rs_genquery2.hpp"
 #include "irods/rodsError.h"
 
-#include <boost/format.hpp>
 #include <fmt/format.h>
 #include <fmt/ranges.h>
 
@@ -59,8 +58,8 @@ namespace {
             const auto status = data_obj_repl_with_retry( _ctx, data_obj_inp );
             if ( status < 0 ) {
                 return ERROR( status,
-                              boost::format( "Failed to replicate the data object [%s]" ) %
-                              _obj_path );
+                              fmt::format( "Failed to replicate the data object [{}]",
+                              _obj_path ) );
             }
         }
         catch( const irods::exception& e ) {
@@ -165,7 +164,7 @@ namespace {
             THROW(SYS_INVALID_INPUT_PARAM, "empty bundles");
         }
         if (_batch_size <= 0) {
-            THROW(SYS_INVALID_INPUT_PARAM, boost::format("invalid batch size [%d]") % _batch_size);
+            THROW(SYS_INVALID_INPUT_PARAM, fmt::format("invalid batch size [{}]", _batch_size));
         }
         if (_invocation_timestamp.empty()) {
             THROW(SYS_INVALID_INPUT_PARAM, "empty invocation timestamp");
@@ -259,20 +258,20 @@ namespace {
     {
         if (!_ctx.comm()) {
             THROW(SYS_INVALID_INPUT_PARAM,
-                  boost::format("null comm pointer. resource [%s]. child resource [%s]. bundle index [%d]. bundles [%s]") %
-                  _parent_resc_name %
-                  _child_resc_name %
-                  _bun_idx %
-                  leaf_bundles_to_string(_bundles));
+                  fmt::format("null comm pointer. resource [{}]. child resource [{}]. bundle index [{}]. bundles [{}]",
+                  _parent_resc_name,
+                  _child_resc_name,
+                  _bun_idx,
+                  leaf_bundles_to_string(_bundles)));
         }
 
         if (_data_ids_to_replicate.empty()) {
             THROW(SYS_INVALID_INPUT_PARAM,
-                  boost::format("empty data id list. resource [%s]. child resource [%s]. bundle index [%d]. bundles [%s]") %
-                  _parent_resc_name %
-                  _child_resc_name %
-                  _bun_idx %
-                  leaf_bundles_to_string(_bundles));
+                  fmt::format("empty data id list. resource [{}]. child resource [{}]. bundle index [{}]. bundles [{}]",
+                  _parent_resc_name,
+                  _child_resc_name,
+                  _bun_idx,
+                  leaf_bundles_to_string(_bundles)));
         }
 
         //irods::file_object_ptr file_obj{std::dynamic_pointer_cast<irods::file_object>(_ctx.fco())};
@@ -299,7 +298,7 @@ namespace {
             // init the parser with the fragment of the upstream hierarchy not including the repl node as it should add itself
             const size_t pos = source_info.resource_hierarchy.find(_parent_resc_name);
             if (std::string::npos == pos) {
-                THROW(SYS_INVALID_INPUT_PARAM, boost::format("missing repl name [%s] in source hier string [%s]") % _parent_resc_name % source_info.resource_hierarchy);
+                THROW(SYS_INVALID_INPUT_PARAM, fmt::format("missing repl name [{}] in source hier string [{}]", _parent_resc_name, source_info.resource_hierarchy));
             }
 
             // Trim hierarchy up to parent because the resource adds itself later in hierarchy resolution
@@ -310,13 +309,13 @@ namespace {
             irods::resource_ptr dst_resc;
             const irods::error err_resolve = resc_mgr.resolve(_child_resc_name, dst_resc);
             if (!err_resolve.ok()) {
-                THROW(err_resolve.code(), boost::format("failed to resolve resource plugin. child resc [%s] parent resc [%s] bundle index [%d] bundles [%s] data id [%lld]. resolve message [%s]") %
-                      _child_resc_name %
-                      _parent_resc_name %
-                      _bun_idx %
-                      leaf_bundles_to_string(_bundles) %
-                      data_id_to_replicate %
-                      err_resolve.result());
+                THROW(err_resolve.code(), fmt::format("failed to resolve resource plugin. child resc [{}] parent resc [{}] bundle index [{}] bundles [{}] data id [{}]. resolve message [{}]",
+                      _child_resc_name,
+                      _parent_resc_name,
+                      _bun_idx,
+                      leaf_bundles_to_string(_bundles),
+                      data_id_to_replicate,
+                      err_resolve.result()));
             }
 
             // then we need to query the target resource and ask it to determine a dest resc hier for the repl
@@ -331,13 +330,13 @@ namespace {
                 &parser,
                 &vote );
             if (!err_vote.ok()) {
-                THROW(err_resolve.code(), boost::format("failed to get dest hierarchy. child resc [%s] parent resc [%s] bundle index [%d] bundles [%s] data id [%lld]. vote message [%s]") %
-                      _child_resc_name %
-                      _parent_resc_name %
-                      _bun_idx %
-                      leaf_bundles_to_string(_bundles) %
-                      data_id_to_replicate %
-                      err_vote.result());
+                THROW(err_resolve.code(), fmt::format("failed to get dest hierarchy. child resc [{}] parent resc [{}] bundle index [{}] bundles [{}] data id [{}]. vote message [{}]",
+                      _child_resc_name,
+                      _parent_resc_name,
+                      _bun_idx,
+                      leaf_bundles_to_string(_bundles),
+                      data_id_to_replicate,
+                      err_vote.result()));
             }
 
             const std::string root_resc = parser.first_resc();
@@ -368,11 +367,11 @@ namespace {
 
         if (!first_rebalance_error.ok()) {
             THROW(first_rebalance_error.code(),
-                  boost::format("%s: repl_for_rebalance failed. child_resc [%s] parent resc [%s]. rebalance message [%s]") %
-                  __FUNCTION__ %
-                  _child_resc_name %
-                  _parent_resc_name %
-                  first_rebalance_error.result());
+                  fmt::format("{}: repl_for_rebalance failed. child_resc [{}] parent resc [{}]. rebalance message [{}]",
+                  __FUNCTION__,
+                  _child_resc_name,
+                  _parent_resc_name,
+                  first_rebalance_error.result()));
         }
     }
 } // anonymous namespace
@@ -400,10 +399,10 @@ namespace irods {
                 const error err_dst_hier = resc_mgr.leaf_id_to_hier(replica_to_update.resource_id, destination_hierarchy);
                 if (!err_dst_hier.ok()) {
                     THROW(err_dst_hier.code(),
-                          boost::format("leaf_id_to_hier failed. data id [%lld]. replica number [%d] resource id [%lld]") %
-                          replica_to_update.data_id %
-                          replica_to_update.replica_number %
-                          replica_to_update.resource_id);
+                          fmt::format("leaf_id_to_hier failed. data id [{}]. replica number [{}] resource id [{}]",
+                          replica_to_update.data_id,
+                          replica_to_update.replica_number,
+                          replica_to_update.resource_id));
                 }
 
                 ReplicationSourceInfo source_info;
@@ -424,18 +423,18 @@ namespace irods {
                 if (!err_parser.ok()) {
                     THROW(
                         err_parser.code(),
-                        boost::format("set_string failed. resource hierarchy [%s]. object path [%s]") %
-                                      source_info.resource_hierarchy %
-                        source_info.object_path);
+                        fmt::format("set_string failed. resource hierarchy [{}]. object path [{}]",
+                                      source_info.resource_hierarchy,
+                        source_info.object_path));
                 }
                 std::string root_resc;
                 const error err_first_resc = hierarchy_parser.first_resc(root_resc);
                 if (!err_first_resc.ok()) {
                     THROW(
                         err_first_resc.code(),
-                        boost::format("first_resc failed. resource hierarchy [%s]. object path [%s]") %
-                        source_info.resource_hierarchy %
-                        source_info.object_path);
+                        fmt::format("first_resc failed. resource hierarchy [{}]. object path [{}]",
+                        source_info.resource_hierarchy,
+                        source_info.object_path));
                 }
 
                 rodsLog(LOG_NOTICE, "update_out_of_date_replicas: updating out-of-date replica for data id [%ji] from [%s] to [%s]",
@@ -495,10 +494,10 @@ namespace irods {
                                                        repls_to_skip);
                 if (status_chlGetReplListForLeafBundles != 0) {
                     THROW(status_chlGetReplListForLeafBundles,
-                          boost::format("failed to get data objects needing new replicas for resource [%s] bundle index [%d] bundles [%s]")
-                          % _resource_name
-                          % i
-                          % leaf_bundles_to_string(_leaf_bundles));
+                          fmt::format("failed to get data objects needing new replicas for resource [{}] bundle index [{}] bundles [{}]",
+                          _resource_name,
+                          i,
+                          leaf_bundles_to_string(_leaf_bundles)));
                 }
 
                 if (repls_to_skip > 0) {

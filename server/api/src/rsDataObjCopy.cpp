@@ -36,8 +36,6 @@
 // =-=-=-=-=-=-=-
 #include "irods/irods_resource_redirect.hpp"
 
-#include <boost/format.hpp>
-
 #include <chrono>
 
 namespace

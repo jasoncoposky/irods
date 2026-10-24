@@ -3,6 +3,7 @@
 #include "irods/rodsErrorTable.h"
 #include "irods/irods_log.hpp"
 
+#include <algorithm>
 #include <iostream>
 #include <sstream>
 
@@ -211,12 +212,12 @@ namespace irods {
                 if (next_itr != resc_list_.end()) {
                     return *next_itr;
                 }
-                THROW(NO_NEXT_RESC_FOUND, (boost::format(
-                      "there is no next resource. [%s] is a leaf resource.") % _current).str());
+                THROW(NO_NEXT_RESC_FOUND, fmt::format(
+                      "there is no next resource. [{}] is a leaf resource.", _current));
             }
         }
-        THROW(CHILD_NOT_FOUND, (boost::format(
-              "resource [%s] not in hierarchy.") % _current).str());
+        THROW(CHILD_NOT_FOUND, fmt::format(
+              "resource [{}] not in hierarchy.", _current));
     }
 
 

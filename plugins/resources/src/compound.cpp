@@ -690,8 +690,8 @@ namespace
         int destination_l1descInx = rsDataObjOpen(_ctx.comm(), &destination_data_obj_inp);
         if ( destination_l1descInx < 0 ) {
             THROW(destination_l1descInx,
-                  (boost::format("Failed to open destination for [%s]") %
-                   destination_data_obj_inp.objPath).str().c_str());
+                  fmt::format("Failed to open destination for [{}]",
+                   destination_data_obj_inp.objPath));
         }
         return destination_l1descInx;
     } // open_destination_replica

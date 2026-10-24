@@ -11267,7 +11267,7 @@ irods::error db_get_repl_list_for_leaf_bundles_op(
     }
 
     if (_count <= 0) {
-        return ERROR(SYS_INVALID_INPUT_PARAM, boost::format("invalid _count [%d]") % _count);
+        return ERROR(SYS_INVALID_INPUT_PARAM, fmt::format("invalid _count [{}]", _count));
     }
     if (nullptr == _bundles) {
         return ERROR(INVALID_INPUT_ARGUMENT_NULL_POINTER, "bundles is NULL");

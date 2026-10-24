@@ -86,15 +86,6 @@ const char *error::status_token_     = " status [";
 
     } // ctor
 
-    error::error(
-        bool          _status,
-        long long     _code,
-        boost::format _msg,
-        std::string   _file,
-        int           _line,
-        std::string   _fcn ) :
-        error::error( _status, _code, _msg.str(), _file, _line, _fcn ) {}
-
 // =-=-=-=-=-=-=-
 // public - deprecated constructor - since 4.0.3
     error::error(

@@ -26,6 +26,7 @@
 #include <boost/archive/iterators/transform_width.hpp>
 #include <boost/archive/iterators/ostream_iterator.hpp>
 
+#include <fmt/format.h>
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
@@ -120,7 +121,7 @@ namespace
             in >> _json;
         }
         catch (const json::parse_error& e) {
-            return ERROR(-1, boost::format("failed to parse json [file=%s, error=%s].") % _file % e.what());
+            return ERROR(-1, fmt::format("failed to parse json [file={}, error={}].", _file, e.what()));
         }
 
         return SUCCESS();
@@ -134,7 +135,7 @@ irods::error convert_server_config( json& _svr_cfg )
     std::string svr_cfg;
     irods::error ret = irods::get_full_path_for_config_file( "server_config.json", svr_cfg );
     if ( !ret.ok() || !fs::exists( svr_cfg ) ) {
-        return ERROR(SYS_CONFIG_FILE_ERR, boost::format("Could not find server config file at [%s]") % svr_cfg);
+        return ERROR(SYS_CONFIG_FILE_ERR, fmt::format("Could not find server config file at [{}]", svr_cfg));
     }
 
     if (auto err = load_json_file(svr_cfg, _svr_cfg); !err.ok()) {
@@ -194,7 +195,7 @@ irods::error get_user_name_string(std::string& user_name_string)
     uid_t uid = getuid();
     passwd *pw = getpwuid(uid);
     if (pw==nullptr) {
-        return ERROR(SYS_INTERNAL_NULL_INPUT_ERR, boost::format("getpwuid() returned null for uid [%d]") % uid);
+        return ERROR(SYS_INTERNAL_NULL_INPUT_ERR, fmt::format("getpwuid() returned null for uid [{}]", uid));
     }
     user_name_string = pw->pw_name;
     return SUCCESS();
@@ -205,11 +206,11 @@ irods::error get_group_name_string(std::string& group_name_string)
     uid_t uid = getuid();
     passwd *pw = getpwuid(uid);
     if (pw==nullptr) {
-        return ERROR(SYS_INTERNAL_NULL_INPUT_ERR, boost::format("getpwuid() returned null for uid [%d]") % uid);
+        return ERROR(SYS_INTERNAL_NULL_INPUT_ERR, fmt::format("getpwuid() returned null for uid [{}]", uid));
     }
     group *grp = getgrgid(pw->pw_gid);
     if (grp==nullptr) {
-        return ERROR(SYS_INTERNAL_NULL_INPUT_ERR, boost::format("getgrgid() returned null for gid [%d]") % pw->pw_gid);
+        return ERROR(SYS_INTERNAL_NULL_INPUT_ERR, fmt::format("getgrgid() returned null for gid [{}]", pw->pw_gid));
     }
     group_name_string = grp->gr_name;
     return SUCCESS();

@@ -8,6 +8,7 @@
 #include <openssl/err.h>
 #include <openssl/aes.h>
 
+#include <algorithm>
 #include <cctype>
 #include <iostream>
 #include <sstream>

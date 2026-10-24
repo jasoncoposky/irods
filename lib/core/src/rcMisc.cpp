@@ -42,10 +42,9 @@
 #include "irods/delay_rule_lock.h"
 #include "irods/delay_rule_unlock.h"
 
-#include <boost/format.hpp>
-#include <boost/generator_iterator.hpp>
-
+#include <fmt/args.h>
 #include <fmt/format.h>
+#include <fmt/printf.h>
 #include <nlohmann/json.hpp>
 
 #include <sys/time.h>
@@ -3161,16 +3160,16 @@ printGenQueryOut( FILE * fd, char * format, char * hint, genQueryOut_t * genQuer
                 fprintf( fd, "------------------------------------------------------------\n" );
             }
             else {
-                boost::format formatter( format );
-                for ( int j = 0; j < n; j++ ) {
-                    formatter % &v[j]->value[v[j]->len * i];
+                fmt::dynamic_format_arg_store<fmt::printf_context> store;
+                for (int j = 0; j < n; j++) {
+                    store.push_back( static_cast<const char*>(&v[j]->value[v[j]->len * i]) );
                 }
-                std::stringstream ss; ss << formatter;
-                fprintf( fd, "%s\n", ss.str().c_str() );
+                const auto formatted = fmt::vsprintf(format, store);
+                fprintf( fd, "%s\n", formatted.c_str() );
             }
         }
     }
-    catch ( const boost::io::format_error& _e ) {
+    catch ( const fmt::format_error& _e ) {
         std::cerr << _e.what() << std::endl;
     }
 
@@ -4393,18 +4392,6 @@ splitMultiStr( char * strInput, strArray_t * strArray ) {
 
     return strArray->len;
 }
-
-namespace boost {
-    void assertion_failed( char const * expr,
-                           char const * function, char const * file, long line ) {
-        std::cerr <<
-                  "***** Internal Program Error - assertion (" << expr << ") failed in "
-                  << function << ":\n"
-                  << file << '(' << line << "): errno = " << errno << std::endl;
-    }
-
-
-} // namespace boost
 
 int
 getPathStMode( const char* p ) {

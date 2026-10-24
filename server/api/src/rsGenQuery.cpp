@@ -11,7 +11,6 @@
 #include "irods/irods_lexical_cast.hpp"
 #include "irods/rodsGenQueryNames.h"
 
-#include <boost/format.hpp>
 #include <boost/tokenizer.hpp>
 #include <boost/algorithm/string/predicate.hpp>
 #include <fmt/format.h>
@@ -862,7 +861,7 @@ _rsGenQuery( rsComm_t *rsComm, genQueryInp_t *genQueryInp,
                            acl_val );
 
     if ( PrePostProcForGenQueryFlag == 1 ) {
-        std::string arg = str( boost::format( "%ld" ) % ( ( long )genQueryInp ) );
+        std::string arg = fmt::format( "{}", ( long )genQueryInp );
         args[0] = arg.c_str();
         argc = 1;
         i =  applyRuleArg( "acPreProcForGenQuery", args, argc, &rei2, NO_SAVE_REI );
@@ -891,9 +890,9 @@ _rsGenQuery( rsComm_t *rsComm, genQueryInp_t *genQueryInp,
 
     /**  June 1 2009 for pre-post processing rule hooks **/
     if ( PrePostProcForGenQueryFlag == 1 ) {
-        std::string in_string = str( boost::format( "%ld" ) % ( ( long )genQueryInp ) );
-        std::string out_string = str( boost::format( "%ld" ) % ( ( long )genQueryOut ) );
-        std::string status_string = str( boost::format( "%d" ) % ( ( long )status ) );
+        std::string in_string = fmt::format( "{}", ( long )genQueryInp );
+        std::string out_string = fmt::format( "{}", ( long )genQueryOut );
+        std::string status_string = fmt::format( "{}", ( long )status );
         args[0] = in_string.c_str();
         args[1] = out_string.c_str();
         args[2] = status_string.c_str();
