@@ -21,6 +21,7 @@
 
 #include <fnmatch.h>
 
+#include <charconv>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
@@ -272,6 +273,20 @@ namespace
 
         return 0;
     } // copyRodsPath
+
+    template <typename T>
+    auto parse_int(const char* _str, T _default = 0) noexcept -> T
+    {
+        if (!_str) {
+            return _default;
+        }
+        while (*_str == ' ' || *_str == '\t') {
+            ++_str;
+        }
+        T val = _default;
+        std::from_chars(_str, _str + std::strlen(_str), val);
+        return val;
+    }
 } // anonymous namespace
 
 int
@@ -746,7 +761,6 @@ queryDataObjAcl( rcComm_t *conn, char *dataId, char *zoneHint, genQueryOut_t **g
 int
 queryCollAclSpecific( rcComm_t *conn, char *collName, char *zoneHint,
                       genQueryOut_t **genQueryOut ) {
-    genQueryOut_t *myGenQueryOut;
     int status;
     specificQueryInp_t specificQueryInp;
 
@@ -754,11 +768,8 @@ queryCollAclSpecific( rcComm_t *conn, char *collName, char *zoneHint,
         return USER__NULL_INPUT_ERR;
     }
 
-    myGenQueryOut = *genQueryOut =
-                        ( genQueryOut_t * ) malloc( sizeof( genQueryOut_t ) );
-    memset( myGenQueryOut, 0, sizeof( genQueryOut_t ) );
-
     memset( &specificQueryInp, 0, sizeof( specificQueryInp_t ) );
+    const auto clear_cond = irods::at_scope_exit{[&specificQueryInp] { clearKeyVal(&specificQueryInp.condInput); }};
     if ( zoneHint != NULL ) {
         addKeyVal( &specificQueryInp.condInput, ZONE_KW, zoneHint );
     }
@@ -1699,6 +1710,7 @@ int get_resc_hier_from_leaf_id(
     inp.resc_id_ = _resc_id;
 
     get_hier_out_t* out = NULL;
+    const auto free_out = irods::at_scope_exit{[&out] { std::free(out); }};
 
     // due to client-server blending of query handles and
     // point of call.  sometimes its on the server, sometimes
@@ -1814,7 +1826,7 @@ getNextDataObjMetaInfo( collHandle_t *collHandle, collEnt_t *outCollEnt ) {
                 if ( strcmp( prevdataId, &dataId[dataIdLen * i] ) != 0 ) {
                     rstrcpy( prevdataId, &dataId[dataIdLen * i], NAME_LEN );
                     selectedInx = i;
-                    if ( atoi( &dataId[dataIdLen * i] ) != 0 ) {
+                    if ( parse_int<int>( &dataId[dataIdLen * i] ) != 0 ) {
                         gotCopy = 1;
                     }
                 }
@@ -1825,7 +1837,7 @@ getNextDataObjMetaInfo( collHandle_t *collHandle, collEnt_t *outCollEnt ) {
                     break;
                 }
                 if ( gotCopy == 0 &&
-                        atoi( &replStatus[replStatusLen * i] ) > 0 ) {
+                        parse_int<int>( &replStatus[replStatusLen * i] ) > 0 ) {
                     /* pick a good copy */
                     selectedInx = i;
                     gotCopy = 1;
@@ -1853,11 +1865,11 @@ getNextDataObjMetaInfo( collHandle_t *collHandle, collEnt_t *outCollEnt ) {
 
     value = dataObjSqlResult->dataMode.value;
     len = dataObjSqlResult->dataMode.len;
-    outCollEnt->dataMode = atoi( &value[len * selectedInx] );
+    outCollEnt->dataMode = parse_int<int>( &value[len * selectedInx] );
 
     value = dataObjSqlResult->dataSize.value;
     len = dataObjSqlResult->dataSize.len;
-    outCollEnt->dataSize = strtoll( &value[len * selectedInx], 0, 0 );
+    outCollEnt->dataSize = parse_int<rodsLong_t>( &value[len * selectedInx] );
 
     value = dataObjSqlResult->createTime.value;
     len = dataObjSqlResult->createTime.len;
@@ -1869,12 +1881,12 @@ getNextDataObjMetaInfo( collHandle_t *collHandle, collEnt_t *outCollEnt ) {
 
     outCollEnt->dataId = &dataId[dataIdLen * selectedInx];
 
-    outCollEnt->replStatus = atoi( &replStatus[replStatusLen *
+    outCollEnt->replStatus = parse_int<int>( &replStatus[replStatusLen *
                                    selectedInx] );
 
     value = dataObjSqlResult->replNum.value;
     len = dataObjSqlResult->replNum.len;
-    outCollEnt->replNum = atoi( &value[len * selectedInx] );
+    outCollEnt->replNum = parse_int<int>( &value[len * selectedInx] );
 
     value = dataObjSqlResult->chksum.value;
     len = dataObjSqlResult->chksum.len;
@@ -2107,6 +2119,8 @@ getCollSizeForProgStat( rcComm_t *conn, char *srcColl,
                  srcColl, status );
         return status;
     }
+
+    const auto close_coll = irods::at_scope_exit{[&collHandle] { rclCloseCollection(&collHandle); }};
 
     while ( ( status = rclReadCollection( conn, &collHandle, &collEnt ) ) >= 0 ) {
         if ( collEnt.objType == DATA_OBJ_T ) {

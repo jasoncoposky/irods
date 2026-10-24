@@ -13,7 +13,25 @@
 
 #include <fmt/format.h>
 
+#include <charconv>
 #include <cstring>
+
+namespace
+{
+    template <typename T>
+    auto parse_int(const char* _str, T _default = 0) noexcept -> T
+    {
+        if (!_str) {
+            return _default;
+        }
+        while (*_str == ' ' || *_str == '\t') {
+            ++_str;
+        }
+        T val = _default;
+        std::from_chars(_str, _str + std::strlen(_str), val);
+        return val;
+    }
+} // anonymous namespace
 
 char zoneHint[MAX_NAME_LEN];
 
@@ -349,11 +367,11 @@ printLsLong( rcComm_t *conn, rodsArguments_t *rodsArgs,
         std::memset(&collEnt, 0, sizeof(collEnt));
 
         collEnt.dataName = &dataName->value[dataName->len * i];
-        collEnt.replNum = atoi( &replNum->value[replNum->len * i] );
-        collEnt.dataSize = strtoll( &dataSize->value[dataSize->len * i], 0, 0 );
+        collEnt.replNum = parse_int<int>( &replNum->value[replNum->len * i] );
+        collEnt.dataSize = parse_int<rodsLong_t>( &dataSize->value[dataSize->len * i] );
         collEnt.resource = &rescName->value[rescName->len * i];
         collEnt.ownerName = &dataOwnerName->value[dataOwnerName->len * i];
-        collEnt.replStatus = atoi( &replStatus->value[replStatus->len * i] );
+        collEnt.replStatus = parse_int<int>( &replStatus->value[replStatus->len * i] );
         collEnt.modifyTime = &dataModify->value[dataModify->len * i];
         collEnt.resc_hier = &rescHier->value[rescHier->len * i];
 
@@ -476,6 +494,7 @@ lsCollUtil( rcComm_t *conn, rodsPath_t *srcPath, rodsEnv *myRodsEnv,
                  srcColl, status );
         return status;
     }
+    const auto close_coll = irods::at_scope_exit{[&collHandle] { rclCloseCollection(&collHandle); }};
     while ( ( status = rclReadCollection( conn, &collHandle, &collEnt ) ) >= 0 ) {
         if ( collEnt.objType == DATA_OBJ_T ) {
             if ( rodsArgs->bundle == True ) {
@@ -506,7 +525,6 @@ lsCollUtil( rcComm_t *conn, rodsPath_t *srcPath, rodsEnv *myRodsEnv,
             }
         }
     }
-    rclCloseCollection( &collHandle );
     if ( savedStatus < 0 && savedStatus != CAT_NO_ROWS_FOUND ) {
         return savedStatus;
     }
@@ -618,7 +636,7 @@ printSpecLsLong( char *objPath, char *ownerName, char *objSize,
 
     collEnt.dataName = objPath;
     collEnt.ownerName = ownerName;
-    collEnt.dataSize = strtoll( objSize, 0, 0 );
+    collEnt.dataSize = parse_int<rodsLong_t>( objSize );
     collEnt.resource = specColl->resource;
     collEnt.resc_hier = specColl->rescHier;
     collEnt.modifyTime = modifyTime;
@@ -663,6 +681,7 @@ printDataAcl( rcComm_t *conn, char *dataId ) {
 int
 printCollAcl( rcComm_t *conn, char *collName ) {
     genQueryOut_t *genQueryOut = NULL;
+    const auto free_out = irods::at_scope_exit{[&genQueryOut] { freeGenQueryOut(&genQueryOut); }};
     int status;
 
     printf( "        ACL - " );
@@ -695,7 +714,6 @@ printCollAcl( rcComm_t *conn, char *collName ) {
 
         }
         printf( "\n" );
-        freeGenQueryOut( &genQueryOut );
         return status;
     }
 
