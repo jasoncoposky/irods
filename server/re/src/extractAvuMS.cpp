@@ -9,10 +9,13 @@
 #endif
 
 #include <algorithm> // for std::find
+#include <cstdlib>
 #include <vector>
 #include <string>
 #include <regex.h>
+#include <fmt/format.h>
 
+#include "irods/irods_at_scope_exit.hpp"
 #include "irods/irods_re_structs.hpp"
 #include "irods/rsModAVUMetadata.hpp"
 
@@ -78,31 +81,52 @@ msiReadMDTemplateIntoTagStruct( msParam_t* bufParam, msParam_t* tagParam, ruleEx
         rodsLog( LOG_NOTICE, "msiReadMDTemplateIntoTagStruct: Error in regcomp: %s\n", errbuff );
         return INVALID_REGEXP;
     }
+    const auto free_preg0 = irods::at_scope_exit{[&preg] { regfree(&preg[0]); }};
+
     j = regcomp( &preg[1], "</PRETAG>", REG_EXTENDED );
     if ( j != 0 ) {
         regerror( j, &preg[1], errbuff, sizeof( errbuff ) );
         rodsLog( LOG_NOTICE, "msiReadMDTemplateIntoTagStruct: Error in regcomp: %s\n", errbuff );
         return INVALID_REGEXP;
     }
+    const auto free_preg1 = irods::at_scope_exit{[&preg] { regfree(&preg[1]); }};
+
     j = regcomp( &preg[2], "<POSTTAG>", REG_EXTENDED );
     if ( j != 0 ) {
         regerror( j, &preg[2], errbuff, sizeof( errbuff ) );
         rodsLog( LOG_NOTICE, "msiReadMDTemplateIntoTagStruct: Error in regcomp: %s\n", errbuff );
         return INVALID_REGEXP;
     }
+    const auto free_preg2 = irods::at_scope_exit{[&preg] { regfree(&preg[2]); }};
+
     j = regcomp( &preg[3], "</POSTTAG>", REG_EXTENDED );
     if ( j != 0 ) {
         regerror( j, &preg[3], errbuff, sizeof( errbuff ) );
         rodsLog( LOG_NOTICE, "msiReadMDTemplateIntoTagStruct: Error in regcomp: %s\n", errbuff );
         return INVALID_REGEXP;
     }
+    const auto free_preg3 = irods::at_scope_exit{[&preg] { regfree(&preg[3]); }};
 
     t = ( char* )malloc( tmplObjBuf->len + 1 );
+    const auto free_t = irods::at_scope_exit{[t] { std::free(t); }};
     t[tmplObjBuf->len] = '\0';
     memcpy( t, tmplObjBuf->buf, tmplObjBuf->len );
     tagValues = ( tagStruct_t* )malloc( sizeof( tagStruct_t ) );
     memset(tagValues,0,sizeof(tagStruct_t));
     tagValues->len = 0;
+    const auto free_tag_values = irods::at_scope_exit{[&tagValues] {
+        if (tagValues) {
+            for (int k = 0; k < tagValues->len; ++k) {
+                std::free(tagValues->preTag[k]);
+                std::free(tagValues->postTag[k]);
+                std::free(tagValues->keyWord[k]);
+            }
+            std::free(tagValues->preTag);
+            std::free(tagValues->postTag);
+            std::free(tagValues->keyWord);
+            std::free(tagValues);
+        }
+    }};
     t1 = t;
     while ( regexec( &preg[0], t1, 1, &pm[0], 0 ) == 0 ) {
         t2 = t1 + pm[0].rm_eo ;                        /* t2 starts preTag */
@@ -135,24 +159,12 @@ msiReadMDTemplateIntoTagStruct( msParam_t* bufParam, msParam_t* tagParam, ruleEx
         }
     }
 
-    /*
-    free(preg[0]);
-    free(preg[1]);
-    free(preg[2]);
-    free(preg[3]);
-    */
-    regfree( &preg[0] );
-    regfree( &preg[1] );
-    regfree( &preg[2] );
-    regfree( &preg[3] );
-    free( t );
-
     if ( tagValues->len == 0 ) {
-        free( tagValues );
         return NO_VALUES_FOUND;
     }
 
     tagParam->inOutStruct = ( void * ) tagValues;
+    tagValues = nullptr;
     tagParam->type = strdup( TagStruct_MS_T );
 
     return 0;
@@ -201,33 +213,28 @@ int msiGetTaggedValueFromString( msParam_t *inTagParam, msParam_t *inStrParam,
     regex_t preg[2];
     regmatch_t pm[2];
     char errbuff[100];
-    char *pstr[2];
     char *t1, *t2, *t3;
     char c;
 
     t1 = ( char * ) inStrParam->inOutStruct;
-    pstr[0] = ( char * ) malloc( strlen( ( char* )inTagParam->inOutStruct ) + 6 );
-    sprintf( pstr[0], "<%s>", ( char * ) inTagParam->inOutStruct );
-    j = regcomp( &preg[0], pstr[0], REG_EXTENDED );
+    const auto open_tag = fmt::format("<{}>", static_cast<char*>(inTagParam->inOutStruct));
+    j = regcomp( &preg[0], open_tag.c_str(), REG_EXTENDED );
     if ( j != 0 ) {
         regerror( j, &preg[0], errbuff, sizeof( errbuff ) );
         rodsLog( LOG_NOTICE, "msiGetTaggedValueFromString: Error in regcomp: %s\n", errbuff );
-        regfree( &preg[0] );
-        free( pstr[0] );
         return INVALID_REGEXP;
     }
-    pstr[1] = ( char * ) malloc( strlen( ( char* )inTagParam->inOutStruct ) + 6 );
-    sprintf( pstr[1], "</%s>", ( char * ) inTagParam->inOutStruct );
-    j = regcomp( &preg[1], pstr[1], REG_EXTENDED );
+    const auto free_preg0 = irods::at_scope_exit{[&preg] { regfree(&preg[0]); }};
+
+    const auto close_tag = fmt::format("</{}>", static_cast<char*>(inTagParam->inOutStruct));
+    j = regcomp( &preg[1], close_tag.c_str(), REG_EXTENDED );
     if ( j != 0 ) {
         regerror( j, &preg[1], errbuff, sizeof( errbuff ) );
         rodsLog( LOG_NOTICE, "msiGetTaggedValueFromString: Error in regcomp: %s\n", errbuff );
-        regfree( &preg[0] );
-        regfree( &preg[1] );
-        free( pstr[0] );
-        free( pstr[1] );
         return INVALID_REGEXP;
     }
+    const auto free_preg1 = irods::at_scope_exit{[&preg] { regfree(&preg[1]); }};
+
     /*    rodsLog (LOG_NOTICE,"TTTTT:%s",t1);*/
     if ( regexec( &preg[0], t1, 1, &pm[0], 0 ) == 0 ) {
         t2 = t1 + pm[0].rm_eo ;                     /* t2 starts value */
@@ -245,10 +252,6 @@ int msiGetTaggedValueFromString( msParam_t *inTagParam, msParam_t *inStrParam,
     else {
         fillMsParam( outValueParam, NULL, STR_MS_T, 0, NULL );
     }
-    regfree( &preg[0] );
-    regfree( &preg[1] );
-    free( pstr[0] );
-    free( pstr[1] );
     return 0;
 }
 
@@ -324,30 +327,35 @@ msiExtractTemplateMDFromBuf( msParam_t* bufParam, msParam_t* tagParam,
     tagValues = ( tagStruct_t * ) tagParam->inOutStruct;
     metaObjBuf = ( bytesBuf_t * )  bufParam->inpOutBuf;
     t = ( char* )malloc( metaObjBuf->len + 1 );
+    const auto free_t = irods::at_scope_exit{[t] { std::free(t); }};
     t[metaObjBuf->len] = '\0';
     memcpy( t, metaObjBuf->buf, metaObjBuf->len );
     metaDataPairs = ( keyValPair_t* )malloc( sizeof( keyValPair_t ) );
     memset(metaDataPairs,0,sizeof(keyValPair_t));
+    const auto free_meta_data_pairs = irods::at_scope_exit{[&metaDataPairs] {
+        if (metaDataPairs) {
+            clearKeyVal(metaDataPairs);
+            std::free(metaDataPairs);
+        }
+    }};
     for ( i = 0; i  < tagValues->len ; i++ ) {
         t1 = t;
         j = regcomp( &preg[0], tagValues->preTag[i], REG_EXTENDED );
         if ( j != 0 ) {
             regerror( j, &preg[0], errbuff, sizeof( errbuff ) );
             rodsLog( LOG_NOTICE, "msiExtractTemplateMDFromBuf: Error in regcomp: %s\n", errbuff );
-            clearKeyVal( metaDataPairs );
-            free( metaDataPairs );
-            free( t );
             return INVALID_REGEXP;
         }
+        const auto free_preg0 = irods::at_scope_exit{[&preg] { regfree(&preg[0]); }};
+
         j = regcomp( &preg[1], tagValues->postTag[i], REG_EXTENDED );
         if ( j != 0 ) {
             regerror( j, &preg[1], errbuff, sizeof( errbuff ) );
             rodsLog( LOG_NOTICE, "msiExtractTemplateMDFromBuf: Error in regcomp: %s\n", errbuff );
-            clearKeyVal( metaDataPairs );
-            free( metaDataPairs );
-            free( t );
             return INVALID_REGEXP;
         }
+        const auto free_preg1 = irods::at_scope_exit{[&preg] { regfree(&preg[1]); }};
+
         while ( regexec( &preg[0], t1, 1, &pm[0], 0 ) == 0 ) {
             t2 = t1 + pm[0].rm_eo ;                     /* t2 starts value */
             if ( regexec( &preg[1], t2, 1, &pm[1], 0 ) != 0 ) {
@@ -361,7 +369,6 @@ msiExtractTemplateMDFromBuf( msParam_t* bufParam, msParam_t* tagParam,
             j = addKeyVal( metaDataPairs, tagValues->keyWord[i], t2 );
             *t4 = c;
             if ( j < 0 ) {
-                free( t );
                 return j;
             }
             t1 = t3;
@@ -369,15 +376,10 @@ msiExtractTemplateMDFromBuf( msParam_t* bufParam, msParam_t* tagParam,
                 break;
             }
         }
-        regfree( &preg[0] );
-        regfree( &preg[1] );
-
-        continue;
     }
 
-    free( t );
-
     metadataParam->inOutStruct = ( void * ) metaDataPairs;
+    metaDataPairs = nullptr;
     metadataParam->type = strdup( KeyValPair_MS_T );
 
     return 0;

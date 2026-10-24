@@ -5,6 +5,10 @@
 #include "irods/rcMisc.h"
 #include "irods/irods_re_structs.hpp"
 #include "irods/rodsErrorTable.h"
+#include "irods/irods_at_scope_exit.hpp"
+
+#include <cstdlib>
+#include <fmt/format.h>
 
 /**
  * \brief Given a list of KVPairs and a Key, this microservice gets the corresponding value.
@@ -109,36 +113,21 @@ int msiGetValByKey(msParam_t* _kvp, msParam_t* _key, msParam_t* _out_value, rule
  * \sa none
 **/
 int msiPrintKeyValPair( msParam_t* where, msParam_t* inkvpair, ruleExecInfo_t *rei ) {
-    int i, l, m, j;
+    int i, j;
     keyValPair_t *k;
-    char *s;
-    msParam_t tms;
+    msParam_t tms{};
 
     RE_TEST_MACRO( "msiPrintKeyValPair" );
 
-    m = 0;
-    s = NULL;
     k = ( keyValPair_t* )inkvpair->inOutStruct;
 
     for ( i = 0; i < k->len; i++ ) {
-        l  =  strlen( k->keyWord[i] ) + strlen( k->value[i] ) + 10;
-        if ( l > m ) {
-            if ( m > 0 ) {
-                free( s );
-            }
-            s = ( char* )malloc( l );
-            m = l;
-        }
-        sprintf( s, "%s = %s\n", k->keyWord[i], k->value[i] );
-        tms.inOutStruct =  s;
+        auto out_str = fmt::format( "{} = {}\n", k->keyWord[i], k->value[i] );
+        tms.inOutStruct = out_str.data();
         j = writeString( where, &tms, rei );
         if ( j < 0 ) {
-            free( s );
             return j;
         }
-    }
-    if ( m > 0 ) {
-        free( s );
     }
     return 0;
 }
@@ -191,10 +180,19 @@ int msiString2KeyValPair( msParam_t *inBufferP, msParam_t* outKeyValPairP, ruleE
     if ( i < 0 ) {
         return i;
     }
+    const auto free_str_array = irods::at_scope_exit{[&strArray] {
+        std::free(strArray.value);
+    }};
     value = strArray.value;
 
     kvp = ( keyValPair_t* )malloc( sizeof( keyValPair_t ) );
     memset(kvp, 0, sizeof(keyValPair_t));
+    const auto free_kvp = irods::at_scope_exit{[&kvp] {
+        if (kvp) {
+            clearKeyVal(kvp);
+            std::free(kvp);
+        }
+    }};
     for ( i = 0; i < strArray.len; i++ ) {
         valPtr = &value[i * strArray.size];
         if ( ( tmpPtr = strstr( valPtr, "=" ) ) != NULL ) {
@@ -208,6 +206,7 @@ int msiString2KeyValPair( msParam_t *inBufferP, msParam_t* outKeyValPairP, ruleE
         }
     }
     outKeyValPairP->inOutStruct = ( void * ) kvp;
+    kvp = nullptr;
     outKeyValPairP->type = strdup( KeyValPair_MS_T );
 
     return 0;

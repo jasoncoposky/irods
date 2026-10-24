@@ -4,7 +4,9 @@
 #include "irods/rsGenQuery.hpp"
 #include "irods/rcMisc.h"
 #include "irods/irods_re_structs.hpp"
+#include "irods/irods_at_scope_exit.hpp"
 
+#include <cstdio>
 #include <unistd.h>
 #include <sys/types.h>
 #include <pwd.h>
@@ -946,17 +948,23 @@ msiPrintGenQueryOutToBuffer( msParam_t *queryOut, msParam_t *format, msParam_t *
         rodsLog( LOG_ERROR, "msiPrintGenQueryOutToBuffer: mkstemp() failed. [%s] %d - %d", filename, fd, errno );
         return ( FILE_OPEN_ERR ); /* accurate enough */
     }
-    FILE *stream = fdopen( fd, "w" );
+    const auto unlink_tmp = irods::at_scope_exit{[&filename] {
+        unlink(filename);
+    }};
+    FILE *stream = fdopen( fd, "w+" );
     if ( !stream ) { /* Since it won't be caught by printGenQueryOut */
         rodsLog( LOG_ERROR, "msiPrintGenQueryOutToBuffer: fdopen() failed." );
+        close( fd );
         return ( FILE_OPEN_ERR ); /* accurate enough */
     }
+    const auto close_stream = irods::at_scope_exit{[stream] {
+        std::fclose(stream);
+    }};
 
     /* Write results to temp file */
     rei->status = printGenQueryOut( stream, format_str, NULL, genQueryOut );
     if ( rei->status < 0 ) {
         rodsLog( LOG_ERROR, "msiPrintGenQueryOutToBuffer: printGenQueryOut() failed, status = %d", rei->status );
-        fclose( stream );
         return rei->status;
     }
 
@@ -979,7 +987,6 @@ msiPrintGenQueryOutToBuffer( msParam_t *queryOut, msParam_t *format, msParam_t *
 
     /* Fill bytesBuf in our buffer output */
     fillBufLenInMsParam( buffer, bytesBuf->len, bytesBuf );
-    fclose( stream );
 
     return 0;
 

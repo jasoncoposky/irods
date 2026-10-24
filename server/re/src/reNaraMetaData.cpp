@@ -8,6 +8,9 @@
 
 #include "irods/irods_log.hpp"
 #include "irods/irods_get_full_path_for_config_file.hpp"
+#include "irods/irods_at_scope_exit.hpp"
+
+#include <cstdio>
 
 /**
  * \fn msiExtractNaraMetadata (ruleExecInfo_t *rei)
@@ -71,8 +74,10 @@ msiExtractNaraMetadata( ruleExecInfo_t *rei ) {
                  "msiExtractNaraMetadata: Cannot open the metadata file %s.", metafile );
         return UNIX_FILE_OPEN_ERR;
     }
+    const auto close_fp = irods::at_scope_exit{[fp] { std::fclose(fp); }};
 
     memset( &modAVUMetadataInp, 0, sizeof( modAVUMetadataInp ) );
+    const auto clear_cond = irods::at_scope_exit{[&modAVUMetadataInp] { clearKeyVal(&modAVUMetadataInp.condInput); }};
     modAVUMetadataInp.arg0 = "add";
 
     while ( !feof( fp ) ) {
@@ -89,6 +94,7 @@ msiExtractNaraMetadata( ruleExecInfo_t *rei ) {
                     if ( strlen( substring ) >= sizeof( attr ) ) {
                         rodsLog( LOG_ERROR,
                                  "attr: [%s] is too long for attr, which may only be %ju characters in length.",
+                                 substring,
                                  ( uintmax_t )sizeof( attr ) );
                     }
                     snprintf( attr, sizeof( attr ), "%s", substring );
@@ -97,6 +103,7 @@ msiExtractNaraMetadata( ruleExecInfo_t *rei ) {
                     if ( strlen( substring ) >= sizeof( value ) ) {
                         rodsLog( LOG_ERROR,
                                  "value: [%s] is too long for value, which may only be %ju characters in length.",
+                                 substring,
                                  ( uintmax_t )sizeof( value ) );
                     }
                     snprintf( value, sizeof( value ), "%s", substring );
@@ -117,6 +124,5 @@ msiExtractNaraMetadata( ruleExecInfo_t *rei ) {
             }
         }
     }
-    fclose( fp );
     return 0;
 }
