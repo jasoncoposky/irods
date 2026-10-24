@@ -39,7 +39,6 @@
 #include "irods/sslSockComm.h"
 
 #include <boost/asio.hpp>
-#include <boost/chrono.hpp>
 #include <boost/interprocess/ipc/message_queue.hpp>
 #include <boost/program_options.hpp>
 #include <boost/stacktrace.hpp>
@@ -1047,11 +1046,11 @@ namespace
             try {
                 // Convert the epoch value to ISO8601 format.
                 log_af::trace("{}: Converting epoch seconds to UTC timestamp.", __func__);
-                using boost::chrono::system_clock;
-                using boost::chrono::time_fmt;
-                const auto tp = system_clock::from_time_t(std::stoll(epoch_seconds));
-                std::ostringstream utc_ss;
-                utc_ss << time_fmt(boost::chrono::timezone::utc, "%FT%T") << tp;
+                const std::time_t tt = std::stoll(epoch_seconds);
+                std::tm utc_tm{};
+                gmtime_r(&tt, &utc_tm);
+                char utc_buf[32]{};
+                std::strftime(utc_buf, sizeof(utc_buf), "%FT%T", &utc_tm);
 
                 // Read the contents of the file.
                 std::ifstream file{p};
@@ -1063,7 +1062,7 @@ namespace
                 log_af::critical({
                     {"log_message", boost::stacktrace::to_string(stacktrace)},
                     {"stacktrace_agent_pid", pid},
-                    {"stacktrace_timestamp_utc", fmt::format("{}.{}Z", utc_ss.str(), remaining_millis)},
+                    {"stacktrace_timestamp_utc", fmt::format("{}.{}Z", utc_buf, remaining_millis)},
                     {"stacktrace_timestamp_epoch_seconds", epoch_seconds},
                     {"stacktrace_timestamp_epoch_milliseconds", remaining_millis}
                 });

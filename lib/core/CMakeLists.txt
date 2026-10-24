@@ -96,7 +96,6 @@ set(
   "${CMAKE_CURRENT_SOURCE_DIR}/include/irods/lifetime_manager.hpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/include/irods/lsUtil.h"
   "${CMAKE_CURRENT_SOURCE_DIR}/include/irods/mcollUtil.h"
-  "${CMAKE_CURRENT_SOURCE_DIR}/include/irods/microservice.hpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/include/irods/miscUtil.h"
   "${CMAKE_CURRENT_SOURCE_DIR}/include/irods/mkdirUtil.h"
   "${CMAKE_CURRENT_SOURCE_DIR}/include/irods/msParam.h"

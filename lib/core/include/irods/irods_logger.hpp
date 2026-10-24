@@ -27,7 +27,6 @@
 #include "irods/rcMisc.h"
 #include "irods/rcConnect.h"
 
-#include <boost/range/iterator_range_core.hpp>
 #include <fmt/format.h>
 #include <fmt/compile.h>
 #include <nlohmann/json.hpp>
@@ -766,7 +765,8 @@ namespace irods::experimental::log
                 }
 
                 if (auto* const error = get_error_object(); error) {
-                    for (const auto& [k, v] : boost::make_iterator_range(_first, _last)) {
+                    for (auto it = _first; it != _last; ++it) {
+                        const auto& [k, v] = *it;
                         const auto msg = fmt::format("{}: {}", k, v);
 
                         // Force addRErrorMsg() to skip prefixing the message with 'Level N:'.

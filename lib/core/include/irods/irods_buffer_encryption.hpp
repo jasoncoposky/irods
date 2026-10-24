@@ -9,10 +9,6 @@
 #include "irods/irods_error.hpp"
 
 // =-=-=-=-=-=-=-
-// boost includes
-#include <boost/numeric/ublas/storage.hpp>
-
-// =-=-=-=-=-=-=-
 // ssl includes
 #include <openssl/evp.h>
 

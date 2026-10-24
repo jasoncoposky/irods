@@ -30,10 +30,6 @@
 #  endif
 #endif
 
-#ifndef IRODS_STDLIB_CHRONO_HAS_CLOCK_STEADY
-#  include <boost/chrono.hpp>
-#endif
-
 namespace irods
 {
     namespace experimental::log
@@ -100,17 +96,6 @@ namespace irods
             const auto tp = clock_type::now();
             const auto tp_usec = chrono::floor<chrono::microseconds>(tp);
             const auto td_usec = tp_usec.time_since_epoch();
-            const auto b_usec = td_usec.count();
-            return static_cast<std::uint64_t>(b_usec);
-        }
-#elif defined(BOOST_CHRONO_HAS_CLOCK_STEADY)
-        if (ec != 0) {
-            namespace chrono = boost::chrono;
-            using clock_type = chrono::steady_clock;
-
-            const auto tp = clock_type::now();
-            const auto td = tp.time_since_epoch();
-            const auto td_usec = chrono::floor<chrono::microseconds>(td);
             const auto b_usec = td_usec.count();
             return static_cast<std::uint64_t>(b_usec);
         }

@@ -6,7 +6,6 @@
 #include "irods/db_flavor.hpp"
 #include "irods/irods_logger.hpp"
 
-#include <boost/iterator/function_input_iterator.hpp>
 #include <fmt/format.h>
 #include <fmt/ranges.h>
 #include <nanodbc/nanodbc.h>
@@ -1092,17 +1091,10 @@ namespace
             throw_if_invalid_conditional_operator(c.op);
 
             if ("in" == c.op) {
-                struct
-                {
-                    using result_type = std::string_view;
-                    auto operator()() const noexcept -> result_type { return "?"; }
-                } gen;
-
                 // Generate the placeholder syntax for the "in" SQL operator and add
                 // the bind argument for each placeholder to the values vector.
-                auto first = boost::make_function_input_iterator(gen, vector_type::size_type{0});
-                auto last = boost::make_function_input_iterator(gen, c.values.size());
-                condition_clauses.push_back(fmt::format("{} in ({})", c.column, fmt::join(first, last, ", ")));
+                const std::vector<std::string_view> placeholders(c.values.size(), "?");
+                condition_clauses.push_back(fmt::format("{} in ({})", c.column, fmt::join(placeholders, ", ")));
                 values.insert(std::end(values), std::begin(c.values), std::end(c.values));
             }
             else {

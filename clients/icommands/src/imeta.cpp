@@ -24,9 +24,9 @@
 #include <string_view>
 #include <algorithm>
 #include <filesystem>
+#include <optional>
 
 #include <boost/program_options.hpp>
-#include <boost/optional.hpp>
 
 #define MAX_SQL 300
 #define BIG_STR 3000
@@ -1690,7 +1690,7 @@ int main( int argc, const char **argv )
     rodsLogLevel(LOG_ERROR);
 
     rodsArguments_t myRodsArgs;
-    boost::optional<std::tuple<po::parsed_options, po::variables_map>> options_and_map;
+    std::optional<std::tuple<po::parsed_options, po::variables_map>> options_and_map;
     try {
         options_and_map = parse_program_options(argc, argv, myRodsArgs);
     }

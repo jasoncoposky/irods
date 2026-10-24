@@ -79,7 +79,7 @@ namespace irods::experimental::genquery2
 
         inline auto append_condition_expression(std::string& _out, const condition_expression& _expr) -> void
         {
-            struct visitor : boost::static_visitor<void>
+            struct visitor
             {
                 std::string& out;
                 explicit visitor(std::string& _o)
@@ -162,16 +162,16 @@ namespace irods::experimental::genquery2
                 void operator()(const condition_operator_not& _e) const
                 {
                     out.append(" not");
-                    boost::apply_visitor(*this, _e.expression);
+                    std::visit(*this, _e.expression);
                 }
             };
 
-            boost::apply_visitor(visitor{_out}, _expr);
+            std::visit(visitor{_out}, _expr);
         }
 
         inline auto append_conditions(std::string& _out, const conditions& _conds) -> void
         {
-            struct visitor : boost::static_visitor<void>
+            struct visitor
             {
                 std::string& out;
                 explicit visitor(std::string& _o)
@@ -213,7 +213,7 @@ namespace irods::experimental::genquery2
 
             visitor v{_out};
             for (const auto& cw : _conds) {
-                boost::apply_visitor(v, cw);
+                std::visit(v, cw);
             }
         }
     } // namespace detail
@@ -229,7 +229,7 @@ namespace irods::experimental::genquery2
             out.append("distinct ");
         }
 
-        struct proj_visitor : boost::static_visitor<void>
+        struct proj_visitor
         {
             std::string& out;
             explicit proj_visitor(std::string& _o)
@@ -253,7 +253,7 @@ namespace irods::experimental::genquery2
             if (i > 0) {
                 out.append(", ");
             }
-            boost::apply_visitor(pv, _sel.projections[i]);
+            std::visit(pv, _sel.projections[i]);
         }
 
         if (!_sel.conditions.empty()) {

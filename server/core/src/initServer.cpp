@@ -42,9 +42,6 @@
 
 #include "irods/logical_locking.hpp"
 
-#include <boost/optional.hpp>
-#include <boost/system/error_code.hpp>
-
 #include <fmt/format.h>
 #include <nlohmann/json.hpp>
 
@@ -52,6 +49,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <optional>
 #include <set>
 #include <string>
 #include <string_view>
@@ -340,9 +338,9 @@ initZone( rsComm_t *rsComm ) {
     rodsServerHost_t* secondaryServerHost = NULL;
     int status;
 
-    boost::optional<std::string> zone_name;
+    std::optional<std::string> zone_name;
     try {
-        zone_name.reset(irods::get_server_property<std::string>(irods::KW_CFG_ZONE_NAME));
+        zone_name = irods::get_server_property<std::string>(irods::KW_CFG_ZONE_NAME);
     } catch ( const irods::exception& e ) {
         irods::log( irods::error(e) );
         return e.code();

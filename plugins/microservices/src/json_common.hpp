@@ -9,12 +9,12 @@
 #include "irods/process_stash.hpp"
 #include "irods/rodsErrorTable.h"
 
-#include <boost/safe_numerics/safe_integer.hpp>
 #include <fmt/format.h>
 #include <nlohmann/json.hpp>
 
 #include <any>
 #include <concepts>
+#include <utility>
 
 namespace irods
 {
@@ -85,13 +85,7 @@ namespace irods
     template <std::integral To, std::integral From>
     constexpr auto truncated(From _value) -> bool
     {
-        try {
-            boost::safe_numerics::safe<To>{_value};
-            return false;
-        }
-        catch (const std::exception&) {
-            return true;
-        }
+        return !std::in_range<To>(_value);
     } // truncated
 } // namespace irods
 

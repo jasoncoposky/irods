@@ -12,6 +12,7 @@
 #include <boost/algorithm/string/trim.hpp>
 #include <boost/program_options.hpp>
 
+#include <any>
 #include <cstdio>
 #include <cstring>
 #include <string>
@@ -200,7 +201,7 @@ main( int argc, char **argv ) {
 
             try {
                 fileName = argsMap["file"].as< std::string >().c_str();
-            } catch ( boost::bad_any_cast& e ) {
+            } catch ( const std::bad_any_cast& e ) {
                 std::cerr << "Bad filename provided to --file option\n";
                 std::cerr << "Use -h or --help for help\n";
                 exit( 10 );
@@ -410,7 +411,7 @@ main( int argc, char **argv ) {
             std::vector< std::string > parameters;
             try {
                 parameters = argsMap["parameters"].as< std::vector< std::string> >();
-            } catch ( boost::bad_any_cast& e ) {
+            } catch ( const std::bad_any_cast& e ) {
                 std::cerr << "Bad parameter list provided\n";
                 std::cerr << "Use -h or --help for help\n";
                 exit( 10 );
@@ -611,7 +612,7 @@ parseParameters( boost::program_options::variables_map _vm, int ruleGen, execMyR
             std::vector< std::string > parameters;
             try {
                 parameters = _vm["parameters"].as< std::vector< std::string > >();
-            } catch ( boost::bad_any_cast& e ) {
+            } catch ( const std::bad_any_cast& e ) {
                 std::cerr << "Bad parameter list provided to parseParameters\n";
                 std::cerr << "Use -h or --help for help\n";
                 return -1;

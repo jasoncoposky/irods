@@ -27,6 +27,7 @@
 #include "irods/transport/default_transport.hpp"
 
 #include <list>
+#include <optional>
 
 extern int ProcessType;
 
@@ -512,7 +513,7 @@ fillSubmitConditions( const char *action, const char *inDelayCondition,
 
     snprintf( ruleSubmitInfo->ruleName, sizeof( ruleSubmitInfo->ruleName ), "%s", action );
 
-    boost::optional<std::map<std::string, std::vector<std::string>>> taggedValues;
+    std::optional<std::map<std::string, std::vector<std::string>>> taggedValues;
     try {
         taggedValues = getTaggedValues(inDelayCondition);
     } catch ( const irods::exception& e) {

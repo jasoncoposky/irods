@@ -20,6 +20,7 @@
 
 #include <cstring>
 #include <ctime>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -127,7 +128,7 @@ void set_plugin_instance_name(
     const char* _xml,
     char*       _plugin_name)
 {
-    boost::optional<std::map<std::string, std::vector<std::string>>> taggedValues;
+    std::optional<std::map<std::string, std::vector<std::string>>> taggedValues;
     try {
         taggedValues = getTaggedValues(_xml);
     } catch ( const irods::exception& e) {

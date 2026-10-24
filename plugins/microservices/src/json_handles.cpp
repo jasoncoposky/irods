@@ -11,7 +11,6 @@
 #include "irods/process_stash.hpp"
 #include "irods/rodsErrorTable.h"
 
-#include <boost/safe_numerics/safe_integer.hpp>
 #include <fmt/format.h>
 #include <fmt/ranges.h>
 

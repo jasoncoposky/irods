@@ -19,8 +19,6 @@
 #include <vector>
 #include <map>
 
-#include <boost/tuple/tuple.hpp>
-
 #include "irods/irods_error.hpp"
 
 using leaf_bundle_t = irods::resource_manager::leaf_bundle_t;

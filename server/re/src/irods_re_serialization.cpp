@@ -7,8 +7,6 @@
 #include "irods/rodsErrorTable.h"
 #include "irods/ticketAdmin.h"
 
-#include <boost/range/adaptors.hpp>
-
 #include <fmt/format.h>
 
 #include <cxxabi.h>
@@ -1138,9 +1136,9 @@ namespace irods::re_serialization
     {
         _out["size"] = std::to_string(_v.size());
 
-        for (auto&& e : _v | boost::adaptors::indexed()) {
-            log_re::debug("{}: element = {{index: {}, value: {}}}", __func__, e.index(), e.value());
-            _out[std::to_string(e.index())] = e.value();
+        for (std::size_t i = 0; i < _v.size(); ++i) {
+            log_re::debug("{}: element = {{index: {}, value: {}}}", __func__, i, _v[i]);
+            _out[std::to_string(i)] = _v[i];
         }
     } // serialize_vector_of_strings_ptr_impl
 

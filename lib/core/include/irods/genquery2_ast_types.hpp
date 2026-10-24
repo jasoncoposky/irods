@@ -1,8 +1,7 @@
 #ifndef IRODS_GENQUERY2_ABSTRACT_SYNTAX_TREE_DATA_TYPES_HPP
 #define IRODS_GENQUERY2_ABSTRACT_SYNTAX_TREE_DATA_TYPES_HPP
 
-#include <boost/variant.hpp>
-
+#include <memory>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -11,6 +10,42 @@
 
 namespace irods::experimental::genquery2
 {
+    template <typename T>
+    class recursive_box
+    {
+    public:
+        recursive_box();
+        recursive_box(T _val);
+        recursive_box(const recursive_box& _other);
+        recursive_box(recursive_box&&) noexcept;
+        ~recursive_box();
+
+        auto operator=(const recursive_box& _other) -> recursive_box&;
+        auto operator=(recursive_box&&) noexcept -> recursive_box&;
+
+        auto get() noexcept -> T&
+        {
+            return *ptr_;
+        }
+
+        auto get() const noexcept -> const T&
+        {
+            return *ptr_;
+        }
+
+        operator T&() noexcept
+        {
+            return *ptr_;
+        }
+
+        operator const T&() const noexcept
+        {
+            return *ptr_;
+        }
+
+    private:
+        std::unique_ptr<T> ptr_;
+    }; // class recursive_box
     struct column
     {
         column() = default;
@@ -168,18 +203,18 @@ namespace irods::experimental::genquery2
 
     struct condition_operator_not;
 
-    using condition_expression = boost::variant<condition_like,
-                                                condition_in,
-                                                condition_between,
-                                                condition_equal,
-                                                condition_not_equal,
-                                                condition_less_than,
-                                                condition_less_than_or_equal_to,
-                                                condition_greater_than,
-                                                condition_greater_than_or_equal_to,
-                                                condition_is_null,
-                                                condition_is_not_null,
-                                                boost::recursive_wrapper<condition_operator_not>>;
+    using condition_expression = std::variant<condition_like,
+                                              condition_in,
+                                              condition_between,
+                                              condition_equal,
+                                              condition_not_equal,
+                                              condition_less_than,
+                                              condition_less_than_or_equal_to,
+                                              condition_greater_than,
+                                              condition_greater_than_or_equal_to,
+                                              condition_is_null,
+                                              condition_is_not_null,
+                                              recursive_box<condition_operator_not>>;
 
     struct condition_operator_not
     {
@@ -192,6 +227,47 @@ namespace irods::experimental::genquery2
 
         condition_expression expression;
     }; // struct condition_operator_not
+
+    template <typename T>
+    recursive_box<T>::recursive_box()
+        : ptr_{std::make_unique<T>()}
+    {
+    }
+
+    template <typename T>
+    recursive_box<T>::recursive_box(T _val)
+        : ptr_{std::make_unique<T>(std::move(_val))}
+    {
+    }
+
+    template <typename T>
+    recursive_box<T>::recursive_box(const recursive_box& _other)
+        : ptr_{_other.ptr_ ? std::make_unique<T>(*_other.ptr_) : std::make_unique<T>()}
+    {
+    }
+
+    template <typename T>
+    recursive_box<T>::recursive_box(recursive_box&&) noexcept = default;
+
+    template <typename T>
+    recursive_box<T>::~recursive_box() = default;
+
+    template <typename T>
+    auto recursive_box<T>::operator=(const recursive_box& _other) -> recursive_box&
+    {
+        if (this != &_other) {
+            if (!ptr_) {
+                ptr_ = _other.ptr_ ? std::make_unique<T>(*_other.ptr_) : std::make_unique<T>();
+            }
+            else if (_other.ptr_) {
+                *ptr_ = *_other.ptr_;
+            }
+        }
+        return *this;
+    }
+
+    template <typename T>
+    auto recursive_box<T>::operator=(recursive_box&&) noexcept -> recursive_box& = default;
 
     struct condition
     {
@@ -219,9 +295,9 @@ namespace irods::experimental::genquery2
     struct logical_grouping;
 
     // clang-format off
-    using projection        = boost::variant<function, column>;
+    using projection        = std::variant<column, function>;
     using projections       = std::vector<projection>;
-    using condition_wrapper = boost::variant<logical_and, logical_or, logical_not, logical_grouping, condition>;
+    using condition_wrapper = std::variant<logical_and, logical_or, logical_not, logical_grouping, condition>;
     using conditions        = std::vector<condition_wrapper>;
     // clang-format on
 
@@ -247,13 +323,13 @@ namespace irods::experimental::genquery2
 
     struct sort_expression
     {
-        std::variant<column, function> expr;
+        projection expr;
         bool ascending_order = true;
     }; // struct sort_expression
 
     struct group_by
     {
-        std::vector<std::variant<function, column>> expressions;
+        projections expressions;
     }; // struct group_by
 
     struct order_by

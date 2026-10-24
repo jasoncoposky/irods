@@ -23,8 +23,6 @@
 #include <filesystem>
 #include <vector>
 
-#include <boost/static_assert.hpp>
-
 #include <dlfcn.h>
 #include <elf.h>
 

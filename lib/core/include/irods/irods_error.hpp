@@ -3,18 +3,16 @@
 
 // =-=-=-=-=-=-=-
 // STL Includes
+#include <optional>
 #include <string>
 #include <vector>
 #include <cstdarg>
-
-#include <boost/optional.hpp>
 
 // =-=-=-=-=-=-=-
 // irods includes
 #include "irods/rodsType.h"
 #include "irods/irods_exception.hpp"
 
-#include <boost/assert.hpp>
 #include <boost/format.hpp>
 
 namespace irods {
@@ -92,7 +90,7 @@ namespace irods {
             long long   code_;
             std::string message_;
             std::vector< std::string > result_stack_;
-            boost::optional< exception > exception_;
+            std::optional< exception > exception_;
 
             // These are hard-coded strings that are used in creating
             // the strings that go in result_stack_, and that are searched

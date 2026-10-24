@@ -53,4 +53,31 @@ TEST_CASE("GenQuery2 DML AST Node Construction and Visitation", "[genquery2][ast
         gq2::statement stmt = sel;
         REQUIRE(std::holds_alternative<gq2::select>(stmt));
     }
+
+    SECTION("recursive_box<condition_operator_not> copy, move, and std::visit")
+    {
+        gq2::condition_operator_not op_not{gq2::condition_equal{"foo"}};
+        gq2::condition_expression expr = gq2::recursive_box<gq2::condition_operator_not>{op_not};
+
+        // Copy construction and assignment
+        gq2::condition_expression expr_copy = expr;
+        REQUIRE(std::holds_alternative<gq2::recursive_box<gq2::condition_operator_not>>(expr_copy));
+
+        const auto& boxed = std::get<gq2::recursive_box<gq2::condition_operator_not>>(expr_copy);
+        REQUIRE(std::holds_alternative<gq2::condition_equal>(boxed.get().expression));
+        REQUIRE(std::get<gq2::condition_equal>(boxed.get().expression).string_literal == "foo");
+
+        // Move construction
+        gq2::condition_expression expr_moved = std::move(expr_copy);
+        bool visited_not = false;
+        std::visit(
+            [&visited_not](const auto& node) {
+                using T = std::decay_t<decltype(node)>;
+                if constexpr (std::is_same_v<T, gq2::recursive_box<gq2::condition_operator_not>>) {
+                    visited_not = std::holds_alternative<gq2::condition_equal>(node.get().expression);
+                }
+            },
+            expr_moved);
+        REQUIRE(visited_not);
+    }
 }

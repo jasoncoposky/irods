@@ -7,8 +7,6 @@
 #include <filesystem>
 #include <sstream>
 
-#include <boost/assert.hpp>
-
 namespace irods {
 
 // =-=-=-=-=-=-=-

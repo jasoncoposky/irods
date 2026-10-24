@@ -134,7 +134,7 @@ rules only.
 %nterm <gq2_detail::projections>                  projection_list;
 %nterm <gq2_detail::conditions>                   condition_list;
 %nterm <gq2_detail::group_by>                     group_by;
-%nterm <std::vector<std::variant<gq2_detail::function, gq2_detail::column>>> group_expression;
+%nterm <gq2_detail::projections>                  group_expression;
 %nterm <gq2_detail::order_by>                     order_by;
 %nterm <std::vector<gq2_detail::sort_expression>> sort_expression;
 %nterm <gq2_detail::range>                        range;
@@ -176,45 +176,17 @@ order_by:
 ;
 
 group_expression:
-  column { $$.push_back($1); }
-| group_expression COMMA column { $1.push_back($3); std::swap($$, $1); }
-| function { $$.push_back($1); }
-| group_expression COMMA function { $1.push_back($3); std::swap($$, $1); }
+  projection { $$.push_back(std::move($1)); }
+| group_expression COMMA projection { $1.push_back(std::move($3)); std::swap($$, $1); }
 ;
 
-/*
-The "projection" rule would simplify this, but attempting to use that results in a compiler
-error due to boost::variant not being compatible with std::variant. For now, we just add more rules
-to achieve the desired outcome.
-
-TODO(#7679): This will be simplified once the parser is converted to use std::variant.
-
-The following would be possible if everything used std::variant.
-
-    sort_expression:
-      projection { $$.push_back(gq2_detail::sort_expression{$1, true}); }
-    | projection ASC { $$.push_back(gq2_detail::sort_expression{$1, true}); }
-    | projection DESC { $$.push_back(gq2_detail::sort_expression{$1, false}); }
-    | sort_expression COMMA projection { $1.push_back(gq2_detail::sort_expression{$3, true}); std::swap($$, $1); }
-    | sort_expression COMMA projection ASC { $1.push_back(gq2_detail::sort_expression{$3, true}); std::swap($$, $1); }
-    | sort_expression COMMA projection DESC { $1.push_back(gq2_detail::sort_expression{$3, false}); std::swap($$, $1); }
-    ;
-
-This also applies to the above group by clause.
-*/
 sort_expression:
-  column { $$.push_back(gq2_detail::sort_expression{$1, true}); }
-| column ASC { $$.push_back(gq2_detail::sort_expression{$1, true}); }
-| column DESC { $$.push_back(gq2_detail::sort_expression{$1, false}); }
-| sort_expression COMMA column { $1.push_back(gq2_detail::sort_expression{$3, true}); std::swap($$, $1); }
-| sort_expression COMMA column ASC { $1.push_back(gq2_detail::sort_expression{$3, true}); std::swap($$, $1); }
-| sort_expression COMMA column DESC { $1.push_back(gq2_detail::sort_expression{$3, false}); std::swap($$, $1); }
-| function { $$.push_back(gq2_detail::sort_expression{$1, true}); }
-| function ASC { $$.push_back(gq2_detail::sort_expression{$1, true}); }
-| function DESC { $$.push_back(gq2_detail::sort_expression{$1, false}); }
-| sort_expression COMMA function { $1.push_back(gq2_detail::sort_expression{$3, true}); std::swap($$, $1); }
-| sort_expression COMMA function ASC { $1.push_back(gq2_detail::sort_expression{$3, true}); std::swap($$, $1); }
-| sort_expression COMMA function DESC { $1.push_back(gq2_detail::sort_expression{$3, false}); std::swap($$, $1); }
+  projection { $$.push_back(gq2_detail::sort_expression{std::move($1), true}); }
+| projection ASC { $$.push_back(gq2_detail::sort_expression{std::move($1), true}); }
+| projection DESC { $$.push_back(gq2_detail::sort_expression{std::move($1), false}); }
+| sort_expression COMMA projection { $1.push_back(gq2_detail::sort_expression{std::move($3), true}); std::swap($$, $1); }
+| sort_expression COMMA projection ASC { $1.push_back(gq2_detail::sort_expression{std::move($3), true}); std::swap($$, $1); }
+| sort_expression COMMA projection DESC { $1.push_back(gq2_detail::sort_expression{std::move($3), false}); std::swap($$, $1); }
 ;
 
 range:

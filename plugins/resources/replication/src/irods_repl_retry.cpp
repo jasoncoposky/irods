@@ -2,10 +2,11 @@
 #include "irods/private/irods_repl_types.hpp"
 #include "irods/rsDataObjRepl.hpp"
 
-#include <boost/numeric/conversion/cast.hpp>
 #include <chrono>
+#include <limits>
 #include <string>
 #include <thread>
+#include <utility>
 
 // Replicates a data object and verifies that the bits are correct
 // Retry mechanism triggers based on config in repl context string
@@ -53,22 +54,23 @@ int irods::data_obj_repl_with_retry(
         __FUNCTION__, __LINE__, retry_attempts, delay_in_seconds, backoff_multiplier));
 
     // Keep retrying until success or there are no more attempts left
-    try {
-        while ( status < 0 && retry_attempts-- > 0 ) {
-            irods::log(LOG_DEBUG, fmt::format("[{}:{}] - retries remaining:[{}]", __FUNCTION__, __LINE__, retry_attempts));
-            std::this_thread::sleep_for( std::chrono::seconds( delay_in_seconds ) );
-            status = rsDataObjRepl( _ctx.comm(), &dataObjInp, &trans_stat );
-            if ( status < 0 && retry_attempts > 0 ) {
-                delay_in_seconds = boost::numeric_cast< decltype( delay_in_seconds ) >
-                                    ( delay_in_seconds * backoff_multiplier );
+    while ( status < 0 && retry_attempts-- > 0 ) {
+        irods::log(LOG_DEBUG, fmt::format("[{}:{}] - retries remaining:[{}]", __FUNCTION__, __LINE__, retry_attempts));
+        std::this_thread::sleep_for( std::chrono::seconds( delay_in_seconds ) );
+        status = rsDataObjRepl( _ctx.comm(), &dataObjInp, &trans_stat );
+        if ( status < 0 && retry_attempts > 0 ) {
+            const auto next_delay = delay_in_seconds * backoff_multiplier;
+            if ( next_delay < 0.0 ||
+                 next_delay > static_cast<double>(std::numeric_limits<decltype(delay_in_seconds)>::max()) )
+            {
+                // Indicates that delay value is too large to store,
+                // so we should stop retrying (2^32 seconds > 136 years)
+                irods::error err = ERROR( USER_INPUT_OPTION_ERR, "numeric cast overflow" );
+                irods::log( err );
+                break;
             }
+            delay_in_seconds = static_cast<decltype(delay_in_seconds)>(next_delay);
         }
-    }
-    catch( const boost::bad_numeric_cast& e ) {
-        // Indicates that delay value is too large to store,
-        // so we should stop retrying (2^32 seconds > 136 years)
-        irods::error err = ERROR( USER_INPUT_OPTION_ERR, e.what() );
-        irods::log( err );
     }
 
     free( trans_stat );

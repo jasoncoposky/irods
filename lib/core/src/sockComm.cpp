@@ -30,6 +30,7 @@ jmp_buf Jcenv;
 
 #include <cstring>
 #include <exception>
+#include <optional>
 
 #include <sys/socket.h>
 #include <sys/types.h>
@@ -391,9 +392,9 @@ sockOpenForInConn( rsComm_t *rsComm, int *portNum, char **addr, int proto ) {
      * server_config.json pick a port in the range.
      */
 
-    boost::optional<int> svr_port_range_start_wrapper;
+    std::optional<int> svr_port_range_start_wrapper;
     try {
-        svr_port_range_start_wrapper.reset(irods::get_server_property<const int>(irods::KW_CFG_SERVER_PORT_RANGE_START));
+        svr_port_range_start_wrapper = irods::get_server_property<const int>(irods::KW_CFG_SERVER_PORT_RANGE_START);
     } catch ( const irods::exception& ) {}
     if ( *portNum <= 0 && svr_port_range_start_wrapper ) {
         int svr_port_range_start = *svr_port_range_start_wrapper;

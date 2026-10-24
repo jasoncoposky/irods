@@ -12,7 +12,6 @@
 
 #include <boost/graph/graph_traits.hpp>
 #include <boost/graph/adjacency_list.hpp>
-#include <boost/iterator/function_input_iterator.hpp>
 
 #include <fmt/format.h>
 #include <fmt/ranges.h>
@@ -207,7 +206,7 @@ namespace
         return fmt::format("t{}", _state.table_alias_id++);
     } // generate_table_alias
 
-    struct sql_visitor : public boost::static_visitor<std::string>
+    struct sql_visitor
     {
         explicit sql_visitor(gq_state& _state)
             : state{&_state}
@@ -1346,7 +1345,7 @@ namespace irods::experimental::genquery2
         sql_visitor v{_state};
 
         for (auto&& s : _projections) {
-            cols.push_back(boost::apply_visitor(v, s));
+            cols.push_back(std::visit(v, s));
         }
 
         return fmt::format("{}", fmt::join(cols, ", "));
@@ -1354,7 +1353,7 @@ namespace irods::experimental::genquery2
 
     auto to_sql(gq_state& _state, const condition_operator_not& _op_not) -> std::string
     {
-        return fmt::format(" not{}", boost::apply_visitor(sql_visitor{_state}, _op_not.expression));
+        return fmt::format(" not{}", std::visit(sql_visitor{_state}, _op_not.expression));
     } // to_sql
 
     auto to_sql(gq_state& _state, const condition_not_equal& _not_equal) -> std::string
@@ -1405,21 +1404,9 @@ namespace irods::experimental::genquery2
         _state.values.insert(
             std::end(_state.values), std::begin(_in.list_of_string_literals), std::end(_in.list_of_string_literals));
 
-        struct
-        {
-            using result_type = std::string_view;
-            auto operator()() const noexcept -> result_type
-            {
-                return "?";
-            }
-        } gen;
+        const std::vector<std::string_view> placeholders(_in.list_of_string_literals.size(), "?");
 
-        using size_type = decltype(_in.list_of_string_literals)::size_type;
-
-        auto first = boost::make_function_input_iterator(gen, size_type{0});
-        auto last = boost::make_function_input_iterator(gen, _in.list_of_string_literals.size());
-
-        return fmt::format(" in ({})", fmt::join(first, last, ", "));
+        return fmt::format(" in ({})", fmt::join(placeholders, ", "));
     } // to_sql
 
     auto to_sql(gq_state& _state, const condition_like& _like) -> std::string
@@ -1442,12 +1429,12 @@ namespace irods::experimental::genquery2
     {
         if (const auto* fn = std::get_if<function>(&_condition.lhs); fn) {
             return fmt::format(
-                "{}{}", to_sql(_state, *fn), boost::apply_visitor(sql_visitor{_state}, _condition.expression));
+                "{}{}", to_sql(_state, *fn), std::visit(sql_visitor{_state}, _condition.expression));
         }
 
         return fmt::format("{}{}",
                            to_sql(_state, std::get<column>(_condition.lhs)),
-                           boost::apply_visitor(sql_visitor{_state}, _condition.expression));
+                           std::visit(sql_visitor{_state}, _condition.expression));
     } // to_sql
 
     auto to_sql(gq_state& _state, const conditions& _conditions) -> std::string
@@ -1455,7 +1442,7 @@ namespace irods::experimental::genquery2
         std::string ret;
 
         for (auto&& condition : _conditions) {
-            ret += boost::apply_visitor(sql_visitor{_state}, condition);
+            ret += std::visit(sql_visitor{_state}, condition);
         }
 
         return ret;
@@ -1543,10 +1530,10 @@ namespace irods::experimental::genquery2
 
                 std::vector<std::string> proj_cols;
                 for (const auto& p : _select.projections) {
-                    if (const auto* col_ptr = boost::get<column>(&p)) {
+                    if (const auto* col_ptr = std::get_if<column>(&p)) {
                         proj_cols.push_back(std::string{resolve_column_name(col_ptr->name)});
                     }
-                    else if (const auto* func_ptr = boost::get<function>(&p)) {
+                    else if (const auto* func_ptr = std::get_if<function>(&p)) {
                         std::vector<std::string> args;
                         for (const auto& arg : func_ptr->arguments) {
                             if (const auto* c = std::get_if<column>(&arg)) {
