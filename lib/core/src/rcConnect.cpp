@@ -3,8 +3,6 @@
 #include "irods/rcMisc.h"
 
 #include <boost/asio.hpp>
-#include <boost/thread.hpp>
-#include <boost/chrono.hpp>
 
 #include "irods/irods_network_factory.hpp"
 
@@ -13,8 +11,13 @@
 #include "irods/sockCommNetworkInterface.hpp"
 #include "irods/rodsError.h"
 
+#include <chrono>
+#include <condition_variable>
 #include <ctime>
 #include <cstring>
+#include <mutex>
+#include <system_error>
+#include <thread>
 
 rcComm_t *
 rcConnect( const char *rodsHost, int rodsPort, const char *userName, const char *rodsZone,
@@ -89,6 +92,9 @@ rcComm_t* _rcConnect(
                       "_rcConnect: setUserInfo failed\n" );
         }
         if ( conn->thread_ctx != NULL ) {
+            if ( conn->thread_ctx->reconnThr && conn->thread_ctx->reconnThr->joinable() ) {
+                conn->thread_ctx->reconnThr->detach();
+            }
             delete  conn->thread_ctx->reconnThr;
             delete  conn->thread_ctx->lock;
             delete  conn->thread_ctx->cond;
@@ -110,6 +116,9 @@ rcComm_t* _rcConnect(
                       "_rcConnect: setRhostInfo failed\n" );
         }
         if ( conn->thread_ctx != NULL ) {
+            if ( conn->thread_ctx->reconnThr && conn->thread_ctx->reconnThr->joinable() ) {
+                conn->thread_ctx->reconnThr->detach();
+            }
             delete  conn->thread_ctx->reconnThr;
             delete  conn->thread_ctx->lock;
             delete  conn->thread_ctx->cond;
@@ -140,6 +149,9 @@ rcComm_t* _rcConnect(
                       "_rcConnect: connectToRhost failed\n" );
         }
         if ( conn->thread_ctx != NULL ) {
+            if ( conn->thread_ctx->reconnThr && conn->thread_ctx->reconnThr->joinable() ) {
+                conn->thread_ctx->reconnThr->detach();
+            }
             delete  conn->thread_ctx->reconnThr;
             delete  conn->thread_ctx->lock;
             delete  conn->thread_ctx->cond;
@@ -162,12 +174,12 @@ rcComm_t* _rcConnect(
         }
         conn->exit_flg = false;
         try {
-            conn->thread_ctx->lock      = new boost::mutex;
-            conn->thread_ctx->cond      = new boost::condition_variable;
-            conn->thread_ctx->reconnThr = new boost::thread( cliReconnManager, conn );
+            conn->thread_ctx->lock      = new std::mutex;
+            conn->thread_ctx->cond      = new std::condition_variable;
+            conn->thread_ctx->reconnThr = new std::thread( cliReconnManager, conn );
         }
-        catch ( const boost::thread_resource_error& ) {
-            rodsLog( LOG_ERROR, "failure initializing the boost thread context in _rcConnect" );
+        catch ( const std::system_error& ) {
+            rodsLog( LOG_ERROR, "failure initializing the thread context in _rcConnect" );
             return NULL;
         }
     }
@@ -285,26 +297,21 @@ int rcDisconnect(
     close( _conn->sock );
 
 
-    _conn->exit_flg = true; //
-    if (_conn->thread_ctx && _conn->thread_ctx->reconnThr) {
-        try {
-            // force an interruption point
+    _conn->exit_flg = true;
+    if (_conn->thread_ctx) {
+        if (_conn->thread_ctx->lock && _conn->thread_ctx->cond) {
+            std::lock_guard<std::mutex> lock{*_conn->thread_ctx->lock};
             _conn->exit_flg = true;
-            bool val = _conn->thread_ctx->reconnThr->try_join_for(
-                           boost::chrono::seconds(
-                               2 ) );
-            if ( true != val ) {
-                // do not error out to client
+            _conn->thread_ctx->cond->notify_all();
+        }
+        if (_conn->thread_ctx->reconnThr && _conn->thread_ctx->reconnThr->joinable()) {
+            try {
+                _conn->thread_ctx->reconnThr->join();
             }
-
-        }
-        catch ( const boost::thread_interrupted& ) {
-            rodsLog( LOG_ERROR, "Thread encountered interrupt." );
-            status = SYS_THREAD_ENCOUNTERED_INTERRUPT;
-        }
-        catch ( const boost::thread_resource_error& ) {
-            rodsLog( LOG_ERROR, "Threads exceed maximum supported concurrent threads" );
-            status = SYS_INTERNAL_ERR;
+            catch (const std::system_error&) {
+                rodsLog(LOG_ERROR, "System error joining reconnect thread.");
+                status = SYS_INTERNAL_ERR;
+            }
         }
     }
 
@@ -350,6 +357,9 @@ cleanRcComm( rcComm_t *conn ) {
         ret = 1;
     }
     if ( conn->thread_ctx != NULL ) {
+        if ( conn->thread_ctx->reconnThr && conn->thread_ctx->reconnThr->joinable() ) {
+            conn->thread_ctx->reconnThr->detach();
+        }
         delete  conn->thread_ctx->reconnThr;
         delete  conn->thread_ctx->lock;
         delete  conn->thread_ctx->cond;
@@ -374,21 +384,28 @@ cliReconnManager( rcComm_t *conn ) {
     conn->reconnTime = time( 0 ) + RECONN_TIMEOUT_TIME;
 
     while ( !conn->exit_flg ) { /* JMC */
-        time_t curTime = time( 0 );
-
-        if ( curTime < conn->reconnTime ) {
-            rodsSleep( conn->reconnTime - curTime, 0 );
-        }
-        boost::unique_lock<boost::mutex> boost_lock;
+        std::unique_lock<std::mutex> boost_lock;
         try {
-            boost_lock = boost::unique_lock<boost::mutex>( *conn->thread_ctx->lock );
+            boost_lock = std::unique_lock<std::mutex>( *conn->thread_ctx->lock );
         }
-        catch ( const boost::lock_error& ) {
+        catch ( const std::system_error& ) {
             rodsLog( LOG_ERROR, "lock_error on unique_lock" );
             return;
         }
+
+        time_t curTime = time( 0 );
+
+        if ( curTime < conn->reconnTime ) {
+            conn->thread_ctx->cond->wait_for(
+                boost_lock,
+                std::chrono::seconds( conn->reconnTime - curTime ),
+                [conn] { return conn->exit_flg != 0; } );
+        }
+        if ( conn->exit_flg ) {
+            break;
+        }
         /* need to check clientState */
-        while ( conn->clientState != PROCESSING_STATE ) {
+        while ( !conn->exit_flg && conn->clientState != PROCESSING_STATE ) {
             /* have to wait until the client stop sending */
             conn->reconnThrState = CONN_WAIT_STATE;
             rodsLog( LOG_DEBUG,
@@ -397,6 +414,9 @@ cliReconnManager( rcComm_t *conn ) {
             fflush( stdout );
             conn->thread_ctx->cond->wait( boost_lock );
 
+        }
+        if ( conn->exit_flg ) {
+            break;
         }
         rodsLog( LOG_DEBUG,
                  "cliReconnManager: Reconnecting clientState = %d",
@@ -503,11 +523,11 @@ cliChkReconnAtSendStart( rcComm_t *conn ) {
     }
     if ( conn->svrVersion != NULL && conn->svrVersion->reconnPort > 0 ) {
         /* handle reconn */
-        boost::unique_lock<boost::mutex> boost_lock;
+        std::unique_lock<std::mutex> boost_lock;
         try {
-            boost_lock = boost::unique_lock<boost::mutex>( *conn->thread_ctx->lock );
+            boost_lock = std::unique_lock<std::mutex>( *conn->thread_ctx->lock );
         }
-        catch ( const boost::lock_error& ) {
+        catch ( const std::system_error& ) {
             rodsLog( LOG_ERROR, "lock_error on unique_lock" );
             return SYS_INTERNAL_ERR;
         }
@@ -532,11 +552,11 @@ int
 cliChkReconnAtSendEnd( rcComm_t *conn ) {
     if ( conn->svrVersion != NULL && conn->svrVersion->reconnPort > 0 ) {
         /* handle reconn */
-        boost::unique_lock<boost::mutex> boost_lock;
+        std::unique_lock<std::mutex> boost_lock;
         try {
-            boost_lock = boost::unique_lock<boost::mutex>( *conn->thread_ctx->lock );
+            boost_lock = std::unique_lock<std::mutex>( *conn->thread_ctx->lock );
         }
-        catch ( const boost::lock_error& ) {
+        catch ( const std::system_error& ) {
             rodsLog( LOG_ERROR, "lock_error on unique_lock" );
             return SYS_INTERNAL_ERR;
         }
@@ -554,11 +574,11 @@ int
 cliChkReconnAtReadStart( rcComm_t *conn ) {
     if ( conn->svrVersion != NULL && conn->svrVersion->reconnPort > 0 ) {
         /* handle reconn */
-        boost::unique_lock<boost::mutex> boost_lock;
+        std::unique_lock<std::mutex> boost_lock;
         try {
-            boost_lock = boost::unique_lock<boost::mutex>( *conn->thread_ctx->lock );
+            boost_lock = std::unique_lock<std::mutex>( *conn->thread_ctx->lock );
         }
-        catch ( const boost::lock_error& ) {
+        catch ( const std::system_error& ) {
             rodsLog( LOG_ERROR, "lock_error on unique_lock" );
             return SYS_INTERNAL_ERR;
         }
@@ -572,11 +592,11 @@ int
 cliChkReconnAtReadEnd( rcComm_t *conn ) {
     if ( conn->svrVersion != NULL && conn->svrVersion->reconnPort > 0 ) {
         /* handle reconn */
-        boost::unique_lock<boost::mutex> boost_lock;
+        std::unique_lock<std::mutex> boost_lock;
         try {
-            boost_lock = boost::unique_lock<boost::mutex>( *conn->thread_ctx->lock );
+            boost_lock = std::unique_lock<std::mutex>( *conn->thread_ctx->lock );
         }
-        catch ( const boost::lock_error& ) {
+        catch ( const std::system_error& ) {
             rodsLog( LOG_ERROR, "lock_error on unique_lock" );
             return SYS_INTERNAL_ERR;
         }
@@ -588,15 +608,7 @@ cliChkReconnAtReadEnd( rcComm_t *conn ) {
 
             conn->thread_ctx->cond->notify_all();
             /* wait for reconnManager to get done */
-            try {
-                conn->thread_ctx->cond->wait( boost_lock );
-            }
-            catch ( const boost::condition_error& ) {
-                rodsLog( LOG_ERROR, "encountered boost condition_error on wait" );
-            }
-            catch ( const boost::thread_interrupted& ) {
-                rodsLog( LOG_ERROR, "encountered interrupt in wait" );
-            }
+            conn->thread_ctx->cond->wait( boost_lock );
         }
         boost_lock.unlock();
     }

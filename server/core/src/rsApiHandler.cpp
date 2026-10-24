@@ -17,10 +17,8 @@
 #include "irods/client_api_allowlist.hpp"
 #include "irods/key_value_proxy.hpp"
 
-#include <boost/thread.hpp>
-#include <boost/thread/mutex.hpp>
-#include <boost/thread/condition.hpp>
 #include <csetjmp>
+#include <mutex>
 jmp_buf Jenv;
 
 // =-=-=-=-=-=-=-
@@ -366,7 +364,7 @@ int sendApiReply(rsComm_t* rsComm, int apiInx, int retVal, void*& myOutStruct, b
 
         if ( rsComm->reconnSock > 0 ) {
             int savedStatus = ret.code();
-            boost::unique_lock< boost::mutex > boost_lock( *rsComm->thread_ctx->lock );
+            std::unique_lock< std::mutex > boost_lock( *rsComm->thread_ctx->lock );
             log_agent::debug("sendApiReply: svrSwitchConnect. client state=[{}], agent state=[{}]",
                              rsComm->clientState,
                              rsComm->agentState);
@@ -597,7 +595,7 @@ readAndProcClientMsg( rsComm_t * rsComm, int flags ) {
         if ( rsComm->reconnSock > 0 ) {
             int savedStatus = ret.code();
             /* try again. the socket might have changed */
-            boost::unique_lock< boost::mutex > boost_lock( *rsComm->thread_ctx->lock );
+            std::unique_lock< std::mutex > boost_lock( *rsComm->thread_ctx->lock );
             rodsLog( LOG_DEBUG,
                      "readAndProcClientMsg: svrSwitchConnect. cliState = %d,agState=%d",
                      rsComm->clientState, rsComm->agentState );

@@ -45,14 +45,18 @@
 #include <fmt/format.h>
 #include <nlohmann/json.hpp>
 
+#include <condition_variable>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <mutex>
 #include <optional>
 #include <set>
 #include <string>
 #include <string_view>
+#include <system_error>
+#include <thread>
 #include <tuple>
 #include <vector>
 
@@ -499,12 +503,13 @@ initAgent( int processType, rsComm_t *rsComm ) {
             rsComm->cookie = ( int )( irods::getRandom<unsigned int>() >> 1 );
         }
         try {
-            rsComm->thread_ctx->lock      = new boost::mutex;
-            rsComm->thread_ctx->cond      = new boost::condition_variable;
-            rsComm->thread_ctx->reconnThr = new boost::thread( reconnManager, rsComm );
+            rsComm->thread_ctx->lock      = new std::mutex;
+            rsComm->thread_ctx->cond      = new std::condition_variable;
+            rsComm->thread_ctx->reconnThr = new std::thread( reconnManager, rsComm );
+            rsComm->thread_ctx->reconnThr->detach();
         }
-        catch ( boost::thread_resource_error& ) {
-            rodsLog( LOG_ERROR, "boost encountered thread_resource_error." );
+        catch ( const std::system_error& ) {
+            rodsLog( LOG_ERROR, "std::thread encountered system_error." );
             return SYS_THREAD_RESOURCE_ERR;
         }
     }

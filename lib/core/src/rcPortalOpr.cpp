@@ -15,17 +15,16 @@
 #include "irods/irods_client_server_negotiation.hpp"
 #include "irods/dstream.hpp"
 #include "irods/transport/default_transport.hpp"
-
-#include <boost/thread/thread.hpp>
-#include <boost/thread/scoped_thread.hpp>
-#include <boost/thread/mutex.hpp>
-#include <boost/thread/condition.hpp>
+#include "irods/irods_at_scope_exit.hpp"
 
 #include <cstring>
 #include <filesystem>
 #include <iomanip>
 #include <iostream>
 #include <fstream>
+#include <mutex>
+#include <system_error>
+#include <thread>
 
 int
 sendTranHeader( int sock, int oprType, int flags, rodsLong_t offset,
@@ -200,8 +199,18 @@ putFileToPortal( rcComm_t *conn, portalOprOut_t *portalOprOut,
     }
     else {
         rodsLong_t totalWritten = 0;
-        std::unique_ptr<boost::scoped_thread<>> tid[MAX_NUM_CONFIG_TRAN_THR];
-        memset( tid, 0, sizeof( tid ) );
+        std::thread tid[MAX_NUM_CONFIG_TRAN_THR];
+        irods::at_scope_exit join_threads{[&tid, numThreads] {
+            for (int i = 0; i < numThreads; ++i) {
+                if (tid[i].joinable()) {
+                    try {
+                        tid[i].join();
+                    }
+                    catch (const std::system_error&) {
+                    }
+                }
+            }
+        }};
 
         for ( int i = 0; i < numThreads; i++ ) {
             const int sock = connectToRhostPortal( myPortList->hostAddr,
@@ -219,10 +228,10 @@ putFileToPortal( rcComm_t *conn, portalOprOut_t *portalOprOut,
             }
             fillRcPortalTransferInp( conn, &myInput[i], sock, in_fd, i );
             try {
-                tid[i] = std::make_unique<boost::scoped_thread<>>( boost::thread( rcPartialDataPut, &myInput[i] ) );
+                tid[i] = std::thread( rcPartialDataPut, &myInput[i] );
             }
-            catch ( const boost::thread_resource_error& ) {
-                rodsLog( LOG_ERROR, "boost encountered thread_resource_error on constructing thread." );
+            catch ( const std::system_error& ) {
+                rodsLog( LOG_ERROR, "std::thread encountered system_error on constructing thread." );
                 return SYS_THREAD_RESOURCE_ERR;
             }
         }
@@ -231,12 +240,12 @@ putFileToPortal( rcComm_t *conn, portalOprOut_t *portalOprOut,
         }
 
         for ( int i = 0; i < numThreads; i++ ) {
-            if ( tid[i] != 0 ) {
+            if ( tid[i].joinable() ) {
                 try {
-                    tid[i]->join();
+                    tid[i].join();
                 }
-                catch ( const boost::thread_resource_error& ) {
-                    rodsLog( LOG_ERROR, "boost encountered thread_resource_error on joining thread." );
+                catch ( const std::system_error& ) {
+                    rodsLog( LOG_ERROR, "std::thread encountered system_error on joining thread." );
                     return SYS_THREAD_RESOURCE_ERR;
                 }
             }
@@ -895,8 +904,18 @@ getFileFromPortal( rcComm_t *conn, portalOprOut_t *portalOprOut,
     }
     else {
         rodsLong_t totalWritten = 0;
-        std::unique_ptr<boost::scoped_thread<>> tid[MAX_NUM_CONFIG_TRAN_THR];
-        memset( tid, 0, sizeof( tid ) );
+        std::thread tid[MAX_NUM_CONFIG_TRAN_THR];
+        irods::at_scope_exit join_threads{[&tid, numThreads] {
+            for (int i = 0; i < numThreads; ++i) {
+                if (tid[i].joinable()) {
+                    try {
+                        tid[i].join();
+                    }
+                    catch (const std::system_error&) {
+                    }
+                }
+            }
+        }};
 
         for ( int i = 0; i < numThreads; i++ ) {
             const int sock = connectToRhostPortal( myPortList->hostAddr,
@@ -920,10 +939,10 @@ getFileFromPortal( rcComm_t *conn, portalOprOut_t *portalOprOut,
             }
             fillRcPortalTransferInp( conn, &myInput[i], out_fd, sock, i );
             try {
-                tid[i] = std::make_unique<boost::scoped_thread<>>( boost::thread( rcPartialDataGet, &myInput[i] ) );
+                tid[i] = std::thread( rcPartialDataGet, &myInput[i] );
             }
-            catch ( const boost::thread_resource_error& ) {
-                rodsLog( LOG_ERROR, "boost encountered thread_resource_error on constructing thread." );
+            catch ( const std::system_error& ) {
+                rodsLog( LOG_ERROR, "std::thread encountered system_error on constructing thread." );
                 return SYS_THREAD_RESOURCE_ERR;
             }
         }
@@ -933,12 +952,12 @@ getFileFromPortal( rcComm_t *conn, portalOprOut_t *portalOprOut,
         }
 
         for ( int i = 0; i < numThreads; i++ ) {
-            if ( tid[i] != 0 ) {
+            if ( tid[i].joinable() ) {
                 try {
-                    tid[i]->join();
+                    tid[i].join();
                 }
-                catch ( const boost::thread_resource_error& ) {
-                    rodsLog( LOG_ERROR, "boost encountered thread_resource_error on joining thread." );
+                catch ( const std::system_error& ) {
+                    rodsLog( LOG_ERROR, "std::thread encountered system_error on joining thread." );
                     return SYS_THREAD_RESOURCE_ERR;
                 }
             }

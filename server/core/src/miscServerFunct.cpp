@@ -42,9 +42,7 @@
 #include "irods/irods_resource_manager.hpp"
 #include "irods/irods_default_paths.hpp"
 #include "irods/irods_logger.hpp"
-
-#include <boost/thread/thread.hpp>
-#include <boost/thread/scoped_thread.hpp>
+#include "irods/irods_at_scope_exit.hpp"
 
 #include <fmt/format.h>
 
@@ -56,7 +54,10 @@
 #include <fstream>
 #include <filesystem>
 #include <memory>
+#include <mutex>
 #include <string>
+#include <system_error>
+#include <thread>
 #include <vector>
 
 // clang-format off
@@ -382,7 +383,6 @@ svrPortalPutGet( rsComm_t *rsComm ) {
     int i;
     int numThreads;
     portalTransferInp_t myInput[MAX_NUM_CONFIG_TRAN_THR];
-    std::shared_ptr<boost::thread> tid[MAX_NUM_CONFIG_TRAN_THR];
     int oprType;
     int flags = 0;
     int retVal = 0;
@@ -463,6 +463,18 @@ svrPortalPutGet( rsComm_t *rsComm ) {
     else {
         rodsLong_t mySize = 0;
         rodsLong_t myOffset = 0;
+        std::thread tid[MAX_NUM_CONFIG_TRAN_THR];
+        irods::at_scope_exit join_threads{[&tid, numThreads] {
+            for (int i = 0; i < numThreads; ++i) {
+                if (tid[i].joinable()) {
+                    try {
+                        tid[i].join();
+                    }
+                    catch (const std::system_error&) {
+                    }
+                }
+            }
+        }};
 
         for ( i = 1; i < numThreads; i++ ) {
             int l3descInx;
@@ -496,7 +508,7 @@ svrPortalPutGet( rsComm_t *rsComm ) {
                                        portalFd, l3descInx, 0,
                                        dataOprInp->destRescTypeInx,
                                        i, mySize, myOffset, flags );
-                tid[i].reset( new boost::thread( partialDataPut, &myInput[i] ) );
+                tid[i] = std::thread( partialDataPut, &myInput[i] );
 
             }
             else {	/* a get */
@@ -504,22 +516,22 @@ svrPortalPutGet( rsComm_t *rsComm ) {
                 fillPortalTransferInp( &myInput[i], rsComm,
                                        l3descInx, portalFd, dataOprInp->srcRescTypeInx, 0,
                                        i, mySize, myOffset, flags );
-                tid[i].reset( new boost::thread( partialDataGet, &myInput[i] ) );
+                tid[i] = std::thread( partialDataGet, &myInput[i] );
             }
         } // for i
 
         /* spawn the first thread. do this last so the file will not be
         * closed */
         if ( oprType == PUT_OPR ) {
-            tid[0].reset( new boost::thread( partialDataPut, &myInput[0] ) );
+            tid[0] = std::thread( partialDataPut, &myInput[0] );
         }
         else {
-            tid[0].reset( new boost::thread( partialDataGet, &myInput[0] ) );
+            tid[0] = std::thread( partialDataGet, &myInput[0] );
         }
 
         for ( i = 0; i < numThreads; i++ ) {
-            if ( tid[i] != 0 ) {
-                tid[i]->join();
+            if ( tid[i].joinable() ) {
+                tid[i].join();
             }
             if ( myInput[i].status < 0 ) {
                 retVal = myInput[i].status;
@@ -1362,8 +1374,18 @@ int remLocCopy(rsComm_t *rsComm, dataCopyInp_t *dataCopyInp)
     }
 
     rodsLong_t totalWritten = 0;
-    std::unique_ptr<boost::scoped_thread<>> tid[MAX_NUM_CONFIG_TRAN_THR];
-    memset( tid, 0, sizeof( tid ) );
+    std::thread tid[MAX_NUM_CONFIG_TRAN_THR];
+    irods::at_scope_exit join_threads{[&tid, numThreads] {
+        for (int i = 0; i < numThreads; ++i) {
+            if (tid[i].joinable()) {
+                try {
+                    tid[i].join();
+                }
+                catch (const std::system_error&) {
+                }
+            }
+        }
+    }};
     for (int i = 1; i < numThreads; i++) {
         sock = connectToRhostPortal( myPortList->hostAddr,
                                      myPortList->portNum, myPortList->cookie, rsComm->windowSize );
@@ -1386,7 +1408,7 @@ int remLocCopy(rsComm_t *rsComm, dataCopyInp_t *dataCopyInp)
                                    sock, myFd, 0, dataOprInp->destRescTypeInx,
                                    i, 0, 0, 0 );
 
-            tid[i] = std::make_unique<boost::scoped_thread<>>( boost::thread( remToLocPartialCopy, &myInput[i] ) );
+            tid[i] = std::thread( remToLocPartialCopy, &myInput[i] );
         }
         else {
             const int myFd = l3OpenByHost( rsComm, dataOprInp->srcL3descInx, O_RDONLY );
@@ -1403,15 +1425,15 @@ int remLocCopy(rsComm_t *rsComm, dataCopyInp_t *dataCopyInp)
                                    myFd, sock, dataOprInp->destRescTypeInx, 0,
                                    i, 0, 0, 0 );
 
-            tid[i] = std::make_unique<boost::scoped_thread<>>( boost::thread( locToRemPartialCopy, &myInput[i] ) );
+            tid[i] = std::thread( locToRemPartialCopy, &myInput[i] );
         }
     }
 
     if (COPY_TO_LOCAL_OPR == oprType) {
-        tid[0] = std::make_unique<boost::scoped_thread<>>( boost::thread( remToLocPartialCopy, &myInput[0] ) );
+        tid[0] = std::thread( remToLocPartialCopy, &myInput[0] );
     }
     else {
-        tid[0] = std::make_unique<boost::scoped_thread<>>( boost::thread( locToRemPartialCopy, &myInput[0] ) );
+        tid[0] = std::thread( locToRemPartialCopy, &myInput[0] );
     }
 
     if (retVal < 0) {
@@ -1419,8 +1441,8 @@ int remLocCopy(rsComm_t *rsComm, dataCopyInp_t *dataCopyInp)
     }
 
     for (int i = 0; i < numThreads; i++) {
-        if (tid[i]) {
-            tid[i]->join();
+        if (tid[i].joinable()) {
+            tid[i].join();
         }
         totalWritten += myInput[i].bytesWritten;
         if (myInput[i].status < 0) {
@@ -1501,8 +1523,18 @@ sameHostCopy( rsComm_t *rsComm, dataCopyInp_t *dataCopyInp ) {
         rodsLong_t totalWritten = 0;
         rodsLong_t mySize = 0;
         rodsLong_t myOffset = 0;
-        std::unique_ptr<boost::scoped_thread<>> tid[MAX_NUM_CONFIG_TRAN_THR];
-        memset( tid, 0, sizeof( tid ) );
+        std::thread tid[MAX_NUM_CONFIG_TRAN_THR];
+        irods::at_scope_exit join_threads{[&tid, numThreads] {
+            for (int i = 0; i < numThreads; ++i) {
+                if (tid[i].joinable()) {
+                    try {
+                        tid[i].join();
+                    }
+                    catch (const std::system_error&) {
+                    }
+                }
+            }
+        }};
 
         for ( i = 1; i < numThreads; i++ ) {
             myOffset += size0;
@@ -1537,18 +1569,18 @@ sameHostCopy( rsComm_t *rsComm, dataCopyInp_t *dataCopyInp ) {
                 dataOprInp->destRescTypeInx,
                 i, mySize, myOffset, 0 );
 
-            tid[i] = std::make_unique<boost::scoped_thread<>>( boost::thread( sameHostPartialCopy, &myInput[i] ) );
+            tid[i] = std::thread( sameHostPartialCopy, &myInput[i] );
         }
 
-        tid[0] = std::make_unique<boost::scoped_thread<>>( boost::thread( sameHostPartialCopy, &myInput[0] ) );
+        tid[0] = std::thread( sameHostPartialCopy, &myInput[0] );
 
         if ( retVal < 0 ) {
             return retVal;
         }
 
         for ( i = 0; i < numThreads; i++ ) {
-            if ( tid[i] != 0 ) {
-                tid[i]->join();
+            if ( tid[i].joinable() ) {
+                tid[i].join();
             }
             totalWritten += myInput[i].bytesWritten;
             if ( myInput[i].status < 0 ) {
@@ -1999,7 +2031,7 @@ reconnManager( rsComm_t *rsComm ) {
             }
             else {
                 rodsLog( LOG_ERROR, "reconnManager: select failed, errno = %d", errno );
-                boost::unique_lock< boost::mutex > boost_lock( *rsComm->thread_ctx->lock );
+                std::unique_lock< std::mutex > boost_lock( *rsComm->thread_ctx->lock );
                 close( rsComm->reconnSock );
                 rsComm->reconnSock = 0;
                 boost_lock.unlock();
@@ -2062,7 +2094,7 @@ reconnManager( rsComm_t *rsComm ) {
             continue;
         }
 
-        boost::unique_lock<boost::mutex> boost_lock( *rsComm->thread_ctx->lock );
+        std::unique_lock<std::mutex> boost_lock( *rsComm->thread_ctx->lock );
         rsComm->clientState = reconnMsg->procState;
         rsComm->reconnectedSock = newSock;
         /* need to check agentState */
@@ -2098,7 +2130,7 @@ int
 svrChkReconnAtSendStart( rsComm_t *rsComm ) {
     if ( rsComm->reconnSock > 0 ) {
         /* handle reconn */
-        boost::unique_lock<boost::mutex> boost_lock( *rsComm->thread_ctx->lock );
+        std::unique_lock<std::mutex> boost_lock( *rsComm->thread_ctx->lock );
         if ( rsComm->reconnThrState == CONN_WAIT_STATE ) {
             /* should not be here */
             rodsLog( LOG_NOTICE,
@@ -2118,7 +2150,7 @@ int
 svrChkReconnAtSendEnd( rsComm_t *rsComm ) {
     if ( rsComm->reconnSock > 0 ) {
         /* handle reconn */
-        boost::unique_lock<boost::mutex> boost_lock( *rsComm->thread_ctx->lock );
+        std::unique_lock<std::mutex> boost_lock( *rsComm->thread_ctx->lock );
         rsComm->agentState = PROCESSING_STATE;
         if ( rsComm->reconnThrState == CONN_WAIT_STATE ) {
             rsComm->thread_ctx->cond->wait( boost_lock );
@@ -2132,7 +2164,7 @@ int
 svrChkReconnAtReadStart( rsComm_t *rsComm ) {
     if ( rsComm->reconnSock > 0 ) {
         /* handle reconn */
-        boost::unique_lock< boost::mutex > boost_lock( *rsComm->thread_ctx->lock );
+        std::unique_lock< std::mutex > boost_lock( *rsComm->thread_ctx->lock );
         if ( rsComm->reconnThrState == CONN_WAIT_STATE ) {
             /* should not be here */
             rodsLog( LOG_NOTICE,
@@ -2152,7 +2184,7 @@ int
 svrChkReconnAtReadEnd( rsComm_t *rsComm ) {
     if ( rsComm->reconnSock > 0 ) {
         /* handle reconn */
-        boost::unique_lock< boost::mutex > boost_lock( *rsComm->thread_ctx->lock );
+        std::unique_lock< std::mutex > boost_lock( *rsComm->thread_ctx->lock );
         rsComm->agentState = PROCESSING_STATE;
         if ( rsComm->reconnThrState == CONN_WAIT_STATE ) {
             rsComm->thread_ctx->cond->notify_all();

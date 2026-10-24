@@ -19,16 +19,15 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 
-#include <boost/thread/mutex.hpp>
-
 #include <filesystem>
+#include <mutex>
 
 namespace
 {
     using log_api = irods::experimental::log::api;
 } // anonymous namespace
 
-boost::mutex ExecCmdMutex;
+std::mutex ExecCmdMutex;
 int initExecCmdMutex() {
     return 0;
 }
