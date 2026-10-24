@@ -14,7 +14,7 @@ int
 mcollUtil( rcComm_t *conn, rodsEnv *myRodsEnv, rodsArguments_t *myRodsArgs,
            rodsPathInp_t *rodsPathInp ) {
     rodsPath_t *destPath, *srcPath;
-    dataObjInp_t dataObjOprInp;
+    dataObjInp_t dataObjOprInp{};
 
     if ( rodsPathInp == NULL ) {
         return USER__NULL_INPUT_ERR;

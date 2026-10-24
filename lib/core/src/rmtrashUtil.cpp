@@ -16,8 +16,8 @@ rmtrashUtil( rcComm_t *conn, rodsArguments_t *myRodsArgs,
     int i = 0;
     int status = 0;
     int savedStatus = 0;
-    collInp_t collInp;
-    dataObjInp_t dataObjInp;
+    collInp_t collInp{};
+    dataObjInp_t dataObjInp{};
 
     if ( rodsPathInp == NULL ) {
         return USER__NULL_INPUT_ERR;

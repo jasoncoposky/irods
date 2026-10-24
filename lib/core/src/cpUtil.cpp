@@ -30,7 +30,7 @@ cpUtil( rcComm_t *conn, rodsEnv *myRodsEnv, rodsArguments_t *myRodsArgs,
         return savedStatus;
     }
 
-    dataObjCopyInp_t dataObjCopyInp;
+    dataObjCopyInp_t dataObjCopyInp{};
     irods::at_scope_exit cleanup_dataObjCopyInp{[&dataObjCopyInp] { clearDataObjCopyInp(&dataObjCopyInp); }};
 
     rodsRestart_t rodsRestart{};

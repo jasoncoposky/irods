@@ -2107,7 +2107,7 @@ int
 getCollSizeForProgStat( rcComm_t *conn, char *srcColl,
                         operProgress_t *operProgress ) {
     int status = 0;
-    collHandle_t collHandle;
+    collHandle_t collHandle{};
     collEnt_t collEnt;
 
     status = rclOpenCollection( conn, srcColl, RECUR_QUERY_FG,

@@ -451,7 +451,7 @@ lsCollUtil( rcComm_t *conn, rodsPath_t *srcPath, rodsEnv *myRodsEnv,
     char *srcColl;
     int status;
     int queryFlags;
-    collHandle_t collHandle;
+    collHandle_t collHandle{};
     collEnt_t collEnt;
 
     if ( srcPath == NULL ) {

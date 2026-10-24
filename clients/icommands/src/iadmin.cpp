@@ -447,6 +447,7 @@ auto modify_replica(
         if(const int status = rcModDataObjMeta(Conn, &inp); status) {
             char* sub_error_name{};
             const char* error_name = rodsErrorName(status, &sub_error_name);
+            std::free(sub_error_name);
             std::cerr << "rcModDataObjMeta failed when modifying replica: [" << error_name << " (" << status << ")]" << std::endl;
             printErrorStack(Conn->rError);
             return -2;

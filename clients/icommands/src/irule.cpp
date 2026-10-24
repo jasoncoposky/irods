@@ -164,12 +164,12 @@ main( int argc, char **argv ) {
 
     if ( !err.ok() ) {
         std::cerr << "Error in parsing command line arguments" << std::endl;
-        exit( 1 );
+        return 1;
     }
 
     if ( argsMap.count( "help" ) ) {
         usage(/*std::cout*/);
-        exit( 0 );
+        return 0;
     }
 
     /* init data structures */
@@ -177,6 +177,7 @@ main( int argc, char **argv ) {
     memset( &msParamArray, 0, sizeof( msParamArray ) );
     execMyRuleInp.inpParamArray = &msParamArray;
     execMyRuleInp.condInput.len = 0;
+    const auto clear_cond = irods::at_scope_exit{[&execMyRuleInp] { clearKeyVal(&execMyRuleInp.condInput); }};
 
     /* add key val for specifying instance on which to run rule */
     if ( argsMap.count( "rule-engine-plugin-instance" ) ) {
@@ -208,11 +209,11 @@ main( int argc, char **argv ) {
             } catch ( const std::bad_any_cast& e ) {
                 std::cerr << "Bad filename provided to --file option\n";
                 std::cerr << "Use -h or --help for help\n";
-                exit( 10 );
+                return 10;
             } catch ( std::out_of_range& e ) {
                 std::cerr << "No filename provided to --file option\n";
                 std::cerr << "Use -h or --help for help\n";
-                exit( 10 );
+                return 10;
             }
 
             // If the input file name starts with "i:", get the file from the iRODS server.
@@ -221,14 +222,14 @@ main( int argc, char **argv ) {
 
                 if ( status < 0 ) {
                     rodsLogError( LOG_ERROR, status, "main: getRodsEnv error. " );
-                    exit( 1 );
+                    return 1;
                 }
 
                 conn = rcConnect( myEnv.rodsHost, myEnv.rodsPort, myEnv.rodsUserName,
                         myEnv.rodsZone, 0, &errMsg );
 
                 if ( conn == NULL ) {
-                    exit( 2 );
+                    return 2;
                 }
 
                 utils::warn_if_connected_to_potentially_incompatible_server(*conn);
@@ -238,7 +239,7 @@ main( int argc, char **argv ) {
                 if ( status != 0 ) {
                     print_error_stack_to_file(conn->rError, stderr);
                     rcDisconnect( conn );
-                    exit( 7 );
+                    return 7;
                 }
                 if ( status == 0 ) {
                     char *myargv[3];
@@ -256,7 +257,8 @@ main( int argc, char **argv ) {
                     const char *fileType = strrchr( fileName, '.' );
                     if ( fileType == NULL ) {
                         printf( "Unsupported input file type\n" );
-                        exit( 10 );
+                        rcDisconnect( conn );
+                        return 10;
                     }
                     if ( strcmp( fileType, ".r" ) == 0 ) {
                         rulegen = 1;
@@ -267,7 +269,8 @@ main( int argc, char **argv ) {
                     else {
                         rodsLog( LOG_ERROR,
                                 "Unsupported input file type %s\n", fileType );
-                        exit( 10 );
+                        rcDisconnect( conn );
+                        return 10;
                     }
                     snprintf( saveFile, MAX_NAME_LEN, "/tmp/tmpiruleFile.%i.%i.%s",
                             ( unsigned int ) time( 0 ), getpid(), rulegen ? "r" : "ir" );
@@ -276,7 +279,7 @@ main( int argc, char **argv ) {
                     status = getUtil( &conn, &myEnv, &myRodsArgs, &rodsPathInp );
                     if ( status < 0 ) {
                         rcDisconnect( conn );
-                        exit( 3 );
+                        return 3;
                     }
 
                     useSaveFile = true;
@@ -296,7 +299,10 @@ main( int argc, char **argv ) {
             if ( fptr == NULL ) {
                 rodsLog( LOG_ERROR, "Cannot open input file %s. errno = %d\n",
                         ruleFile, errno );
-                exit( 1 );
+                if ( connFlag == 1 ) {
+                    rcDisconnect( conn );
+                }
+                return 1;
             }
 
             const auto close_fptr = irods::at_scope_exit{[fptr, connFlag, &saveFile] {
@@ -310,7 +316,10 @@ main( int argc, char **argv ) {
             const char *fileType = strrchr( ruleFile, '.' );
             if ( fileType == NULL ) {
                 printf( "Unsupported input file type\n" );
-                exit( 10 );
+                if ( connFlag == 1 ) {
+                    rcDisconnect( conn );
+                }
+                return 10;
 
             }
             else if ( strcmp( fileType, ".r" ) == 0 ) {
@@ -322,7 +331,10 @@ main( int argc, char **argv ) {
             else {
                 rodsLog( LOG_ERROR,
                         "Unsupported input file type %s\n", fileType );
-                exit( 10 );
+                if ( connFlag == 1 ) {
+                    rcDisconnect( conn );
+                }
+                return 10;
             }
 
             /* add the @external directive in the rule if the input file is in the new rule engine syntax */
@@ -382,7 +394,10 @@ main( int argc, char **argv ) {
                         if ( convertListToMultiString( buf, 1 ) != 0 ) {
                             rodsLog( LOG_ERROR,
                                 "Input parameter list format error for %s\n", ruleFile );
-                            exit( 10 );
+                            if ( connFlag == 1 ) {
+                                rcDisconnect( conn );
+                            }
+                            return 10;
                         }
                     }
                     parseParameters( argsMap, rulegen, &execMyRuleInp, buf );
@@ -392,7 +407,10 @@ main( int argc, char **argv ) {
                         if ( convertListToMultiString( buf, 0 ) != 0 ) {
                             rodsLog( LOG_ERROR,
                                 "Output parameter list format error for %s\n", ruleFile );
-                            exit( 10 );
+                            if ( connFlag == 1 ) {
+                                rcDisconnect( conn );
+                            }
+                            return 10;
                         }
                     }
                     if ( strcmp( buf, "null" ) != 0 ) {
@@ -415,7 +433,10 @@ main( int argc, char **argv ) {
             if ( gotRule != 2 ) {
                 rodsLog( LOG_ERROR, "Incomplete rule input for %s", ruleFile );
                 //                     argsMap["file"].as<std::string>().c_str() );
-                exit( 2 );
+                if ( connFlag == 1 ) {
+                    rcDisconnect( conn );
+                }
+                return 2;
             }
         }
         else {	/* command line input */
@@ -425,18 +446,18 @@ main( int argc, char **argv ) {
             } catch ( const std::bad_any_cast& e ) {
                 std::cerr << "Bad parameter list provided\n";
                 std::cerr << "Use -h or --help for help\n";
-                exit( 10 );
+                return 10;
             } catch ( std::out_of_range& e ) {
                 std::cerr << "No parameters list provided\n";
                 std::cerr << "Use -h or --help for help\n";
-                exit( 10 );
+                return 10;
             }
 
             rulegen = 1;
             if ( parameters.size() < 3 ) {
                 rodsLog( LOG_ERROR, "incomplete input" );
                 fprintf(stderr, "Use -h for help.\n" );
-                exit( 3 );
+                return 3;
             }
 
             snprintf( execMyRuleInp.myRule, META_STR_LEN, "@external rule { %s }", parameters.at(0).c_str() );
@@ -445,7 +466,7 @@ main( int argc, char **argv ) {
             if (0 != parseParameters( argsMap, 1, &execMyRuleInp, cmdLineInput )) {
                 rodsLog (LOG_ERROR, "Invalid input parameter list specification");
                 fprintf( stderr, "Use -h for help.\n" );
-                exit(10);
+                return 10;
             }
 
             if ( parameters.at(2) != "null") {
@@ -459,7 +480,7 @@ main( int argc, char **argv ) {
 
         if ( status < 0 ) {
             rodsLogError( LOG_ERROR, status, "main: getRodsEnv error. " );
-            exit( 1 );
+            return 1;
         }
 
         conn = rcConnect( myEnv.rodsHost, myEnv.rodsPort, myEnv.rodsUserName,
@@ -468,7 +489,7 @@ main( int argc, char **argv ) {
         if ( conn == NULL ) {
             rodsLogError( LOG_ERROR, errMsg.status, "rcConnect failure %s",
                           errMsg.msg );
-            exit( 2 );
+            return 2;
         }
 
         if (print_incompatibility_warning) {
@@ -481,7 +502,7 @@ main( int argc, char **argv ) {
         if ( status != 0 ) {
             print_error_stack_to_file(conn->rError, stderr);
             rcDisconnect( conn );
-            exit( 7 );
+            return 7;
         }
     }
 
@@ -515,7 +536,7 @@ main( int argc, char **argv ) {
             }
         }
         rcDisconnect( conn );
-        exit( 4 );
+        return 4;
     }
 
     if ( argsMap.count( "verbose" ) ) {
@@ -548,7 +569,7 @@ main( int argc, char **argv ) {
 
     printErrorStack( conn->rError );
     rcDisconnect( conn );
-    exit( 0 );
+    return 0;
 
 }
 

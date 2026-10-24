@@ -23,8 +23,8 @@ rmUtil( rcComm_t *conn, rodsArguments_t *myRodsArgs,
         return USER_INPUT_OPTION_ERR;
     }
 
-    collInp_t collInp;
-    dataObjInp_t dataObjInp;
+    collInp_t collInp{};
+    dataObjInp_t dataObjInp{};
 
     irods::at_scope_exit clear_inputs_objects{[&collInp, &dataObjInp] {
         clearCollInp(&collInp);
