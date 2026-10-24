@@ -278,10 +278,12 @@ int fillRescQuotaStruct(
 
     std::memset(rescQuota, 0, sizeof(rescQuota_t));
 
-    rescQuota->quotaLimit = strtoll( tmpQuotaLimit, 0, 0 );
-    rescQuota->quotaOverrun = strtoll( tmpQuotaOver, 0, 0 );
+    std::from_chars(tmpQuotaLimit, tmpQuotaLimit + std::strlen(tmpQuotaLimit), rescQuota->quotaLimit);
+    std::from_chars(tmpQuotaOver, tmpQuotaOver + std::strlen(tmpQuotaOver), rescQuota->quotaOverrun);
 
-    if ( strtoll( tmpQuotaRescId, 0, 0 ) > 0 ) {
+    rodsLong_t quota_resc_id = 0;
+    std::from_chars(tmpQuotaRescId, tmpQuotaRescId + std::strlen(tmpQuotaRescId), quota_resc_id);
+    if ( quota_resc_id > 0 ) {
         /* quota by resource */
         rstrcpy( rescQuota->rescName, tmpRescName, NAME_LEN );
     }

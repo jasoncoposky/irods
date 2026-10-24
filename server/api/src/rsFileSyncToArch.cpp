@@ -10,6 +10,7 @@
 #include "irods/irods_stacktrace.hpp"
 #include "irods/irods_resource_backport.hpp"
 
+#include <charconv>
 #include <cstring>
 
 int rsFileSyncToArch(
@@ -134,7 +135,9 @@ int _rsFileSyncToArch(
     // set object id if provided
     char *id_str = getValByKey(&_sync_inp->condInput, DATA_ID_KW);
     if (id_str) {
-        file_obj->id(strtol(id_str, NULL, 10));
+        long id_val = 0;
+        std::from_chars(id_str, id_str + std::strlen(id_str), id_val);
+        file_obj->id(id_val);
     }
 
     irods::error sync_err = fileSyncToArch( _comm, file_obj, _sync_inp->cacheFilename );

@@ -148,6 +148,14 @@ namespace
                      dataObjInp.objPath, l1descInx );
             return l1descInx;
         }
+        bool l1desc_closed = false;
+        const auto close_l1desc = irods::at_scope_exit{[&] {
+            if (!l1desc_closed) {
+                openedDataObjInp_t close_inp{};
+                close_inp.l1descInx = l1descInx;
+                rsDataObjClose(rsComm, &close_inp);
+            }
+        }};
 
         // =-=-=-=-=-=-=-
         // FIXME :: Why, when we replicate them above?
@@ -192,10 +200,6 @@ namespace
         if ( status < 0 ) {
             rodsLog( LOG_ERROR, "rsStructFileBundle: rsChkObjPermAndStat of %s error. stat = %d",
                      chkObjPermAndStatInp.objPath, status );
-            openedDataObjInp_t dataObjCloseInp{};
-            dataObjCloseInp.l1descInx = l1descInx;
-            //L1desc[l1descInx].oprStatus = status;
-            rsDataObjClose( rsComm, &dataObjCloseInp );
             return status;
         }
 
@@ -226,11 +230,14 @@ namespace
             rodsLog( LOG_ERROR, "rsStructFileBundle: rsOpenCollection of %s error. status = %d",
                      collInp.collName, handleInx );
             rmdir( phyBunDir );
-            openedDataObjInp_t dataObjCloseInp{};
-            dataObjCloseInp.l1descInx = l1descInx;
-            rsDataObjClose( rsComm, &dataObjCloseInp );
             return handleInx;
         }
+        bool coll_closed = false;
+        const auto close_coll = irods::at_scope_exit{[&] {
+            if (!coll_closed) {
+                rsCloseCollection(rsComm, &handleInx);
+            }
+        }};
 
         // =-=-=-=-=-=-=-
         // preserve the collection path?
@@ -256,6 +263,10 @@ namespace
                     "rsStructFileBundle: collEnt is NULL" );
                 continue;
             }
+            const auto free_coll_ent = irods::at_scope_exit{[&collEnt] {
+                freeCollEnt(collEnt);
+                collEnt = nullptr;
+            }};
             // =-=-=-=-=-=-=-
             // entry is a data object
             if ( collEnt->objType == DATA_OBJ_T ) {
@@ -268,8 +279,6 @@ namespace
                         __FUNCTION__,
                         collEnt->phyPath,
                         collEnt->resc_hier );
-                    free( collEnt );
-                    collEnt = NULL;
                     continue;
                 }
 
@@ -299,7 +308,6 @@ namespace
                             LOG_ERROR,
                             "mkDirForFilePath failed in %s with status %d",
                             __FUNCTION__, status );
-                        free( collEnt );
                         return status;
                     }
                 }
@@ -316,7 +324,6 @@ namespace
                         errno );
                     rmLinkedFilesInUnixDir( phyBunDir );
                     rmdir( phyBunDir );
-                    free( collEnt );
                     return UNIX_FILE_LINK_ERR - errno;
                 }
                 else {
@@ -332,21 +339,15 @@ namespace
                 // =-=-=-=-=-=-=-
                 // entry is a collection
                 if ( ( int ) strlen( collEnt->collName ) + 1 <= collLen ) {
-                    free( collEnt );
-                    collEnt = NULL;
                     continue;
                 }
                 snprintf( tmpPath, MAX_NAME_LEN, "%s/%s", phyBunDir, collEnt->collName + collLen );
                 status = mkFileDirR( rsComm, strlen( phyBunDir ), tmpPath, resc_hier.c_str(), getDefDirMode() );
                 if ( status < 0 ) {
                     rodsLog( LOG_ERROR, "mkFileDirR failed in %s with status %d", __FUNCTION__, status );
-                    free( collEnt );
                     return status;
                 }
             } // else
-
-            free( collEnt );
-            collEnt = NULL;
 
         } // while
 
@@ -354,6 +355,7 @@ namespace
         // clean up key vals and close the collection
         clearKeyVal( &collInp.condInput );
         rsCloseCollection( rsComm, &handleInx );
+        coll_closed = true;
 
         // =-=-=-=-=-=-=-
         // call the helper function to do the actual bundling
@@ -380,6 +382,7 @@ namespace
         openedDataObjInp_t dataObjCloseInp{};
         dataObjCloseInp.l1descInx = l1descInx;
         //L1desc[l1descInx].oprStatus = status;
+        l1desc_closed = true;
         status = rsDataObjClose( rsComm, &dataObjCloseInp );
         if ( status >= 0 ) {
             return savedStatus;
@@ -425,10 +428,16 @@ int rsStructFileBundle(
     rodsServerHost_t* host  =  0;
 
     dataObjInp_t      data_inp{};
+    const auto clear_data_inp_cond = irods::at_scope_exit{[&data_inp] {
+        clearKeyVal(&data_inp.condInput);
+    }};
     rstrcpy(data_inp.objPath, structFileBundleInp->objPath, MAX_NAME_LEN);
     copyKeyVal( &structFileBundleInp->condInput, &data_inp.condInput );
 
-    DataObjInfo* ip{};
+    DataObjInfo* ip = nullptr;
+    const auto free_ip = irods::at_scope_exit{[&ip] {
+        freeAllDataObjInfo(ip);
+    }};
     const char* h{getValByKey(&structFileBundleInp->condInput, RESC_HIER_STR_KW)};
     if (!h) {
         irods::error ret = irods::resource_redirect(irods::CREATE_OPERATION, rsComm, &data_inp, hier, host, local, &ip);

@@ -12,6 +12,7 @@
 
 #include <fmt/format.h>
 
+#include <charconv>
 #include <cstring>
 
 namespace
@@ -65,8 +66,12 @@ rsModDataObjMeta( rsComm_t *rsComm, modDataObjMeta_t *modDataObjMetaInp ) {
     if ( status >= 0 ) {
         const auto open_type = getValByKey(modDataObjMetaInp->regParam, OPEN_TYPE_KW);
         const auto in_repl = getValByKey(modDataObjMetaInp->regParam, IN_REPL_KW);
+        int open_type_val = 0;
+        if (open_type) {
+            std::from_chars(open_type, open_type + std::strlen(open_type), open_type_val);
+        }
         if (!in_repl && open_type &&
-            (OPEN_FOR_WRITE_TYPE == std::atoi(open_type) || CREATE_TYPE == std::atoi(open_type))) {
+            (OPEN_FOR_WRITE_TYPE == open_type_val || CREATE_TYPE == open_type_val)) {
             // TODO check for IN_PDMO...
             status = _call_file_modified_for_modification( rsComm, modDataObjMetaInp );
         }

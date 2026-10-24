@@ -98,7 +98,6 @@ namespace
         bytesBuf_t fileReadBuf;
         fileOpenInp_t fileOpenInp;
         fileReadInp_t fileReadInp;
-        fileCloseInp_t fileCloseInp;
         int buf_len, fd;
         pathnamePatterns_t *pp;
 
@@ -142,6 +141,11 @@ namespace
                 "readPathnamePatternsFromFile: can't open {} for reading. status = {}", fileOpenInp.fileName, fd);
             return NULL;
         }
+        const auto close_fd = irods::at_scope_exit{[&_comm, fd] {
+            fileCloseInp_t fileCloseInp{};
+            fileCloseInp.fileInx = fd;
+            rsFileClose(_comm, &fileCloseInp);
+        }};
 
         memset( &fileReadBuf, 0, sizeof( fileReadBuf ) );
         fileReadBuf.buf = malloc( buf_len );
@@ -149,19 +153,15 @@ namespace
             log_api::info("readPathnamePatternsFromFile: could not malloc buffer");
             return NULL;
         }
+        const auto clear_read_buf = irods::at_scope_exit{[&fileReadBuf] { clearBBuf(&fileReadBuf); }};
 
         memset( &fileReadInp, 0, sizeof( fileReadInp ) );
         fileReadInp.fileInx = fd;
         fileReadInp.len = buf_len;
         status = rsFileRead( _comm, &fileReadInp, &fileReadBuf );
 
-        memset( &fileCloseInp, 0, sizeof( fileCloseInp ) );
-        fileCloseInp.fileInx = fd;
-        rsFileClose( _comm, &fileCloseInp );
-
         if ( status < 0 ) {
             log_api::info("readPathnamePatternsFromFile: could not read {}. status = {}", fileOpenInp.fileName, status);
-            free( fileReadBuf.buf );
             return NULL;
         }
 
@@ -222,6 +222,9 @@ namespace
             return ec;
         }
 
+        // Free the structure before exiting the function
+        irods::at_scope_exit free_data_obj_info_head{[&data_obj_info_head] { freeAllDataObjInfo(data_obj_info_head); }};
+
         // Put a desired replica at the head of the list
         if (const int ec = sortObjInfoForOpen(&data_obj_info_head, phy_path_reg_cond_input.get(), 0 ); ec < 0) {
             // we did not match the hier string but we can still continue as we have a good copy for a read
@@ -229,9 +232,6 @@ namespace
                 return ec;
             }
         }
-
-        // Free the structure before exiting the function
-        irods::at_scope_exit free_data_obj_info_head{[&data_obj_info_head] { freeAllDataObjInfo(data_obj_info_head); }};
 
         // Populate information for the replica being registered
         auto dst_replica_info = *data_obj_info_head;

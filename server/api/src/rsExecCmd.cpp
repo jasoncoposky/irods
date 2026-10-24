@@ -4,6 +4,7 @@
 #include "irods/execCmd.h"
 #include "irods/fileClose.h"
 #include "irods/icatDefines.h"
+#include "irods/irods_at_scope_exit.hpp"
 #include "irods/irods_default_paths.hpp"
 #include "irods/irods_logger.hpp"
 #include "irods/irods_re_structs.hpp"
@@ -78,6 +79,7 @@ rsExecCmd( rsComm_t *rsComm, execCmd_t *execCmdInp, execCmdOut_t **execCmdOut ) 
     memset( &addr, 0, sizeof( addr ) );
     if ( *execCmdInp->hintPath != '\0' ) {
         dataObjInp_t dataObjInp{};
+        const auto clear_cond = irods::at_scope_exit{[&dataObjInp] { clearKeyVal(&dataObjInp.condInput); }};
         rstrcpy( dataObjInp.objPath, execCmdInp->hintPath, MAX_NAME_LEN );
 
         // =-=-=-=-=-=-=-
@@ -107,6 +109,10 @@ rsExecCmd( rsComm_t *rsComm, execCmd_t *execCmdInp, execCmdOut_t **execCmdOut ) 
                      execCmdInp->hintPath );
             return status;
         }
+        const auto free_doi = irods::at_scope_exit{[&dataObjInfoHead] {
+            freeAllDataObjInfo(dataObjInfoHead);
+            dataObjInfoHead = nullptr;
+        }};
 
         status = sortObjInfoForOpen( &dataObjInfoHead, &execCmdInp->condInput, 0 );
 
@@ -146,7 +152,6 @@ rsExecCmd( rsComm_t *rsComm, execCmd_t *execCmdInp, execCmdOut_t **execCmdOut ) 
         *execCmdInp->hintPath = '\0';	/* no need for hint */
         rstrcpy( execCmdInp->execAddr, location.c_str(),
                  LONG_NAME_LEN );
-        freeAllDataObjInfo( dataObjInfoHead );
         remoteFlag = resolveHost( &addr, &rodsServerHost );
     }
     else if ( *execCmdInp->execAddr  != '\0' ) {
@@ -250,6 +255,8 @@ _rsExecCmd( execCmd_t *execCmdInp, execCmdOut_t **execCmdOut ) {
     {
         rodsLog( LOG_ERROR,
                  "_rsExecCmd: pipe create failed. errno = %d", errno );
+        close( stdoutFd[0] );
+        close( stdoutFd[1] );
         ExecCmdMutex.unlock();
         return SYS_PIPE_ERROR - errno;
     }
@@ -262,6 +269,10 @@ _rsExecCmd( execCmd_t *execCmdInp, execCmdOut_t **execCmdOut ) {
     {
         rodsLog( LOG_ERROR,
                  "_rsExecCmd: pipe create failed. errno = %d", errno );
+        close( stdoutFd[0] );
+        close( stdoutFd[1] );
+        close( stderrFd[0] );
+        close( stderrFd[1] );
         ExecCmdMutex.unlock();
         return SYS_PIPE_ERROR - errno;
     }
@@ -299,6 +310,12 @@ _rsExecCmd( execCmd_t *execCmdInp, execCmdOut_t **execCmdOut ) {
     else if ( childPid < 0 ) {
         rodsLog( LOG_ERROR,
                  "_rsExecCmd: RODS_FORK failed. errno = %d", errno );
+        close( stdoutFd[0] );
+        close( stdoutFd[1] );
+        close( stderrFd[0] );
+        close( stderrFd[1] );
+        close( statusFd[0] );
+        close( statusFd[1] );
         return SYS_FORK_ERROR;
     }
 #else  /* Windows */
@@ -346,10 +363,10 @@ _rsExecCmd( execCmd_t *execCmdInp, execCmdOut_t **execCmdOut ) {
         memset( &statusBuf, 0, sizeof( statusBuf ) );
         readToByteBuf( statusFd[0], &statusBuf );
         close( statusFd[0] );
-        if ( statusBuf.len == sizeof( int ) + 1 ) {
-            myExecCmdOut->status = *( ( int * )statusBuf.buf );
-            free( statusBuf.buf );
+        if ( statusBuf.len == sizeof( int ) + 1 && statusBuf.buf != nullptr ) {
+            myExecCmdOut->status = *static_cast<int*>(statusBuf.buf);
         }
+        clearBBuf( &statusBuf );
         childStatus = 0;
 
 #ifndef windows_platform   /* UNIX */

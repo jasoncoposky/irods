@@ -294,8 +294,13 @@ int rsMvDataObjToTrash(
         if ( rmTrashFlag == 1 ) {
             const char* age_kw = getValByKey(&dataObjUnlinkInp->condInput, AGE_KW);
             if (age_kw) {
-                const int age_limit = std::atoi(age_kw) * 60;
-                const auto age = time(0) - std::atoi(dataObjInfoHead->dataModify);
+                int age_minutes = 0;
+                std::from_chars(age_kw, age_kw + std::strlen(age_kw), age_minutes);
+                const int age_limit = age_minutes * 60;
+                long long data_modify = 0;
+                const char* mod_str = dataObjInfoHead->dataModify;
+                std::from_chars(mod_str, mod_str + std::strlen(mod_str), data_modify);
+                const auto age = time(0) - data_modify;
                 if (age < age_limit) {
                     /* younger than ageLimit. Nothing to do */
                     return 0;

@@ -25,6 +25,7 @@
 
 #include <fmt/format.h>
 
+#include <charconv>
 #include <cstring>
 #include <filesystem>
 
@@ -188,10 +189,11 @@ unbunBulkBuf(rsComm_t* rsComm,
         return SYS_REQUESTED_BUF_TOO_LARGE;
     }
 
-    int intOffset[MAX_NUM_BULK_OPR_FILES];
+    int intOffset[MAX_NUM_BULK_OPR_FILES]{};
 
     for (int i = 0; i < attriArray->rowCnt; i++) {
-        intOffset[i] = atoi(&offset->value[offset->len * i]);
+        const char* val = &offset->value[offset->len * i];
+        std::from_chars(val, val + std::strlen(val), intOffset[i]);
     }
 
     kvp[DATA_INCLUDED_KW] = "";
@@ -919,10 +921,12 @@ postProcBulkPut( rsComm_t *rsComm, genQueryOut_t *bulkDataObjRegInp,
         rstrcpy( tmpDataObjInfo->objPath, tmpObjPath, MAX_NAME_LEN );
         rstrcpy( dataObjInp.objPath, tmpObjPath, MAX_NAME_LEN );
         rstrcpy( tmpDataObjInfo->dataType, tmpDataType, NAME_LEN );
-        tmpDataObjInfo->dataSize = strtoll( tmpDataSize, 0, 0 );
+        tmpDataObjInfo->dataSize = 0;
+        std::from_chars(tmpDataSize, tmpDataSize + std::strlen(tmpDataSize), tmpDataObjInfo->dataSize);
         rstrcpy( tmpDataObjInfo->filePath, tmpFilePath, MAX_NAME_LEN );
         rstrcpy( tmpDataObjInfo->dataMode, tmpDataMode, NAME_LEN );
-        tmpDataObjInfo->replNum = atoi( tmpReplNum );
+        tmpDataObjInfo->replNum = 0;
+        std::from_chars(tmpReplNum, tmpReplNum + std::strlen(tmpReplNum), tmpDataObjInfo->replNum);
         if ( chksum != NULL ) {
             tmpChksum = &chksum->value[chksum->len * i];
             if ( strlen( tmpChksum ) > 0 ) {

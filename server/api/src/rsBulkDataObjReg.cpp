@@ -11,6 +11,7 @@
 #include "irods/irods_file_object.hpp"
 #include "irods/irods_configuration_keywords.hpp"
 
+#include <charconv>
 #include <cstring>
 
 int
@@ -181,10 +182,10 @@ int _rsBulkDataObjReg(
             dataObjInfo.flags = NO_COMMIT_FLAG;
             rstrcpy( dataObjInfo.objPath, tmpObjPath, MAX_NAME_LEN );
             rstrcpy( dataObjInfo.dataType, tmpDataType, NAME_LEN );
-            dataObjInfo.dataSize = strtoll( tmpDataSize, 0, 0 );
+            std::from_chars(tmpDataSize, tmpDataSize + std::strlen(tmpDataSize), dataObjInfo.dataSize);
             rstrcpy( dataObjInfo.rescName, tmpRescName, NAME_LEN );
 
-            dataObjInfo.rescId = strtoll(tmpRescID, 0, 0);
+            std::from_chars(tmpRescID, tmpRescID + std::strlen(tmpRescID), dataObjInfo.rescId);
             std::string resc_hier;
             irods::error ret = resc_mgr.leaf_id_to_hier(dataObjInfo.rescId, resc_hier);
             if( !ret.ok() ) {
@@ -195,7 +196,7 @@ int _rsBulkDataObjReg(
             }
             rstrcpy( dataObjInfo.filePath, tmpFilePath, MAX_NAME_LEN );
             rstrcpy( dataObjInfo.dataMode, tmpDataMode, SHORT_STR_LEN );
-            dataObjInfo.replNum = atoi( tmpReplNum );
+            std::from_chars(tmpReplNum, tmpReplNum + std::strlen(tmpReplNum), dataObjInfo.replNum);
             if ( chksum != NULL ) {
                 tmpChksum = &chksum->value[chksum->len * i];
                 if ( strlen( tmpChksum ) > 0 ) {

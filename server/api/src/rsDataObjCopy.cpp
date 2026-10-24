@@ -36,7 +36,9 @@
 // =-=-=-=-=-=-=-
 #include "irods/irods_resource_redirect.hpp"
 
+#include <charconv>
 #include <chrono>
+#include <cstring>
 
 namespace
 {
@@ -323,7 +325,9 @@ namespace
             return srcL1descInx < 0 ? srcL1descInx : SYS_FILE_DESC_OUT_OF_RANGE;
         }
 
-        const int createMode = std::atoi(L1desc[srcL1descInx].dataObjInfo->dataMode);
+        const char* mode_str = L1desc[srcL1descInx].dataObjInfo->dataMode;
+        int createMode = 0;
+        std::from_chars(mode_str, mode_str + std::strlen(mode_str), createMode);
         if (createMode >= 0100) {
             destDataObjInp->createMode = createMode;
         }

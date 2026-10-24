@@ -24,6 +24,7 @@
 #include <openssl/x509v3.h>
 
 #include <array>
+#include <charconv>
 #include <cstdlib>
 #include <cstring>
 #include <vector>
@@ -74,7 +75,7 @@ rsGetMiscSvrInfo( rsComm_t *rsComm, miscSvrInfo_t **outSvrInfo ) {
 
     snprintf( myOutSvrInfo->rodsZone, NAME_LEN, "%s", zone_name.c_str() );
     if ( ( tmpStr = getenv( SERVER_BOOT_TIME ) ) != NULL ) {
-        myOutSvrInfo->serverBootTime = atoi( tmpStr );
+        std::from_chars(tmpStr, tmpStr + std::strlen(tmpStr), myOutSvrInfo->serverBootTime);
     }
 
     nlohmann::json certinfo_json;

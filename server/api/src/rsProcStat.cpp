@@ -280,7 +280,9 @@ localProcStat( procStatInp_t *procStatInp,
                          "localProcStat: proc count %d exceeded", numProc );
                 break;
             }
-            procLog.pid = atoi( cp.c_str() );
+            const auto cp_str = cp.string();
+            procLog.pid = 0;
+            std::from_chars(cp_str.data(), cp_str.data() + cp_str.size(), procLog.pid);
             if ( readProcLog( procLog.pid, &procLog ) < 0 ) {
                 continue;
             }

@@ -7,7 +7,6 @@
 #include "irods/irods_log.hpp"
 #include "irods/irods_server_properties.hpp"
 #include "irods/miscServerFunct.hpp"
-#include "irods/miscServerFunct.hpp"
 #include "irods/pamAuthRequest.h"
 #include "irods/sslSockComm.h"
 #include "irods/irods_logger.hpp"
@@ -88,6 +87,8 @@ runPamAuthCheck( char *username, char *password ) {
     if ( pid == -1 ) {
         irods::experimental::log::authentication::error(
             "{}: fork() error: errno=[{}], username=[{}].", __func__, errno, username ? username : "nullptr");
+        close( p2cp[0] );
+        close( p2cp[1] );
         return SYS_FORK_ERROR;
     }
 
@@ -96,6 +97,7 @@ runPamAuthCheck( char *username, char *password ) {
           This is still the parent.  Write the message to the child and
           then wait for the exit and status.
         */
+        close( p2cp[0] );
         if ( write( p2cp[1], password, strlen( password ) ) == -1 ) {
             int errsv = errno;
             irods::log( ERROR( errsv, "Error during write from parent to child." ) );
@@ -111,6 +113,7 @@ runPamAuthCheck( char *username, char *password ) {
             int errsv = errno;
             irods::log( ERROR( errsv, "Error duplicating the file descriptor." ) );
         }
+        close( p2cp[0] );
         close( p2cp[1] );
         const auto binary = irods::get_irods_sbin_directory() / "irodsPamAuthCheck";
         i = execl(binary.c_str(),
