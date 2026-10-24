@@ -53,6 +53,8 @@
 #include <cstdlib>
 #include <cstdio>
 #include <cstring>
+#include <cctype>
+#include <charconv>
 #include <filesystem>
 #include <iostream>
 #include <iomanip>
@@ -71,6 +73,26 @@
 
 namespace
 {
+    template <typename T = int>
+    auto parse_int(const char* _s) noexcept -> T
+    {
+        if (!_s) {
+            return 0;
+        }
+        std::string_view sv{_s};
+        while (!sv.empty() && std::isspace(static_cast<unsigned char>(sv.front()))) {
+            sv.remove_prefix(1);
+        }
+        if (!sv.empty() && sv.front() == '+') {
+            sv.remove_prefix(1);
+        }
+        T val{};
+        if (!sv.empty()) {
+            std::from_chars(sv.data(), sv.data() + sv.size(), val);
+        }
+        return val;
+    }
+
     constexpr auto free_pointer(auto* _q)
     {
         if (_q) {
@@ -1928,7 +1950,7 @@ getLocalTimeFromRodsTime( const char *timeStrIn, char *timeStr ) {
 #ifdef _WIN32
             myTime = _atoi64( timeStrIn );
 #else
-            myTime = atoll( timeStrIn );
+            myTime = parse_int<long long>( timeStrIn );
 #endif
         }
 
@@ -2025,17 +2047,17 @@ updateOffsetTimeStr( char *timeStr, int offset ) {
     rstrcpy( s, timeStr, 49 );
 
     s[19] = '\0';
-    mytm->tm_sec = atoi( &s[17] );
+    mytm->tm_sec = parse_int( &s[17] );
     s[16] = '\0';
-    mytm->tm_min = atoi( &s[14] );
+    mytm->tm_min = parse_int( &s[14] );
     s[13] = '\0';
-    mytm->tm_hour = atoi( &s[11] );
+    mytm->tm_hour = parse_int( &s[11] );
     s[10] = '\0';
-    mytm->tm_mday = atoi( &s[8] );
+    mytm->tm_mday = parse_int( &s[8] );
     s[7] = '\0';
-    mytm->tm_mon = atoi( &s[5] ) - 1;
+    mytm->tm_mon = parse_int( &s[5] ) - 1;
     s[4] = '\0';
-    mytm->tm_year = atoi( &s[0] ) - 1900;
+    mytm->tm_year = parse_int( &s[0] ) - 1900;
 
     mytm->tm_min += offset; /* offset by the input minutes */
 
@@ -2200,7 +2222,7 @@ getNextRepeatTime( char *currTime, char *delayStr, char *nextTime ) {
             s++;
         }
         *s = '\0';
-        n = atoi( tstr );
+        n = parse_int( tstr );
         n--;
         dt = dt   + atol( currTime );
         sprintf( nextTime, "%lld", dt );
@@ -2228,7 +2250,7 @@ getNextRepeatTime( char *currTime, char *delayStr, char *nextTime ) {
             s++;
         }
         *s = '\0';
-        n = atoi( tstr );
+        n = parse_int( tstr );
         n--;
         dt = dt   + atol( currTime );
         sprintf( nextTime, "%lld", dt );
@@ -2321,7 +2343,7 @@ getNextRepeatTime( char *currTime, char *delayStr, char *nextTime ) {
             s++;
         }
         *s = '\0';
-        n = atoi( tstr );
+        n = parse_int( tstr );
         n--;
 
         dt = dt   + atol( currTime );
@@ -2350,7 +2372,7 @@ getNextRepeatTime( char *currTime, char *delayStr, char *nextTime ) {
             s++;
         }
         *s = '\0';
-        n = atoi( tstr );
+        n = parse_int( tstr );
         n--;
         dt = dt   + atol( currTime );
         sprintf( nextTime, "%lld", dt );
@@ -2384,17 +2406,17 @@ localToUnixTime( char * localTime, char * unixTime ) {
     rstrcpy( s, localTime, TIME_LEN );
 
     s[19] = '\0';
-    mytm->tm_sec = atoi( &s[17] );
+    mytm->tm_sec = parse_int( &s[17] );
     s[16] = '\0';
-    mytm->tm_min = atoi( &s[14] );
+    mytm->tm_min = parse_int( &s[14] );
     s[13] = '\0';
-    mytm->tm_hour = atoi( &s[11] );
+    mytm->tm_hour = parse_int( &s[11] );
     s[10] = '\0';
-    mytm->tm_mday = atoi( &s[8] );
+    mytm->tm_mday = parse_int( &s[8] );
     s[7] = '\0';
-    mytm->tm_mon = atoi( &s[5] ) - 1;
+    mytm->tm_mon = parse_int( &s[5] ) - 1;
     s[4] = '\0';
-    mytm->tm_year = atoi( &s[0] ) - 1900;
+    mytm->tm_year = parse_int( &s[0] ) - 1900;
 
     newTime = mktime( mytm );
     if ( sizeof( newTime ) == 64 ) {
@@ -2483,35 +2505,35 @@ checkDateFormat( char * s ) {
     if ( s[len - 1] == 's' ) {
         /* in sec */
         s[len - 1] = '\0';
-        offset = atoi( s );
+        offset = parse_int( s );
         snprintf( s, 19, "%d", offset );
         return 0;
     }
     else if ( s[len - 1] == 'm' ) {
         /* in min */
         s[len - 1] = '\0';
-        offset = atoi( s ) * 60;
+        offset = parse_int( s ) * 60;
         snprintf( s, 19, "%d", offset );
         return 0;
     }
     else if ( s[len - 1] == 'h' ) {
         /* in hours */
         s[len - 1] = '\0';
-        offset = atoi( s ) * 3600;
+        offset = parse_int( s ) * 3600;
         snprintf( s, 19, "%d", offset );
         return 0;
     }
     else if ( s[len - 1] == 'd' ) {
         /* in days */
         s[len - 1] = '\0';
-        offset = atoi( s ) * 3600 * 24;
+        offset = parse_int( s ) * 3600 * 24;
         snprintf( s, 19, "%d", offset );
         return 0;
     }
     else if ( s[len - 1] == 'y' ) {
         /* in days */
         s[len - 1] = '\0';
-        offset = atoi( s ) * 3600 * 24 * 365;
+        offset = parse_int( s ) * 3600 * 24 * 365;
         snprintf( s, 19, "%d", offset );
         return 0;
     }
@@ -2932,7 +2954,7 @@ openRestartFile( char * restartFile, rodsRestart_t * rodsRestart ) {
                      "openRestartFile: restartFile %s has 1 only line", restartFile );
             return USER_RESTART_FILE_INPUT_ERR;
         }
-        rodsRestart->doneCnt = atoi( tmpStr );
+        rodsRestart->doneCnt = parse_int( tmpStr );
 
         if ( getLineInBuf( &inptr, rodsRestart->lastDonePath,
                            MAX_NAME_LEN ) < 0 ) {
@@ -3901,7 +3923,7 @@ getAttriInAttriArray( const char * inpObjPath, genQueryOut_t * attriArray,
         if ( strcmp( inpObjPath, tmpObjPath ) == 0 ) {
             attriArray->continueInx = i + 1;
             tmpDataMode = &dataMode->value[dataMode->len * i];
-            *outDataMode = atoi( tmpDataMode );
+            *outDataMode = parse_int( tmpDataMode );
             if ( chksum != NULL ) {
                 tmpChksum = &chksum->value[chksum->len * i];
                 if ( strlen( tmpChksum ) > 0 ) {
@@ -3923,7 +3945,7 @@ getAttriInAttriArray( const char * inpObjPath, genQueryOut_t * attriArray,
         if ( strcmp( inpObjPath, tmpObjPath ) == 0 ) {
             attriArray->continueInx = i + 1;
             tmpDataMode = &dataMode->value[dataMode->len * i];
-            *outDataMode = atoi( tmpDataMode );
+            *outDataMode = parse_int( tmpDataMode );
             if ( chksum != NULL ) {
                 tmpChksum = &chksum->value[chksum->len * i];
                 if ( strlen( tmpChksum ) > 0 ) {

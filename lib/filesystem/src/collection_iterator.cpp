@@ -369,10 +369,13 @@ namespace irods::filesystem::NAMESPACE_IMPL
                         ent.data_id_.assign(row[2].get_ref<const std::string&>());
 
                         const auto& mode_sv = row[3].get_ref<const std::string&>();
-                        ent.data_mode_ = static_cast<unsigned>(std::atoi(mode_sv.c_str()));
+                        int mode_val = 0;
+                        std::from_chars(mode_sv.data(), mode_sv.data() + mode_sv.size(), mode_val);
+                        ent.data_mode_ = static_cast<unsigned>(mode_val);
 
                         const auto& size_sv = row[4].get_ref<const std::string&>();
-                        const auto sz = std::strtoll(size_sv.c_str(), nullptr, 0);
+                        long long sz = 0;
+                        std::from_chars(size_sv.data(), size_sv.data() + size_sv.size(), sz);
                         ent.data_size_ = (sz >= 0) ? static_cast<std::uintmax_t>(sz) : 0;
 
                         parse_timestamp_sv(row[5].get_ref<const std::string&>(), ent.mtime_);

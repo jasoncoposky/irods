@@ -383,7 +383,7 @@ namespace irods::filesystem::NAMESPACE_IMPL
                 if (parse_int(val_str, val)) {
                     return val != 0;
                 }
-                return std::atoi(val_str.c_str()) != 0;
+                return false;
             }
 
             return false;
