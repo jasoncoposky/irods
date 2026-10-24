@@ -168,7 +168,7 @@ putUtil( rcComm_t **myConn, rodsEnv *myRodsEnv,
     int status;
     int savedStatus = 0;
     rodsPath_t *targPath = 0;
-    rodsRestart_t rodsRestart;
+    rodsRestart_t rodsRestart{};
     rcComm_t *conn = *myConn;
 
     if ( rodsPathInp == NULL ) {

@@ -187,7 +187,7 @@ trimCollUtil( rcComm_t *conn, char *srcColl, rodsEnv *myRodsEnv,
     int status;
     int savedStatus = 0;
     char srcChildPath[MAX_NAME_LEN];
-    collHandle_t collHandle;
+    collHandle_t collHandle{};
     collEnt_t collEnt;
 
     if ( srcColl == NULL ) {

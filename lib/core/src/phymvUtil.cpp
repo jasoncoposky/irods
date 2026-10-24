@@ -152,7 +152,7 @@ phymvCollUtil( rcComm_t *conn, char *srcColl, rodsEnv *myRodsEnv,
                rodsArguments_t *rodsArgs, dataObjInp_t *dataObjInp ) {
     int status;
     int savedStatus = 0;
-    collHandle_t collHandle;
+    collHandle_t collHandle{};
     collEnt_t collEnt;
     char srcChildPath[MAX_NAME_LEN];
 

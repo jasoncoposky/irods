@@ -1706,7 +1706,7 @@ int get_resc_hier_from_leaf_id(
         return SYS_INVALID_INPUT_PARAM;
     }
 
-    get_hier_inp_t  inp;
+    get_hier_inp_t inp{};
     inp.resc_id_ = _resc_id;
 
     get_hier_out_t* out = NULL;

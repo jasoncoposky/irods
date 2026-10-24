@@ -679,7 +679,7 @@ rsyncCollToDirUtil( rcComm_t *conn, rodsPath_t *srcPath,
     char *srcColl, *targDir;
     char targChildPath[MAX_NAME_LEN];
     rodsPath_t mySrcPath, myTargPath;
-    collHandle_t collHandle;
+    collHandle_t collHandle{};
     collEnt_t collEnt;
     dataObjInp_t childDataObjInp;
 
@@ -988,7 +988,7 @@ rsyncCollToCollUtil( rcComm_t *conn, rodsPath_t *srcPath,
     char targChildPath[MAX_NAME_LEN];
 
     rodsPath_t mySrcPath, myTargPath;
-    collHandle_t collHandle;
+    collHandle_t collHandle{};
     collEnt_t collEnt;
     dataObjCopyInp_t childDataObjCopyInp;
 

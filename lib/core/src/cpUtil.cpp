@@ -250,7 +250,7 @@ cpCollUtil( rcComm_t *conn, char *srcColl, char *targColl,
             dataObjCopyInp_t *dataObjCopyInp, rodsRestart_t *rodsRestart ) {
     int status = 0;
     int savedStatus = 0;
-    collHandle_t collHandle;
+    collHandle_t collHandle{};
     collEnt_t collEnt;
     char srcChildPath[MAX_NAME_LEN], targChildPath[MAX_NAME_LEN];
     dataObjCopyInp_t childDataObjCopyInp;

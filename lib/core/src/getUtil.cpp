@@ -43,7 +43,7 @@ auto getUtil(rcComm_t** myConn, rodsEnv* myRodsEnv, rodsArguments_t* myRodsArgs,
     int status = 0;
     int savedStatus = 0;
     rodsPath_t* targPath{};
-    rodsRestart_t rodsRestart;
+    rodsRestart_t rodsRestart{};
     rcComm_t *conn = *myConn;
 
     if ( rodsPathInp == NULL ) {
@@ -389,7 +389,7 @@ getCollUtil( rcComm_t **myConn, char *srcColl, char *targDir,
     int status = 0;
     int savedStatus = 0;
     char srcChildPath[MAX_NAME_LEN], targChildPath[MAX_NAME_LEN];
-    collHandle_t collHandle;
+    collHandle_t collHandle{};
     collEnt_t collEnt;
     dataObjInp_t childDataObjInp;
     rcComm_t *conn;
