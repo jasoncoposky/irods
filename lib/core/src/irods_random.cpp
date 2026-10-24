@@ -3,9 +3,9 @@
 #include "irods/irods_exception.hpp"
 #include "irods/rodsErrorTable.h"
 
-#include <boost/random.hpp>
 #include <fmt/format.h>
 #include <openssl/rand.h>
+#include <unistd.h>
 
 #include <cctype>
 #include <ctime>
@@ -31,13 +31,14 @@ namespace
     } // generate_random_alphanumeric_character
 } // anonymous namespace
 
-void irods::getRandomBytes( void * buf, int bytes ) {
-    if ( RAND_bytes( ( unsigned char * )buf, bytes ) != 1 ) {
-        static boost::mt19937 generator( std::time( 0 ) ^ ( getpid() << 16 ) );
-        static boost::uniform_int<unsigned char> byte_range( 0, 0xff );
-        static boost::variate_generator<boost::mt19937, boost::uniform_int<unsigned char> > random_byte( generator, byte_range );
-        for ( int i = 0; i < bytes; i++ ) {
-            ( ( unsigned char * ) buf )[i] = random_byte();
+void irods::getRandomBytes(void* buf, int bytes)
+{
+    if (RAND_bytes(static_cast<unsigned char*>(buf), bytes) != 1) {
+        static std::mt19937 generator(static_cast<std::mt19937::result_type>(std::time(nullptr) ^ (getpid() << 16)));
+        static std::uniform_int_distribution<unsigned int> byte_range(0, 0xff);
+        auto* out = static_cast<unsigned char*>(buf);
+        for (int i = 0; i < bytes; i++) {
+            out[i] = static_cast<unsigned char>(byte_range(generator));
         }
     }
 }

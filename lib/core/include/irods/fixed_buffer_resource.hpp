@@ -3,22 +3,12 @@
 
 /// \file
 
-#include <boost/version.hpp>
-
-#if BOOST_VERSION < 107200
-    // There is a known bug in Boost versions prior to v1.72.
-    // The bug appears when deallocating memory and results in UB due
-    // to memory alignment issues.
-    #error fixed_buffer_resource.hpp requires Boost v1.72!
-#endif // BOOST_VERSION < 107200
-
-#include <boost/container/pmr/memory_resource.hpp>
-
 #include <fmt/format.h>
 
 #include <cstddef>
 #include <cassert>
 #include <memory>
+#include <memory_resource>
 #include <ostream>
 #include <stdexcept>
 #include <tuple>
@@ -42,7 +32,7 @@ namespace irods::experimental::pmr
     /// \since 4.3.0
     template <typename ByteRep>
     class fixed_buffer_resource
-        : public boost::container::pmr::memory_resource
+        : public std::pmr::memory_resource
     {
     public:
         static_assert(std::is_same_v<ByteRep, char> ||
@@ -60,7 +50,7 @@ namespace irods::experimental::pmr
         ///
         /// \since 4.3.0
         fixed_buffer_resource(ByteRep* _buffer, std::int64_t _buffer_size)
-            : boost::container::pmr::memory_resource{}
+            : std::pmr::memory_resource{}
             , buffer_{_buffer}
             , buffer_size_(_buffer_size)
             , allocated_{}
@@ -160,7 +150,7 @@ namespace irods::experimental::pmr
             allocated_ -= _bytes;
         } // do_deallocate
 
-        auto do_is_equal(const boost::container::pmr::memory_resource& _other) const noexcept -> bool override
+        auto do_is_equal(const std::pmr::memory_resource& _other) const noexcept -> bool override
         {
             return this == &_other;
         } // do_is_equal

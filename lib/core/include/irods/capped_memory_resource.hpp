@@ -3,10 +3,9 @@
 
 /// \file
 
-#include <boost/container/pmr/memory_resource.hpp>
-
 #include <fmt/format.h>
 
+#include <memory_resource>
 #include <new>
 #include <stdexcept>
 
@@ -19,7 +18,7 @@ namespace irods::experimental::pmr
     ///
     /// \since 4.2.11
     class capped_memory_resource
-        : public boost::container::pmr::memory_resource
+        : public std::pmr::memory_resource
     {
     public:
         /// Constructs a \p capped_memory_resource with the given limit.
@@ -31,7 +30,7 @@ namespace irods::experimental::pmr
         ///
         /// \since 4.2.11
         explicit capped_memory_resource(std::int64_t _max_size)
-            : boost::container::pmr::memory_resource{}
+            : std::pmr::memory_resource{}
             , max_size_(_max_size)
             , allocated_{}
         {
@@ -77,7 +76,7 @@ namespace irods::experimental::pmr
             allocated_ -= _bytes;
         } // do_deallocate
 
-        auto do_is_equal(const boost::container::pmr::memory_resource&) const noexcept -> bool override
+        auto do_is_equal(const std::pmr::memory_resource&) const noexcept -> bool override
         {
             return true;
         } // do_is_equal

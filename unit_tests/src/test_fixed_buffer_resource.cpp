@@ -1,16 +1,12 @@
-#include <boost/version.hpp>
-
-#if BOOST_VERSION >= 107200
-
 #include <catch2/catch_all.hpp>
 
 #include "irods/fixed_buffer_resource.hpp"
 
-#include <boost/container/pmr/vector.hpp>
-
 #include <cstddef>
+#include <memory_resource>
 #include <sstream>
 #include <stdexcept>
+#include <vector>
 
 namespace pmr = irods::experimental::pmr;
 
@@ -31,7 +27,7 @@ TEST_CASE("fixed_buffer_resource allocation and deallocation")
 
     // Show that the fixed_buffer_resource throws a std::bad_alloc exception
     // when the underlying buffer is exhausted.
-    CHECK_THROWS_AS([&allocator] { allocator.allocate(101); }(), std::bad_alloc);
+    CHECK_THROWS_AS(allocator.allocate(101), std::bad_alloc);
 
     // Show that the allocator's state is not corrupted following a
     // std::bad_alloc exception.
@@ -67,13 +63,13 @@ TEST_CASE("fixed_buffer_resource works with pmr containers")
     pmr::fixed_buffer_resource allocator{buffer, sizeof(buffer)};
 
     {
-        boost::container::pmr::vector<int> ints{&allocator};
+        std::pmr::vector<int> ints{&allocator};
 
         ints.push_back(1);
         ints.push_back(2);
         ints.push_back(3);
 
-        CHECK(allocator.allocated() == sizeof(int) * ints.size());
+        CHECK(allocator.allocated() == sizeof(int) * ints.capacity());
 
         // Show that the allocation table can be printed out.
         std::ostringstream os;
@@ -106,5 +102,3 @@ TEST_CASE("fixed_buffer_resource throws exception when buffer is too small")
         pmr::fixed_buffer_resource allocator{buffer, sizeof(buffer)};
     }());
 }
-
-#endif // BOOST_VERSION >= 107200
