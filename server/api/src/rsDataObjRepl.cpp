@@ -527,6 +527,9 @@ namespace
 
         const auto cond_input = irods::experimental::make_key_value_proxy(_destination_inp.condInput);
         if (source_replica.checksum().empty() && cond_input.contains(VERIFY_CHKSUM_KW)) {
+            constexpr bool preserve_rst = false;
+            irods::close_replica_without_catalog_update(_comm, source_l1descInx, preserve_rst);
+
             const std::string msg = fmt::format(
                 "Requested to verify checksum, but source replica for [{}] on [{}] has no "
                 "checksum. Calculate a checksum for the source replica and try again. "
@@ -543,6 +546,9 @@ namespace
         }
 
         if (!source_replica.checksum().empty() && cond_input.contains(REG_CHKSUM_KW)) {
+            constexpr bool preserve_rst = false;
+            irods::close_replica_without_catalog_update(_comm, source_l1descInx, preserve_rst);
+
             const std::string msg = fmt::format(
                 "Requested to register checksum without verifying, but source replica for [{}] "
                 "on [{}] has a checksum. This can result in multiple replicas being marked good "
@@ -1156,7 +1162,7 @@ int rsDataObjRepl( rsComm_t *rsComm, dataObjInp_t *dataObjInp, transferStat_t **
 
     // Resolve path in linked collection if applicable
     dataObjInfo_t *dataObjInfo{};
-    const irods::at_scope_exit free_data_obj_info{[dataObjInfo]() {
+    const irods::at_scope_exit free_data_obj_info{[&dataObjInfo]() {
         freeAllDataObjInfo(dataObjInfo);
     }};
     int status = resolvePathInSpecColl( rsComm, dataObjInp->objPath,

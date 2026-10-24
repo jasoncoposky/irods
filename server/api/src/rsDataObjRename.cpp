@@ -384,6 +384,11 @@ namespace
         destType = resolvePathInSpecColl( rsComm, destDataObjInp->objPath,
                                           WRITE_COLL_PERM, 0, &destDataObjInfo );
 
+        const irods::at_scope_exit free_spec_coll_infos{[&srcDataObjInfo, &destDataObjInfo] {
+            freeDataObjInfo(srcDataObjInfo);
+            freeDataObjInfo(destDataObjInfo);
+        }};
+
         if ( srcDataObjInfo           != NULL &&
                 srcDataObjInfo->specColl != NULL &&
                 strcmp( srcDataObjInfo->specColl->collection,
@@ -400,8 +405,6 @@ namespace
 
         if ( destType >= 0 ) {
             log_api::error("rsDataObjRename: dest specColl objPath {} exists", destDataObjInp->objPath);
-            freeDataObjInfo( srcDataObjInfo );
-            freeDataObjInfo( destDataObjInfo );
             return SYS_DEST_SPEC_COLL_SUB_EXIST;
         }
 
@@ -423,8 +426,6 @@ namespace
                     destDataObjInp->objPath);
                 status = SYS_SRC_DEST_SPEC_COLL_CONFLICT;
             }
-            freeDataObjInfo( srcDataObjInfo );
-            freeDataObjInfo( destDataObjInfo );
             return status;
         }
         else if ( srcType == SYS_SPEC_COLL_OBJ_NOT_EXIST ) {

@@ -2206,6 +2206,11 @@ int svrSockOpenForInConn(rsComm_t* rsComm, int* portNum, char** addr, int proto)
     }
 
     if (const int ec = set_socket_tcp_keepalive_options(sfd); ec < 0) {
+        close(sfd);
+        if (addr != nullptr && *addr != nullptr) {
+            std::free(*addr);
+            *addr = nullptr;
+        }
         return ec;
     }
 

@@ -179,12 +179,14 @@ rsStructFileExtAndReg(
 
     openedDataObjInp_t dataObjCloseInp{};
     dataObjCloseInp.l1descInx = l1descInx;
+    const auto close_l1desc = irods::at_scope_exit{[rsComm, &dataObjCloseInp] {
+        rsDataObjClose(rsComm, &dataObjCloseInp);
+    }};
 
     if ( local == REMOTE_HOST ) {
         addKeyVal( &structFileExtAndRegInp->condInput, RESC_HIER_STR_KW, L1desc[l1descInx].dataObjInfo->rescHier );
 
         status = rcStructFileExtAndReg( host->conn, structFileExtAndRegInp );
-        rsDataObjClose( rsComm, &dataObjCloseInp );
 
         return status;
     }
@@ -218,7 +220,6 @@ rsStructFileExtAndReg(
         rodsLog( LOG_ERROR,
                  "rsStructFileExtAndReg:unbunPhyBunFile err for %s to dir %s.stat=%d",
                  dataObjInfo->filePath, phyBunDir, status );
-        rsDataObjClose( rsComm, &dataObjCloseInp );
         return status;
     }
 
@@ -246,7 +247,6 @@ rsStructFileExtAndReg(
                  "_rsUnbunAndRegPhyBunfile: rsStructFileExtAndReg for dir %s.stat=%d",
                  phyBunDir, status );
     }
-    rsDataObjClose( rsComm, &dataObjCloseInp );
 
     return status;
 }

@@ -202,6 +202,11 @@ _rsRmCollRecur( rsComm_t *rsComm, collInp_t *rmCollInp,
     int status;
     ruleExecInfo_t rei;
     dataObjInfo_t *dataObjInfo = NULL;
+    const auto free_doi = irods::at_scope_exit{[&dataObjInfo] {
+        if (dataObjInfo != nullptr) {
+            freeDataObjInfo(dataObjInfo);
+        }
+    }};
     /* check for specColl and permission */
     status = resolvePathInSpecColl( rsComm, rmCollInp->collName,
                                     WRITE_COLL_PERM, 0, &dataObjInfo );
@@ -256,9 +261,6 @@ _rsRmCollRecur( rsComm_t *rsComm, collInp_t *rmCollInp,
     /* got here. will recursively phy delete the collection */
     status = _rsPhyRmColl( rsComm, rmCollInp, dataObjInfo, collOprStat );
 
-    if ( dataObjInfo != NULL ) {
-        freeDataObjInfo( dataObjInfo );
-    }
     return status;
 }
 
@@ -425,6 +427,13 @@ _rsPhyRmColl( rsComm_t *rsComm, collInp_t *rmCollInp,
                 }
             }
             initReiWithCollInp( &rei, rsComm, &tmpCollInp, &collInfo );
+            const auto free_rei_cond = irods::at_scope_exit{[&rei] {
+                if (rei.condInputData != nullptr) {
+                    clearKeyVal(rei.condInputData);
+                    std::free(rei.condInputData);
+                    rei.condInputData = nullptr;
+                }
+            }};
             status = applyRule( "acPreprocForRmColl", NULL, &rei, NO_SAVE_REI );
             if ( status < 0 ) {
                 if ( rei.status < 0 ) {

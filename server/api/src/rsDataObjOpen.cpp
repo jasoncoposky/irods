@@ -81,6 +81,7 @@
 
 #include <fmt/format.h>
 
+#include <charconv>
 #include <chrono>
 #include <stdexcept>
 
@@ -234,7 +235,10 @@ namespace
             new_replica.type(cond_input.contains(DATA_TYPE_KW) ? cond_input.at(DATA_TYPE_KW).value() : GENERIC_DT_STR);
 
             if (cond_input.contains(DATA_ID_KW)) {
-                new_replica.data_id(std::atoll(cond_input.at(DATA_ID_KW).value().data()));
+                rodsLong_t data_id = 0;
+                const auto val = cond_input.at(DATA_ID_KW).value();
+                std::from_chars(val.data(), val.data() + val.size(), data_id);
+                new_replica.data_id(data_id);
             }
 
             cond_input[OPEN_TYPE_KW] = std::to_string(CREATE_TYPE);
