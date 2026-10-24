@@ -70,11 +70,11 @@ struct region_node *make_region_node( size_t is ) {
     }
 
     node->block = ( unsigned char * )malloc( is );
-    memset( node->block, 0, is );
     if ( node->block == NULL ) {
         free( node );
         return NULL;
     }
+    memset( node->block, 0, is );
 
     node->size = is;
     node->used = 0;

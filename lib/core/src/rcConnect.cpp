@@ -11,6 +11,7 @@
 #include "irods/sockCommNetworkInterface.hpp"
 #include "irods/rodsError.h"
 
+#include <charconv>
 #include <chrono>
 #include <condition_variable>
 #include <ctime>
@@ -71,7 +72,9 @@ rcComm_t* _rcConnect(
     }
 
     if ( ( tmpStr = getenv( IRODS_PROT ) ) != NULL ) {
-        conn->irodsProt = ( irodsProt_t )atoi( tmpStr );
+        int prot{};
+        std::from_chars(tmpStr, tmpStr + std::strlen(tmpStr), prot);
+        conn->irodsProt = static_cast<irodsProt_t>(prot);
 
         if (conn->irodsProt != NATIVE_PROT && conn->irodsProt != XML_PROT) {
             rodsLog(LOG_ERROR, "Invalid protocol value.");

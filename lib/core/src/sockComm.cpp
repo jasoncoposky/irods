@@ -8,9 +8,6 @@
 #include "irods/rcConnect.h"
 #include "irods/rodsConnect.h"
 
-#include <csetjmp>
-jmp_buf Jcenv;
-
 #include "irods/authentication_plugin_framework.hpp"
 #include "irods/hostname_cache.hpp"
 #include "irods/irods_client_server_negotiation.hpp"

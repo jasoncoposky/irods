@@ -9,11 +9,41 @@
 #include "irods/irods_logger.hpp"
 
 #include <algorithm>
+#include <cctype>
+#include <charconv>
 #include <cstring>
 #include <iterator>
 #include <string_view>
 
 using log_msi = irods::experimental::log::microservice;
+
+namespace
+{
+    template <typename T = int>
+    auto parse_int(const char* _s, bool _auto_base = false) noexcept -> T
+    {
+        if (!_s) {
+            return 0;
+        }
+        std::string_view sv{_s};
+        while (!sv.empty() && std::isspace(static_cast<unsigned char>(sv.front()))) {
+            sv.remove_prefix(1);
+        }
+        if (!sv.empty() && sv.front() == '+') {
+            sv.remove_prefix(1);
+        }
+        int base = 10;
+        if (_auto_base && sv.size() > 2 && sv[0] == '0' && (sv[1] == 'x' || sv[1] == 'X')) {
+            base = 16;
+            sv.remove_prefix(2);
+        }
+        T val{};
+        if (!sv.empty()) {
+            std::from_chars(sv.data(), sv.data() + sv.size(), val, base);
+        }
+        return val;
+    }
+} // anonymous namespace
 
 /* addMsParam - This is for backward compatibility only.
  *  addMsParamToArray should be used for all new functions
@@ -1081,7 +1111,7 @@ parseMspForPosInt( msParam_t* inpParam ) {
         if ( strcmp( ( char * ) inpParam->inOutStruct, "null" ) == 0 ) {
             return SYS_NULL_INPUT;
         }
-        myInt = atoi( ( const char* )inpParam->inOutStruct );
+        myInt = parse_int( ( const char* )inpParam->inOutStruct );
     }
     else if ( strcmp( inpParam->type, INT_MS_T ) == 0 ||
               strcmp( inpParam->type, BUF_LEN_MS_T ) == 0 ) {
@@ -1462,7 +1492,7 @@ parseMsKeyValStrForDataObjInp( msParam_t * inpParam, dataObjInp_t * dataObjInp,
         }
         /* check for some of the special keyWd */
         if ( status == CREATE_MODE_FLAG ) {
-            dataObjInp->createMode = atoi( parsedMsKeyValStr.valPtr );
+            dataObjInp->createMode = parse_int( parsedMsKeyValStr.valPtr );
             continue;
         }
         else if ( status == OPEN_FLAGS_FLAG ) {
@@ -1484,15 +1514,15 @@ parseMsKeyValStrForDataObjInp( msParam_t * inpParam, dataObjInp_t * dataObjInp,
             continue;
         }
         else if ( status == DATA_SIZE_FLAGS ) {
-            dataObjInp->dataSize =  strtoll( parsedMsKeyValStr.valPtr, 0, 0 );
+            dataObjInp->dataSize = parse_int<rodsLong_t>( parsedMsKeyValStr.valPtr, true );
             continue;
         }
         else if ( status == NUM_THREADS_FLAG ) {
-            dataObjInp->numThreads = atoi( parsedMsKeyValStr.valPtr );
+            dataObjInp->numThreads = parse_int( parsedMsKeyValStr.valPtr );
             continue;
         }
         else if ( status == OPR_TYPE_FLAG ) {
-            dataObjInp->oprType = atoi( parsedMsKeyValStr.valPtr );
+            dataObjInp->oprType = parse_int( parsedMsKeyValStr.valPtr );
             continue;
         }
         else if ( status == OBJ_PATH_FLAG ) {
@@ -1596,11 +1626,11 @@ parseMsKeyValStrForCollInp( msParam_t * inpParam, collInp_t * collInp,
         }
         /* check for some of the special keyWd */
         if ( status == COLL_FLAGS_FLAG ) {
-            collInp->flags = atoi( parsedMsKeyValStr.valPtr );
+            collInp->flags = parse_int( parsedMsKeyValStr.valPtr );
             continue;
         }
         else if ( status == OPR_TYPE_FLAG ) {
-            collInp->oprType = atoi( parsedMsKeyValStr.valPtr );
+            collInp->oprType = parse_int( parsedMsKeyValStr.valPtr );
             continue;
         }
         else if ( status == COLL_NAME_FLAG ) {
@@ -1759,11 +1789,11 @@ parseMsKeyValStrForStructFileExtAndRegInp( msParam_t * inpParam,
         }
         /* check for some of the special keyWd */
         if ( status == COLL_FLAGS_FLAG ) {
-            structFileExtAndRegInp->flags = atoi( parsedMsKeyValStr.valPtr );
+            structFileExtAndRegInp->flags = parse_int( parsedMsKeyValStr.valPtr );
             continue;
         }
         else if ( status == OPR_TYPE_FLAG ) {
-            structFileExtAndRegInp->oprType = atoi( parsedMsKeyValStr.valPtr );
+            structFileExtAndRegInp->oprType = parse_int( parsedMsKeyValStr.valPtr );
             continue;
         }
         else if ( status == OBJ_PATH_FLAG ) {

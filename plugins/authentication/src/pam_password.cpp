@@ -42,12 +42,14 @@ namespace
         int pid = fork();
         if (pid == -1) {
             irods::experimental::log::authentication::error("{}: fork() error: [errno=[{}]]", __func__, errno);
+            close(p2cp[0]);
             close(p2cp[1]);
             THROW(SYS_FORK_ERROR, "failed to fork process");
         }
 
         // parent process
         if (pid) {
+            close(p2cp[0]);
             if (write(p2cp[1], _password.c_str(), _password.size()) == -1) {
                 int errsv = errno;
                 irods::log(ERROR(errsv, "Error writing from parent to child."));
@@ -75,6 +77,7 @@ namespace
             int errsv = errno;
             irods::log(ERROR(errsv, "Error duplicating the file descriptor."));
         }
+        close(p2cp[0]);
         close(p2cp[1]);
 
         // From the docs...

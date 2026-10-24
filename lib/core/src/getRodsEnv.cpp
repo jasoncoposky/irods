@@ -38,7 +38,10 @@
 
 #include <nlohmann/json.hpp>
 
+#include <cctype>
+#include <charconv>
 #include <cstring>
+#include <string_view>
 
 #define BUF_LEN 100
 #define LARGE_BUF_LEN MAX_NAME_LEN+20
@@ -142,6 +145,25 @@ namespace
                 _env.irodsPluginDirectory, sizeof(rodsEnv::irodsPluginDirectory) - 1);
         }
     } // init_from_server_properties
+
+    auto parse_int(const char* _s) noexcept -> int
+    {
+        if (!_s) {
+            return 0;
+        }
+        std::string_view sv{_s};
+        while (!sv.empty() && std::isspace(static_cast<unsigned char>(sv.front()))) {
+            sv.remove_prefix(1);
+        }
+        if (!sv.empty() && sv.front() == '+') {
+            sv.remove_prefix(1);
+        }
+        int val{};
+        if (!sv.empty()) {
+            std::from_chars(sv.data(), sv.data() + sv.size(), val);
+        }
+        return val;
+    }
 } // anonymous namespace
 
 extern "C" {
@@ -176,7 +198,7 @@ extern "C" {
     int
     convertLogLevel( char *inputStr ) {
         int i;
-        i = atoi( inputStr );
+        i = parse_int( inputStr );
         if ( i > 0 && i <= LOG_SQL ) {
             return i;
         }
@@ -487,7 +509,7 @@ extern "C" {
         char* env = getenv(
                         irods::to_env( _key ).c_str() );
         if ( env ) {
-            _val = atoi( env );
+            _val = parse_int( env );
             rodsLog(
                 LOG_DEBUG,
                 "captured env [%s]-[%d]",

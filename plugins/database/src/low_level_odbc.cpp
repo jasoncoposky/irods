@@ -81,6 +81,7 @@ SQLINTEGER columnLength[MAX_TOKEN];  /* change me ! */
 
 #include <cctype>
 #include <cstdio>
+#include <cstdlib>
 #include <string>
 #include <vector>
 #include <type_traits>
@@ -559,11 +560,15 @@ cllExecSqlWithResultBV(
     }
     if ( statementNumber < 0 ) {
         log_db::error("{}: too many concurrent statements", __func__);
+        SQLFreeHandle( SQL_HANDLE_STMT, hstmt );
         return CAT_STATEMENT_TABLE_FULL;
     }
 
-    icatStmtStrct * myStatement = ( icatStmtStrct * )malloc( sizeof( icatStmtStrct ) );
-    memset( myStatement, 0, sizeof( icatStmtStrct ) );
+    icatStmtStrct * myStatement = static_cast<icatStmtStrct*>(std::calloc(1, sizeof(icatStmtStrct)));
+    if ( myStatement == nullptr ) {
+        SQLFreeHandle( SQL_HANDLE_STMT, hstmt );
+        return SYS_MALLOC_ERR;
+    }
     icss->stmtPtr[statementNumber] = myStatement;
 
     *stmtNum = statementNumber;
@@ -650,8 +655,7 @@ cllExecSqlWithResultBV(
         }
         /*      printf("columnLength[%d]=%d\n",i,columnLength[i]); */
 
-        myStatement->resultValue[i] = ( char* )malloc( ( int )columnLength[i] );
-        memset( myStatement->resultValue[i], 0, (int)columnLength[i] );
+        myStatement->resultValue[i] = static_cast<char*>(std::calloc(1, (int)columnLength[i]));
 
         myStatement->resultValue[i][0] = '\0';
         // =-=-=-=-=-=-=-
@@ -664,8 +668,7 @@ cllExecSqlWithResultBV(
         }
 
 
-        myStatement->resultColName[i] = ( char* )malloc( ( int )columnLength[i] );
-        memset( myStatement->resultColName[i], 0, (int)columnLength[i] );
+        myStatement->resultColName[i] = static_cast<char*>(std::calloc(1, (int)columnLength[i]));
         if (icss) {
             const auto& flavor = irods::experimental::catalog::get_db_flavor(icss->databaseType);
             if (flavor.lowercase_column_names) {

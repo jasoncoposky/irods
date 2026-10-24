@@ -16,7 +16,38 @@ CommandLineOptions document so we can keep it all consistent.
 #include "irods/rcMisc.h"
 #include "irods/filesystem/path.hpp"
 
+#include <cctype>
+#include <charconv>
 #include <cstring>
+#include <string_view>
+
+namespace
+{
+    template <typename T = int>
+    auto parse_int(const char* _s, bool _auto_base = false) noexcept -> T
+    {
+        if (!_s) {
+            return 0;
+        }
+        std::string_view sv{_s};
+        while (!sv.empty() && std::isspace(static_cast<unsigned char>(sv.front()))) {
+            sv.remove_prefix(1);
+        }
+        if (!sv.empty() && sv.front() == '+') {
+            sv.remove_prefix(1);
+        }
+        int base = 10;
+        if (_auto_base && sv.size() > 2 && sv[0] == '0' && (sv[1] == 'x' || sv[1] == 'X')) {
+            base = 16;
+            sv.remove_prefix(2);
+        }
+        T val{};
+        if (!sv.empty()) {
+            std::from_chars(sv.data(), sv.data() + sv.size(), val, base);
+        }
+        return val;
+    }
+} // anonymous namespace
 
 /*
  Input:
@@ -95,7 +126,7 @@ parseCmdLineOpt( int argc, char **argv, const char *optString, int includeLong,
                                  "--ttl option needs a time to live number" );
                         return USER_INPUT_OPTION_ERR;
                     }
-                    rodsArgs->ttlValue = atoi( argv[i + 1] );
+                    rodsArgs->ttlValue = parse_int( argv[i + 1] );
                     argv[i + 1] = "-Z";
                 }
             }
@@ -116,7 +147,7 @@ parseCmdLineOpt( int argc, char **argv, const char *optString, int includeLong,
                                  "--retries option needs an iput file" );
                         return USER_INPUT_OPTION_ERR;
                     }
-                    rodsArgs->retriesValue = atoi( argv[i + 1] );
+                    rodsArgs->retriesValue = parse_int( argv[i + 1] );
                     argv[i + 1] = "-Z";
                 }
             }
@@ -170,7 +201,7 @@ parseCmdLineOpt( int argc, char **argv, const char *optString, int includeLong,
                                  "--age option needs an iput number" );
                         return USER_INPUT_OPTION_ERR;
                     }
-                    rodsArgs->agevalue = atoi( argv[i + 1] );
+                    rodsArgs->agevalue = parse_int( argv[i + 1] );
                     argv[i + 1] = "-Z";
                 }
             }
@@ -388,7 +419,7 @@ parseCmdLineOpt( int argc, char **argv, const char *optString, int includeLong,
             break;
         case 'N':
             rodsArgs->number = True;
-            rodsArgs->numberValue = atoi( optarg );
+            rodsArgs->numberValue = parse_int( optarg );
             break;
         case 'o':
             rodsArgs->option = True;
@@ -418,7 +449,7 @@ parseCmdLineOpt( int argc, char **argv, const char *optString, int includeLong,
             rodsArgs->sizeFlag = True;
             if ( optarg != NULL ) {
                 /* irsync uses sizeFlag for sync but has no size value */
-                rodsArgs->size = strtoll( optarg, 0, 0 );
+                rodsArgs->size = parse_int<rodsLong_t>( optarg, true );
             }
             break;
         case 'S':
@@ -477,7 +508,7 @@ parseCmdLineOpt( int argc, char **argv, const char *optString, int includeLong,
             break;
         case 'Y':
             rodsArgs->retries = True;
-            rodsArgs->retriesValue = atoi( optarg );
+            rodsArgs->retriesValue = parse_int( optarg );
             break;
         default:
             rodsLogError( LOG_ERROR, USER_INPUT_OPTION_ERR,

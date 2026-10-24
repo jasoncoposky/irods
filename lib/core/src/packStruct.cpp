@@ -8,15 +8,43 @@
 #include "irods/version.hpp"
 #include "irods/irods_pack_table.hpp"
 
+#include <cctype>
+#include <charconv>
 #include <cstdio>
 #include <iostream>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <optional>
 #include <regex>
 
 namespace
 {
+    template <typename T = int>
+    auto parse_int(const char* _s, bool _auto_base = false) noexcept -> T
+    {
+        if (!_s) {
+            return 0;
+        }
+        std::string_view sv{_s};
+        while (!sv.empty() && std::isspace(static_cast<unsigned char>(sv.front()))) {
+            sv.remove_prefix(1);
+        }
+        if (!sv.empty() && sv.front() == '+') {
+            sv.remove_prefix(1);
+        }
+        int base = 10;
+        if (_auto_base && sv.size() > 2 && sv[0] == '0' && (sv[1] == 'x' || sv[1] == 'X')) {
+            base = 16;
+            sv.remove_prefix(2);
+        }
+        T val{};
+        if (!sv.empty()) {
+            std::from_chars(sv.data(), sv.data() + sv.size(), val, base);
+        }
+        return val;
+    }
+
     int copyStrFromPiBuf(const char *&inBuf, char *outBuf, int dependentFlag);
   
     int packTypeLookup(const char *typeName);
@@ -635,7 +663,7 @@ namespace
         while ( ( c = *tmpPtr ) != '\0' ) {
             if ( c == ',' || c == '=' ) {
                 *bufPtr = '\0';
-                if ( strstr( buf, "default" ) != 0 || atoi( buf ) == keyVal ) {
+                if ( strstr( buf, "default" ) != 0 || parse_int( buf ) == keyVal ) {
                     /* get the PI */
                     if ( c == ',' ) {
                         /* skip to = */
@@ -735,7 +763,7 @@ namespace
         int i;
 
         if ( isAllDigit( name ) ) {
-            return atoi( name );
+            return parse_int( name );
         }
 
         /* check the current item chain first */
@@ -2365,7 +2393,7 @@ namespace
                 strncpy( tmpStr, ( const char* )inPtr, myStrlen );
                 tmpStr[myStrlen] = '\0';
 
-                *tmpIntPtr = atoi( tmpStr );
+                *tmpIntPtr = parse_int( tmpStr );
                 if ( i == 0 ) {
                     /* save this and return later */
                     intValue = *tmpIntPtr;
@@ -2505,7 +2533,7 @@ namespace
                 strncpy( tmpStr, ( const char* )inPtr, myStrlen );
                 tmpStr[myStrlen] = '\0';
 
-                *tmpIntPtr = atoi( tmpStr );
+                *tmpIntPtr = parse_int<short>( tmpStr );
                 if ( i == 0 ) {
                     /* save this and return later */
                     intValue = *tmpIntPtr;
@@ -2639,7 +2667,7 @@ namespace
                 strncpy( tmpStr, ( const char* )inPtr, myStrlen );
                 tmpStr[myStrlen] = '\0';
 
-                *tmpDoublePtr = strtoll( tmpStr, 0, 0 );
+                *tmpDoublePtr = parse_int<rodsLong_t>( tmpStr, true );
                 tmpDoublePtr ++;
                 inPtr = ( const char * )inPtr + ( myStrlen + endTagLen );
             }

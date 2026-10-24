@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <arpa/inet.h>
+#include <charconv>
 #include <fmt/format.h>
 #include <filesystem>
 #include <iostream>
@@ -43,7 +44,11 @@ std::vector<int> get_open_socket_file_descriptors(void) {
             if (std::filesystem::is_symlink(it->path())) {
                 std::filesystem::path symlink_contents = std::filesystem::read_symlink(it->path());
                 if (!symlink_contents.string().compare(0, 8, "socket:[")) {
-                    ret.push_back(atoi(it->path().filename().string().c_str()));
+                    const auto fname = it->path().filename();
+                    const auto& native = fname.native();
+                    int fd{};
+                    std::from_chars(native.data(), native.data() + native.size(), fd);
+                    ret.push_back(fd);
                 }
             }
         }
