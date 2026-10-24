@@ -7,6 +7,8 @@
 
 #include <fmt/format.h>
 
+#include <cctype>
+#include <charconv>
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
@@ -23,6 +25,21 @@ namespace irods::experimental::catalog::access_control
         {
             return std::chrono::duration_cast<std::chrono::seconds>(
                 std::chrono::system_clock::now().time_since_epoch()).count();
+        }
+
+        auto parse_int64(std::string_view _sv) noexcept -> int64_t
+        {
+            while (!_sv.empty() && std::isspace(static_cast<unsigned char>(_sv.front()))) {
+                _sv.remove_prefix(1);
+            }
+            if (!_sv.empty() && _sv.front() == '+') {
+                _sv.remove_prefix(1);
+            }
+            int64_t val{};
+            if (!_sv.empty()) {
+                std::from_chars(_sv.data(), _sv.data() + _sv.size(), val);
+            }
+            return val;
         }
     } // anonymous namespace
 
@@ -513,14 +530,14 @@ namespace irods::experimental::catalog::access_control
             auto res = _exec.execute_query(_conn, sql, {ticket_str, data_id_str, coll_path.string()});
             if (res.next()) {
                 ticket_id = res.is_null(0) ? "" : res.get<std::string>(0);
-                uses_limit = res.is_null(1) ? 0 : std::strtoll(res.get<std::string>(1).c_str(), nullptr, 10);
-                uses_count = res.is_null(2) ? 0 : std::strtoll(res.get<std::string>(2).c_str(), nullptr, 10);
-                ticket_expiry = res.is_null(3) ? 0 : std::strtoll(res.get<std::string>(3).c_str(), nullptr, 10);
+                uses_limit = res.is_null(1) ? 0 : parse_int64(res.get<std::string>(1));
+                uses_count = res.is_null(2) ? 0 : parse_int64(res.get<std::string>(2));
+                ticket_expiry = res.is_null(3) ? 0 : parse_int64(res.get<std::string>(3));
                 if (is_modify) {
-                    write_file_count = res.is_null(4) ? 0 : std::strtoll(res.get<std::string>(4).c_str(), nullptr, 10);
-                    write_file_limit = res.is_null(5) ? 0 : std::strtoll(res.get<std::string>(5).c_str(), nullptr, 10);
-                    write_byte_count = res.is_null(6) ? 0 : std::strtoll(res.get<std::string>(6).c_str(), nullptr, 10);
-                    write_byte_limit = res.is_null(7) ? 0 : std::strtoll(res.get<std::string>(7).c_str(), nullptr, 10);
+                    write_file_count = res.is_null(4) ? 0 : parse_int64(res.get<std::string>(4));
+                    write_file_limit = res.is_null(5) ? 0 : parse_int64(res.get<std::string>(5));
+                    write_byte_count = res.is_null(6) ? 0 : parse_int64(res.get<std::string>(6));
+                    write_byte_limit = res.is_null(7) ? 0 : parse_int64(res.get<std::string>(7));
                 }
                 found = true;
                 break;
@@ -555,7 +572,7 @@ namespace irods::experimental::catalog::access_control
             return restr_ec;
         }
 
-        const int64_t int_data_id = std::strtoll(data_id_str.c_str(), nullptr, 10);
+        const int64_t int_data_id = parse_int64(data_id_str);
 
         if (is_modify) {
             if (write_byte_limit > 0 && write_byte_count > write_byte_limit) {
@@ -607,7 +624,7 @@ namespace irods::experimental::catalog::access_control
         std::string_view _data_size,
         std::string_view _object_id) -> int
     {
-        const auto size_bytes = std::strtoll(std::string{_data_size}.c_str(), nullptr, 10);
+        const auto size_bytes = parse_int64(_data_size);
         if (size_bytes <= 0) {
             return 0;
         }
@@ -640,8 +657,8 @@ namespace irods::experimental::catalog::access_control
             auto res = _exec.execute_query(_conn, sql, {ticket_str, obj_id_str, obj_id_str});
             if (res.next()) {
                 ticket_id = res.is_null(0) ? "" : res.get<std::string>(0);
-                write_byte_count = res.is_null(1) ? 0 : std::strtoll(res.get<std::string>(1).c_str(), nullptr, 10);
-                write_byte_limit = res.is_null(2) ? 0 : std::strtoll(res.get<std::string>(2).c_str(), nullptr, 10);
+                write_byte_count = res.is_null(1) ? 0 : parse_int64(res.get<std::string>(1));
+                write_byte_limit = res.is_null(2) ? 0 : parse_int64(res.get<std::string>(2));
                 found = true;
                 break;
             }

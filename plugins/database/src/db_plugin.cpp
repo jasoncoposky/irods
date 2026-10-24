@@ -55,6 +55,7 @@
 #include <cctype>
 #include <charconv>
 #include <chrono>
+#include <cstdlib>
 #include <cstring>
 #include <ctime>
 #include <iomanip>
@@ -105,6 +106,28 @@ namespace
             return USER_STRLEN_TOOLONG;
         }
         return 0;
+    }
+
+    template <typename T = long long>
+    auto parse_int(std::string_view _sv) noexcept -> T
+    {
+        while (!_sv.empty() && std::isspace(static_cast<unsigned char>(_sv.front()))) {
+            _sv.remove_prefix(1);
+        }
+        if (!_sv.empty() && _sv.front() == '+') {
+            _sv.remove_prefix(1);
+        }
+        T val{};
+        if (!_sv.empty()) {
+            std::from_chars(_sv.data(), _sv.data() + _sv.size(), val);
+        }
+        return val;
+    }
+
+    template <typename T = long long>
+    auto parse_int(const char* _s) noexcept -> T
+    {
+        return _s ? parse_int<T>(std::string_view{_s}) : T{};
     }
 } // anonymous namespace
 
@@ -2255,7 +2278,7 @@ irods::error db_mod_data_obj_meta_op(
                     if ( strlen( theVal ) < 11 ) {
                         static char theVal2[20];
                         time_t myTimeValue;
-                        myTimeValue = atoll( theVal );
+                        myTimeValue = parse_int<time_t>( theVal );
                         snprintf( theVal2, sizeof theVal2, "%011d", ( int )myTimeValue );
                         updateVals[j] = theVal2;
                     }
@@ -2268,7 +2291,7 @@ irods::error db_mod_data_obj_meta_op(
                     if ( strlen( theVal ) < 11 ) {
                         static char theVal3[20];
                         time_t myTimeValue;
-                        myTimeValue = atoll( theVal );
+                        myTimeValue = parse_int<time_t>( theVal );
                         snprintf( theVal3, sizeof theVal3, "%011d", ( int )myTimeValue );
                         updateVals[j] = theVal3;
                     }
@@ -2281,7 +2304,7 @@ irods::error db_mod_data_obj_meta_op(
                     if (strlen(theVal) < 11) {
                         static char theVal4[20];
                         time_t myTimeValue;
-                        myTimeValue = atoll(theVal);
+                        myTimeValue = parse_int<time_t>(theVal);
                         snprintf(theVal4, sizeof theVal4, "%011d", (int) myTimeValue);
                         updateVals[j] = theVal4;
                     }
@@ -2294,7 +2317,7 @@ irods::error db_mod_data_obj_meta_op(
                     if (strlen(theVal) < 11) {
                         static char theVal5[20];
                         time_t myTimeValue;
-                        myTimeValue = atoll(theVal);
+                        myTimeValue = parse_int<time_t>(theVal);
                         snprintf(theVal5, sizeof theVal5, "%011d", (int) myTimeValue);
                         updateVals[j] = theVal5;
                     }
@@ -5581,7 +5604,7 @@ irods::error db_check_auth_op(
                 return ERROR(CAT_INVALID_AUTHENTICATION, "invalid argument");
             }
 
-            rodsLong_t expireTime = atoll(goodPwExpiry.c_str());
+            rodsLong_t expireTime = parse_int<rodsLong_t>(goodPwExpiry);
             auth_config ac{};
             if (const auto err = get_auth_config("authentication", ac); !err.ok()) {
                 log_db::error("Failed to get auth configuration. [{}]", err.result());
@@ -5590,12 +5613,12 @@ irods::error db_check_auth_op(
 
             char myTime[50]{};
             getNowStr(myTime);
-            time_t nowTime = atoll(myTime);
+            time_t nowTime = parse_int<time_t>(myTime);
 
             if ((strncmp(goodPwExpiry.c_str(), "9999", 4) != 0) &&
                 expireTime >= ac.password_min_time &&
                 expireTime <= ac.password_max_time) {
-                time_t modTime = atoll(goodPwModTs.c_str());
+                time_t modTime = parse_int<time_t>(goodPwModTs);
                 if (modTime + expireTime < nowTime) {
                     // Expired PAM password
                     nanodbc::transaction trans{db_conn};
@@ -5614,7 +5637,7 @@ irods::error db_check_auth_op(
             if (!std::string_view{lastPw}.starts_with(PASSWORD_SCRAMBLE_PREFIX) && expireTime < temp_password_max_time) {
                 int temp_password_time = irods::get_advanced_setting<const int>(irods::KW_CFG_DEF_TEMP_PASSWORD_LIFETIME);
 
-                time_t createTime = atoll(goodPwTs.c_str());
+                time_t createTime = parse_int<time_t>(goodPwTs);
                 bool returnExpired = false;
                 if (createTime == 0 || nowTime == 0 || createTime + expireTime < nowTime) {
                     returnExpired = true;
@@ -5846,15 +5869,15 @@ namespace
                 .from("USER_PASSWORD")
                 .build());
         if (pw_res.query_result) {
-            time_t now_ts = std::atoll(_now_time_str);
+            time_t now_ts = parse_int<time_t>(_now_time_str);
             while (pw_res.query_result->next()) {
                 const auto uid = pw_res.query_result->get<std::string>(0);
                 const auto pw = pw_res.query_result->get<std::string>(1);
                 const auto exp_str = pw_res.query_result->get<std::string>(2);
                 const auto mod_str = pw_res.query_result->get<std::string>(3);
                 if (!exp_str.starts_with("9999")) {
-                    time_t exp_ts = std::atoll(exp_str.c_str());
-                    time_t mod_ts = std::atoll(mod_str.c_str());
+                    time_t exp_ts = parse_int<time_t>(exp_str);
+                    time_t mod_ts = parse_int<time_t>(mod_str);
                     if (exp_ts >= _ac.password_min_time && exp_ts <= _ac.password_max_time && (exp_ts + mod_ts < now_ts)) {
                         auto del_stmt = gq2::builder::remove_from("USER_PASSWORD")
                             .where(col("user_id") == uid && col("rcat_password") == pw)
@@ -6096,7 +6119,7 @@ auto db_update_pam_password_op(irods::plugin_context& _ctx,
                 auto pw = sel_res.query_result->get<std::string>(0);
                 auto exp_str = sel_res.query_result->get<std::string>(1);
                 if (!exp_str.starts_with("9999")) {
-                    auto exp_val = std::atoll(exp_str.c_str());
+                    auto exp_val = parse_int<rodsLong_t>(exp_str);
                     if (exp_val >= ac.password_min_time && exp_val <= ac.password_max_time) {
                         existing_pw = pw;
                         has_valid_pam = true;
@@ -6321,7 +6344,7 @@ irods::error db_mod_user_op(
                         const auto pw = pw_res.query_result->get<std::string>(0);
                         const auto expiry_str = pw_res.query_result->get<std::string>(1);
                         if (!expiry_str.starts_with("9999")) {
-                            const auto expiry = std::atoll(expiry_str.c_str());
+                            const auto expiry = parse_int<rodsLong_t>(expiry_str);
                             if (expiry >= ac.password_min_time && expiry <= ac.password_max_time) {
                                 auto del_pw = gq2::builder::remove_from("USER_PASSWORD")
                                     .where(col("user_id") == std::to_string(*uid_opt) && col("rcat_password") == pw)
@@ -9636,8 +9659,8 @@ irods::error db_purge_server_load_op(
 
         char nowStr[50];
         getNowStr( nowStr );
-        time_t nowTime = atoll( nowStr );
-        time_t secondsAgoTime = atoll( _seconds_ago );
+        time_t nowTime = parse_int<time_t>( nowStr );
+        time_t secondsAgoTime = parse_int<time_t>( _seconds_ago );
         time_t thenTime = nowTime - secondsAgoTime;
         const auto thenStr = fmt::format( "{:011d}", static_cast<unsigned int>( thenTime ) );
 
@@ -9726,8 +9749,8 @@ irods::error db_purge_server_load_digest_op(
 
         char nowStr[50];
         getNowStr( nowStr );
-        time_t nowTime = atoll( nowStr );
-        time_t secondsAgoTime = atoll( _seconds_ago );
+        time_t nowTime = parse_int<time_t>( nowStr );
+        time_t secondsAgoTime = parse_int<time_t>( _seconds_ago );
         time_t thenTime = nowTime - secondsAgoTime;
         const auto thenStr = fmt::format( "{:011d}", static_cast<unsigned int>( thenTime ) );
 
@@ -11073,12 +11096,15 @@ irods::error db_specific_query_op(
             attriTextLen = numOfCols * maxColSize;
             totalLen = attriTextLen * _spec_query_inp->maxRows;
             for ( j = 0; j < numOfCols; j++ ) {
-                tResult = ( char * ) malloc( totalLen );
+                tResult = static_cast<char*>(std::calloc(1, totalLen));
                 if ( tResult == NULL ) {
+                    for ( int c = 0; c < j; ++c ) {
+                        std::free(_result->sqlResult[c].value);
+                        _result->sqlResult[c].value = nullptr;
+                    }
                     free_specific_query_slot(statementNum);
                     return ERROR( SYS_MALLOC_ERR, "malloc error" );
                 }
-                memset( tResult, 0, totalLen );
                 _result->sqlResult[j].attriInx = 0;
                 /* In Gen-query this would be set to _spec_query_inp->selectInp.inx[j]; */
 
@@ -11101,12 +11127,15 @@ irods::error db_specific_query_op(
             for ( j = 0; j < numOfCols; j++ ) {
                 char *cp1, *cp2;
                 int k;
-                tResult = ( char * ) malloc( totalLen );
+                tResult = static_cast<char*>(std::calloc(1, totalLen));
                 if ( tResult == NULL ) {
+                    for ( int c = 0; c < numOfCols; ++c ) {
+                        std::free(_result->sqlResult[c].value);
+                        _result->sqlResult[c].value = nullptr;
+                    }
                     free_specific_query_slot(statementNum);
                     return ERROR( SYS_MALLOC_ERR, "failed to allocate result" );
                 }
-                memset( tResult, 0, totalLen );
                 cp1 = _result->sqlResult[j].value;
                 cp2 = tResult;
                 for ( k = 0; k < _result->rowCnt; k++ ) {
