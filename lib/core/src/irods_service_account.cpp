@@ -6,6 +6,8 @@
 #include "irods/irods_log.hpp"
 #include "irods/rodsErrorTable.h"
 
+#include <algorithm>
+#include <cctype>
 #include <cerrno>
 #include <cstdint>
 #include <cstdlib>
@@ -16,7 +18,6 @@
 #include <sys/types.h>
 #include <unistd.h>
 
-#include <boost/algorithm/string.hpp>
 #include <fmt/format.h>
 
 namespace irods
@@ -51,7 +52,10 @@ namespace irods
         std::uint64_t cfg_line_no = 0;
         for (std::string cfg_line; std::getline(svc_acct_cfg_strm, cfg_line);) {
             cfg_line_no++;
-            boost::algorithm::trim(cfg_line); // trim whitespace (should handle CRLF)
+            // trim whitespace (should handle CRLF)
+            const auto first = std::find_if_not(cfg_line.begin(), cfg_line.end(), [](unsigned char c) { return std::isspace(c); });
+            const auto last = std::find_if_not(cfg_line.rbegin(), cfg_line.rend(), [](unsigned char c) { return std::isspace(c); }).base();
+            cfg_line = (first < last) ? std::string{first, last} : std::string{};
             if (cfg_line.empty()) {
                 // ignore empty lines
                 continue;

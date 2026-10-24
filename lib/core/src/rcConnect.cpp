@@ -297,12 +297,14 @@ int rcDisconnect(
     close( _conn->sock );
 
 
-    _conn->exit_flg = true;
     if (_conn->thread_ctx) {
         if (_conn->thread_ctx->lock && _conn->thread_ctx->cond) {
             std::lock_guard<std::mutex> lock{*_conn->thread_ctx->lock};
             _conn->exit_flg = true;
             _conn->thread_ctx->cond->notify_all();
+        }
+        else {
+            _conn->exit_flg = true;
         }
         if (_conn->thread_ctx->reconnThr && _conn->thread_ctx->reconnThr->joinable()) {
             try {
@@ -313,6 +315,9 @@ int rcDisconnect(
                 status = SYS_INTERNAL_ERR;
             }
         }
+    }
+    else {
+        _conn->exit_flg = true;
     }
 
     status = freeRcComm( _conn );

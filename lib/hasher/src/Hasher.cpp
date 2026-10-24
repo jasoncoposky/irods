@@ -2,7 +2,6 @@
 
 #include <iostream>
 #include <algorithm>
-#include <boost/algorithm/string.hpp>
 
 #include "irods/rodsErrorTable.h"
 #include "irods/irods_stacktrace.hpp"

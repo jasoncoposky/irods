@@ -6,13 +6,15 @@
 #include "irods/rodsGenQuery.h"
 #include "irods/rodsErrorTable.h"
 
-#include <boost/algorithm/string.hpp>
 #include <fmt/format.h>
 
+#include <algorithm>
+#include <cctype>
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -97,7 +99,11 @@ TEST_CASE("GenQuery1 flex bison parser maintains backward compatibility with ori
             // NOLINTBEGIN(cppcoreguidelines-pro-bounds-pointer-arithmetic)
             INFO("input1.sqlCondInp.value[" << i << "] = [" << input1.sqlCondInp.value[i] << ']');
             INFO("input2.sqlCondInp.value[" << i << "] = [" << input2.sqlCondInp.value[i] << ']');
-            CHECK(boost::iequals(input1.sqlCondInp.value[i], input2.sqlCondInp.value[i]));
+            const std::string_view v1{input1.sqlCondInp.value[i]};
+            const std::string_view v2{input2.sqlCondInp.value[i]};
+            CHECK(std::equal(v1.begin(), v1.end(), v2.begin(), v2.end(), [](unsigned char a, unsigned char b) {
+                return std::tolower(a) == std::tolower(b);
+            }));
             // NOLINTEND(cppcoreguidelines-pro-bounds-pointer-arithmetic)
         }
     }

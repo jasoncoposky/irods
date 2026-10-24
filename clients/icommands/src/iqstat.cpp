@@ -9,10 +9,11 @@
 #include <irods/rodsLog.h>
 #include <irods/user_administration.hpp>
 
-#include <boost/algorithm/string/trim.hpp>
 #include <fmt/format.h>
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
+#include <cctype>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -269,7 +270,9 @@ auto show_RuleExec( char *userName,
 auto throw_if_id_cannot_be_converted_to_int(const std::string& key) -> void
 {
     std::string k{key};
-    boost::algorithm::trim(k);
+    const auto first = std::find_if_not(k.begin(), k.end(), [](unsigned char c) { return std::isspace(c); });
+    const auto last = std::find_if_not(k.rbegin(), k.rend(), [](unsigned char c) { return std::isspace(c); }).base();
+    k = (first < last) ? std::string{first, last} : std::string{};
     try {
         std::stoul(k);
     }

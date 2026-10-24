@@ -6,14 +6,9 @@
 
 // =-=-=-=-=-=-=-
 // stl includes
-#include <string>
-
-// =-=-=-=-=-=-=-
-// boost includes
 #include <iostream>
 #include <string>
 #include <map>
-#include <boost/algorithm/string.hpp>
 
 namespace irods {
 /// =-=-=-=-=-=-=-

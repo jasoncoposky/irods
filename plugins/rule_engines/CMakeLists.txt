@@ -75,7 +75,6 @@ foreach(plugin IN LISTS IRODS_RULE_ENGINE_PLUGINS)
     irods_server
     irods_common
     "${IRODS_EXTERNALS_FULLPATH_BOOST}/lib/libboost_system.so"
-    "${IRODS_EXTERNALS_FULLPATH_BOOST}/lib/libboost_regex.so"
     fmt::fmt
     ${CMAKE_DL_LIBS}
   )

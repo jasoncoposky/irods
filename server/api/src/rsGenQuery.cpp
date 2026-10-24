@@ -11,10 +11,11 @@
 #include "irods/irods_lexical_cast.hpp"
 #include "irods/rodsGenQueryNames.h"
 
-#include <boost/algorithm/string/predicate.hpp>
 #include <fmt/format.h>
 #include <fmt/ranges.h>
 
+#include <algorithm>
+#include <cctype>
 #include <cstring>
 #include <regex>
 #include <span>
@@ -561,6 +562,13 @@ static auto extract_zone_from_hint(std::string_view _zone_hint) -> std::string_v
     return _zone_hint.substr(start, end - start);
 }
 
+static auto iequals(std::string_view _lhs, std::string_view _rhs) -> bool
+{
+    return std::equal(_lhs.begin(), _lhs.end(), _rhs.begin(), _rhs.end(), [](unsigned char a, unsigned char b) {
+        return std::tolower(a) == std::tolower(b);
+    });
+}
+
 static bool is_zone_name_valid(const std::string& _zone_hint)
 {
     const auto zone_name = extract_zone_from_hint(_zone_hint);
@@ -569,7 +577,7 @@ static bool is_zone_name_valid(const std::string& _zone_hint)
     }
 
     for (const auto* tmp_zone = ZoneInfoHead; tmp_zone; tmp_zone = tmp_zone->next) {
-        if (boost::iequals(zone_name, tmp_zone->zoneName)) {
+        if (iequals(zone_name, tmp_zone->zoneName)) {
             return true;
         }
     }
@@ -591,7 +599,7 @@ irods::error process_query_terms_for_pre_irods4_server(const std::string& _zone_
     // grind through the zones and find the match to the kw
     while (tmp_zone) {
         // clang-format off
-        if (boost::iequals(zone_name, tmp_zone->zoneName) &&
+        if (iequals(zone_name, tmp_zone->zoneName) &&
             tmp_zone->primaryServerHost->conn &&
             tmp_zone->primaryServerHost->conn->svrVersion &&
             tmp_zone->primaryServerHost->conn->svrVersion->cookie < 301)

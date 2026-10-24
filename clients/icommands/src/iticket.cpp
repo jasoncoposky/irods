@@ -49,23 +49,17 @@ void showRestrictions( const char *inColumn );
 
 std::string to_utc_timestamp(const std::string_view _seconds)
 {
-    try {
-        std::time_t tt = 0;
-        const auto [ptr, ec] = std::from_chars(_seconds.data(), _seconds.data() + _seconds.size(), tt);
-        if (ec != std::errc{}) {
-            std::cerr << "Timestamp conversion error: invalid integer\n";
-            return "?";
-        }
-        std::tm utc_tm{};
-        gmtime_r(&tt, &utc_tm);
-        std::ostringstream ss;
-        ss << std::put_time(&utc_tm, "%Y-%m-%d.%H:%M:%S");
-        return ss.str();
-    }
-    catch (const std::exception& e) {
-        std::cerr << "Timestamp conversion error: " << e.what() << '\n';
+    std::time_t tt = 0;
+    const auto [ptr, ec] = std::from_chars(_seconds.data(), _seconds.data() + _seconds.size(), tt);
+    if (ec != std::errc{} || ptr != _seconds.data() + _seconds.size()) {
+        std::cerr << "Timestamp conversion error: invalid integer\n";
         return "?";
     }
+    std::tm utc_tm{};
+    gmtime_r(&tt, &utc_tm);
+    std::ostringstream ss;
+    ss << std::put_time(&utc_tm, "%Y-%m-%d.%H:%M:%S");
+    return ss.str();
 }
 
 /*

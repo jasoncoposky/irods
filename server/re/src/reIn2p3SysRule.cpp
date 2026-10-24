@@ -10,13 +10,13 @@
 #include "irods/rodsErrorTable.h"
 #include "irods/rs_genquery2.hpp"
 
-#include <boost/algorithm/string.hpp>
 #include <boost/asio.hpp>
 #include <boost/system/error_code.hpp>
 
 #include <algorithm>
 #include <cstdint>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace
@@ -40,7 +40,21 @@ int checkHostAccessControl(const std::string& _user_name,
     namespace ip = boost::asio::ip;
 
     std::vector<std::string> group_list;
-    boost::split(group_list, _groups_name, boost::is_any_of("\t "), boost::token_compress_on);
+    {
+        const std::string_view groups_sv{_groups_name};
+        constexpr std::string_view delims{"\t "};
+        std::size_t pos = 0;
+        while (true) {
+            const auto delim_pos = groups_sv.find_first_of(delims, pos);
+            if (delim_pos == std::string_view::npos) {
+                group_list.emplace_back(groups_sv.substr(pos));
+                break;
+            }
+            group_list.emplace_back(groups_sv.substr(pos, delim_pos - pos));
+            const auto next_pos = groups_sv.find_first_not_of(delims, delim_pos);
+            pos = (next_pos == std::string_view::npos) ? groups_sv.size() : next_pos;
+        }
+    }
 
     const auto host_access_control = irods::get_server_property<nlohmann::json>(irods::KW_CFG_HOST_ACCESS_CONTROL);
     const auto& access_entries = host_access_control.at(irods::KW_CFG_ACCESS_ENTRIES);

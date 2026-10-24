@@ -26,11 +26,14 @@
 
 // =-=-=-=-=-=-=-
 // stl includes
+#include <algorithm>
+#include <cctype>
 #include <filesystem>
 #include <iostream>
 #include <sstream>
 #include <vector>
 #include <string>
+#include <string_view>
 #include <optional>
 
 // =-=-=-=-=-=-=-
@@ -93,7 +96,12 @@ namespace
 
         irods::error ret = prop_map.get<std::string>(HOST_MODE, host_mode_str);
         if (ret.ok()) {
-            return boost::iequals(host_mode_str.c_str(), "detached");
+            constexpr std::string_view target{"detached"};
+            return std::equal(host_mode_str.begin(),
+                              host_mode_str.end(),
+                              target.begin(),
+                              target.end(),
+                              [](unsigned char a, unsigned char b) { return std::tolower(a) == std::tolower(b); });
         }
 
         // default is attached mode
@@ -186,7 +194,7 @@ static irods::error unix_file_copy(
     if ( ( statbuf.st_mode & S_IFREG ) == 0 ) {
         return ERROR(UNIX_FILE_STAT_ERR, fmt::format(
             "srcFileName \"{}\" is not a regular file.",
-            srcFileName, err_status));
+            srcFileName));
     }
 
     int inFd{-1};

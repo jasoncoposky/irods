@@ -4,7 +4,8 @@
 #include "irods/irods_string_tokenize.hpp"
 #include "irods/irods_hierarchy_parser.hpp"
 #include "irods/irods_stacktrace.hpp"
-#include <boost/algorithm/string.hpp>
+#include <algorithm>
+#include <cctype>
 #include <string>
 
 namespace irods {
@@ -329,7 +330,9 @@ namespace irods {
             }
             else {
                 cond_input_resc = name;
-                boost::trim(cond_input_resc);
+                const auto first = std::find_if_not(cond_input_resc.begin(), cond_input_resc.end(), [](unsigned char c) { return std::isspace(c); });
+                const auto last = std::find_if_not(cond_input_resc.rbegin(), cond_input_resc.rend(), [](unsigned char c) { return std::isspace(c); }).base();
+                cond_input_resc = (first < last) ? std::string{first, last} : std::string{};
             }
 
         } // else if

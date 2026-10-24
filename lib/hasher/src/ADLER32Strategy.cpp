@@ -11,8 +11,6 @@
 #include <string>
 #include <string_view>
 
-#include <boost/algorithm/string/predicate.hpp>
-
 static constexpr std::uint32_t ADLER32_DIGEST_LENGTH = 4;
 
 namespace irods {

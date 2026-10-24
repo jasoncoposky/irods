@@ -12,8 +12,6 @@
 #include <fstream>
 #include <system_error>
 
-#include <boost/algorithm/string.hpp>
-
 namespace irods {
     error get_json_environment_file(
         std::string& _env_file,

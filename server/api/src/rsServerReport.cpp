@@ -21,8 +21,6 @@
 #include <sys/utsname.h>
 #include <unistd.h>
 
-#include <boost/algorithm/string.hpp>
-
 #include <fmt/format.h>
 #include <nlohmann/json.hpp>
 
@@ -32,6 +30,7 @@
 #include <fstream>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace fs = std::filesystem;
@@ -61,7 +60,17 @@ json make_federation_set( const std::vector< std::string >& _feds )
 
     for ( const auto& federation : _feds ) {
         std::vector<std::string> zone_sid_vals;
-        boost::split( zone_sid_vals, federation, boost::is_any_of( "-" ) );
+        const std::string_view fed_sv{federation};
+        std::size_t pos = 0;
+        while (true) {
+            const auto delim_pos = fed_sv.find('-', pos);
+            if (delim_pos == std::string_view::npos) {
+                zone_sid_vals.emplace_back(fed_sv.substr(pos));
+                break;
+            }
+            zone_sid_vals.emplace_back(fed_sv.substr(pos, delim_pos - pos));
+            pos = delim_pos + 1;
+        }
 
         if ( zone_sid_vals.size() > 2 ) {
             rodsLog( LOG_ERROR, "multiple hyphens found in RemoteZoneSID [%s]", federation.c_str() );

@@ -34,9 +34,8 @@
 #include "irods/irods_virtual_path.hpp"
 #include "irods/stringOpr.h"
 
-#include <boost/algorithm/string.hpp>
-
 #include <string>
+#include <string_view>
 #include <algorithm>
 
 namespace {
@@ -1318,17 +1317,19 @@ addInClauseToWhereForParentOf( char *inArg, std::vector<std::string>& bind_vars 
         return BAD_FUNCTION_CALL;
     }
 
-    try
     {
-        std::string stringInArg(const_cast<const char *>(inArg));
-
-        // The fourth parameter below will remove adjacent separators
-        boost::algorithm::split(paths, stringInArg, boost::is_any_of(separator), boost::algorithm::token_compress_on);
-    }
-    catch ( const boost::bad_function_call& )
-    {
-        log_gq::error("{}: boost::split threw boost::bad_function_call", __func__);
-        return BAD_FUNCTION_CALL;
+        const std::string_view str_sv{inArg};
+        std::size_t pos = 0;
+        while (true) {
+            const auto delim_pos = separator.empty() ? std::string_view::npos : str_sv.find_first_of(separator, pos);
+            if (delim_pos == std::string_view::npos) {
+                paths.emplace_back(str_sv.substr(pos));
+                break;
+            }
+            paths.emplace_back(str_sv.substr(pos, delim_pos - pos));
+            const auto next_pos = str_sv.find_first_not_of(separator, delim_pos);
+            pos = (next_pos == std::string_view::npos) ? str_sv.size() : next_pos;
+        }
     }
 
     std::vector<std::string> inStringVec;

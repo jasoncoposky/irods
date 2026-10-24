@@ -15,7 +15,6 @@
 #include "irods/rsIESClientHints.hpp"
 
 #include <fstream>
-#include <boost/algorithm/string.hpp>
 
 #include <sys/utsname.h>
 

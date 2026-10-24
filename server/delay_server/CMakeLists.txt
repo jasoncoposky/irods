@@ -22,8 +22,6 @@ target_link_libraries(
   irods_common
   "${IRODS_EXTERNALS_FULLPATH_BOOST}/lib/libboost_program_options.so"
   "${IRODS_EXTERNALS_FULLPATH_BOOST}/lib/libboost_system.so"
-  "${IRODS_EXTERNALS_FULLPATH_BOOST}/lib/libboost_thread.so"
-  "${IRODS_EXTERNALS_FULLPATH_BOOST}/lib/libboost_container.so"
   rt
   ${CMAKE_DL_LIBS}
   m

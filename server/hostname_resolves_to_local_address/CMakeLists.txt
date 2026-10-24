@@ -8,10 +8,7 @@ target_link_libraries(
   irods_common
   irods_plugin_dependencies
   irods_server
-  "${IRODS_EXTERNALS_FULLPATH_BOOST}/lib/libboost_chrono.so"
-  "${IRODS_EXTERNALS_FULLPATH_BOOST}/lib/libboost_regex.so"
   "${IRODS_EXTERNALS_FULLPATH_BOOST}/lib/libboost_system.so"
-  "${IRODS_EXTERNALS_FULLPATH_BOOST}/lib/libboost_thread.so"
   rt
   ${CMAKE_DL_LIBS}
   m

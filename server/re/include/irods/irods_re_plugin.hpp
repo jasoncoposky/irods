@@ -7,8 +7,6 @@
 #include "irods/irods_re_structs.hpp"
 #include "irods/irods_state_table.h"
 
-#include <boost/algorithm/string.hpp>
-
 #include <fmt/format.h>
 
 #include <any>

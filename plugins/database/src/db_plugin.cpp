@@ -51,8 +51,6 @@
 #include <nanodbc/nanodbc.h>
 #include <nlohmann/json.hpp>
 
-#include <boost/algorithm/string.hpp>
-
 #include <algorithm>
 #include <cctype>
 #include <charconv>
@@ -1989,7 +1987,7 @@ irods::error db_open_op(
                  db_plugin_map.at(irods::KW_CFG_DB_TECHNOLOGY).get_ref<const std::string&>().c_str());
     } catch ( const irods::exception& e ) {
         return irods::error(e);
-    } catch ( const boost::exception& e ) {
+    } catch ( const std::exception& e ) {
         return ERROR(INVALID_ANY_CAST, "Failed any_cast in the database configuration");
     }
 
@@ -7062,9 +7060,17 @@ irods::error db_mod_resc_data_paths_op(
             }
         }
 
+        const std::string_view old_sv{_old_path};
+        const std::string_view new_sv{_new_path};
         for (const auto& [did, repl, p] : updates) {
             std::string new_p = p;
-            boost::replace_all(new_p, _old_path, _new_path);
+            if (!old_sv.empty()) {
+                for (std::size_t pos = new_p.find(old_sv); pos != std::string::npos;
+                     pos = new_p.find(old_sv, pos + new_sv.size()))
+                {
+                    new_p.replace(pos, old_sv.size(), new_sv);
+                }
+            }
             auto upd = gq2::builder::update("DATA_OBJECT")
                 .set("data_path", new_p)
                 .where(col("data_id") == did && col("data_repl_num") == repl)

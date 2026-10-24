@@ -58,9 +58,8 @@ This option causes make_* functions to be generated for each token kind.
 %code {
     #include "irods/private/genquery1_driver.hpp"
 
-    #include <boost/algorithm/string.hpp>
-
     #include <algorithm>
+    #include <cctype>
     #include <optional>
     #include <string_view>
 
@@ -203,17 +202,23 @@ auto add_column_to_projection_list(irods::experimental::genquery1::driver& _drv,
     const auto column_id = find_column_id_by_name(_column);
 
     if (_fn) {
+        const auto iequals = [](std::string_view _lhs, std::string_view _rhs) {
+            return std::equal(_lhs.begin(), _lhs.end(), _rhs.begin(), _rhs.end(), [](unsigned char a, unsigned char b) {
+                return std::tolower(a) == std::tolower(b);
+            });
+        };
+
         int aggregate_fn = -1;
 
         // clang-format off
-        if      (boost::iequals(*_fn, "order"))      { aggregate_fn = ORDER_BY; }
-        else if (boost::iequals(*_fn, "order_asc"))  { aggregate_fn = ORDER_BY; }
-        else if (boost::iequals(*_fn, "order_desc")) { aggregate_fn = ORDER_BY_DESC; }
-        else if (boost::iequals(*_fn, "min"))        { aggregate_fn = SELECT_MIN; }
-        else if (boost::iequals(*_fn, "max"))        { aggregate_fn = SELECT_MAX; }
-        else if (boost::iequals(*_fn, "sum"))        { aggregate_fn = SELECT_SUM; }
-        else if (boost::iequals(*_fn, "avg"))        { aggregate_fn = SELECT_AVG; }
-        else if (boost::iequals(*_fn, "count"))      { aggregate_fn = SELECT_COUNT; }
+        if      (iequals(*_fn, "order"))      { aggregate_fn = ORDER_BY; }
+        else if (iequals(*_fn, "order_asc"))  { aggregate_fn = ORDER_BY; }
+        else if (iequals(*_fn, "order_desc")) { aggregate_fn = ORDER_BY_DESC; }
+        else if (iequals(*_fn, "min"))        { aggregate_fn = SELECT_MIN; }
+        else if (iequals(*_fn, "max"))        { aggregate_fn = SELECT_MAX; }
+        else if (iequals(*_fn, "sum"))        { aggregate_fn = SELECT_SUM; }
+        else if (iequals(*_fn, "avg"))        { aggregate_fn = SELECT_AVG; }
+        else if (iequals(*_fn, "count"))      { aggregate_fn = SELECT_COUNT; }
         // clang-format on
         else {
             // When fillGenQueryInpFromStrCond() entered this case, it would ignore the unknown aggregate

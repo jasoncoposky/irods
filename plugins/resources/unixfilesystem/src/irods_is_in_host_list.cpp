@@ -4,10 +4,9 @@
 #include "irods/irods_string_tokenize.hpp"
 #include "irods/filesystem/path.hpp"
 
-// boost includes
-#include <boost/algorithm/string/predicate.hpp>
-
 // stl includes
+#include <algorithm>
+#include <cctype>
 #include <vector>
 #include <string_view>
 
@@ -36,7 +35,12 @@ namespace irods
         irods::string_tokenize(host_list_str, delimiter, tokens);
 
         for (const std::string& token : tokens) {
-            if (boost::iequals(token, resource_hostname)) {
+            if (std::equal(token.begin(),
+                           token.end(),
+                           resource_hostname.begin(),
+                           resource_hostname.end(),
+                           [](unsigned char a, unsigned char b) { return std::tolower(a) == std::tolower(b); }))
+            {
                 return true;
             }
         }

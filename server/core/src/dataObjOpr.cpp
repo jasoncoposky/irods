@@ -31,8 +31,6 @@
 #include "irods/scoped_privileged_client.hpp"
 #include "irods/filesystem/path.hpp"
 
-#include <boost/algorithm/string.hpp>
-
 #include <fmt/format.h>
 
 #include <sys/types.h>
@@ -41,6 +39,7 @@
 #include <algorithm>
 #include <charconv>
 #include <filesystem>
+#include <string_view>
 
 namespace
 {
@@ -1034,13 +1033,18 @@ irods::linked_list_iterator<const dataObjInfo_t> end(const dataObjInfo_t* _objec
 
 bool contains_replica(const dataObjInfo_t* _objects, const std::string& _resc_name) {
     return contains_replica_if(_objects, [&_resc_name](const auto& _node) {
-        const std::string hier{_node.rescHier};
-        auto b = boost::make_split_iterator(hier, boost::first_finder(";", boost::is_equal{}));
-        boost::split_iterator<std::string::const_iterator> e{};
-
-        return std::any_of(b, e, [&_resc_name](const auto& _resource_name) {
-            return _resource_name == _resc_name;
-        });
+        const std::string_view hier{_node.rescHier};
+        std::size_t pos = 0;
+        while (true) {
+            const auto delim_pos = hier.find(';', pos);
+            if (delim_pos == std::string_view::npos) {
+                return hier.substr(pos) == _resc_name;
+            }
+            if (hier.substr(pos, delim_pos - pos) == _resc_name) {
+                return true;
+            }
+            pos = delim_pos + 1;
+        }
     });
 }
 

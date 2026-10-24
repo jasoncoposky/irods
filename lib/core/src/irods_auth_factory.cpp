@@ -4,7 +4,9 @@
 #include "irods/irods_pam_auth_object.hpp"
 #include "irods/irods_generic_auth_object.hpp"
 #include "irods/rodsErrorTable.h"
-#include <boost/algorithm/string.hpp>
+
+#include <algorithm>
+#include <cctype>
 
 namespace irods {
 /// =-=-=-=-=-=-=-
@@ -15,7 +17,10 @@ namespace irods {
         rError_t*          _r_error,
         auth_object_ptr&   _ptr ) {
         // ensure scheme is lower case for comparison
-        std::string scheme = boost::algorithm::to_lower_copy( _scheme );
+        std::string scheme = _scheme;
+        std::transform(scheme.begin(), scheme.end(), scheme.begin(), [](unsigned char c) {
+            return static_cast<char>(std::tolower(c));
+        });
 
         if ( scheme.empty() || AUTH_NATIVE_SCHEME == scheme ) {
             _ptr.reset( new native_auth_object( _r_error ) );

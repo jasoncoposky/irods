@@ -18,8 +18,8 @@
 #include "irods/rsExecCmd.hpp"
 #include "irods/voting.hpp"
 
-#include <boost/algorithm/string.hpp>
-
+#include <algorithm>
+#include <cctype>
 #include <cstring>
 #include <iostream>
 #include <sstream>
@@ -70,7 +70,9 @@ namespace
 
         std::string value;
         if (const auto err = _ctx.prop_map().get<std::string>(ESCAPE_SINGLE_QUOTES, value); err.ok()) {
-            boost::trim(value);
+            const auto first = std::find_if_not(value.begin(), value.end(), [](unsigned char c) { return std::isspace(c); });
+            const auto last = std::find_if_not(value.rbegin(), value.rend(), [](unsigned char c) { return std::isspace(c); }).base();
+            value = (first < last) ? std::string{first, last} : std::string{};
         }
         else {
             // If we're here, then something horrible has happened. The plugin always sets
@@ -92,8 +94,33 @@ namespace
 
         log_resc::debug(
             "{}: Escaping single quotes in paths is enabled for univmss resource [{}].", __func__, resc_name);
-        return boost::replace_all_copy(_input, "'", "\\'");
+        std::string out;
+        out.reserve(_input.size());
+        std::size_t prev = 0;
+        for (std::size_t pos = _input.find('\''); pos != std::string::npos; pos = _input.find('\'', prev)) {
+            out.append(_input, prev, pos - prev);
+            out.append("\\'");
+            prev = pos + 1;
+        }
+        out.append(_input, prev, std::string::npos);
+        return out;
     } // escape_single_quotes
+
+    auto split_string(std::string_view _str, std::string_view _delims) -> std::vector<std::string>
+    {
+        std::vector<std::string> out;
+        std::size_t pos = 0;
+        while (true) {
+            const auto delim_pos = _delims.empty() ? std::string_view::npos : _str.find_first_of(_delims, pos);
+            if (delim_pos == std::string_view::npos) {
+                out.emplace_back(_str.substr(pos));
+                break;
+            }
+            out.emplace_back(_str.substr(pos, delim_pos - pos));
+            pos = delim_pos + 1;
+        }
+        return out;
+    }
 } // anonymous namespace
 
 /// =-=-=-=-=-=-=-
@@ -245,8 +272,7 @@ irods::error univ_mss_file_stat(
     if ( status == 0 && NULL != execCmdOut ) { // JMC cppcheck - nullptr
         if ( execCmdOut->stdoutBuf.buf != NULL ) {
             const std::string outputStr(static_cast<char*>(execCmdOut->stdoutBuf.buf), execCmdOut->stdoutBuf.len);
-            std::vector<std::string> output_tokens;
-            boost::algorithm::split( output_tokens, outputStr, boost::is_any_of( delim1 ) );
+            const std::vector<std::string> output_tokens = split_string( outputStr, delim1 );
             _statbuf->st_dev = atoi( output_tokens[0].c_str() );
             _statbuf->st_ino = atoi( output_tokens[1].c_str() );
             _statbuf->st_mode = atoi( output_tokens[2].c_str() );
@@ -258,13 +284,11 @@ irods::error univ_mss_file_stat(
             _statbuf->st_blksize = atoi( output_tokens[8].c_str() );
             _statbuf->st_blocks = atoi( output_tokens[9].c_str() );
             for ( i = 0; i < 3; i++ ) {
-                std::vector<std::string> date_tokens;
-                boost::algorithm::split( date_tokens, output_tokens[10 + i], boost::is_any_of( delim2 ) );
+                const std::vector<std::string> date_tokens = split_string( output_tokens[10 + i], delim2 );
                 mytm.tm_year = atoi( date_tokens[0].c_str() ) - 1900;
                 mytm.tm_mon = atoi( date_tokens[1].c_str() ) - 1;
                 mytm.tm_mday = atoi( date_tokens[2].c_str() );
-                std::vector<std::string> time_tokens;
-                boost::algorithm::split( time_tokens, date_tokens[3], boost::is_any_of( delim3 ) );
+                const std::vector<std::string> time_tokens = split_string( date_tokens[3], delim3 );
                 mytm.tm_hour = atoi( time_tokens[0].c_str() );
                 mytm.tm_min = atoi( time_tokens[1].c_str() );
                 mytm.tm_sec = atoi( time_tokens[2].c_str() );

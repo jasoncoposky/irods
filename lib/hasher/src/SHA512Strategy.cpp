@@ -13,8 +13,6 @@
 #include <string>
 #include <string_view>
 
-#include <boost/algorithm/string/predicate.hpp>
-
 #include <openssl/err.h>
 #include <openssl/evp.h>
 #include <openssl/sha.h>

@@ -9,13 +9,15 @@
 #include <irods/irods_configuration_keywords.hpp>
 #include <irods/rcMisc.h>
 
-#include <boost/algorithm/string/trim.hpp>
 #include <boost/program_options.hpp>
 
+#include <algorithm>
 #include <any>
+#include <cctype>
 #include <cstdio>
 #include <cstring>
 #include <string>
+#include <string_view>
 
 void usage();
 
@@ -336,8 +338,10 @@ main( int argc, char **argv ) {
                         std::memmove(buf, buf + _skip_len, copy_length);
 
                         // Trim spaces
-                        auto res{boost::algorithm::trim_copy_if(
-                            std::string{buf}, [](unsigned char c) { return std::isspace(c); })};
+                        const std::string_view sv{buf};
+                        const auto first = std::find_if_not(sv.begin(), sv.end(), [](unsigned char c) { return std::isspace(c); });
+                        const auto last = std::find_if_not(sv.rbegin(), sv.rend(), [](unsigned char c) { return std::isspace(c); }).base();
+                        const std::string res = (first < last) ? std::string{first, last} : std::string{};
                         std::strncpy(buf, res.c_str(), res.size() + null_term);
                     }};
 

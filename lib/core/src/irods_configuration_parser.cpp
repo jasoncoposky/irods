@@ -4,10 +4,10 @@
 
 #include <algorithm>
 #include <any>
+#include <cctype>
 #include <filesystem>
 #include <fstream>
 
-#include <boost/algorithm/string.hpp>
 #include <fmt/format.h>
 
 namespace fs = std::filesystem;
@@ -188,8 +188,11 @@ namespace irods {
 
     std::string to_env(
         const std::string& _v ) {
-        return boost::to_upper_copy <
-               std::string > ( _v );
+        std::string out = _v;
+        std::transform(out.begin(), out.end(), out.begin(), [](unsigned char c) {
+            return static_cast<char>(std::toupper(c));
+        });
+        return out;
     }
 
     void configuration_parser::remove(const std::string& _key) {

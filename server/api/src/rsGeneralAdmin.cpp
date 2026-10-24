@@ -33,8 +33,6 @@
 
 #include <fmt/format.h>
 
-#include <boost/algorithm/string/trim.hpp>
-
 #include <algorithm>
 #include <charconv>
 #include <cctype>
@@ -44,6 +42,7 @@
 #include <optional>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <tuple>
 
 using log_api = irods::experimental::log::api;
@@ -52,9 +51,16 @@ extern irods::resource_manager resc_mgr;
 
 namespace
 {
+    auto trim_copy(std::string_view _s) -> std::string
+    {
+        const auto first = std::find_if_not(_s.begin(), _s.end(), [](unsigned char _ch) { return std::isspace(_ch); });
+        const auto last = std::find_if_not(_s.rbegin(), _s.rend(), [](unsigned char _ch) { return std::isspace(_ch); }).base();
+        return (first < last) ? std::string{first, last} : std::string{};
+    }
+
     auto contains_whitespace(std::string _value) -> bool
     {
-        boost::algorithm::trim(_value);
+        _value = trim_copy(_value);
 
         const auto b = std::begin(_value);
         const auto e = std::end(_value);
@@ -579,7 +585,7 @@ _removeChildFromResource(
         return CAT_INVALID_RESOURCE_NAME;
     }
 
-    resc_input[irods::RESOURCE_NAME] = boost::algorithm::trim_copy(std::string{_generalAdminInp->arg2});
+    resc_input[irods::RESOURCE_NAME] = trim_copy(_generalAdminInp->arg2);
 
     if ( strlen( _generalAdminInp->arg3 ) >= MAX_PATH_ALLOWED ) {
         return SYS_INVALID_INPUT_PARAM;
@@ -590,7 +596,7 @@ _removeChildFromResource(
         return CAT_INVALID_RESOURCE_NAME;
     }
 
-    resc_input[irods::RESOURCE_CHILDREN] = boost::algorithm::trim_copy(std::string{_generalAdminInp->arg3});
+    resc_input[irods::RESOURCE_CHILDREN] = trim_copy(_generalAdminInp->arg3);
 
     rodsLog( LOG_NOTICE, "rsGeneralAdmin remove child \"%s\" from resource \"%s\"", resc_input[irods::RESOURCE_CHILDREN].c_str(),
              resc_input[irods::RESOURCE_NAME].c_str() );
@@ -644,7 +650,7 @@ _addResource(
 
     // =-=-=-=-=-=-=-
     // capture all the parameters
-    resc_input[irods::RESOURCE_NAME] = boost::algorithm::trim_copy(std::string{_generalAdminInp->arg2});
+    resc_input[irods::RESOURCE_NAME] = trim_copy(_generalAdminInp->arg2);
     resc_input[irods::RESOURCE_TYPE] = _generalAdminInp->arg3;
     resc_input[irods::RESOURCE_PATH] = _generalAdminInp->arg4;
     resc_input[irods::RESOURCE_CONTEXT] = _generalAdminInp->arg5;
@@ -1179,7 +1185,7 @@ int _rsGeneralAdmin(rsComm_t* rsComm, generalAdminInp_t* generalAdminInp)
                     return CAT_INVALID_RESOURCE_NAME;
                 }
 
-                new_resc_name = boost::algorithm::trim_copy(std::string{generalAdminInp->arg4});
+                new_resc_name = trim_copy(generalAdminInp->arg4);
                 args[2] = new_resc_name.c_str();
             }
             else if (std::strcmp(generalAdminInp->arg3, "parent_context") == 0) {
