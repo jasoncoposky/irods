@@ -1,5 +1,6 @@
 #include "irods/rsServerReport.hpp"
 
+#include "irods/base64.hpp"
 #include "irods/irods_configuration_keywords.hpp"
 #include "irods/irods_default_paths.hpp"
 #include "irods/irods_environment_properties.hpp"
@@ -21,10 +22,6 @@
 #include <unistd.h>
 
 #include <boost/algorithm/string.hpp>
-#include <boost/archive/iterators/base64_from_binary.hpp>
-#include <boost/archive/iterators/insert_linebreaks.hpp>
-#include <boost/archive/iterators/transform_width.hpp>
-#include <boost/archive/iterators/ostream_iterator.hpp>
 
 #include <fmt/format.h>
 #include <nlohmann/json.hpp>
@@ -33,6 +30,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -333,38 +331,31 @@ irods::error get_resource_array( json& _resources )
     return SUCCESS();
 } // get_resource_array
 
-irods::error get_file_contents( const std::string& _fn, std::string& _cont )
+irods::error get_file_contents(const std::string& _fn, std::string& _cont)
 {
-    std::ifstream f( _fn.c_str() );
+    std::ifstream f(_fn.c_str());
     std::stringstream ss;
     ss << f.rdbuf();
     f.close();
 
-    std::string in_s = ss.str();
+    const std::string in_s = ss.str();
+    if (in_s.empty()) {
+        _cont.clear();
+        return SUCCESS();
+    }
 
-    namespace bitr = boost::archive::iterators;
-    std::stringstream o_str;
-    typedef
-    bitr::base64_from_binary < // convert binary values to base64 characters
-    bitr::transform_width <   // retrieve 6 bit integers from a sequence of 8 bit bytes
-    const char *,
-          6,
-          8
-          >
-          >
-          base64_text; // compose all the above operations in to a new iterator
+    unsigned long out_len = ((in_s.size() + 2) / 3) * 4 + 1;
+    std::vector<unsigned char> out_buf(out_len, 0);
+    const int ec = irods::base64_encode(
+        reinterpret_cast<const unsigned char*>(in_s.data()),
+        in_s.size(),
+        out_buf.data(),
+        &out_len);
+    if (ec != 0) {
+        return ERROR(ec, "Failed to base64 encode file contents");
+    }
 
-    std::copy(
-        base64_text( in_s.c_str() ),
-        base64_text( in_s.c_str() + in_s.size() ),
-        bitr::ostream_iterator<char>( o_str )
-    );
-
-    _cont = o_str.str();
-
-    size_t pad = in_s.size() % 3;
-    _cont.insert( _cont.size(), ( 3 - pad ) % 3, '=' );
-
+    _cont.assign(reinterpret_cast<const char*>(out_buf.data()), out_len);
     return SUCCESS();
 } // get_file_contents
 

@@ -12,7 +12,6 @@
 // boost includes
 #include <iostream>
 #include <string>
-#include <boost/tokenizer.hpp>
 #include <map>
 #include <boost/algorithm/string.hpp>
 

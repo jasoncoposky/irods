@@ -52,18 +52,18 @@
 #include <nlohmann/json.hpp>
 
 #include <boost/algorithm/string.hpp>
-#include <boost/date_time.hpp>
-#include <boost/regex.hpp>
 
 #include <algorithm>
 #include <cctype>
 #include <charconv>
 #include <chrono>
 #include <cstring>
+#include <ctime>
 #include <iomanip>
 #include <iostream>
 #include <locale>
 #include <memory>
+#include <regex>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -939,9 +939,9 @@ irods::error validate_resource_name( std::string _resc_name ) {
     // Must be between 1 and NAME_LEN-1 characters.
     // Must start and end with a word character.
     // May contain non consecutive dashes.
-    boost::regex re( "^(?=.{1,63}$)\\w+(-\\w+)*$" );
+    std::regex re( "^(?=.{1,63}$)\\w+(-\\w+)*$" );
 
-    if ( !boost::regex_match( _resc_name, re ) ) {
+    if ( !std::regex_match( _resc_name, re ) ) {
         std::stringstream msg;
         msg << "validate_resource_name failed for resource [";
         msg << _resc_name;
@@ -1561,7 +1561,7 @@ findOrInsertAVU( const char *attribute, const char *value, const char *units ) {
 /* create a path name with escaped SQL special characters (% and _) */
 std::string
 makeEscapedPath( const std::string &inPath ) {
-    return boost::regex_replace( inPath, boost::regex( "[%_\\\\]" ), "\\\\$&" );
+    return std::regex_replace( inPath, std::regex( "[%_\\\\]" ), "\\$&" );
 }
 
 /* Internal routine to modify inheritance */
@@ -11758,17 +11758,11 @@ namespace
                         //
 
                         std::istringstream ss{_arg4};
-
-                        // The facet allocated via the "new" operator is managed by the std::locale.
-                        // The use of "new" here is correct and there are no memory leaks caused by this line.
-                        ss.imbue(std::locale(ss.getloc(), new boost::posix_time::time_input_facet{"%Y-%m-%d.%H:%M:%S"}));
-
-                        boost::posix_time::ptime t;
-                        if (!(ss >> t)) {
+                        std::tm tm{};
+                        if (!(ss >> std::get_time(&tm, "%Y-%m-%d.%H:%M:%S"))) {
                             return ERROR(SYS_INTERNAL_ERR, "Could not parse timestamp string into appropriate object.");
                         }
-
-                        ticket_expiration_string = fmt::format("{:011}", to_time_t(t));
+                        ticket_expiration_string = fmt::format("{:011}", timegm(&tm));
                     }
                 }
 
@@ -12379,17 +12373,11 @@ irods::error db_mod_ticket_op(
                     //
 
                     std::istringstream ss{_arg4};
-
-                    // The facet allocated via the "new" operator is managed by the std::locale.
-                    // The use of "new" here is correct and there are no memory leaks caused by this line.
-                    ss.imbue(std::locale(ss.getloc(), new boost::posix_time::time_input_facet{"%Y-%m-%d.%H:%M:%S"}));
-
-                    boost::posix_time::ptime t;
-                    if (!(ss >> t)) {
+                    std::tm tm{};
+                    if (!(ss >> std::get_time(&tm, "%Y-%m-%d.%H:%M:%S"))) {
                         return ERROR(SYS_INTERNAL_ERR, "Could not parse timestamp string into appropriate object.");
                     }
-
-                    ticket_expiration_string = fmt::format("{:011}", to_time_t(t));
+                    ticket_expiration_string = fmt::format("{:011}", timegm(&tm));
                 }
             }
 

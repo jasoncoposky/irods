@@ -6,9 +6,8 @@
 #include "irods/irods_logger.hpp"
 #include "irods/rcGlobalExtern.h"
 
-#include <boost/regex.hpp>
-
 #include <cstring>
+#include <regex>
 #include <string>
 
 using log_server = irods::experimental::log::server;
@@ -316,7 +315,7 @@ checkStringForSystem( const char * inString ) {
     if ( inString == NULL ) {
         return 0;
     }
-    if ( boost::regex_match( inString, boost::regex( "[a-zA-Z0-9,./ ]*" ) ) ) {
+    if ( std::regex_match( inString, std::regex( "[a-zA-Z0-9,./ ]*" ) ) ) {
         return 0;
     }
     return USER_INPUT_STRING_ERR;
@@ -333,7 +332,7 @@ checkStringForEmailAddress( const char * inString ) {
     if ( inString == NULL ) {
         return 0;
     }
-    if ( boost::regex_match( inString, boost::regex( "[-a-zA-Z0-9,./+*_@]*" ) ) ) {
+    if ( std::regex_match( inString, std::regex( "[-a-zA-Z0-9,./+*_@]*" ) ) ) {
         return 0;
     }
     return USER_INPUT_STRING_ERR;

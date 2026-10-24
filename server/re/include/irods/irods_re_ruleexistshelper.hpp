@@ -1,8 +1,7 @@
 #ifndef IRODS_RE_RULEEXISTSHELPER_HPP
 #define IRODS_RE_RULEEXISTSHELPER_HPP
 
-#include <boost/regex.hpp>
-
+#include <regex>
 #include <string>
 #include <vector>
 
@@ -19,7 +18,7 @@ class RuleExistsHelper
 
   private:
     RuleExistsHelper() = default;
-    std::vector<boost::regex> ruleRegexes;
+    std::vector<std::regex> ruleRegexes;
 }; // class RuleExistsHelper
 
 #endif // IRODS_RE_RULEEXISTSHELPER_HPP

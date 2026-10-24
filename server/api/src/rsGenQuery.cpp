@@ -11,7 +11,6 @@
 #include "irods/irods_lexical_cast.hpp"
 #include "irods/rodsGenQueryNames.h"
 
-#include <boost/tokenizer.hpp>
 #include <boost/algorithm/string/predicate.hpp>
 #include <fmt/format.h>
 #include <fmt/ranges.h>
@@ -552,18 +551,22 @@ irods::error add_resc_hier_name_to_query_out( genQueryOut_t *_out, int& _pos ) {
 
 } // add_resc_hier_name_to_query_out
 
+static auto extract_zone_from_hint(std::string_view _zone_hint) -> std::string_view
+{
+    const auto start = _zone_hint.find_first_not_of('/');
+    if (start == std::string_view::npos) {
+        return {};
+    }
+    const auto end = _zone_hint.find('/', start);
+    return _zone_hint.substr(start, end - start);
+}
+
 static bool is_zone_name_valid(const std::string& _zone_hint)
 {
-    // Extract zone name from zone hint.
-    boost::char_separator<char> sep("/");
-    boost::tokenizer<boost::char_separator<char>> tokens(_zone_hint, sep);
-
-    if (tokens.begin() == tokens.end()) {
+    const auto zone_name = extract_zone_from_hint(_zone_hint);
+    if (zone_name.empty()) {
         return false;
     }
-
-    const auto iter = tokens.begin();
-    const std::string_view zone_name = *iter;
 
     for (const auto* tmp_zone = ZoneInfoHead; tmp_zone; tmp_zone = tmp_zone->next) {
         if (boost::iequals(zone_name, tmp_zone->zoneName)) {
@@ -578,15 +581,11 @@ static
 irods::error process_query_terms_for_pre_irods4_server(const std::string& _zone_hint,
                                                        genQueryInp_t* _inp)
 {
-    // extract zone name from zone hint
-    boost::char_separator<char> sep("/");
-    boost::tokenizer<boost::char_separator<char>> tokens(_zone_hint, sep);
-    if (tokens.begin() == tokens.end()) {
+    const auto zone_name = extract_zone_from_hint(_zone_hint);
+    if (zone_name.empty()) {
         return ERROR(SYS_INVALID_ZONE_NAME, "No zone name parsed from zone hint");
     }
 
-    const auto iter = tokens.begin();
-    const std::string_view zone_name = *iter;
     const zoneInfo_t* tmp_zone = ZoneInfoHead;
 
     // grind through the zones and find the match to the kw

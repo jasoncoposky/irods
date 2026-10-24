@@ -33,7 +33,6 @@
 #include <iostream>
 #include <sstream>
 #include <vector>
-#include <boost/regex.hpp>
 
 // =-=-=-=-=-=-=-
 // debug flag used across all icat fcns

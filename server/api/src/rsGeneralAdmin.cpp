@@ -33,14 +33,16 @@
 
 #include <fmt/format.h>
 
-#include <boost/date_time.hpp>
 #include <boost/algorithm/string/trim.hpp>
 
 #include <algorithm>
 #include <charconv>
 #include <cctype>
+#include <ctime>
+#include <iomanip>
 #include <iostream>
 #include <optional>
+#include <sstream>
 #include <string>
 #include <tuple>
 
@@ -260,13 +262,11 @@ namespace
 
     auto get_unit_for_rebalance_avu() -> std::string
     {
-        // get timestamp in defined format
-        const boost::posix_time::ptime timeUTC = boost::posix_time::second_clock::universal_time();
-        std::stringstream stream;
-        boost::posix_time::time_facet* facet = new boost::posix_time::time_facet();
-        facet->format("%Y%m%dT%H%M%SZ");
-        stream.imbue(std::locale(std::locale::classic(), facet));
-        stream << timeUTC;
+        const std::time_t now = std::time(nullptr);
+        std::tm utc_tm{};
+        gmtime_r(&now, &utc_tm);
+        std::ostringstream stream;
+        stream << std::put_time(&utc_tm, "%Y%m%dT%H%M%SZ");
         return stream.str();
     } // get_unit_for_rebalance_avu
 } // anonymous namespace

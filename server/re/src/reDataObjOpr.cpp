@@ -37,9 +37,6 @@
 #include "irods/rsStructFileExtAndReg.hpp"
 #include "irods/rs_replica_truncate.hpp"
 
-#include <boost/algorithm/string/regex.hpp>
-#include <boost/regex.hpp>
-
 #include <cstring>
 #include <string>
 #include <vector>

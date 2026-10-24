@@ -2,7 +2,7 @@
 #include <sstream>
 #include <vector>
 #include <set>
-#include <boost/regex.hpp>
+#include <regex>
 #include "irods/irods_serialization.hpp"
 #include "irods/irods_exception.hpp"
 #include "irods/rodsErrorTable.h"
@@ -19,12 +19,7 @@ namespace irods {
         case '\0':
             break;
         case '$':
-        case '(':
-        case ')':
-        case '?':
-        case ':':
-        case '\\':
-            str << '\\' << escape_char;
+            str << "$$";
             break;
         default:
             str << escape_char;
@@ -33,7 +28,7 @@ namespace irods {
         return str.str();
     }
 
-    boost::regex character_set_regex(
+    std::regex character_set_regex(
         const std::set<char>& character_set ) {
         std::stringstream str;
         str << '[';
@@ -50,10 +45,10 @@ namespace irods {
             }
         }
         str << ']';
-        return boost::regex( str.str() );
+        return std::regex( str.str() );
     }
 
-    boost::regex character_set_regex(
+    std::regex character_set_regex(
         const std::string& character_set ) {
         std::set<char> set;
         for ( std::string::const_iterator iter = character_set.begin(); iter != character_set.end(); ++iter ) {
@@ -64,15 +59,15 @@ namespace irods {
 
     std::vector<std::string> escape_strings(
         const std::vector<std::string>& strs,
-        const boost::regex& special_character_set_regex,
+        const std::regex& special_character_set_regex,
         const char escape_char ) {
         std::vector<std::string> escaped_strs;
         if ( escape_char ) {
-            if ( !boost::regex_match( std::string( 1, escape_char ), special_character_set_regex ) ) {
+            if ( !std::regex_match( std::string( 1, escape_char ), special_character_set_regex ) ) {
                 THROW( SYS_BAD_INPUT, "Regular expression passed to escape_string must match against the escape character." );
             }
             for ( std::vector<std::string>::const_iterator iter = strs.begin(); iter != strs.end(); ++iter ) {
-                escaped_strs.push_back( boost::regex_replace( *iter, special_character_set_regex, get_format_string_for_escape( escape_char ) ) );
+                escaped_strs.push_back( std::regex_replace( *iter, special_character_set_regex, get_format_string_for_escape( escape_char ) ) );
             }
         }
         else {
@@ -99,7 +94,7 @@ namespace irods {
 
     std::vector<std::string> escape_strings(
         const std::vector<std::string>& strs,
-        const boost::regex& special_character_set_regex ) {
+        const std::regex& special_character_set_regex ) {
         return escape_strings( strs, special_character_set_regex, default_escape_char );
     }
 
@@ -122,7 +117,7 @@ namespace irods {
 
     std::string escape_string(
         const std::string& str,
-        const boost::regex& special_character_set_regex,
+        const std::regex& special_character_set_regex,
         const char escape_char ) {
         std::vector<std::string> v;
         v.push_back( str );
@@ -145,7 +140,7 @@ namespace irods {
 
     std::string escape_string(
         const std::string& str,
-        const boost::regex& special_character_set_regex ) {
+        const std::regex& special_character_set_regex ) {
         return escape_string( str, special_character_set_regex, default_escape_char );
     }
 
@@ -184,10 +179,10 @@ namespace irods {
 
     std::string serialize_list(
         const std::vector<std::string>& list,
-        const boost::regex& special_character_set_regex,
+        const std::regex& special_character_set_regex,
         const char delimiter_char,
         const char escape_char ) {
-        if ( escape_char && !boost::regex_match( std::string( 1, delimiter_char ), special_character_set_regex ) ) {
+        if ( escape_char && !std::regex_match( std::string( 1, delimiter_char ), special_character_set_regex ) ) {
             THROW( SYS_BAD_INPUT, "Regular expression passed to serialize_list must match against the delimiter character." );
         }
         std::vector<std::string> escaped_strings = escape_strings( list, special_character_set_regex, escape_char );
@@ -212,7 +207,7 @@ namespace irods {
 
     std::string serialize_list(
         const std::vector<std::string>& list,
-        const boost::regex& special_character_set_regex,
+        const std::regex& special_character_set_regex,
         const char delimiter_char ) {
         return serialize_list( list, special_character_set_regex, delimiter_char, default_escape_char );
     }
@@ -233,7 +228,7 @@ namespace irods {
 
     std::string serialize_list(
         const std::vector<std::string>& list,
-        const boost::regex& special_character_set_regex ) {
+        const std::regex& special_character_set_regex ) {
         return serialize_list( list, special_character_set_regex, default_delimiter_char );
     }
 
@@ -349,7 +344,7 @@ namespace irods {
             if ( iter->size() != 2 ) {
                 THROW( SYS_BAD_INPUT, "ACLs must be a tuple of user and permission" );
             }
-            shallow_serialized_acl.push_back( serialize_list( *iter, boost::regex( "[\\\\ ;]" ), ' ', '\\' ) );
+            shallow_serialized_acl.push_back( serialize_list( *iter, std::regex( "[\\\\ ;]" ), ' ', '\\' ) );
         }
         return join( shallow_serialized_acl, ';' );
     }

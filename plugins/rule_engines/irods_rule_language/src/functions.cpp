@@ -29,7 +29,7 @@ getDataObjInfoIncSpecColl( rsComm_t *rsComm, dataObjInp_t *dataObjInp,
 #endif
 
 
-#include <boost/regex.h>
+#include <regex.h>
 
 #ifndef DEBUG
 #include "irods/execMyRule.h"

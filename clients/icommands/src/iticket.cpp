@@ -10,11 +10,12 @@
 #include <irods/rodsError.h>
 #include <irods/rodsPath.h>
 
-#include <boost/date_time.hpp>
 #include <nlohmann/json.hpp>
 
 #include <charconv>
 #include <cstdio>
+#include <ctime>
+#include <iomanip>
 #include <locale>
 #include <optional>
 #include <sstream>
@@ -55,12 +56,10 @@ std::string to_utc_timestamp(const std::string_view _seconds)
             std::cerr << "Timestamp conversion error: invalid integer\n";
             return "?";
         }
-        const auto pt = boost::posix_time::from_time_t(tt);
-
+        std::tm utc_tm{};
+        gmtime_r(&tt, &utc_tm);
         std::ostringstream ss;
-        ss.imbue(std::locale(ss.getloc(), new boost::posix_time::time_facet{"%Y-%m-%d.%H:%M:%S"}));
-        ss << pt;
-
+        ss << std::put_time(&utc_tm, "%Y-%m-%d.%H:%M:%S");
         return ss.str();
     }
     catch (const std::exception& e) {

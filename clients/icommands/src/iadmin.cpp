@@ -23,7 +23,10 @@
 #include <array>
 #include <charconv>
 #include <cstdio>
+#include <ctime>
+#include <iomanip>
 #include <iostream>
+#include <sstream>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -33,7 +36,6 @@
 #include <termios.h>
 #include <unistd.h>
 
-#include <boost/date_time.hpp>
 #include <fmt/compile.h>
 #include <fmt/format.h>
 #include <nlohmann/json.hpp>
@@ -1057,12 +1059,11 @@ auto list_logical_quotas(const char* _coll_name = nullptr) -> int
 
         std::string modify_ts_string = "?";
         try {
-            const auto pt = boost::posix_time::from_time_t(std::strtoll(quotaEntry.modify_time, nullptr, 10));
-
+            const std::time_t tt = std::strtoll(quotaEntry.modify_time, nullptr, 10);
+            std::tm utc_tm{};
+            gmtime_r(&tt, &utc_tm);
             std::ostringstream ss;
-            ss.imbue(std::locale(ss.getloc(), new boost::posix_time::time_facet{"%Y-%m-%d.%H:%M:%S"}));
-            ss << pt;
-
+            ss << std::put_time(&utc_tm, "%Y-%m-%d.%H:%M:%S");
             modify_ts_string = ss.str();
         }
         catch (const std::exception& e) {

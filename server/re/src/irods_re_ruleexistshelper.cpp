@@ -6,13 +6,13 @@ RuleExistsHelper* RuleExistsHelper::Instance() {
 }
 
 void RuleExistsHelper::registerRuleRegex( const std::string& _regex ) {
-    boost::regex expr(_regex);
+    std::regex expr(_regex);
     ruleRegexes.push_back(expr);
 }
 
 bool RuleExistsHelper::checkOperation( const std::string& _op_name ) {
     for (auto& expr : ruleRegexes) {
-        if (boost::regex_match(_op_name, expr)) {
+        if (std::regex_match(_op_name, expr)) {
             return true;
         }
     }
