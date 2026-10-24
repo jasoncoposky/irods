@@ -1,7 +1,9 @@
 #include "utility.hpp"
+#include <irods/irods_at_scope_exit.hpp>
 #include <irods/irods_client_api_table.hpp>
 #include <irods/irods_pack_table.hpp>
 #include <irods/parseCommandLine.h>
+#include <irods/rcMisc.h>
 #include <irods/rodsClient.h>
 #include <irods/rodsError.h>
 
@@ -23,6 +25,7 @@ modDelayedRule( char *ruleId, char *fieldName, char *fieldValue ) {
 
     ruleExecModInp_t ruleExecModInp;
     memset( &ruleExecModInp, 0, sizeof( ruleExecModInp ) );
+    const auto clear_cond = irods::at_scope_exit{[&ruleExecModInp] { clearKeyVal(&ruleExecModInp.condInput); }};
 
     /* for the time fields, convert from YYYY-MM-DD.hh:mm:ss in sec of unix time
       if necessary */

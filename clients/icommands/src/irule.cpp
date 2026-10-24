@@ -4,6 +4,7 @@
 #include <irods/parseCommandLine.h>
 #include <irods/rodsPath.h>
 #include <irods/getUtil.h>
+#include <irods/irods_at_scope_exit.hpp>
 #include <irods/irods_client_api_table.hpp>
 #include <irods/irods_pack_table.hpp>
 #include <irods/irods_configuration_keywords.hpp>
@@ -15,6 +16,7 @@
 #include <any>
 #include <cctype>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <string>
 #include <string_view>
@@ -241,11 +243,13 @@ main( int argc, char **argv ) {
                 if ( status == 0 ) {
                     char *myargv[3];
                     int myargc, myoptind;
-                    rodsPathInp_t rodsPathInp;
-                    rodsArguments_t myRodsArgs;
+                    rodsPathInp_t rodsPathInp{};
+                    const auto free_path = irods::at_scope_exit{[&rodsPathInp] { freeRodsPathInpMembers(&rodsPathInp); }};
+                    rodsArguments_t myRodsArgs{};
                     connFlag = 1;
 
-                    myargv[0] = strdup( fileName + 2 );
+                    std::string remote_rule_path{fileName + 2};
+                    myargv[0] = remote_rule_path.data();
                     myargv[1] = saveFile;
                     myargc = 2;
                     myoptind = 0;
@@ -294,6 +298,13 @@ main( int argc, char **argv ) {
                         ruleFile, errno );
                 exit( 1 );
             }
+
+            const auto close_fptr = irods::at_scope_exit{[fptr, connFlag, &saveFile] {
+                std::fclose(fptr);
+                if (connFlag == 1) {
+                    unlink(saveFile);
+                }
+            }};
 
             /* test if the file extension is supported */
             const char *fileType = strrchr( ruleFile, '.' );
@@ -405,10 +416,6 @@ main( int argc, char **argv ) {
                 rodsLog( LOG_ERROR, "Incomplete rule input for %s", ruleFile );
                 //                     argsMap["file"].as<std::string>().c_str() );
                 exit( 2 );
-            }
-            if ( connFlag == 1 ) {
-                fclose( fptr );
-                unlink( saveFile );
             }
         }
         else {	/* command line input */
@@ -605,6 +612,8 @@ parseParameters( boost::program_options::variables_map _vm, int ruleGen, execMyR
         execMyRuleInp->inpParamArray = NULL;
         return status;
     }
+
+    const auto free_str_array = irods::at_scope_exit{[&strArray] { std::free(strArray.value); }};
 
     status = 0;
 

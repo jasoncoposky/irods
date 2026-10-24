@@ -21,7 +21,7 @@ main( int argc, char **argv ) {
     rErrMsg_t errMsg;
     rcComm_t *conn;
     rodsArguments_t myRodsArgs;
-    char *optStr, buffer[HUGE_NAME_LEN];
+    char *optStr;
     objType_t srcType, destType;
     int nArgv;
     int i;
@@ -57,12 +57,11 @@ main( int argc, char **argv ) {
     for ( i = 2; i <= nArgv; i++ ) {
         if ( strcmp( argv[argc - i], "i:" ) == 0 ) {
             srcType = UNKNOWN_OBJ_T;
-            strcpy( argv[argc - i], "." );
+            argv[argc - i] = const_cast<char*>(".");
         }
         else if ( strncmp( argv[argc - i], "i:", 2 ) == 0 ) {
             srcType = UNKNOWN_OBJ_T;
-            snprintf( buffer, HUGE_NAME_LEN, "%s", argv[argc - i] + 2 );
-            argv[argc - i] = strdup( buffer );
+            argv[argc - i] += 2;
         }
         else {
             srcType = UNKNOWN_FILE_T;
@@ -71,12 +70,11 @@ main( int argc, char **argv ) {
 
     if ( strcmp( argv[argc - 1], "i:" ) == 0 ) {
         destType = UNKNOWN_OBJ_T;
-        strcpy( argv[argc - 1], "." );
+        argv[argc - 1] = const_cast<char*>(".");
     }
     else if ( strncmp( argv[argc - 1], "i:", 2 ) == 0 ) {
         destType = UNKNOWN_OBJ_T;
-        snprintf( buffer, HUGE_NAME_LEN, "%s", argv[argc - 1] + 2 );
-        argv[argc - 1] = strdup( argv[argc - 1] + 2 );
+        argv[argc - 1] += 2;
     }
     else {
         destType = UNKNOWN_FILE_T;

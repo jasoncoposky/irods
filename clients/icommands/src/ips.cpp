@@ -1,11 +1,15 @@
 #include "utility.hpp"
+#include <irods/irods_at_scope_exit.hpp>
+#include <irods/rcMisc.h>
 #include <irods/rodsClient.h>
 #include <irods/rodsError.h>
 #include <irods/parseCommandLine.h>
 #include <irods/irods_client_api_table.hpp>
 #include <irods/irods_pack_table.hpp>
 
+#include <charconv>
 #include <cstdio>
+#include <cstring>
 
 int
 printProcStat( rodsArguments_t *myRodsArgs, genQueryOut_t *procStatOut );
@@ -27,7 +31,7 @@ main( int argc, char **argv ) {
     rErrMsg_t errMsg;
     rodsArguments_t myRodsArgs;
     char *optStr;
-    procStatInp_t procStatInp;
+    procStatInp_t procStatInp{};
     genQueryOut_t *procStatOut = NULL;
 
     optStr = "ahH:R:vz:";
@@ -75,6 +79,7 @@ main( int argc, char **argv ) {
         }
     }
 
+    const auto clear_cond = irods::at_scope_exit{[&procStatInp] { clearKeyVal(&procStatInp.condInput); }};
     initCondForProcStat( &myRodsArgs, &procStatInp );
 
     status = rcProcStat( conn, &procStatInp, &procStatOut );
@@ -180,7 +185,9 @@ printProcStat( rodsArguments_t *myRodsArgs, genQueryOut_t *procStatOut ) {
         char uptimeStr[NAME_LEN];
 
         pidVal = pid->value + pid->len * i;
-        startTimeVal =  atoi( startTime->value + startTime->len * i );
+        startTimeVal = 0;
+        const char* start_str = startTime->value + startTime->len * i;
+        std::from_chars(start_str, start_str + std::strlen(start_str), startTimeVal);
         clientNameVal = clientName->value + clientName->len * i;
         clientZoneVal = clientZone->value + clientZone->len * i;
         proxyNameVal = proxyName->value + proxyName->len * i;
@@ -246,7 +253,7 @@ initCondForProcStat( rodsArguments_t *rodsArgs, procStatInp_t *procStatInp ) {
         return USER__NULL_INPUT_ERR;
     }
 
-    bzero( procStatInp, sizeof( procStatInp_t ) );
+    std::memset( procStatInp, 0, sizeof( procStatInp_t ) );
 
     if ( rodsArgs == NULL ) {
         return 0;

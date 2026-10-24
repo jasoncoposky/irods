@@ -4,6 +4,7 @@
 #include <irods/parseCommandLine.h>
 #include <irods/rcMisc.h>
 
+#include <charconv>
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
@@ -26,7 +27,8 @@ main( int argc, char **argv ) {
         return 0;
     }
 
-    int errorCode = std::atoi(argv[1]);
+    int errorCode = 0;
+    std::from_chars(argv[1], argv[1] + std::strlen(argv[1]), errorCode);
 
     if ( errorCode > 0 ) {
         errorCode = -errorCode;

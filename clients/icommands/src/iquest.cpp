@@ -201,6 +201,7 @@ queryAndShowStrCond( rcComm_t *conn, char *hint, char *format,
             }
         }
         genQueryInp.continueInx = genQueryOut->continueInx;
+        freeGenQueryOut(&genQueryOut);
         i = rcGenQuery( conn, &genQueryInp, &genQueryOut );
         if ( i < 0 ) {
             if (i==CAT_NO_ROWS_FOUND) {
@@ -225,6 +226,10 @@ execAndShowSpecificQuery( rcComm_t *conn, char *sql,
     specificQueryInp_t specificQueryInp;
     int status, i;
     genQueryOut_t *genQueryOut = NULL;
+    const auto cleanup = irods::at_scope_exit{[&specificQueryInp, &genQueryOut] {
+        clearKeyVal(&specificQueryInp.condInput);
+        freeGenQueryOut(&genQueryOut);
+    }};
     char *cp;
     int nQuestionMarks, nArgs;
     char *format = "";
@@ -298,6 +303,7 @@ execAndShowSpecificQuery( rcComm_t *conn, char *sql,
             }
         }
         specificQueryInp.continueInx = genQueryOut->continueInx;
+        freeGenQueryOut(&genQueryOut);
         status = rcSpecificQuery( conn, &specificQueryInp, &genQueryOut );
         if ( status < 0 ) {
             printError( conn, status, "rcSpecificQuery" );

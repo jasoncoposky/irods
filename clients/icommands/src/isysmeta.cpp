@@ -199,14 +199,12 @@ doMod( rcComm_t *Conn, char *objPath, char *time ) {
     int status;
 
     modDataObjMeta_t modDataObjMetaInp;
-    keyValPair_t regParam;
-    dataObjInfo_t dataObjInfo;
+    keyValPair_t regParam{};
+    dataObjInfo_t dataObjInfo{};
 
-    memset( &regParam, 0, sizeof( regParam ) );
     const auto clear_reg = irods::at_scope_exit{[&regParam] { clearKeyVal(&regParam); }};
     addKeyVal( &regParam, DATA_EXPIRY_KW, time );
 
-    memset( &dataObjInfo, 0, sizeof( dataObjInfo ) );
     rstrcpy( dataObjInfo.objPath, objPath, MAX_NAME_LEN );
 
     modDataObjMetaInp.regParam = &regParam;
@@ -225,14 +223,12 @@ doModDatatype( rcComm_t *Conn, char *objPath, char *dataType ) {
     int status;
 
     modDataObjMeta_t modDataObjMetaInp;
-    keyValPair_t regParam;
-    dataObjInfo_t dataObjInfo;
+    keyValPair_t regParam{};
+    dataObjInfo_t dataObjInfo{};
 
-    memset( &regParam, 0, sizeof( regParam ) );
     const auto clear_reg = irods::at_scope_exit{[&regParam] { clearKeyVal(&regParam); }};
     addKeyVal( &regParam, DATA_TYPE_KW, dataType );
 
-    memset( &dataObjInfo, 0, sizeof( dataObjInfo ) );
     rstrcpy( dataObjInfo.objPath, objPath, MAX_NAME_LEN );
 
     modDataObjMetaInp.regParam = &regParam;
@@ -251,14 +247,12 @@ doModComment( rcComm_t *Conn, char *objPath, int numRepl, char *theComment ) {
     int status;
 
     modDataObjMeta_t modDataObjMetaInp;
-    keyValPair_t regParam;
-    dataObjInfo_t dataObjInfo;
+    keyValPair_t regParam{};
+    dataObjInfo_t dataObjInfo{};
 
-    memset( &regParam, 0, sizeof( regParam ) );
     const auto clear_reg = irods::at_scope_exit{[&regParam] { clearKeyVal(&regParam); }};
     addKeyVal( &regParam, DATA_COMMENTS_KW, theComment );
 
-    memset( &dataObjInfo, 0, sizeof( dataObjInfo ) );
     rstrcpy( dataObjInfo.objPath, objPath, MAX_NAME_LEN );
 
     if ( numRepl > 0 ) {
