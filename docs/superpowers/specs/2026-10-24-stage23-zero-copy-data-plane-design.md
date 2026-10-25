@@ -2,15 +2,15 @@
 
 **Date**: 2026-10-24  
 **Stage**: 23 of 23  
-**Parent Roadmap**: [`2026-10-24-irods-nextgen-architecture-roadmap.md`](file:///home/darkfell/dev/irods/docs/superpowers/specs/2026-10-24-irods-nextgen-architecture-roadmap.md)
+**Parent Roadmap**: [`2026-10-24-irods-nextgen-architecture-roadmap.md`](2026-10-24-irods-nextgen-architecture-roadmap.md)
 
 ---
 
 ## 1. Problem Statement & Motivation
 
 Despite the transport and `dstream` modernizations in Stage 2, iRODS data transfers still copy every byte through user-space buffers:
-1. **Local Vault-to-Vault / Staging Copies (`unix_file_copy` in [`unixfilesystem.cpp`](file:///home/darkfell/dev/irods/plugins/resources/unixfilesystem/src/unixfilesystem.cpp#L1125-L1205))**: Allocates a user-space `char* buf` (`trans_buff_size_for_parallel_transfer_in_megabytes`) and loops over `read(inFd, buf, ...)` + `write(outFd, buf, ...)`, causing two context switches and two kernel-to-userspace memory copies per chunk.
-2. **Socket-to-File & File-to-Socket Portal Transfers ([`rcPortalOpr.cpp`](file:///home/darkfell/dev/irods/lib/core/src/rcPortalOpr.cpp) & [`rsDataObjPut.cpp`](file:///home/darkfell/dev/irods/server/api/src/rsDataObjPut.cpp) / [`rsDataObjGet.cpp`](file:///home/darkfell/dev/irods/server/api/src/rsDataObjGet.cpp))**: Reads from socket into user-space buffer and writes to disk (or vice versa) even when `rbudp` / encryption is disabled (`encryption_key_size == 0`).
+1. **Local Vault-to-Vault / Staging Copies (`unix_file_copy` in [`unixfilesystem.cpp`](../../../plugins/resources/unixfilesystem/src/unixfilesystem.cpp#L1125-L1205))**: Allocates a user-space `char* buf` (`trans_buff_size_for_parallel_transfer_in_megabytes`) and loops over `read(inFd, buf, ...)` + `write(outFd, buf, ...)`, causing two context switches and two kernel-to-userspace memory copies per chunk.
+2. **Socket-to-File & File-to-Socket Portal Transfers ([`rcPortalOpr.cpp`](../../../lib/core/src/rcPortalOpr.cpp) & [`rsDataObjPut.cpp`](../../../server/api/src/rsDataObjPut.cpp) / [`rsDataObjGet.cpp`](../../../server/api/src/rsDataObjGet.cpp))**: Reads from socket into user-space buffer and writes to disk (or vice versa) even when `rbudp` / encryption is disabled (`encryption_key_size == 0`).
 
 In Stage 23, we introduce a **Zero-Copy Kernel Data Plane (`irods::experimental::io::zero_copy`)** that leverages Linux kernel zero-copy syscalls (`copy_file_range`, `sendfile`, and `splice`) with automatic transparent fallback to user-space read/write when cross-filesystem (`EXDEV`) or kernel support limits are encountered.
 
@@ -62,4 +62,4 @@ Provide three composable, `EINTR`-resilient C++20 functions:
    - Test `copy_file_descriptors` across empty files, small files, and multi-megabyte files, verifying SHA-256 / byte-for-byte identity.
    - Test `sendfile_to_socket` and `splice_from_socket` over a local `socketpair(AF_UNIX, SOCK_STREAM, 0)` between temporary files, verifying exact byte transfer and zero descriptor leaks.
 2. **Dialectic CPG Gate**:
-   - Pass [`scripts/verify_refactoring.sh`](file:///home/darkfell/dev/irods/scripts/verify_refactoring.sh) with 0 concurrency violations and 0 typestate violations.
+   - Pass [`scripts/verify_refactoring.sh`](../../../scripts/verify_refactoring.sh) with 0 concurrency violations and 0 typestate violations.

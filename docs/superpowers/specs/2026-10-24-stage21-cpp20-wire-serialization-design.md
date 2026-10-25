@@ -2,13 +2,13 @@
 
 **Date**: 2026-10-24  
 **Stage**: 21 of 23  
-**Parent Roadmap**: [`2026-10-24-irods-nextgen-architecture-roadmap.md`](file:///home/darkfell/dev/irods/docs/superpowers/specs/2026-10-24-irods-nextgen-architecture-roadmap.md)
+**Parent Roadmap**: [`2026-10-24-irods-nextgen-architecture-roadmap.md`](2026-10-24-irods-nextgen-architecture-roadmap.md)
 
 ---
 
 ## 1. Problem Statement & Motivation
 
-[`lib/core/src/packStruct.cpp`](file:///home/darkfell/dev/irods/lib/core/src/packStruct.cpp) (3,490+ lines) serializes API inputs and outputs by parsing domain-specific instruction strings at runtime on every RPC call:
+[`lib/core/src/packStruct.cpp`](../../../lib/core/src/packStruct.cpp) (3,490+ lines) serializes API inputs and outputs by parsing domain-specific instruction strings at runtime on every RPC call:
 ```c
 #define DataObjInp_PI "str objPath[MAX_NAME_LEN]; int createMode; int openFlags; double offset; double dataSize; int numThreads; int oprType; struct *SpecColl_PI; struct KeyValPair_PI;"
 ```
@@ -54,4 +54,4 @@ flowchart TD
 1. **Unit & Round-Trip Tests (`unit_tests/src/test_compiled_pack_codecs.cpp`)**:
    - Verify byte-for-byte equivalence between the compiled C++20 codecs and the legacy dynamic `packStruct` parser across `DataObjInp`, `OpenedDataObjInp`, `CollInp`, `KeyValPair`, `Genquery2Input`, and `ModAVUMetadataInp` for both `XML_PROT` and `NATIVE_PROT` (including XML entity escaping of `&`, `<`, `>`, `'`, `"`, `` ` ``).
 2. **Dialectic CPG Gate**:
-   - Pass [`scripts/verify_refactoring.sh`](file:///home/darkfell/dev/irods/scripts/verify_refactoring.sh) with 0 concurrency violations and 0 typestate violations.
+   - Pass [`scripts/verify_refactoring.sh`](../../../scripts/verify_refactoring.sh) with 0 concurrency violations and 0 typestate violations.
