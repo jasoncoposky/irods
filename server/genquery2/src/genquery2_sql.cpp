@@ -101,6 +101,7 @@ namespace
         "R_RULE_FNM_MAP",               // 29
         "R_MICROSRVC_MAIN",             // 30
         "R_MICROSRVC_VER",              // 31
+        "R_OBJT_AUDIT",                 // 32
     }); // table_names
     // clang-format on
 
@@ -155,6 +156,13 @@ namespace
         {to_index("R_RULE_DVM_MAP"), to_index("R_RULE_DVM")},               // R_RULE_DVM_MAP.dvm_id = R_RULE_DVM.dvm_id
         {to_index("R_RULE_FNM_MAP"), to_index("R_RULE_FNM")},               // R_RULE_FNM_MAP.fnm_id = R_RULE_FNM.fnm_id
         {to_index("R_MICROSRVC_MAIN"), to_index("R_MICROSRVC_VER")},        // R_MICROSRVC_MAIN.msrvc_id = R_MICROSRVC_VER.msrvc_id
+
+        {to_index("R_OBJT_AUDIT"), to_index("R_DATA_MAIN")},                // R_OBJT_AUDIT.object_id = R_DATA_MAIN.data_id
+        {to_index("R_OBJT_AUDIT"), to_index("R_COLL_MAIN")},                // R_OBJT_AUDIT.object_id = R_COLL_MAIN.coll_id
+        {to_index("R_OBJT_AUDIT"), to_index("R_USER_MAIN")},                // R_OBJT_AUDIT.user_id = R_USER_MAIN.user_id
+        {to_index("R_OBJT_AUDIT"), to_index("R_RESC_MAIN")},                // R_OBJT_AUDIT.object_id = R_RESC_MAIN.resc_id
+        {to_index("R_OBJT_AUDIT"), to_index("R_META_MAIN")},                // R_OBJT_AUDIT.object_id = R_META_MAIN.meta_id
+        {to_index("R_OBJT_AUDIT"), to_index("R_TOKN_MAIN")},                // R_OBJT_AUDIT.action_id = R_TOKN_MAIN.token_id
     }); // table_edges
     // clang-format on
 
@@ -198,6 +206,13 @@ namespace
         {"{}.dvm_id = {}.dvm_id", 26},
         {"{}.fnm_id = {}.fnm_id", 27},
         {"{}.msrvc_id = {}.msrvc_id", 28},
+
+        {"{}.object_id = {}.data_id", 29},
+        {"{}.object_id = {}.coll_id", 30},
+        {"{}.user_id = {}.user_id", 31},
+        {"{}.object_id = {}.resc_id", 32},
+        {"{}.object_id = {}.meta_id", 33},
+        {"{}.action_id = {}.token_id", 34},
     }); // table_joins
     // clang-format on
 
@@ -427,11 +442,12 @@ namespace
             // The following columns require the joining of R_OBJT_ACCESS:
             // - COLL_ACCESS_PERM_ID / COLL_ACCESS_TYPE = R_OBJT_ACCESS.access_type_id
             // - COLL_ACCESS_USER_ID = R_OBJT_ACCESS.user_id
+            // - COLL_ACCESS_COLL_ID = R_OBJT_ACCESS.object_id
             [[maybe_unused]] auto added_r_objt_access_table = false;
             auto add_join =
                 std::any_of(std::begin(_state.ast_column_ptrs), std::end(_state.ast_column_ptrs), [](auto* _col_ptr) {
                     return "COLL_ACCESS_PERM_ID" == _col_ptr->name || "COLL_ACCESS_TYPE" == _col_ptr->name ||
-                           "COLL_ACCESS_USER_ID" == _col_ptr->name;
+                           "COLL_ACCESS_USER_ID" == _col_ptr->name || "COLL_ACCESS_COLL_ID" == _col_ptr->name;
                 });
             if (add_join) {
                 added_r_objt_access_table = true;
@@ -440,13 +456,18 @@ namespace
             }
 
             // The following columns require the joining of R_TOKN_MAIN:
-            // - COLL_ACCESS_PERM_NAME = R_TOKN_MAIN.token_name
+            // - COLL_ACCESS_PERM_NAME / COLL_ACCESS_NAME = R_TOKN_MAIN.token_name
+            // - COLL_TOKEN_NAMESPACE = R_TOKN_MAIN.token_namespace
             //
             // The joining of R_TOKN_MAIN requires the following tables be joined:
             // - R_OBJT_ACCESS
             add_join = std::any_of(std::begin(_state.ast_column_ptrs),
                                    std::end(_state.ast_column_ptrs),
-                                   [](auto* _col_ptr) { return "COLL_ACCESS_PERM_NAME" == _col_ptr->name; });
+                                   [](auto* _col_ptr) {
+                                       return "COLL_ACCESS_PERM_NAME" == _col_ptr->name ||
+                                              "COLL_ACCESS_NAME" == _col_ptr->name ||
+                                              "COLL_TOKEN_NAMESPACE" == _col_ptr->name;
+                                   });
             if (add_join) {
                 if (!added_r_objt_access_table) {
                     added_r_objt_access_table = true;
@@ -457,16 +478,17 @@ namespace
             }
 
             // The following columns require the joining of R_USER_MAIN:
-            // - COLL_ACCESS_USER_NAME = R_USER_MAIN.user_name
+            // - COLL_ACCESS_USER_NAME / COLL_USER_NAME = R_USER_MAIN.user_name
             // - COLL_ACCESS_USER_TYPE = R_USER_MAIN.user_type_name
-            // - COLL_ACCESS_USER_ZONE = R_USER_MAIN.zone_name
+            // - COLL_ACCESS_USER_ZONE / COLL_ZONE_NAME = R_USER_MAIN.zone_name
             //
             // The joining of R_USER_MAIN requires the following tables be joined:
             // - R_OBJT_ACCESS
             // - R_USER_GROUP
             add_join =
                 std::any_of(std::begin(_state.ast_column_ptrs), std::end(_state.ast_column_ptrs), [](auto* _col_ptr) {
-                    return "COLL_ACCESS_USER_ID" != _col_ptr->name && _col_ptr->name.starts_with("COLL_ACCESS_USER_");
+                    return ("COLL_ACCESS_USER_ID" != _col_ptr->name && _col_ptr->name.starts_with("COLL_ACCESS_USER_")) ||
+                           "COLL_USER_NAME" == _col_ptr->name || "COLL_ZONE_NAME" == _col_ptr->name;
                 });
             if (add_join) {
                 if (!added_r_objt_access_table) {
@@ -485,11 +507,12 @@ namespace
             // The following columns require the joining of R_OBJT_ACCESS:
             // - DATA_ACCESS_PERM_ID / DATA_ACCESS_TYPE = R_OBJT_ACCESS.access_type_id
             // - DATA_ACCESS_USER_ID = R_OBJT_ACCESS.user_id
+            // - DATA_ACCESS_DATA_ID = R_OBJT_ACCESS.object_id
             [[maybe_unused]] auto added_r_objt_access_table = false;
             auto add_join =
                 std::any_of(std::begin(_state.ast_column_ptrs), std::end(_state.ast_column_ptrs), [](auto* _col_ptr) {
                     return "DATA_ACCESS_PERM_ID" == _col_ptr->name || "DATA_ACCESS_TYPE" == _col_ptr->name ||
-                           "DATA_ACCESS_USER_ID" == _col_ptr->name;
+                           "DATA_ACCESS_USER_ID" == _col_ptr->name || "DATA_ACCESS_DATA_ID" == _col_ptr->name;
                 });
             if (add_join) {
                 added_r_objt_access_table = true;
@@ -498,13 +521,18 @@ namespace
             }
 
             // The following columns require the joining of R_TOKN_MAIN:
-            // - DATA_ACCESS_PERM_NAME = R_TOKN_MAIN.token_name
+            // - DATA_ACCESS_PERM_NAME / DATA_ACCESS_NAME = R_TOKN_MAIN.token_name
+            // - DATA_TOKEN_NAMESPACE = R_TOKN_MAIN.token_namespace
             //
             // The joining of R_TOKN_MAIN requires the following tables be joined:
             // - R_OBJT_ACCESS
             add_join = std::any_of(std::begin(_state.ast_column_ptrs),
                                    std::end(_state.ast_column_ptrs),
-                                   [](auto* _col_ptr) { return "DATA_ACCESS_PERM_NAME" == _col_ptr->name; });
+                                   [](auto* _col_ptr) {
+                                       return "DATA_ACCESS_PERM_NAME" == _col_ptr->name ||
+                                              "DATA_ACCESS_NAME" == _col_ptr->name ||
+                                              "DATA_TOKEN_NAMESPACE" == _col_ptr->name;
+                                   });
             if (add_join) {
                 if (!added_r_objt_access_table) {
                     added_r_objt_access_table = true;
@@ -515,16 +543,17 @@ namespace
             }
 
             // The following columns require the joining of R_USER_MAIN:
-            // - DATA_ACCESS_USER_NAME = R_USER_MAIN.user_name
+            // - DATA_ACCESS_USER_NAME / DATA_USER_NAME = R_USER_MAIN.user_name
             // - DATA_ACCESS_USER_TYPE = R_USER_MAIN.user_type_name
-            // - DATA_ACCESS_USER_ZONE = R_USER_MAIN.zone_name
+            // - DATA_ACCESS_USER_ZONE / DATA_ZONE_NAME = R_USER_MAIN.zone_name
             //
             // The joining of R_USER_MAIN requires the following tables be joined:
             // - R_OBJT_ACCESS
             // - R_USER_GROUP
             add_join =
                 std::any_of(std::begin(_state.ast_column_ptrs), std::end(_state.ast_column_ptrs), [](auto* _col_ptr) {
-                    return "DATA_ACCESS_USER_ID" != _col_ptr->name && _col_ptr->name.starts_with("DATA_ACCESS_USER_");
+                    return ("DATA_ACCESS_USER_ID" != _col_ptr->name && _col_ptr->name.starts_with("DATA_ACCESS_USER_")) ||
+                           "DATA_USER_NAME" == _col_ptr->name || "DATA_ZONE_NAME" == _col_ptr->name;
                 });
             if (add_join) {
                 if (!added_r_objt_access_table) {
@@ -544,7 +573,7 @@ namespace
             auto add_join =
                 std::any_of(std::begin(_state.ast_column_ptrs), std::end(_state.ast_column_ptrs), [](auto* _col_ptr) {
                     return "RESC_ACCESS_PERM_ID" == _col_ptr->name || "RESC_ACCESS_TYPE" == _col_ptr->name ||
-                           "RESC_ACCESS_USER_ID" == _col_ptr->name;
+                           "RESC_ACCESS_USER_ID" == _col_ptr->name || "RESC_ACCESS_RESC_ID" == _col_ptr->name;
                 });
             if (add_join) {
                 added_r_objt_access_table = true;
@@ -554,7 +583,11 @@ namespace
 
             add_join = std::any_of(std::begin(_state.ast_column_ptrs),
                                    std::end(_state.ast_column_ptrs),
-                                   [](auto* _col_ptr) { return "RESC_ACCESS_PERM_NAME" == _col_ptr->name; });
+                                   [](auto* _col_ptr) {
+                                       return "RESC_ACCESS_PERM_NAME" == _col_ptr->name ||
+                                              "RESC_ACCESS_NAME" == _col_ptr->name ||
+                                              "RESC_TOKEN_NAMESPACE" == _col_ptr->name;
+                                   });
             if (add_join) {
                 if (!added_r_objt_access_table) {
                     added_r_objt_access_table = true;
@@ -784,12 +817,32 @@ namespace
             return "td_coll";
         }
 
+        if (_column == "DATA_USER_NAME" || _column == "DATA_ZONE_NAME") {
+            return "pdu";
+        }
+
+        if (_column == "DATA_TOKEN_NAMESPACE") {
+            return "pdt";
+        }
+
+        if (_column == "COLL_USER_NAME" || _column == "COLL_ZONE_NAME") {
+            return "pcu";
+        }
+
+        if (_column == "COLL_TOKEN_NAMESPACE") {
+            return "pct";
+        }
+
+        if (_column == "RESC_TOKEN_NAMESPACE") {
+            return "prt";
+        }
+
         if (_column.starts_with("DATA_ACCESS_") && _column != "DATA_ACCESS_TIME") {
             constexpr auto prefix_length = std::char_traits<char>::length("DATA_ACCESS_");
             const auto tail = _column.substr(prefix_length);
 
             // The alias for R_TOKN_MAIN as it relates to data objects.
-            if (tail == "PERM_NAME") {
+            if (tail == "PERM_NAME" || tail == "NAME") {
                 return "pdt";
             }
 
@@ -807,7 +860,7 @@ namespace
             const auto tail = _column.substr(prefix_length);
 
             // The alias for R_TOKN_MAIN as it relates to collections.
-            if (tail == "PERM_NAME") {
+            if (tail == "PERM_NAME" || tail == "NAME") {
                 return "pct";
             }
 
@@ -824,7 +877,7 @@ namespace
             constexpr auto prefix_length = std::char_traits<char>::length("RESC_ACCESS_");
             const auto tail = _column.substr(prefix_length);
 
-            if (tail == "PERM_NAME") {
+            if (tail == "PERM_NAME" || tail == "NAME") {
                 return "prt";
             }
 
@@ -1131,16 +1184,22 @@ namespace irods::experimental::genquery2
             table_alias = "mmu";
         }
         // DATA_ACCESS_TIME is not a permission column so make sure it is skipped.
-        else if (_column.name.starts_with("DATA_ACCESS_") && _column.name != "DATA_ACCESS_TIME") {
+        else if ((_column.name.starts_with("DATA_ACCESS_") && _column.name != "DATA_ACCESS_TIME") ||
+                 _column.name == "DATA_TOKEN_NAMESPACE" || _column.name == "DATA_USER_NAME" ||
+                 _column.name == "DATA_ZONE_NAME")
+        {
             // There are three tables which are secretly joined to satisfy columns that trigger this branch.
             // The columns require special hard-coded table aliases to work properly. This is because the joins
             // cannot be worked out using only the graph.
-            if (_column.name == "DATA_ACCESS_PERM_NAME") {
+            if (_column.name == "DATA_ACCESS_PERM_NAME" || _column.name == "DATA_ACCESS_NAME" ||
+                _column.name == "DATA_TOKEN_NAMESPACE")
+            {
                 add_r_data_main = true;
                 table_alias = "pdt"; // The alias for R_TOKN_MAIN as it relates to data objects.
             }
             else if (_column.name == "DATA_ACCESS_USER_NAME" || _column.name == "DATA_ACCESS_USER_ZONE" ||
-                     _column.name == "DATA_ACCESS_USER_TYPE")
+                     _column.name == "DATA_ACCESS_USER_TYPE" || _column.name == "DATA_USER_NAME" ||
+                     _column.name == "DATA_ZONE_NAME")
             {
                 add_r_data_main = true;
                 table_alias = "pdu"; // The alias for R_USER_MAIN as it relates to data objects.
@@ -1150,16 +1209,21 @@ namespace irods::experimental::genquery2
                 table_alias = "pdoa"; // The alias for R_OBJT_ACCESS as it relates to data objects.
             }
         }
-        else if (_column.name.starts_with("COLL_ACCESS_")) {
+        else if (_column.name.starts_with("COLL_ACCESS_") || _column.name == "COLL_TOKEN_NAMESPACE" ||
+                 _column.name == "COLL_USER_NAME" || _column.name == "COLL_ZONE_NAME")
+        {
             // There are three tables which are secretly joined to satisfy columns that trigger this branch.
             // The columns require special hard-coded table aliases to work properly. This is because the joins
             // cannot be worked out using only the graph.
-            if (_column.name == "COLL_ACCESS_PERM_NAME") {
+            if (_column.name == "COLL_ACCESS_PERM_NAME" || _column.name == "COLL_ACCESS_NAME" ||
+                _column.name == "COLL_TOKEN_NAMESPACE")
+            {
                 add_r_coll_main = true;
                 table_alias = "pct"; // The alias for R_TOKN_MAIN as it relates to collections.
             }
             else if (_column.name == "COLL_ACCESS_USER_NAME" || _column.name == "COLL_ACCESS_USER_ZONE" ||
-                     _column.name == "COLL_ACCESS_USER_TYPE")
+                     _column.name == "COLL_ACCESS_USER_TYPE" || _column.name == "COLL_USER_NAME" ||
+                     _column.name == "COLL_ZONE_NAME")
             {
                 add_r_coll_main = true;
                 table_alias = "pcu"; // The alias for R_USER_MAIN as it relates to collections.
@@ -1169,8 +1233,10 @@ namespace irods::experimental::genquery2
                 table_alias = "pcoa"; // The alias for R_OBJT_ACCESS as it relates to collections.
             }
         }
-        else if (_column.name.starts_with("RESC_ACCESS_")) {
-            if (_column.name == "RESC_ACCESS_PERM_NAME") {
+        else if (_column.name.starts_with("RESC_ACCESS_") || _column.name == "RESC_TOKEN_NAMESPACE") {
+            if (_column.name == "RESC_ACCESS_PERM_NAME" || _column.name == "RESC_ACCESS_NAME" ||
+                _column.name == "RESC_TOKEN_NAMESPACE")
+            {
                 add_r_resc_main = true;
                 table_alias = "prt";
             }

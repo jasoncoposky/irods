@@ -1,5 +1,7 @@
 #include <catch2/catch_all.hpp>
 
+#include "irods/genquery1_ast_adapter.hpp"
+#include "irods/genquery2_builder.hpp"
 #include "irods/irods_at_scope_exit.hpp"
 #include "irods/irods_default_paths.hpp"
 #include "irods/rcMisc.h"
@@ -42,8 +44,11 @@ TEST_CASE("GenQuery1 flex bison parser maintains backward compatibility with ori
     //      environment (e.g. /var/log/irods).
     //   2. If the tests were run in parallel, take each file (now stored on the host) and concatenate them.
     //   3. Clean up file contents (i.e. dedup lines, etc).
-    const auto file_path =
+    auto file_path =
         irods::get_irods_home_directory() / "unit_tests/genquery1_backwards_compatibility_queries.txt";
+    if (!std::filesystem::exists(file_path)) {
+        file_path = "unit_tests/genquery1_backwards_compatibility_queries.txt";
+    }
     std::ifstream in{file_path.generic_string()};
     REQUIRE(in);
 
@@ -297,6 +302,99 @@ TEST_CASE("GenQuery1 flex bison parser suppors long sequence of whitespace chara
     CHECK(1 == input.sqlCondInp.len);
     CHECK(COL_COLL_NAME == input.sqlCondInp.inx[0]);
     CHECK(fmt::format("= '{}'", env.rodsHome) == input.sqlCondInp.value[0]);
+}
+
+TEST_CASE("genquery1_to_genquery2_ast translator")
+{
+    namespace gq2 = irods::experimental::genquery2;
+
+    SECTION("basic select, where, order_by, and default ordering")
+    {
+        genQueryInp_t input{};
+        irods::at_scope_exit_unsafe clear_input{[&input] { clearGenQueryInp(&input); }};
+
+        addInxIval(&input.selectInp, COL_COLL_NAME, 1);
+        addInxIval(&input.selectInp, COL_DATA_NAME, ORDER_BY_DESC);
+        addInxVal(&input.sqlCondInp, COL_COLL_NAME, "= '/tempZone/home/rods'");
+        input.maxRows = 10;
+        input.rowOffset = 5;
+
+        const auto s = gq2::genquery1_to_genquery2_ast(input);
+        CHECK(s.distinct);
+        REQUIRE(s.projections.size() == 2);
+        CHECK(std::get<gq2::column>(s.projections[0]).name == "COLL_NAME");
+        CHECK(std::get<gq2::column>(s.projections[1]).name == "DATA_NAME");
+        REQUIRE(s.order_by.sort_expressions.size() == 2);
+        CHECK(std::get<gq2::column>(s.order_by.sort_expressions[0].expr).name == "DATA_NAME");
+        CHECK(!s.order_by.sort_expressions[0].ascending_order);
+        CHECK(std::get<gq2::column>(s.order_by.sort_expressions[1].expr).name == "COLL_NAME");
+        CHECK(s.order_by.sort_expressions[1].ascending_order);
+        CHECK(s.range.number_of_rows == "10");
+        CHECK(s.range.offset == "5");
+        CHECK(gq2::to_query_string(s) ==
+              "select distinct COLL_NAME, DATA_NAME where COLL_NAME = '/tempZone/home/rods' "
+              "order by DATA_NAME desc, COLL_NAME asc offset 5 fetch first 10 rows only");
+    }
+
+    SECTION("aggregates and automatic group_by")
+    {
+        genQueryInp_t input{};
+        irods::at_scope_exit_unsafe clear_input{[&input] { clearGenQueryInp(&input); }};
+
+        addInxIval(&input.selectInp, COL_COLL_NAME, 1);
+        addInxIval(&input.selectInp, COL_DATA_SIZE, SELECT_SUM);
+        addInxIval(&input.selectInp, COL_D_DATA_ID, SELECT_COUNT);
+        input.options = NO_DISTINCT;
+
+        const auto s = gq2::genquery1_to_genquery2_ast(input);
+        CHECK(!s.distinct);
+        REQUIRE(s.projections.size() == 3);
+        REQUIRE(s.group_by.expressions.size() == 1);
+        CHECK(std::get<gq2::column>(s.group_by.expressions[0]).name == "COLL_NAME");
+        CHECK(gq2::to_query_string(s) ==
+              "select COLL_NAME, sum(DATA_SIZE), count(DATA_ID) "
+              "group by COLL_NAME order by COLL_NAME asc");
+    }
+
+    SECTION("numeric cast operators, compound conditions, between, in, not like, parent_of, begin_of")
+    {
+        genQueryInp_t input{};
+        irods::at_scope_exit_unsafe clear_input{[&input] { clearGenQueryInp(&input); }};
+
+        addInxIval(&input.selectInp, COL_D_DATA_ID, 1);
+        addInxVal(&input.sqlCondInp, COL_DATA_SIZE, "n> '100' && n< '200'");
+        addInxVal(&input.sqlCondInp, COL_DATA_NAME, "= 'a' || like 'b%'");
+        addInxVal(&input.sqlCondInp, COL_DATA_REPL_NUM, "between '0' '2'");
+        addInxVal(&input.sqlCondInp, COL_D_REPL_STATUS, "in ('1', '2')");
+        addInxVal(&input.sqlCondInp, COL_COLL_NAME, "not like '/trash%'");
+        addInxVal(&input.sqlCondInp, COL_COLL_NAME, "parent_of '/tempZone/home/rods/sub'");
+        addInxVal(&input.sqlCondInp, COL_COLL_NAME, "begin_of '/tempZone/home/rods/file'");
+
+        const auto s = gq2::genquery1_to_genquery2_ast(input);
+        const auto qs = gq2::to_query_string(s);
+        CHECK(qs.find("cast(DATA_SIZE as decimal) > '100'") != std::string::npos);
+        CHECK(qs.find("cast(DATA_SIZE as decimal) < '200'") != std::string::npos);
+        CHECK(qs.find("(DATA_NAME = 'a' or DATA_NAME like 'b%')") != std::string::npos);
+        CHECK(qs.find("DATA_REPL_NUM between '0' and '2'") != std::string::npos);
+        CHECK(qs.find("DATA_REPL_STATUS in ('1', '2')") != std::string::npos);
+        CHECK(qs.find("COLL_NAME not like '/trash%'") != std::string::npos);
+        CHECK(qs.find("COLL_NAME in ('/', '/tempZone', '/tempZone/home', '/tempZone/home/rods', '/tempZone/home/rods/sub')") != std::string::npos);
+        CHECK(qs.find("COLL_NAME in ('/', '/tempZone', '/tempZone/home', '/tempZone/home/rods', '/tempZone/home/rods/file')") != std::string::npos);
+    }
+
+    SECTION("UPPER_CASE_WHERE wraps LHS in upper(...)")
+    {
+        genQueryInp_t input{};
+        irods::at_scope_exit_unsafe clear_input{[&input] { clearGenQueryInp(&input); }};
+
+        addInxIval(&input.selectInp, COL_DATA_NAME, 1);
+        addInxVal(&input.sqlCondInp, COL_DATA_NAME, "= 'FOO'");
+        input.options = UPPER_CASE_WHERE;
+
+        const auto s = gq2::genquery1_to_genquery2_ast(input);
+        CHECK(gq2::to_query_string(s) ==
+              "select distinct DATA_NAME where upper(DATA_NAME) = 'FOO' order by DATA_NAME asc");
+    }
 }
 
 auto fillGenQueryInpFromStrCond(char* str, genQueryInp_t* genQueryInp) -> int

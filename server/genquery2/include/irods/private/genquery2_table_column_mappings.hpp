@@ -59,6 +59,7 @@ namespace irods::experimental::genquery2
         {"RESC_PARENT_ID", {"R_RESC_MAIN", "resc_parent"}},
         {"RESC_PARENT", {"R_RESC_MAIN", "resc_parent"}},
         {"RESC_PARENT_CONTEXT", {"R_RESC_MAIN", "resc_parent_context"}},
+        {"RESC_GROUP_NAME", {"R_RESC_MAIN", "resc_name"}},
 
         {"DATA_ID", {"R_DATA_MAIN", "data_id"}},
         {"DATA_COLL_ID", {"R_DATA_MAIN", "coll_id"}},
@@ -68,6 +69,7 @@ namespace irods::experimental::genquery2
         {"DATA_TYPE_NAME", {"R_DATA_MAIN", "data_type_name"}},
         {"DATA_SIZE", {"R_DATA_MAIN", "data_size"}},
         {"DATA_RESC_NAME", {"R_RESC_MAIN", "resc_name"}},
+        {"DATA_RESC_GROUP_NAME", {"R_RESC_MAIN", "resc_name"}},
         {"DATA_PATH", {"R_DATA_MAIN", "data_path"}},
         {"DATA_OWNER_NAME", {"R_DATA_MAIN", "data_owner_name"}},
         {"DATA_OWNER_ZONE", {"R_DATA_MAIN", "data_owner_zone"}},
@@ -82,9 +84,8 @@ namespace irods::experimental::genquery2
         {"DATA_MODIFY_TIME", {"R_DATA_MAIN", "modify_ts"}},
         {"DATA_MODE", {"R_DATA_MAIN", "data_mode"}},
         {"DATA_RESC_ID", {"R_DATA_MAIN", "resc_id"}},
-
-        //{"DATA_USER_NAME",      {"R_USER_MAIN", "user_name"}}, // Special? Derived from R_USER_MAIN and R_OBJT_ACCESS.
-        //{"DATA_USER_ZONE",      {"R_USER_MAIN", "zone_name"}}, // Special? Derived from R_USER_MAIN and R_OBJT_ACCESS.
+        {"DATA_USER_NAME", {"R_USER_MAIN", "user_name"}},
+        {"DATA_ZONE_NAME", {"R_USER_MAIN", "zone_name"}},
 
         // This is a special column that is derived via SQL.
         // It has no direct mapping. It is generated using a recursive CTE.
@@ -104,9 +105,10 @@ namespace irods::experimental::genquery2
         {"COLL_TYPE", {"R_COLL_MAIN", "coll_type"}},
         {"COLL_INFO1", {"R_COLL_MAIN", "coll_info1"}},
         {"COLL_INFO2", {"R_COLL_MAIN", "coll_info2"}},
-
-        //{"COLL_USER_NAME",   {"R_USER_MAIN", "user_name"}}, // Special? Derived from R_USER_MAIN and R_OBJT_ACCESS.
-        //{"COLL_USER_ZONE",   {"R_USER_MAIN", "zone_name"}}, // Special? Derived from R_USER_MAIN and R_OBJT_ACCESS.
+        {"COLL_INFO_1", {"R_COLL_MAIN", "coll_info1"}},
+        {"COLL_INFO_2", {"R_COLL_MAIN", "coll_info2"}},
+        {"COLL_USER_NAME", {"R_USER_MAIN", "user_name"}},
+        {"COLL_ZONE_NAME", {"R_USER_MAIN", "zone_name"}},
 
         {"META_DATA_ATTR_NAME", {"R_META_MAIN", "meta_attr_name"}},
         {"META_DATA_ATTR_VALUE", {"R_META_MAIN", "meta_attr_value"}},
@@ -177,6 +179,7 @@ namespace irods::experimental::genquery2
         {"RULE_EXEC_NOTIFICATION_ADDR", {"R_RULE_EXEC", "notification_addr"}},
         {"RULE_EXEC_LAST_EXE_TIME", {"R_RULE_EXEC", "last_exe_time"}},
         {"RULE_EXEC_STATUS", {"R_RULE_EXEC", "exe_status"}},
+        {"RULE_EXEC_CONTEXT", {"R_RULE_EXEC", "exe_context"}},
         {"RULE_EXEC_LOCK_HOST", {"R_RULE_EXEC", "lock_host"}},
         {"RULE_EXEC_LOCK_HOST_PID", {"R_RULE_EXEC", "lock_host_pid"}},
         {"RULE_EXEC_LOCK_TIME", {"R_RULE_EXEC", "lock_ts"}},
@@ -190,6 +193,13 @@ namespace irods::experimental::genquery2
         {"TOKEN_COMMENT", {"R_TOKN_MAIN", "r_comment"}},
         {"TOKEN_CREATE_TIME", {"R_TOKN_MAIN", "create_ts"}},
         {"TOKEN_MODIFY_TIME", {"R_TOKN_MAIN", "modify_ts"}},
+
+        {"AUDIT_OBJ_ID", {"R_OBJT_AUDIT", "object_id"}},
+        {"AUDIT_USER_ID", {"R_OBJT_AUDIT", "user_id"}},
+        {"AUDIT_ACTION_ID", {"R_OBJT_AUDIT", "action_id"}},
+        {"AUDIT_COMMENT", {"R_OBJT_AUDIT", "r_comment"}},
+        {"AUDIT_CREATE_TIME", {"R_OBJT_AUDIT", "create_ts"}},
+        {"AUDIT_MODIFY_TIME", {"R_OBJT_AUDIT", "modify_ts"}},
 
         {"SL_HOST_NAME", {"R_SERVER_LOAD", "host_name"}},
         {"SL_RESC_NAME", {"R_SERVER_LOAD", "resc_name"}},
@@ -223,18 +233,21 @@ namespace irods::experimental::genquery2
         {"DATA_ACCESS_PERM_ID", {"R_OBJT_ACCESS", "access_type_id"}},
         {"DATA_ACCESS_TYPE", {"R_OBJT_ACCESS", "access_type_id"}},
         {"DATA_ACCESS_PERM_NAME", {"R_TOKN_MAIN", "token_name"}},
+        {"DATA_ACCESS_NAME", {"R_TOKN_MAIN", "token_name"}},
+        {"DATA_TOKEN_NAMESPACE", {"R_TOKN_MAIN", "token_namespace"}},
         {"DATA_ACCESS_USER_ID", {"R_OBJT_ACCESS", "user_id"}},
+        {"DATA_ACCESS_DATA_ID", {"R_OBJT_ACCESS", "object_id"}},
         {"DATA_ACCESS_USER_NAME", {"R_USER_MAIN", "user_name"}}, // What about groups?
         {"DATA_ACCESS_USER_TYPE", {"R_USER_MAIN", "user_type_name"}},
         {"DATA_ACCESS_USER_ZONE", {"R_USER_MAIN", "zone_name"}},
-        //{"DATA_ACCESS_DATA_ID",  {"R_OBJT_ACCESS", "object_id"}},
-        //{"DATA_ACCESS_NAME",     {"R_TOKN_MAIN", "token_name"}}, // special?
-        //{"DATA_TOKEN_NAMESPACE", {"R_TOKN_MAIN", "token_namespace"}}, // special?
 
         {"COLL_ACCESS_PERM_ID", {"R_OBJT_ACCESS", "access_type_id"}},
         {"COLL_ACCESS_TYPE", {"R_OBJT_ACCESS", "access_type_id"}},
         {"COLL_ACCESS_PERM_NAME", {"R_TOKN_MAIN", "token_name"}},
+        {"COLL_ACCESS_NAME", {"R_TOKN_MAIN", "token_name"}},
+        {"COLL_TOKEN_NAMESPACE", {"R_TOKN_MAIN", "token_namespace"}},
         {"COLL_ACCESS_USER_ID", {"R_OBJT_ACCESS", "user_id"}},
+        {"COLL_ACCESS_COLL_ID", {"R_OBJT_ACCESS", "object_id"}},
         {"COLL_ACCESS_USER_NAME", {"R_USER_MAIN", "user_name"}},
         {"COLL_ACCESS_USER_TYPE", {"R_USER_MAIN", "user_type_name"}},
         {"COLL_ACCESS_USER_ZONE", {"R_USER_MAIN", "zone_name"}},
@@ -242,13 +255,13 @@ namespace irods::experimental::genquery2
         {"RESC_ACCESS_PERM_ID", {"R_OBJT_ACCESS", "access_type_id"}},
         {"RESC_ACCESS_TYPE", {"R_OBJT_ACCESS", "access_type_id"}},
         {"RESC_ACCESS_PERM_NAME", {"R_TOKN_MAIN", "token_name"}},
+        {"RESC_ACCESS_NAME", {"R_TOKN_MAIN", "token_name"}},
+        {"RESC_TOKEN_NAMESPACE", {"R_TOKN_MAIN", "token_namespace"}},
         {"RESC_ACCESS_USER_ID", {"R_OBJT_ACCESS", "user_id"}},
+        {"RESC_ACCESS_RESC_ID", {"R_OBJT_ACCESS", "object_id"}},
         {"RESC_ACCESS_USER_NAME", {"R_USER_MAIN", "user_name"}},
         {"RESC_ACCESS_USER_TYPE", {"R_USER_MAIN", "user_type_name"}},
         {"RESC_ACCESS_USER_ZONE", {"R_USER_MAIN", "zone_name"}},
-        //{"COLL_ACCESS_COLL_ID",  {"R_OBJT_ACCESS", "object_id"}},
-        //{"COLL_ACCESS_NAME",     {"R_TOKN_MAIN", "token_name"}}, // special?
-        //{"COLL_TOKEN_NAMESPACE", {"R_TOKN_MAIN", "token_namespace"}}, // special?
 
         {"TICKET_ID", {"R_TICKET_MAIN", "ticket_id"}},
         {"TICKET_STRING", {"R_TICKET_MAIN", "ticket_string"}},

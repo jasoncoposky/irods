@@ -4,6 +4,7 @@
 #include "irods/genquery2_ast_types.hpp"
 
 #include <cstdlib>
+#include <span>
 #include <string>
 #include <string_view>
 #include <type_traits>
@@ -35,10 +36,15 @@ namespace irods::experimental::genquery2
 
         inline auto append_column(std::string& _out, const column& _col) -> void
         {
-            _out.append(_col.name);
-            if (!_col.type_name.empty()) {
-                _out.push_back(':');
+            if (_col.type_name.empty()) {
+                _out.append(_col.name);
+            }
+            else {
+                _out.append("cast(");
+                _out.append(_col.name);
+                _out.append(" as ");
                 _out.append(_col.type_name);
+                _out.push_back(')');
             }
         }
 
@@ -765,10 +771,10 @@ struct RsComm;
 namespace irods::experimental::genquery2
 {
 #  if __has_include("irods/rodsGenQuery.h")
-    /// Populates a legacy `GenQueryOut*` C structure from a GenQuery2 JSON row array and a list of
+    /// Populates a legacy `GenQueryOut*` C structure from a GenQuery2 JSON row array and a span of
     /// `COL_*` attribute indices. Returns `CAT_NO_ROWS_FOUND` when \p _rows is empty.
     inline auto rows_to_genquery_out(const nlohmann::json& _rows,
-                                     std::initializer_list<int> _col_indices,
+                                     std::span<const int> _col_indices,
                                      GenQueryOut** _out,
                                      int _continue_inx = 0) -> int
     {
@@ -836,6 +842,55 @@ namespace irods::experimental::genquery2
 
         *_out = res;
         return 0;
+    }
+
+    inline auto rows_to_genquery_out(const nlohmann::json& _rows,
+                                     std::initializer_list<int> _col_indices,
+                                     GenQueryOut** _out,
+                                     int _continue_inx = 0) -> int
+    {
+        return rows_to_genquery_out(
+            _rows, std::span<const int>{_col_indices.begin(), _col_indices.size()}, _out, _continue_inx);
+    }
+
+    inline auto rows_to_genquery_out(const nlohmann::json& _rows,
+                                     std::span<const int> _col_indices,
+                                     GenQueryOut*& _out,
+                                     int _continue_inx = 0) -> int
+    {
+        return rows_to_genquery_out(_rows, _col_indices, &_out, _continue_inx);
+    }
+
+    inline auto rows_to_genquery_out(const nlohmann::json& _rows,
+                                     std::initializer_list<int> _col_indices,
+                                     GenQueryOut*& _out,
+                                     int _continue_inx = 0) -> int
+    {
+        return rows_to_genquery_out(
+            _rows, std::span<const int>{_col_indices.begin(), _col_indices.size()}, &_out, _continue_inx);
+    }
+
+    inline auto rows_to_genquery_out(const std::string& _json_rows,
+                                     std::span<const int> _col_indices,
+                                     GenQueryOut** _out,
+                                     int _continue_inx = 0) -> int
+    {
+        nlohmann::json rows;
+        try {
+            rows = nlohmann::json::parse(_json_rows);
+        }
+        catch (...) {
+            return SYS_LIBRARY_ERROR;
+        }
+        return rows_to_genquery_out(rows, _col_indices, _out, _continue_inx);
+    }
+
+    inline auto rows_to_genquery_out(const std::string& _json_rows,
+                                     std::span<const int> _col_indices,
+                                     GenQueryOut*& _out,
+                                     int _continue_inx = 0) -> int
+    {
+        return rows_to_genquery_out(_json_rows, _col_indices, &_out, _continue_inx);
     }
 #  endif
     int rs_genquery2(RsComm* _comm,
