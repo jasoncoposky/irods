@@ -811,7 +811,7 @@ namespace irods::experimental::genquery2
 
         std::size_t col_idx = 0;
         for (const int attri_inx : _col_indices) {
-            std::size_t max_len = 1;
+            std::size_t max_len = 50;
             for (const auto& row : _rows) {
                 if (col_idx < row.size() && row[col_idx].is_string()) {
                     const auto& s = row[col_idx].get_ref<const std::string&>();

@@ -12066,17 +12066,11 @@ irods::error db_mod_ticket_op(
     if ( strcmp( _op_name, "session" ) == 0 ) {
         if ( strlen( _arg3 ) > 0 ) {
             /* for 2 server hops, arg3 is the original client addr */
-            if (const auto ec = chlGenQueryTicketSetup(_ticket_string, _arg3); ec < 0) {
-                return ERROR(ec, "failed in chlGenQueryTicketSetup");
-            }
             snprintf( mySessionTicket, sizeof( mySessionTicket ), "%s", _ticket_string );
             snprintf( mySessionClientAddr, sizeof( mySessionClientAddr ), "%s", _arg3 );
         }
         else {
             /* for direct connections, rsComm has the original client addr */
-            if (const auto ec = chlGenQueryTicketSetup(_ticket_string, _ctx.comm()->clientAddr); ec < 0) {
-                return ERROR(ec, "failed in chlGenQueryTicketSetup");
-            }
             snprintf( mySessionTicket, sizeof( mySessionTicket ), "%s", _ticket_string );
             snprintf( mySessionClientAddr, sizeof( mySessionClientAddr ), "%s", _ctx.comm()->clientAddr );
         }
@@ -12670,116 +12664,6 @@ irods::error db_get_icss_op(
     return SUCCESS();
 
 } // db_get_icss_op
-
-// =-=-=-=-=-=-=-
-// from general_query.cpp ::
-int chl_gen_query_impl( genQueryInp_t, genQueryOut_t* );
-
-irods::error db_gen_query_op(
-    irods::plugin_context& _ctx,
-    genQueryInp_t*         _gen_query_inp,
-    genQueryOut_t*         _result ) {
-    // =-=-=-=-=-=-=-
-    // check the context
-    irods::error ret = _ctx.valid();
-    if ( !ret.ok() ) {
-        return PASS( ret );
-    }
-
-    // =-=-=-=-=-=-=-
-    // check the params
-    if ( !_gen_query_inp
-       ) {
-        return ERROR( CAT_INVALID_ARGUMENT, "null parameter" );
-
-    }
-
-    int status = chl_gen_query_impl(
-                     *_gen_query_inp,
-                     _result );
-//         if( status < 0 ) {
-//             return ERROR( status, "chl_gen_query_impl failed" );
-//         } else {
-//             return SUCCESS();
-//         }
-    return CODE( status );
-
-} // db_gen_query_op
-
-// =-=-=-=-=-=-=-
-// from general_query.cpp ::
-int chl_gen_query_access_control_setup_impl( const char*, const char*, const char*, int, int );
-
-irods::error db_gen_query_access_control_setup_op(
-    irods::plugin_context& _ctx,
-    const char*            _user,
-    const char*            _zone,
-    const char*            _host,
-    int                    _priv,
-    int                    _control_flag ) {
-    // =-=-=-=-=-=-=-
-    // check the context
-    irods::error ret = _ctx.valid();
-    if ( !ret.ok() ) {
-        return PASS( ret );
-    }
-
-    // =-=-=-=-=-=-=-
-    // check the params
-    //if ( ) {
-    //    return ERROR( CAT_INVALID_ARGUMENT, "null parameter" );
-    //
-    //}
-
-    int status = chl_gen_query_access_control_setup_impl(
-                     _user,
-                     _zone,
-                     _host,
-                     _priv,
-                     _control_flag );
-    if ( status < 0 ) {
-        return ERROR( status, "chl_gen_query_access_control_setup_impl failed" );
-    }
-    else {
-        return CODE( status );
-    }
-
-} // db_gen_query_access_control_setup_op
-
-// =-=-=-=-=-=-=-
-// from general_query.cpp ::
-int chl_gen_query_ticket_setup_impl( const char*, const char* );
-
-irods::error db_gen_query_ticket_setup_op(
-    irods::plugin_context& _ctx,
-    const char*            _ticket,
-    const char*            _client_addr ) {
-    // =-=-=-=-=-=-=-
-    // check the context
-    irods::error ret = _ctx.valid();
-    if ( !ret.ok() ) {
-        return PASS( ret );
-    }
-
-    // =-=-=-=-=-=-=-
-    // check the params
-    if ( !_ticket ||
-            !_client_addr ) {
-        return ERROR( CAT_INVALID_ARGUMENT, "null parameter" );
-
-    }
-
-    int status = chl_gen_query_ticket_setup_impl(
-                     _ticket,
-                     _client_addr );
-    if ( status < 0 ) {
-        return ERROR( status, "chl_gen_query_ticket_setup_impl failed" );
-    }
-    else {
-        return SUCCESS();
-    }
-
-} // db_gen_query_ticket_setup_op
 
 auto db_check_permission_to_modify_data_object_op(
     irods::plugin_context& _ctx,
@@ -14481,18 +14365,6 @@ irods::database* plugin_factory(
         DATABASE_OP_GET_RCS,
         function<error(plugin_context&,icatSessionStruct**)>(
             db_get_icss_op ) );
-    pg->add_operation(
-        DATABASE_OP_GEN_QUERY,
-        function<error(plugin_context&,genQueryInp_t*,genQueryOut_t*)>(
-            db_gen_query_op ) );
-    pg->add_operation(
-        DATABASE_OP_GEN_QUERY_ACCESS_CONTROL_SETUP,
-        function<error(plugin_context&,const char*,const char*,const char*,int,int)>(
-            db_gen_query_access_control_setup_op ) );
-    pg->add_operation(
-        DATABASE_OP_GEN_QUERY_TICKET_SETUP,
-        function<error(plugin_context&,const char*,const char*)>(
-            db_gen_query_ticket_setup_op ) );
     pg->add_operation(
         DATABASE_OP_GET_DISTINCT_DATA_OBJ_COUNT_ON_RESOURCE,
         function<error(plugin_context&,const char*,long long*)>(

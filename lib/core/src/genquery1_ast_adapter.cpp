@@ -434,6 +434,23 @@ namespace
 
     auto extract_literal_list(std::string_view _s) -> std::vector<std::string>
     {
+        const auto is_closing_quote = [_s](std::size_t _idx) noexcept -> bool {
+            std::size_t j = _idx + 1;
+            while (j < _s.size() && (_s[j] == ' ' || _s[j] == '\t' || _s[j] == '\n' || _s[j] == '\r')) {
+                ++j;
+            }
+            if (j >= _s.size()) {
+                return true;
+            }
+            if (_s[j] == ',' || _s[j] == ')') {
+                return true;
+            }
+            if (_s[j] == '\'' && j > _idx + 1) {
+                return true;
+            }
+            return false;
+        };
+
         std::vector<std::string> result;
         std::size_t i = 0;
         while (i < _s.size()) {
@@ -446,14 +463,16 @@ namespace
             bool closed = false;
             while (i < _s.size()) {
                 if (_s[i] == '\'') {
-                    if (i + 1 < _s.size() && _s[i + 1] == '\'') {
+                    if (i + 1 < _s.size() && _s[i + 1] == '\'' && !is_closing_quote(i + 1)) {
                         item.push_back('\'');
                         i += 2;
                         continue;
                     }
-                    ++i;
-                    closed = true;
-                    break;
+                    if (is_closing_quote(i)) {
+                        ++i;
+                        closed = true;
+                        break;
+                    }
                 }
                 item.push_back(_s[i]);
                 ++i;
@@ -480,6 +499,22 @@ namespace
 
     auto split_compound_condition(std::string_view _cond) -> std::vector<compound_piece>
     {
+        const auto is_closing_quote = [_cond](std::size_t _idx) noexcept -> bool {
+            std::size_t j = _idx + 1;
+            while (j < _cond.size() &&
+                   (_cond[j] == ' ' || _cond[j] == '\t' || _cond[j] == '\n' || _cond[j] == '\r' || _cond[j] == ')'))
+            {
+                ++j;
+            }
+            if (j >= _cond.size()) {
+                return true;
+            }
+            if (j + 1 < _cond.size() && ((_cond[j] == '|' && _cond[j + 1] == '|') || (_cond[j] == '&' && _cond[j + 1] == '&'))) {
+                return true;
+            }
+            return false;
+        };
+
         std::vector<compound_piece> pieces;
         bool in_quote = false;
         std::size_t piece_start = 0;
@@ -487,7 +522,15 @@ namespace
 
         for (std::size_t i = 0; i < _cond.size(); ++i) {
             if (_cond[i] == '\'') {
-                in_quote = !in_quote;
+                if (!in_quote) {
+                    in_quote = true;
+                }
+                else if (i + 1 < _cond.size() && _cond[i + 1] == '\'' && !is_closing_quote(i + 1)) {
+                    ++i;
+                }
+                else if (is_closing_quote(i)) {
+                    in_quote = false;
+                }
                 continue;
             }
             if (!in_quote && i + 1 < _cond.size()) {
@@ -627,6 +670,9 @@ namespace irods::experimental::genquery2
             }
         }
 
+        if (_col_id == 408) {
+            return "DATA_RESC_GROUP_NAME";
+        }
         if (_col_id == COL_USER_AUTH_ID) {
             return "USER_AUTH_ID";
         }

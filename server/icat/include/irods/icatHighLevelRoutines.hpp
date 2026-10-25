@@ -49,10 +49,6 @@ int chlRegCollByAdmin( rsComm_t *rsComm, collInfo_t *collInfo );
 int chlRegColl( rsComm_t *rsComm, collInfo_t *collInfo );
 int chlModColl( rsComm_t *rsComm, collInfo_t *collInfo );
 
-int chlGenQuery( genQueryInp_t genQueryInp, genQueryOut_t *result );
-int chlGenQueryAccessControlSetup( const char *user, const char *zone, const char *host,
-                                   int priv, int controlFlag );
-int chlGenQueryTicketSetup( const char *ticket, const char *clientAddr );
 int chlSpecificQuery( specificQueryInp_t specificQueryInp,
                       genQueryOut_t *genQueryOut );
 
@@ -141,11 +137,6 @@ int chlAddSpecificQuery( rsComm_t *rsComm, const char *alias, const char *sql );
 int chlDelSpecificQuery( rsComm_t *rsComm, const char *sqlOrAlias );
 
 int chlGetLocalZone( std::string& );
-
-int sTableInit();
-int sFklink( const char *table1, const char *table2, const char *connectingSQL );
-int sTable( const char *tableName, const char *tableAlias, int cycler );
-int sColumn( int defineVal, const char *tableName, const char *columnName );
 
 int chlDebug( const char *debugMode );
 int chlInsRuleTable( rsComm_t *rsComm,

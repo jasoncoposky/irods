@@ -395,6 +395,44 @@ TEST_CASE("genquery1_to_genquery2_ast translator")
         CHECK(gq2::to_query_string(s) ==
               "select distinct DATA_NAME where upper(DATA_NAME) = 'FOO' order by DATA_NAME asc");
     }
+
+    SECTION("round-trip hex-escaped single quotes in IN and compound conditions")
+    {
+        {
+            genQueryInp_t input{};
+            irods::at_scope_exit_unsafe clear_input{[&input] { clearGenQueryInp(&input); }};
+
+            REQUIRE(parse_genquery1_string(
+                        "select COLL_NAME where COLL_NAME in ('collect\\x27ion', 'other')", &input) == 0);
+
+            const auto s = gq2::genquery1_to_genquery2_ast(input);
+            REQUIRE(s.conditions.size() == 1);
+            const auto& cond = std::get<gq2::condition>(s.conditions[0]);
+            const auto& in_expr = std::get<gq2::condition_in>(cond.expression);
+            REQUIRE(in_expr.list_of_string_literals.size() == 2);
+            CHECK(in_expr.list_of_string_literals[0] == "collect'ion");
+            CHECK(in_expr.list_of_string_literals[1] == "other");
+        }
+
+        {
+            genQueryInp_t input{};
+            irods::at_scope_exit_unsafe clear_input{[&input] { clearGenQueryInp(&input); }};
+
+            REQUIRE(parse_genquery1_string(
+                        "select COLL_NAME where COLL_NAME = 'collect\\x27ion' || = 'other'", &input) == 0);
+
+            const auto s = gq2::genquery1_to_genquery2_ast(input);
+            REQUIRE(s.conditions.size() == 1);
+            const auto& grp = std::get<gq2::logical_grouping>(s.conditions[0]);
+            REQUIRE(grp.conditions.size() == 2);
+            const auto& c0 = std::get<gq2::condition>(grp.conditions[0]);
+            const auto& lor = std::get<gq2::logical_or>(grp.conditions[1]);
+            REQUIRE(lor.condition.size() == 1);
+            const auto& c1 = std::get<gq2::condition>(lor.condition[0]);
+            CHECK(std::get<gq2::condition_equal>(c0.expression).string_literal == "collect'ion");
+            CHECK(std::get<gq2::condition_equal>(c1.expression).string_literal == "other");
+        }
+    }
 }
 
 auto fillGenQueryInpFromStrCond(char* str, genQueryInp_t* genQueryInp) -> int

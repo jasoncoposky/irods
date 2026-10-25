@@ -1,26 +1,39 @@
 #include "irods/rcMisc.h"
 #include "irods/genQuery.h"
+#include "irods/genquery1_ast_adapter.hpp"
+#include "irods/genquery2_builder.hpp"
 #include "irods/icatHighLevelRoutines.hpp"
-#include "irods/miscUtil.h"
-#include "irods/rodsErrorTable.h"
-#include "irods/rsGenQuery.hpp"
-#include "irods/rsGlobalExtern.hpp"
-#include "irods/miscServerFunct.hpp"
-#include "irods/irods_resource_manager.hpp"
-#include "irods/irods_server_properties.hpp"
+#include "irods/irods_at_scope_exit.hpp"
 #include "irods/irods_lexical_cast.hpp"
+#include "irods/irods_resource_manager.hpp"
+#include "irods/irods_rs_comm_query.hpp"
+#include "irods/irods_server_properties.hpp"
+#include "irods/miscServerFunct.hpp"
+#include "irods/miscUtil.h"
+#include "irods/private/genquery2_sql.hpp"
+#include "irods/rodsErrorTable.h"
 #include "irods/rodsGenQueryNames.h"
+#include "irods/rsGenQuery.hpp"
+#include "irods/rsGetRescQuota.hpp"
+#include "irods/rsGlobalExtern.hpp"
 
 #include <fmt/format.h>
 #include <fmt/ranges.h>
+#include <nlohmann/json.hpp>
 
 #include <algorithm>
 #include <cctype>
+#include <charconv>
+#include <cstdlib>
 #include <cstring>
+#include <mutex>
+#include <optional>
 #include <regex>
 #include <span>
 #include <string>
 #include <string_view>
+#include <unordered_map>
+#include <vector>
 
 namespace {
     using log_api = irods::experimental::log::api;
@@ -759,10 +772,155 @@ rsGenQuery( rsComm_t *rsComm, genQueryInp_t *genQueryInp,
     return status;
 }
 
+namespace {
+    struct continuation_state
+    {
+        std::size_t next_offset = 0;
+        int total_row_count = 0;
+    };
+
+    std::mutex g_continuation_mutex;
+    std::unordered_map<int, continuation_state> g_continuations;
+    int g_next_continue_inx = 1;
+
+    auto allocate_continue_inx(std::size_t _next_offset, int _total_row_count) -> int
+    {
+        std::lock_guard lock{g_continuation_mutex};
+        int inx = g_next_continue_inx++;
+        if (g_next_continue_inx <= 0) {
+            g_next_continue_inx = 1;
+        }
+        g_continuations[inx] = continuation_state{_next_offset, _total_row_count};
+        return inx;
+    }
+
+    auto get_continuation(int _inx) -> std::optional<continuation_state>
+    {
+        std::lock_guard lock{g_continuation_mutex};
+        if (const auto it = g_continuations.find(_inx); it != g_continuations.end()) {
+            return it->second;
+        }
+        return std::nullopt;
+    }
+
+    void update_continuation(int _inx, std::size_t _next_offset, int _total_row_count)
+    {
+        std::lock_guard lock{g_continuation_mutex};
+        g_continuations[_inx] = continuation_state{_next_offset, _total_row_count};
+    }
+
+    void erase_continuation(int _inx)
+    {
+        std::lock_guard lock{g_continuation_mutex};
+        g_continuations.erase(_inx);
+    }
+
+    auto extract_quota_literal(std::string_view _cond) -> std::string
+    {
+        auto trim = [](std::string_view _s) noexcept {
+            while (!_s.empty() && std::isspace(static_cast<unsigned char>(_s.front()))) {
+                _s.remove_prefix(1);
+            }
+            while (!_s.empty() && std::isspace(static_cast<unsigned char>(_s.back()))) {
+                _s.remove_suffix(1);
+            }
+            return _s;
+        };
+
+        auto s = trim(_cond);
+        if (!s.empty() && s.front() == '=') {
+            s.remove_prefix(1);
+            s = trim(s);
+        }
+        if (s.size() >= 2 && s.front() == '\'' && s.back() == '\'') {
+            s = s.substr(1, s.size() - 2);
+        }
+        return std::string{s};
+    }
+
+    auto check_cond_input_access(
+        rsComm_t& _comm,
+        const genQueryInp_t& _inp,
+        const nlohmann::json& _rows) -> int
+    {
+        if (_inp.condInput.len <= 0) {
+            return 0;
+        }
+
+        if (getValByKey(&_inp.condInput, ADMIN_KW) != nullptr) {
+            return 0;
+        }
+
+        if (_inp.condInput.len == 1 &&
+            _inp.condInput.keyWord[0] != nullptr &&
+            std::strcmp(_inp.condInput.keyWord[0], ZONE_KW) == 0)
+        {
+            return 0;
+        }
+
+        const char* user_name = getValByKey(&_inp.condInput, USER_NAME_CLIENT_KW);
+        const char* user_zone = getValByKey(&_inp.condInput, RODS_ZONE_CLIENT_KW);
+        const char* access_perm = getValByKey(&_inp.condInput, ACCESS_PERMISSION_KW);
+
+        if (user_name == nullptr || user_zone == nullptr || access_perm == nullptr) {
+            if (getValByKey(&_inp.condInput, DISABLE_STRICT_ACL_KW) != nullptr) {
+                return 0;
+            }
+            return CAT_INVALID_ARGUMENT;
+        }
+
+        int data_ix = -1;
+        for (int i = 0; i < _inp.selectInp.len; ++i) {
+            if (_inp.selectInp.inx[i] == COL_D_DATA_ID) {
+                data_ix = i;
+                break;
+            }
+        }
+
+        if (data_ix < 0) {
+            return CAT_INVALID_ARGUMENT;
+        }
+
+        std::string resolved_zone = user_zone;
+        if (resolved_zone.empty()) {
+            chlGetLocalZone(resolved_zone);
+        }
+
+        rsComm_t check_comm = _comm;
+        std::snprintf(check_comm.clientUser.userName, sizeof(check_comm.clientUser.userName), "%s", user_name);
+        std::snprintf(check_comm.clientUser.rodsZone, sizeof(check_comm.clientUser.rodsZone), "%s", resolved_zone.c_str());
+
+        std::string prev_data_id;
+        for (const auto& row : _rows) {
+            if (!row.is_array() || static_cast<std::size_t>(data_ix) >= row.size() || !row[data_ix].is_string()) {
+                return CAT_INVALID_ARGUMENT;
+            }
+            const auto& data_id_str = row[data_ix].get_ref<const std::string&>();
+            if (!prev_data_id.empty() && data_id_str == prev_data_id) {
+                continue;
+            }
+            prev_data_id = data_id_str;
+
+            rodsLong_t data_id = 0;
+            const auto [ptr, ec] = std::from_chars(
+                data_id_str.data(), data_id_str.data() + data_id_str.size(), data_id);
+            if (ec != std::errc{}) {
+                return CAT_INVALID_ARGUMENT;
+            }
+
+            if (const int status = chl_check_data_object_access(check_comm, data_id, access_perm); status != 0) {
+                return status;
+            }
+        }
+
+        return 0;
+    }
+} // anonymous namespace
+
 int
 _rsGenQuery( rsComm_t *rsComm, genQueryInp_t *genQueryInp,
              genQueryOut_t **genQueryOut ) {
-    int status;
+    int status = 0;
     int resc_grp_attr_pos = -1;
     int resc_hier_attr_pos = -1;
 
@@ -805,28 +963,13 @@ _rsGenQuery( rsComm_t *rsComm, genQueryInp_t *genQueryInp,
     memset( ( char* )&rei2, 0, sizeof( ruleExecInfo_t ) );
     rei2.rsComm = rsComm;
 
-    /*  printGenQI(genQueryInp);  for debug */
-
-    *genQueryOut = ( genQueryOut_t* )malloc( sizeof( genQueryOut_t ) );
-    memset( ( char * )*genQueryOut, 0, sizeof( genQueryOut_t ) );
+    *genQueryOut = static_cast<genQueryOut_t*>(std::calloc(1, sizeof(genQueryOut_t)));
+    if (*genQueryOut == nullptr) {
+        return SYS_MALLOC_ERR;
+    }
 
     if (ruleExecuted == 0) {
-        std::string svc_role;
-        irods::error ret = get_catalog_service_role(svc_role);
-        int status{};
-        if (!ret.ok()) {
-            irods::log(PASS(ret));
-            // NOLINTNEXTLINE(bugprone-narrowing-conversions,cppcoreguidelines-narrowing-conversions)
-            status = ret.code();
-        }
-
-        if (irods::KW_CFG_SERVICE_ROLE_PROVIDER == svc_role) {
-            constexpr auto priv{0};
-            constexpr auto control_flag{2};
-
-            chlGenQueryAccessControlSetup(nullptr, nullptr, nullptr, priv, control_flag);
-        }
-
+        int prop_status{};
         // set a strict acl prop
         try {
             irods::set_server_property<std::string>(irods::STRICT_ACL_KW, "on");
@@ -834,9 +977,9 @@ _rsGenQuery( rsComm_t *rsComm, genQueryInp_t *genQueryInp,
         catch (irods::exception& e) {
             irods::log(e);
             // NOLINTNEXTLINE(bugprone-narrowing-conversions,cppcoreguidelines-narrowing-conversions)
-            status = e.code();
+            prop_status = e.code();
         }
-        if (status == 0) {
+        if (prop_status == 0) {
             ruleExecuted = 1; /* No need to retry next time since it
                                    succeeded.  Since this is called at
                                    startup, the Rule Engine may not be
@@ -846,26 +989,9 @@ _rsGenQuery( rsComm_t *rsComm, genQueryInp_t *genQueryInp,
         }
     }
 
-    // =-=-=-=-=-=-=-
-    // verify that we are running a query for another agent connection
     const bool agent_conn_flag = irods::server_property_exists(irods::AGENT_CONN_KW);
-
-    // =-=-=-=-=-=-=-
-    // detect if a request for disable of strict acls is made
-    int acl_val = -1;
     char* dis_kw = getValByKey( &genQueryInp->condInput, DISABLE_STRICT_ACL_KW );
-    if ( agent_conn_flag && dis_kw ) {
-        acl_val = 0;
-    }
-
-    // =-=-=-=-=-=-=-
-    // cache the old acl value for reuse later if necessary
-    int old_acl_val =  chlGenQueryAccessControlSetup(
-                           rsComm->clientUser.userName,
-                           rsComm->clientUser.rodsZone,
-                           rsComm->clientAddr,
-                           rsComm->clientUser.authInfo.authFlag,
-                           acl_val );
+    const bool disable_strict_acl = (agent_conn_flag && dis_kw != nullptr);
 
     if ( PrePostProcForGenQueryFlag == 1 ) {
         std::string arg = fmt::format( "{}", ( long )genQueryInp );
@@ -882,18 +1008,234 @@ _rsGenQuery( rsComm_t *rsComm, genQueryInp_t *genQueryInp,
     }
     /**  June 1 2009 for pre-post processing rule hooks **/
 
-    status = chlGenQuery( *genQueryInp, *genQueryOut );
+    auto run_query = [&]() -> int {
+        namespace gq2 = irods::experimental::genquery2;
 
-    // =-=-=-=-=-=-=-
-    // if a disable was requested, repave with old value immediately
-    if ( agent_conn_flag && dis_kw ) {
-        chlGenQueryAccessControlSetup(
-            rsComm->clientUser.userName,
-            rsComm->clientUser.rodsZone,
-            rsComm->clientAddr,
-            rsComm->clientUser.authInfo.authFlag,
-            old_acl_val );
-    }
+        // Close an open continuation cursor when continueInx > 0 and maxRows <= 0.
+        if (genQueryInp->continueInx > 0 && genQueryInp->maxRows <= 0) {
+            erase_continuation(genQueryInp->continueInx);
+            return 0;
+        }
+
+        // Delegate QUOTA_QUERY to getQuotaByResc.
+        if ((genQueryInp->options & QUOTA_QUERY) != 0) {
+            std::string quota_user;
+            std::string quota_resc;
+            for (int k = 0; k < genQueryInp->sqlCondInp.len; ++k) {
+                if (genQueryInp->sqlCondInp.value[k] == nullptr) {
+                    continue;
+                }
+                if (genQueryInp->sqlCondInp.inx[k] == COL_USER_NAME) {
+                    quota_user = extract_quota_literal(genQueryInp->sqlCondInp.value[k]);
+                }
+                else if (genQueryInp->sqlCondInp.inx[k] == COL_R_RESC_NAME) {
+                    quota_resc = extract_quota_literal(genQueryInp->sqlCondInp.value[k]);
+                }
+            }
+
+            if (quota_user.empty()) {
+                quota_user = rsComm->clientUser.userName;
+            }
+
+            std::free(*genQueryOut);
+            *genQueryOut = nullptr;
+
+            const int q_status = getQuotaByResc(
+                rsComm,
+                quota_user.data(),
+                quota_resc.empty() ? nullptr : quota_resc.data(),
+                genQueryOut);
+
+            if (*genQueryOut == nullptr) {
+                *genQueryOut = static_cast<genQueryOut_t*>(std::calloc(1, sizeof(genQueryOut_t)));
+                if (*genQueryOut == nullptr) {
+                    return SYS_MALLOC_ERR;
+                }
+            }
+
+            if (q_status < 0) {
+                return q_status;
+            }
+            if ((*genQueryOut)->rowCnt == 0) {
+                return CAT_NO_ROWS_FOUND;
+            }
+            return 0;
+        }
+
+        std::size_t current_offset = static_cast<std::size_t>(std::max(0, genQueryInp->rowOffset));
+        int total_row_count = 0;
+
+        if (genQueryInp->continueInx > 0) {
+            const auto state = get_continuation(genQueryInp->continueInx);
+            if (!state) {
+                return CAT_INVALID_ARGUMENT;
+            }
+            current_offset = state->next_offset;
+            total_row_count = state->total_row_count;
+        }
+
+        gq2::select select_ast;
+        try {
+            select_ast = gq2::genquery1_to_genquery2_ast(*genQueryInp);
+        }
+        catch (const irods::exception& e) {
+            log_api::error("_rsGenQuery: AST translation failed: {}", e.client_display_what());
+            // NOLINTNEXTLINE(bugprone-narrowing-conversions,cppcoreguidelines-narrowing-conversions)
+            return e.code();
+        }
+        catch (const std::exception& e) {
+            log_api::error("_rsGenQuery: AST translation failed: {}", e.what());
+            return CAT_INVALID_ARGUMENT;
+        }
+
+        std::string db_tech;
+        {
+            const auto handle = irods::server_properties::instance().map();
+            const auto& config = handle.get_json();
+            const auto& db = config.at(nlohmann::json::json_pointer{"/plugin_configuration/database/technology"});
+            db_tech = db.get_ref<const std::string&>();
+        }
+
+        gq2::options sql_opts{};
+        sql_opts.database = db_tech;
+        sql_opts.user_name = rsComm->clientUser.userName;
+        sql_opts.user_zone = rsComm->clientUser.rodsZone;
+        sql_opts.admin_mode = irods::is_privileged_client(*rsComm) || disable_strict_acl;
+        sql_opts.default_number_of_rows = MAX_SQL_ROWS;
+
+        // Compute total row count when requested on the initial page.
+        if (genQueryInp->continueInx <= 0 && (genQueryInp->options & RETURN_TOTAL_ROW_COUNT) != 0) {
+            auto count_ast = select_ast;
+            count_ast.range = {};
+            try {
+                auto [count_sql, count_values] = gq2::to_sql(count_ast, sql_opts);
+                char* count_out_str = nullptr;
+                irods::at_scope_exit free_count_out{[&count_out_str] { std::free(count_out_str); }};
+                const int count_ec = chl_execute_genquery2_sql(*rsComm, count_sql.c_str(), &count_values, &count_out_str);
+                if (count_ec == 0 && count_out_str != nullptr) {
+                    const auto count_rows = nlohmann::json::parse(count_out_str);
+                    if (count_rows.is_array()) {
+                        total_row_count = static_cast<int>(count_rows.size());
+                    }
+                }
+            }
+            catch (const irods::exception& e) {
+                log_api::error("_rsGenQuery: count SQL generation failed: {}", e.client_display_what());
+                // NOLINTNEXTLINE(bugprone-narrowing-conversions,cppcoreguidelines-narrowing-conversions)
+                return e.code();
+            }
+            catch (const std::exception& e) {
+                log_api::error("_rsGenQuery: count SQL execution failed: {}", e.what());
+                return SYS_INTERNAL_ERR;
+            }
+        }
+
+        // If maxRows <= 0 on initial call, return 0 rows with totalRowCount populated.
+        if (genQueryInp->maxRows <= 0) {
+            (*genQueryOut)->totalRowCount = total_row_count;
+            return total_row_count == 0 ? CAT_NO_ROWS_FOUND : 0;
+        }
+
+        const auto requested_rows = static_cast<std::size_t>(genQueryInp->maxRows);
+        select_ast.range.offset = std::to_string(current_offset);
+        select_ast.range.number_of_rows = std::to_string(requested_rows + 1);
+
+        std::string sql;
+        std::vector<std::string> bind_values;
+        try {
+            std::tie(sql, bind_values) = gq2::to_sql(select_ast, sql_opts);
+        }
+        catch (const irods::exception& e) {
+            log_api::error("_rsGenQuery: SQL generation failed: {}", e.client_display_what());
+            // NOLINTNEXTLINE(bugprone-narrowing-conversions,cppcoreguidelines-narrowing-conversions)
+            return e.code();
+        }
+        catch (const std::exception& e) {
+            log_api::error("_rsGenQuery: SQL generation failed: {}", e.what());
+            return CAT_INVALID_ARGUMENT;
+        }
+
+        char* sql_out_str = nullptr;
+        irods::at_scope_exit free_sql_out{[&sql_out_str] { std::free(sql_out_str); }};
+        if (const int ec = chl_execute_genquery2_sql(*rsComm, sql.c_str(), &bind_values, &sql_out_str); ec < 0) {
+            return ec;
+        }
+
+        if (sql_out_str == nullptr) {
+            return SYS_INTERNAL_ERR;
+        }
+
+        nlohmann::json rows;
+        try {
+            rows = nlohmann::json::parse(sql_out_str);
+        }
+        catch (const std::exception& e) {
+            log_api::error("_rsGenQuery: failed to parse JSON result: {}", e.what());
+            return SYS_INTERNAL_ERR;
+        }
+
+        if (!rows.is_array() || rows.empty()) {
+            if (genQueryInp->continueInx > 0) {
+                erase_continuation(genQueryInp->continueInx);
+            }
+            (*genQueryOut)->totalRowCount = total_row_count;
+            return CAT_NO_ROWS_FOUND;
+        }
+
+        const bool has_more = rows.size() > requested_rows;
+        if (has_more) {
+            rows.get_ref<nlohmann::json::array_t&>().resize(requested_rows);
+        }
+
+        if (const int access_ec = check_cond_input_access(*rsComm, *genQueryInp, rows); access_ec != 0) {
+            if (genQueryInp->continueInx > 0) {
+                erase_continuation(genQueryInp->continueInx);
+            }
+            return access_ec;
+        }
+
+        int out_continue_inx = 0;
+        const std::size_t next_offset = current_offset + rows.size();
+        if (has_more) {
+            if ((genQueryInp->options & AUTO_CLOSE) != 0) {
+                if (genQueryInp->continueInx > 0) {
+                    erase_continuation(genQueryInp->continueInx);
+                }
+                out_continue_inx = -1;
+            }
+            else if (genQueryInp->continueInx > 0) {
+                update_continuation(genQueryInp->continueInx, next_offset, total_row_count);
+                out_continue_inx = genQueryInp->continueInx;
+            }
+            else {
+                out_continue_inx = allocate_continue_inx(next_offset, total_row_count);
+            }
+        }
+        else if (genQueryInp->continueInx > 0) {
+            erase_continuation(genQueryInp->continueInx);
+        }
+
+        std::vector<int> col_indices;
+        col_indices.reserve(static_cast<std::size_t>(std::max(0, genQueryInp->selectInp.len)));
+        for (int k = 0; k < genQueryInp->selectInp.len; ++k) {
+            col_indices.push_back(genQueryInp->selectInp.inx[k]);
+        }
+
+        genQueryOut_t* populated_out = nullptr;
+        if (const int pack_ec = gq2::rows_to_genquery_out(rows, col_indices, &populated_out, out_continue_inx); pack_ec < 0) {
+            return pack_ec;
+        }
+
+        std::free(*genQueryOut);
+        *genQueryOut = populated_out;
+        if ((genQueryInp->options & RETURN_TOTAL_ROW_COUNT) != 0) {
+            (*genQueryOut)->totalRowCount = total_row_count;
+        }
+
+        return 0;
+    };
+
+    status = run_query();
 
     /**  June 1 2009 for pre-post processing rule hooks **/
     if ( PrePostProcForGenQueryFlag == 1 ) {

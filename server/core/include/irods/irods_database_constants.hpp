@@ -31,9 +31,6 @@ namespace irods
     const std::string DATABASE_OP_REG_COLL_BY_ADMIN( "database_reg_coll_by_admin" );
     const std::string DATABASE_OP_REG_COLL( "database_reg_coll" );
     const std::string DATABASE_OP_MOD_COLL( "database_mod_coll" );
-    const std::string DATABASE_OP_GEN_QUERY( "database_gen_query" );
-    const std::string DATABASE_OP_GEN_QUERY_ACCESS_CONTROL_SETUP( "database_gen_query_access_control_setup" );
-    const std::string DATABASE_OP_GEN_QUERY_TICKET_SETUP( "database_gen_query_ticket_setup" );
     const std::string DATABASE_OP_SPECIFIC_QUERY( "database_specific_query" );
     const std::string DATABASE_OP_DEL_COLL_BY_ADMIN( "database_del_coll_by_admin" );
     const std::string DATABASE_OP_DEL_COLL( "database_del_coll" );
