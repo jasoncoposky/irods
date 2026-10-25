@@ -99,7 +99,7 @@ namespace
         auto next() -> std::optional<gq1_token>
         {
             while (pos_ < input_.size() &&
-                   (input_[pos_] == ' ' || input_[pos_] == '\t' || input_[pos_] == '\n'))
+                   (input_[pos_] == ' ' || input_[pos_] == '\t' || input_[pos_] == '\n' || input_[pos_] == '\r'))
             {
                 ++pos_;
             }

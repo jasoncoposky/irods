@@ -1128,6 +1128,10 @@ namespace
             return fmt::format(" fetch first {} rows only", _number_of_rows);
         }
 
+        if (_opts.default_number_of_rows <= 0) {
+            return {};
+        }
+
         if (_opts.database == "mysql") {
             return fmt::format(" limit {}", _opts.default_number_of_rows);
         }

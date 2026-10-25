@@ -1107,15 +1107,23 @@ _rsGenQuery( rsComm_t *rsComm, genQueryInp_t *genQueryInp,
         if (genQueryInp->continueInx <= 0 && (genQueryInp->options & RETURN_TOTAL_ROW_COUNT) != 0) {
             auto count_ast = select_ast;
             count_ast.range = {};
+            count_ast.order_by = {};
+            auto count_opts = sql_opts;
+            count_opts.default_number_of_rows = 0;
             try {
-                auto [count_sql, count_values] = gq2::to_sql(count_ast, sql_opts);
+                auto [inner_sql, count_values] = gq2::to_sql(count_ast, count_opts);
+                const auto count_sql = fmt::format("select count(*) from ({}) as irods_gq1_total_cnt", inner_sql);
                 char* count_out_str = nullptr;
                 irods::at_scope_exit free_count_out{[&count_out_str] { std::free(count_out_str); }};
                 const int count_ec = chl_execute_genquery2_sql(*rsComm, count_sql.c_str(), &count_values, &count_out_str);
                 if (count_ec == 0 && count_out_str != nullptr) {
                     const auto count_rows = nlohmann::json::parse(count_out_str);
-                    if (count_rows.is_array()) {
-                        total_row_count = static_cast<int>(count_rows.size());
+                    if (count_rows.is_array() && !count_rows.empty() &&
+                        count_rows[0].is_array() && !count_rows[0].empty() &&
+                        count_rows[0][0].is_string())
+                    {
+                        const auto& cnt_str = count_rows[0][0].get_ref<const std::string&>();
+                        std::from_chars(cnt_str.data(), cnt_str.data() + cnt_str.size(), total_row_count);
                     }
                 }
             }
