@@ -83,6 +83,7 @@ set(
   fully_qualified_username
   generate_random_alphanumeric_string
   genquery1_flex_bison_parser
+  genquery2_ast_dispatch
   genquery2_dml_ast
   genquery2_builder
   genquery2_sql_dml

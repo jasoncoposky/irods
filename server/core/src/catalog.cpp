@@ -82,4 +82,25 @@ namespace irods::experimental::catalog {
         return _func(trans);
     } // execute_transaction
 
+    auto uses_odbc() -> bool
+    {
+        try {
+            const auto config_handle{server_properties::instance().map()};
+            const auto& config{config_handle.get_json()};
+            const auto& db_instance =
+                config.at(irods::KW_CFG_PLUGIN_CONFIGURATION).at(irods::KW_CFG_PLUGIN_TYPE_DATABASE);
+            std::string tech;
+            if (db_instance.contains(irods::KW_CFG_DB_TECHNOLOGY)) {
+                tech = db_instance.at(irods::KW_CFG_DB_TECHNOLOGY).get<std::string>();
+            }
+            else if (db_instance.contains("catalog_database_type")) {
+                tech = db_instance.at("catalog_database_type").get<std::string>();
+            }
+            return tech == "postgres" || tech == "mysql" || tech == "oracle";
+        }
+        catch (...) {
+            return true;
+        }
+    } // uses_odbc
+
 } // namespace irods::experimental::catalog

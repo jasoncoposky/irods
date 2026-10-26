@@ -1,5 +1,6 @@
 #include "irods/access_time_queue.hpp"
 #include "irods/catalog.hpp"
+#include "irods/icatHighLevelRoutines.hpp"
 #include "irods/chrono.hpp"
 #include "irods/client_connection.hpp"
 #include "irods/dns_cache.hpp"
@@ -732,6 +733,15 @@ Signals:
             const auto role = irods::get_server_property<std::string>(irods::KW_CFG_CATALOG_SERVICE_ROLE);
 
             if (role == irods::KW_CFG_SERVICE_ROLE_PROVIDER) {
+                if (!irods::experimental::catalog::uses_odbc()) {
+                    rsComm_t comm{};
+                    int vers = IRODS_CATALOG_SCHEMA_VERSION;
+                    if (chl_get_catalog_version(&comm, &vers) == 0 && vers > 0) {
+                        return {vers == IRODS_CATALOG_SCHEMA_VERSION, vers};
+                    }
+                    return {true, IRODS_CATALOG_SCHEMA_VERSION};
+                }
+
                 auto [db_instance, db_conn] = irods::experimental::catalog::new_database_connection();
 
                 auto row = nanodbc::execute(db_conn,
@@ -857,6 +867,10 @@ Signals:
                 }
 
                 try {
+                    if (!irods::experimental::catalog::uses_odbc()) {
+                        return 0;
+                    }
+
                     // Try to connect to the catalog. If the catalog isn't accepting connections or
                     // the server configuration is incorrect, this function will throw an exception.
                     irods::experimental::catalog::new_database_connection();
@@ -1570,29 +1584,74 @@ Signals:
             // from the database.
 
             if (role == irods::KW_CFG_SERVICE_ROLE_PROVIDER) {
-                // Catalog Service Providers are required to have database credentials, so all we have to do
-                // to get around the lack of an agent factory is use nanodbc to interact with the database
-                // directly.
-
-                auto [db_instance, db_conn] = irods::experimental::catalog::new_database_connection();
-                auto row = execute(
-                    db_conn,
-                    "select option_name, option_value from R_GRID_CONFIGURATION where namespace = 'access_time'");
-
-                while (row.next()) {
-                    const auto opt_name = row.get<std::string>(0);
-
-                    if (opt_name == irods::KW_CFG_ACCESS_TIME_QUEUE_NAME_PREFIX) {
-                        queue_name_prefix = row.get<std::string>(1);
+                if (!irods::experimental::catalog::uses_odbc()) {
+                    rsComm_t comm{};
+                    char val[MAX_NAME_LEN]{};
+                    if (chlGetGridConfigurationValue(
+                            &comm, "access_time", irods::KW_CFG_ACCESS_TIME_QUEUE_NAME_PREFIX, val, sizeof(val)) == 0 &&
+                        val[0] != '\0')
+                    {
+                        queue_name_prefix = val;
                     }
-                    else if (opt_name == irods::KW_CFG_ACCESS_TIME_QUEUE_SIZE) {
-                        queue_size = row.get<std::string>(1);
+                    else {
+                        queue_name_prefix = "irods_access_time_queue_";
                     }
-                    else if (opt_name == irods::KW_CFG_ACCESS_TIME_BATCH_SIZE) {
-                        batch_size = row.get<std::string>(1);
+                    std::memset(val, 0, sizeof(val));
+                    if (chlGetGridConfigurationValue(
+                            &comm, "access_time", irods::KW_CFG_ACCESS_TIME_QUEUE_SIZE, val, sizeof(val)) == 0 &&
+                        val[0] != '\0')
+                    {
+                        queue_size = val;
                     }
-                    else if (opt_name == irods::KW_CFG_ACCESS_TIME_RESOLUTION_IN_SECONDS) {
-                        resolution_in_seconds = row.get<std::string>(1);
+                    else {
+                        queue_size = "20000";
+                    }
+                    std::memset(val, 0, sizeof(val));
+                    if (chlGetGridConfigurationValue(
+                            &comm, "access_time", irods::KW_CFG_ACCESS_TIME_BATCH_SIZE, val, sizeof(val)) == 0 &&
+                        val[0] != '\0')
+                    {
+                        batch_size = val;
+                    }
+                    else {
+                        batch_size = "20000";
+                    }
+                    std::memset(val, 0, sizeof(val));
+                    if (chlGetGridConfigurationValue(
+                            &comm, "access_time", irods::KW_CFG_ACCESS_TIME_RESOLUTION_IN_SECONDS, val, sizeof(val)) == 0 &&
+                        val[0] != '\0')
+                    {
+                        resolution_in_seconds = val;
+                    }
+                    else {
+                        resolution_in_seconds = "86400";
+                    }
+                }
+                else {
+                    // Catalog Service Providers are required to have database credentials, so all we have to do
+                    // to get around the lack of an agent factory is use nanodbc to interact with the database
+                    // directly.
+
+                    auto [db_instance, db_conn] = irods::experimental::catalog::new_database_connection();
+                    auto row = execute(
+                        db_conn,
+                        "select option_name, option_value from R_GRID_CONFIGURATION where namespace = 'access_time'");
+
+                    while (row.next()) {
+                        const auto opt_name = row.get<std::string>(0);
+
+                        if (opt_name == irods::KW_CFG_ACCESS_TIME_QUEUE_NAME_PREFIX) {
+                            queue_name_prefix = row.get<std::string>(1);
+                        }
+                        else if (opt_name == irods::KW_CFG_ACCESS_TIME_QUEUE_SIZE) {
+                            queue_size = row.get<std::string>(1);
+                        }
+                        else if (opt_name == irods::KW_CFG_ACCESS_TIME_BATCH_SIZE) {
+                            batch_size = row.get<std::string>(1);
+                        }
+                        else if (opt_name == irods::KW_CFG_ACCESS_TIME_RESOLUTION_IN_SECONDS) {
+                            resolution_in_seconds = row.get<std::string>(1);
+                        }
                     }
                 }
             }

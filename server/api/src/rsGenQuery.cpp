@@ -841,7 +841,8 @@ namespace {
     auto check_cond_input_access(
         rsComm_t& _comm,
         const genQueryInp_t& _inp,
-        const nlohmann::json& _rows) -> int
+        const lite3cpp::Buffer& _rows_buf,
+        std::size_t _row_count) -> int
     {
         if (_inp.condInput.len <= 0) {
             return 0;
@@ -890,12 +891,34 @@ namespace {
         std::snprintf(check_comm.clientUser.userName, sizeof(check_comm.clientUser.userName), "%s", user_name);
         std::snprintf(check_comm.clientUser.rodsZone, sizeof(check_comm.clientUser.rodsZone), "%s", resolved_zone.c_str());
 
-        std::string prev_data_id;
-        for (const auto& row : _rows) {
-            if (!row.is_array() || static_cast<std::size_t>(data_ix) >= row.size() || !row[data_ix].is_string()) {
+        const auto data_col_u32 = static_cast<std::uint32_t>(data_ix);
+        std::string_view prev_data_id;
+        for (std::size_t r = 0; r < _row_count; ++r) {
+            const auto row_u32 = static_cast<std::uint32_t>(r);
+            const auto elem_type = _rows_buf.arr_get_type(0, row_u32);
+            std::size_t proj_ofs = 0;
+            if (elem_type == lite3cpp::Type::Object) {
+                const std::size_t row_ofs = _rows_buf.arr_get_obj(0, row_u32);
+                if (_rows_buf.get_type(row_ofs, "proj") == lite3cpp::Type::Array) {
+                    proj_ofs = _rows_buf.get_arr(row_ofs, "proj");
+                }
+            }
+            else if (elem_type == lite3cpp::Type::Array) {
+                proj_ofs = _rows_buf.arr_get_arr(0, row_u32);
+            }
+
+            if (proj_ofs == 0 || proj_ofs + sizeof(lite3cpp::PackedNodeLayout) > _rows_buf.size()) {
                 return CAT_INVALID_ARGUMENT;
             }
-            const auto& data_id_str = row[data_ix].get_ref<const std::string&>();
+            const lite3cpp::NodeView pnv{
+                reinterpret_cast<const lite3cpp::PackedNodeLayout*>(_rows_buf.data() + proj_ofs)};
+            if (data_col_u32 >= pnv.size() ||
+                _rows_buf.arr_get_type(proj_ofs, data_col_u32) != lite3cpp::Type::String)
+            {
+                return CAT_INVALID_ARGUMENT;
+            }
+
+            const std::string_view data_id_str = _rows_buf.arr_get_str(proj_ofs, data_col_u32);
             if (!prev_data_id.empty() && data_id_str == prev_data_id) {
                 continue;
             }
@@ -1110,31 +1133,15 @@ _rsGenQuery( rsComm_t *rsComm, genQueryInp_t *genQueryInp,
             count_ast.order_by = {};
             auto count_opts = sql_opts;
             count_opts.default_number_of_rows = 0;
-            try {
-                auto [inner_sql, count_values] = gq2::to_sql(count_ast, count_opts);
-                const auto count_sql = fmt::format("select count(*) from ({}) as irods_gq1_total_cnt", inner_sql);
-                char* count_out_str = nullptr;
-                irods::at_scope_exit free_count_out{[&count_out_str] { std::free(count_out_str); }};
-                const int count_ec = chl_execute_genquery2_sql(*rsComm, count_sql.c_str(), &count_values, &count_out_str);
-                if (count_ec == 0 && count_out_str != nullptr) {
-                    const auto count_rows = nlohmann::json::parse(count_out_str);
-                    if (count_rows.is_array() && !count_rows.empty() &&
-                        count_rows[0].is_array() && !count_rows[0].empty() &&
-                        count_rows[0][0].is_string())
-                    {
-                        const auto& cnt_str = count_rows[0][0].get_ref<const std::string&>();
-                        std::from_chars(cnt_str.data(), cnt_str.data() + cnt_str.size(), total_row_count);
-                    }
-                }
+            const gq2::statement count_stmt = std::move(count_ast);
+            lite3cpp::Buffer count_buf;
+            if (const int count_ec = chl_execute_genquery2_buffer(*rsComm, count_stmt, count_opts, count_buf);
+                count_ec == 0)
+            {
+                total_row_count = static_cast<int>(gq2::rows_buffer_get_row_count(count_buf));
             }
-            catch (const irods::exception& e) {
-                log_api::error("_rsGenQuery: count SQL generation failed: {}", e.client_display_what());
-                // NOLINTNEXTLINE(bugprone-narrowing-conversions,cppcoreguidelines-narrowing-conversions)
-                return e.code();
-            }
-            catch (const std::exception& e) {
-                log_api::error("_rsGenQuery: count SQL execution failed: {}", e.what());
-                return SYS_INTERNAL_ERR;
+            else if (count_ec != CAT_NO_ROWS_FOUND) {
+                return count_ec;
             }
         }
 
@@ -1148,41 +1155,14 @@ _rsGenQuery( rsComm_t *rsComm, genQueryInp_t *genQueryInp,
         select_ast.range.offset = std::to_string(current_offset);
         select_ast.range.number_of_rows = std::to_string(requested_rows + 1);
 
-        std::string sql;
-        std::vector<std::string> bind_values;
-        try {
-            std::tie(sql, bind_values) = gq2::to_sql(select_ast, sql_opts);
-        }
-        catch (const irods::exception& e) {
-            log_api::error("_rsGenQuery: SQL generation failed: {}", e.client_display_what());
-            // NOLINTNEXTLINE(bugprone-narrowing-conversions,cppcoreguidelines-narrowing-conversions)
-            return e.code();
-        }
-        catch (const std::exception& e) {
-            log_api::error("_rsGenQuery: SQL generation failed: {}", e.what());
-            return CAT_INVALID_ARGUMENT;
-        }
-
-        char* sql_out_str = nullptr;
-        irods::at_scope_exit free_sql_out{[&sql_out_str] { std::free(sql_out_str); }};
-        if (const int ec = chl_execute_genquery2_sql(*rsComm, sql.c_str(), &bind_values, &sql_out_str); ec < 0) {
+        const gq2::statement stmt = std::move(select_ast);
+        lite3cpp::Buffer rows_buf;
+        if (const int ec = chl_execute_genquery2_buffer(*rsComm, stmt, sql_opts, rows_buf); ec < 0) {
             return ec;
         }
 
-        if (sql_out_str == nullptr) {
-            return SYS_INTERNAL_ERR;
-        }
-
-        nlohmann::json rows;
-        try {
-            rows = nlohmann::json::parse(sql_out_str);
-        }
-        catch (const std::exception& e) {
-            log_api::error("_rsGenQuery: failed to parse JSON result: {}", e.what());
-            return SYS_INTERNAL_ERR;
-        }
-
-        if (!rows.is_array() || rows.empty()) {
+        const std::size_t returned_rows = gq2::rows_buffer_get_row_count(rows_buf);
+        if (returned_rows == 0) {
             if (genQueryInp->continueInx > 0) {
                 erase_continuation(genQueryInp->continueInx);
             }
@@ -1190,12 +1170,10 @@ _rsGenQuery( rsComm_t *rsComm, genQueryInp_t *genQueryInp,
             return CAT_NO_ROWS_FOUND;
         }
 
-        const bool has_more = rows.size() > requested_rows;
-        if (has_more) {
-            rows.get_ref<nlohmann::json::array_t&>().resize(requested_rows);
-        }
+        const bool has_more = returned_rows > requested_rows;
+        const std::size_t page_rows = std::min(returned_rows, requested_rows);
 
-        if (const int access_ec = check_cond_input_access(*rsComm, *genQueryInp, rows); access_ec != 0) {
+        if (const int access_ec = check_cond_input_access(*rsComm, *genQueryInp, rows_buf, page_rows); access_ec != 0) {
             if (genQueryInp->continueInx > 0) {
                 erase_continuation(genQueryInp->continueInx);
             }
@@ -1203,7 +1181,7 @@ _rsGenQuery( rsComm_t *rsComm, genQueryInp_t *genQueryInp,
         }
 
         int out_continue_inx = 0;
-        const std::size_t next_offset = current_offset + rows.size();
+        const std::size_t next_offset = current_offset + page_rows;
         if (has_more) {
             if ((genQueryInp->options & AUTO_CLOSE) != 0) {
                 if (genQueryInp->continueInx > 0) {
@@ -1230,7 +1208,9 @@ _rsGenQuery( rsComm_t *rsComm, genQueryInp_t *genQueryInp,
         }
 
         genQueryOut_t* populated_out = nullptr;
-        if (const int pack_ec = gq2::rows_to_genquery_out(rows, col_indices, &populated_out, out_continue_inx); pack_ec < 0) {
+        if (const int pack_ec = gq2::rows_buffer_to_genquery_out(rows_buf, col_indices, &populated_out, out_continue_inx, page_rows);
+            pack_ec < 0)
+        {
             return pack_ec;
         }
 

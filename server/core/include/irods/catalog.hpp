@@ -30,6 +30,12 @@ namespace irods::experimental::catalog
     auto execute_transaction(
         nanodbc::connection& _db_conn,
         std::function<int(nanodbc::transaction&)> _func) -> int;
+
+    /// \brief Returns true if the configured catalog database plugin uses ODBC/SQL
+    /// (i.e. postgres, mysql, or oracle), and false for non-ODBC backends (e.g. l3kvg).
+    ///
+    /// \since 6.0.0
+    auto uses_odbc() -> bool;
 } // namespace irods::experimental::catalog
 
 #endif // #ifndef IRODS_CATALOG_HPP

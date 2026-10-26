@@ -4,6 +4,7 @@ add_dependencies(all-plugins all-plugins-database)
 
 set(
   IRODS_PLUGINS_DATABASE_SOURCES
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/atomic_apply_sql.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/catalog_access_control.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/database_session.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/db_plugin.cpp"
@@ -14,6 +15,7 @@ set(
 
 set(
   IRODS_PLUGINS_DATABASE_HEADERS_PRIVATE
+  "${CMAKE_CURRENT_SOURCE_DIR}/include/irods/private/atomic_apply_sql.hpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/include/irods/private/catalog_access_control.hpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/include/irods/private/database_session.hpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/include/irods/private/db_flavor_table.hpp"

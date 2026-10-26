@@ -4,6 +4,7 @@
 /// \file
 
 #include "irods/logical_quota_utilities.hpp"
+#include "irods/atomic_apply_database_operations.hpp"
 #include "irods/objInfo.h"
 #include "irods/ruleExecSubmit.h"
 #include "irods/rcConnect.h"
@@ -20,6 +21,23 @@
 #include <map>
 
 #include "irods/irods_error.hpp"
+#include <variant>
+
+namespace lite3cpp
+{
+    class Buffer;
+} // namespace lite3cpp
+
+namespace irods::experimental::genquery2
+{
+    struct options;
+    struct select;
+    struct insert;
+    struct update;
+    struct remove;
+
+    using statement = std::variant<select, insert, update, remove>;
+} // namespace irods::experimental::genquery2
 
 using leaf_bundle_t = irods::resource_manager::leaf_bundle_t;
 
@@ -418,6 +436,51 @@ auto chl_check_auth_credentials(RsComm& _comm,
 /// \since 4.3.2
 auto chl_execute_genquery2_sql(RsComm& _comm, const char* _sql, const std::vector<std::string>* _values, char** _output)
     -> int;
+
+/// \brief High-level wrapper for executing GenQuery2 statements natively via AST.
+///
+/// Dispatches the GenQuery2 statement AST directly to the database plugin if supported,
+/// or falls back to SQL compilation and chl_execute_genquery2_sql.
+///
+/// \param[in]  _comm   The communication object.
+/// \param[in]  _stmt   The GenQuery2 statement AST.
+/// \param[in]  _opts   The query execution options.
+/// \param[out] _output The pointer that will hold the results of the query.
+///
+/// \return An integer.
+/// \retval  0 On success.
+/// \retval <0 On failure.
+///
+/// \since 5.1.0
+auto chl_execute_genquery2(RsComm& _comm,
+                           const irods::experimental::genquery2::statement& _stmt,
+                           const irods::experimental::genquery2::options& _opts,
+                           char** _output) -> int;
+
+/// \brief High-level wrapper for executing GenQuery2 statements natively via AST into a lite3cpp::Buffer.
+///
+/// Dispatches the GenQuery2 statement AST directly to the database plugin via
+/// DATABASE_OP_EXECUTE_GENQUERY2_BUFFER, avoiding JSON string serialization.
+///
+/// \param[in]  _comm   The communication object.
+/// \param[in]  _stmt   The GenQuery2 statement AST.
+/// \param[in]  _opts   The query execution options.
+/// \param[out] _output The lite3cpp::Buffer that will hold the result rows array.
+///
+/// \return An integer.
+/// \retval  0 On success.
+/// \retval <0 On failure.
+///
+/// \since 6.0.0
+auto chl_execute_genquery2_buffer(RsComm& _comm,
+                                  const irods::experimental::genquery2::statement& _stmt,
+                                  const irods::experimental::genquery2::options& _opts,
+                                  lite3cpp::Buffer& _output) -> int;
+
+auto chl_get_catalog_version(RsComm* _comm, int* _version) -> int;
+auto chl_atomic_apply(RsComm* _comm, const char* _json_input) -> int;
+auto chl_atomic_apply_operations(RsComm* _comm,
+                                 const std::vector<irods::experimental::dml::operation_type>& _ops) -> int;
 
 /// \brief High-level wrapper for locking delay rules.
 ///

@@ -34,10 +34,13 @@
 #include "irods/private/irods_catalog_properties.hpp"
 #include "irods/private/low_level.hpp"
 #include "irods/private/genquery2_builder.hpp"
+#include "irods/private/genquery2_sql.hpp"
+#include "irods/private/atomic_apply_sql.hpp"
 #include "irods/private/nanodbc_executor.hpp"
 #include "irods/private/database_session.hpp"
 #include "irods/private/db_flavor_table.hpp"
 #include "irods/private/catalog_access_control.hpp"
+#include "buffer.hpp"
 #include "irods/rcConnect.h"
 #include "irods/rcMisc.h"
 #include "irods/rods.h"
@@ -13044,6 +13047,177 @@ auto db_execute_genquery2_sql(irods::plugin_context& _ctx,
     }
 } // db_execute_genquery2_sql
 
+auto db_execute_genquery2_op(irods::plugin_context& _ctx,
+                             const irods::experimental::genquery2::select* _ast,
+                             const irods::experimental::genquery2::options* _opts,
+                             char** _output) -> irods::error
+{
+    if (const auto ret = _ctx.valid(); !ret.ok()) {
+        return PASS(ret);
+    }
+
+    if (!_ast || !_opts || !_output) {
+        log_db::error("{}: Received one or more null pointers.", __func__);
+        return ERROR(SYS_INTERNAL_NULL_INPUT_ERR, "Received one or more null pointers.");
+    }
+
+    *_output = nullptr;
+
+    try {
+        auto opts = *_opts;
+        if (opts.database.empty()) {
+            const auto config_handle = irods::server_properties::instance().map();
+            opts.database = config_handle.get_json()
+                                .at(irods::KW_CFG_PLUGIN_CONFIGURATION)
+                                .at(irods::KW_CFG_PLUGIN_TYPE_DATABASE)
+                                .at(irods::KW_CFG_DB_TECHNOLOGY)
+                                .get<std::string>();
+        }
+
+        const auto [sql, values] = irods::experimental::genquery2::to_sql(*_ast, opts);
+        return db_execute_genquery2_sql(_ctx, sql.c_str(), &values, _output);
+    }
+    catch (const irods::exception& e) {
+        log_db::error("{}: {}", __func__, e.client_display_what());
+        return ERROR(e.code(), e.what());
+    }
+    catch (const std::exception& e) {
+        log_db::error("{}: {}", __func__, e.what());
+        return ERROR(SYS_LIBRARY_ERROR, e.what());
+    }
+} // db_execute_genquery2_op
+
+auto db_execute_genquery2_buffer_op(irods::plugin_context& _ctx,
+                                    const irods::experimental::genquery2::select* _ast,
+                                    const irods::experimental::genquery2::options* _opts,
+                                    lite3cpp::Buffer* _output) -> irods::error
+{
+    if (const auto ret = _ctx.valid(); !ret.ok()) {
+        return PASS(ret);
+    }
+
+    if (!_ast || !_opts || !_output) {
+        log_db::error("{}: Received one or more null pointers.", __func__);
+        return ERROR(SYS_INTERNAL_NULL_INPUT_ERR, "Received one or more null pointers.");
+    }
+
+    try {
+        auto opts = *_opts;
+        if (opts.database.empty()) {
+            const auto config_handle = irods::server_properties::instance().map();
+            opts.database = config_handle.get_json()
+                                .at(irods::KW_CFG_PLUGIN_CONFIGURATION)
+                                .at(irods::KW_CFG_PLUGIN_TYPE_DATABASE)
+                                .at(irods::KW_CFG_DB_TECHNOLOGY)
+                                .get<std::string>();
+        }
+
+        const auto [sql, values] = irods::experimental::genquery2::to_sql(*_ast, opts);
+        auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
+        auto row = executor.execute_query(db_conn, sql, values);
+
+        lite3cpp::Buffer out_buf(4096);
+        out_buf.init_object();
+        const std::size_t rows_ofs = out_buf.set_arr(0, "rows");
+
+        const auto n_cols = row.columns();
+        while (row.next()) {
+            const std::size_t r_ofs = out_buf.arr_append_arr(rows_ofs);
+            for (std::remove_cvref_t<decltype(n_cols)> i = 0; i < n_cols; ++i) {
+                out_buf.arr_append_str(r_ofs, row.get<std::string>(i, ""));
+            }
+        }
+
+        *_output = std::move(out_buf);
+        return SUCCESS();
+    }
+    catch (const irods::exception& e) {
+        log_db::error("{}: {}", __func__, e.client_display_what());
+        return ERROR(e.code(), e.what());
+    }
+    catch (const std::exception& e) {
+        log_db::error("{}: {}", __func__, e.what());
+        return ERROR(SYS_LIBRARY_ERROR, e.what());
+    }
+} // db_execute_genquery2_buffer_op
+
+auto db_atomic_apply_op(irods::plugin_context& _ctx,
+                        const std::vector<irods::experimental::dml::operation_type>* _ops,
+                        int* _affected_rows) -> irods::error
+{
+    if (const auto ret = _ctx.valid(); !ret.ok()) {
+        return PASS(ret);
+    }
+
+    if (!_ops) {
+        return ERROR(SYS_INTERNAL_NULL_INPUT_ERR, "Operation list cannot be null.");
+    }
+
+    try {
+        auto [db_instance, db_conn] = irods::experimental::catalog::get_session_connection();
+        const auto rows = irods::experimental::catalog::apply_atomic_operations(db_conn, db_instance, *_ops);
+        if (_affected_rows) {
+            *_affected_rows = rows;
+        }
+        return SUCCESS();
+    }
+    catch (const irods::exception& e) {
+        log_db::error("{}: {}", __func__, e.client_display_what());
+        return ERROR(e.code(), e.what());
+    }
+    catch (const std::exception& e) {
+        log_db::error("{}: {}", __func__, e.what());
+        return ERROR(SYS_LIBRARY_ERROR, e.what());
+    }
+} // db_atomic_apply_op
+
+auto db_get_catalog_version_op(irods::plugin_context& _ctx, int* _schema_version) -> irods::error
+{
+    if (const auto ret = _ctx.valid(); !ret.ok()) {
+        return PASS(ret);
+    }
+
+    if (!_schema_version) {
+        return ERROR(SYS_INTERNAL_NULL_INPUT_ERR, "Output pointer cannot be null.");
+    }
+
+    *_schema_version = 0;
+
+    try {
+        auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
+        namespace gq2 = irods::experimental::genquery2;
+        using gq2::builder::col;
+
+        const auto opt_ver = irods::experimental::catalog::query_catalog_string(
+            executor,
+            db_conn,
+            gq2::builder::select({"option_value"})
+                .from("GRID_CONFIGURATION")
+                .where(col("namespace") == "database" && col("option_name") == "schema_version")
+                .build());
+        if (!opt_ver) {
+            return ERROR(CAT_NO_ROWS_FOUND, "Could not find schema_version in R_GRID_CONFIGURATION.");
+        }
+
+        int ver = 0;
+        const auto [ptr, ec] = std::from_chars(opt_ver->data(), opt_ver->data() + opt_ver->size(), ver);
+        if (ec != std::errc{}) {
+            return ERROR(SYS_LIBRARY_ERROR, fmt::format("Invalid schema_version [{}]", *opt_ver));
+        }
+
+        *_schema_version = ver;
+        return SUCCESS();
+    }
+    catch (const irods::exception& e) {
+        log_db::error("{}: {}", __func__, e.client_display_what());
+        return ERROR(e.code(), e.what());
+    }
+    catch (const std::exception& e) {
+        log_db::error("{}: {}", __func__, e.what());
+        return ERROR(SYS_LIBRARY_ERROR, e.what());
+    }
+} // db_get_catalog_version_op
+
 auto db_delay_rule_lock(irods::plugin_context& _ctx, const char* _rule_id, const char* _lock_host, int _lock_host_pid)
     -> irods::error
 {
@@ -14409,6 +14583,29 @@ irods::database* plugin_factory(
         DATABASE_OP_EXECUTE_GENQUERY2_SQL,
         function<error(plugin_context&, const char*, const std::vector<std::string>*, char**)>(
             db_execute_genquery2_sql));
+    pg->add_operation<const irods::experimental::genquery2::select*,
+                      const irods::experimental::genquery2::options*,
+                      char**>(
+        DATABASE_OP_EXECUTE_GENQUERY2,
+        function<error(plugin_context&,
+                       const irods::experimental::genquery2::select*,
+                       const irods::experimental::genquery2::options*,
+                       char**)>(db_execute_genquery2_op));
+    pg->add_operation<const irods::experimental::genquery2::select*,
+                      const irods::experimental::genquery2::options*,
+                      lite3cpp::Buffer*>(
+        DATABASE_OP_EXECUTE_GENQUERY2_BUFFER,
+        function<error(plugin_context&,
+                       const irods::experimental::genquery2::select*,
+                       const irods::experimental::genquery2::options*,
+                       lite3cpp::Buffer*)>(db_execute_genquery2_buffer_op));
+    pg->add_operation<const std::vector<irods::experimental::dml::operation_type>*, int*>(
+        DATABASE_OP_ATOMIC_APPLY,
+        function<error(plugin_context&, const std::vector<irods::experimental::dml::operation_type>*, int*)>(
+            db_atomic_apply_op));
+    pg->add_operation<int*>(
+        DATABASE_OP_GET_CATALOG_VERSION,
+        function<error(plugin_context&, int*)>(db_get_catalog_version_op));
     pg->add_operation<const char*, const char*, int>(
         DATABASE_OP_DELAY_RULE_LOCK,
         function<error(plugin_context&, const char*, const char*, int)>(db_delay_rule_lock));

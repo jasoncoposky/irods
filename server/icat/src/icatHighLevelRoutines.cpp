@@ -24,6 +24,11 @@
 #include "irods/irods_database_constants.hpp"
 #include "irods/irods_server_properties.hpp"
 #include "irods/logical_quota_utilities.hpp"
+#include "irods/private/genquery2_ast_types.hpp"
+#include "irods/private/genquery2_sql.hpp"
+#include "buffer.hpp"
+#include <nlohmann/json.hpp>
+#include <memory>
 
 // =-=-=-=-=-=-=-
 // stl includes
@@ -4544,6 +4549,192 @@ auto chl_execute_genquery2_sql(RsComm& _comm, const char* _sql, const std::vecto
     // NOLINTNEXTLINE(bugprone-narrowing-conversions,cppcoreguidelines-narrowing-conversions)
     return ret.code();
 } // chl_execute_genquery2_sql
+
+auto chl_execute_genquery2(RsComm& _comm,
+                           const irods::experimental::genquery2::statement& _stmt,
+                           const irods::experimental::genquery2::options& _opts,
+                           char** _output) -> int
+{
+    irods::database_object_ptr db_obj_ptr;
+    if (const auto ret = irods::database_factory(database_plugin_type, db_obj_ptr); !ret.ok()) {
+        irods::log(PASS(ret));
+        // NOLINTNEXTLINE(bugprone-narrowing-conversions,cppcoreguidelines-narrowing-conversions)
+        return ret.code();
+    }
+
+    irods::plugin_ptr db_plug_ptr;
+    if (const auto ret = db_obj_ptr->resolve(irods::DATABASE_INTERFACE, db_plug_ptr); !ret.ok()) {
+        irods::log(PASSMSG("failed to resolve database interface", ret));
+        // NOLINTNEXTLINE(bugprone-narrowing-conversions,cppcoreguidelines-narrowing-conversions)
+        return ret.code();
+    }
+
+    irods::first_class_object_ptr ptr = db_obj_ptr;
+    irods::database_ptr db = std::dynamic_pointer_cast<irods::database>(db_plug_ptr);
+
+    if (db->has_operation(irods::DATABASE_OP_EXECUTE_GENQUERY2)) {
+        const auto ret = db->call(&_comm, irods::DATABASE_OP_EXECUTE_GENQUERY2, ptr, &_stmt, &_opts, _output);
+        // NOLINTNEXTLINE(bugprone-narrowing-conversions,cppcoreguidelines-narrowing-conversions)
+        return ret.code();
+    }
+
+    // Fallback: if _stmt holds select, compile to SQL and execute via chl_execute_genquery2_sql.
+    if (const auto* select_stmt = std::get_if<irods::experimental::genquery2::select>(&_stmt)) {
+        try {
+            const auto [sql, values] = irods::experimental::genquery2::to_sql(*select_stmt, _opts);
+            if (sql.empty()) {
+                return SYS_INVALID_INPUT_PARAM;
+            }
+            return chl_execute_genquery2_sql(_comm, sql.c_str(), &values, _output);
+        }
+        catch (const irods::exception& e) {
+            irods::log(e);
+            // NOLINTNEXTLINE(bugprone-narrowing-conversions,cppcoreguidelines-narrowing-conversions)
+            return e.code();
+        }
+        catch (const std::exception& e) {
+            irods::log(ERROR(SYS_LIBRARY_ERROR, e.what()));
+            return SYS_LIBRARY_ERROR;
+        }
+        catch (...) {
+            irods::log(ERROR(SYS_UNKNOWN_ERROR, "An unknown error occurred"));
+            return SYS_UNKNOWN_ERROR;
+        }
+    }
+
+    return SYS_NOT_SUPPORTED;
+} // chl_execute_genquery2
+
+auto chl_execute_genquery2_buffer(RsComm& _comm,
+                                  const irods::experimental::genquery2::statement& _stmt,
+                                  const irods::experimental::genquery2::options& _opts,
+                                  lite3cpp::Buffer& _output) -> int
+{
+    irods::database_object_ptr db_obj_ptr;
+    if (const auto ret = irods::database_factory(database_plugin_type, db_obj_ptr); !ret.ok()) {
+        irods::log(PASS(ret));
+        // NOLINTNEXTLINE(bugprone-narrowing-conversions,cppcoreguidelines-narrowing-conversions)
+        return ret.code();
+    }
+
+    irods::plugin_ptr db_plug_ptr;
+    if (const auto ret = db_obj_ptr->resolve(irods::DATABASE_INTERFACE, db_plug_ptr); !ret.ok()) {
+        irods::log(PASSMSG("failed to resolve database interface", ret));
+        // NOLINTNEXTLINE(bugprone-narrowing-conversions,cppcoreguidelines-narrowing-conversions)
+        return ret.code();
+    }
+
+    irods::first_class_object_ptr ptr = db_obj_ptr;
+    irods::database_ptr db = std::dynamic_pointer_cast<irods::database>(db_plug_ptr);
+
+    if (db->has_operation(irods::DATABASE_OP_EXECUTE_GENQUERY2_BUFFER)) {
+        const auto ret = db->call(&_comm, irods::DATABASE_OP_EXECUTE_GENQUERY2_BUFFER, ptr, &_stmt, &_opts, &_output);
+        // NOLINTNEXTLINE(bugprone-narrowing-conversions,cppcoreguidelines-narrowing-conversions)
+        return ret.code();
+    }
+
+    // Fallback to chl_execute_genquery2 (JSON string) and populate _output Buffer.
+    char* raw_json = nullptr;
+    const int ec = chl_execute_genquery2(_comm, _stmt, _opts, &raw_json);
+    std::unique_ptr<char, void (*)(void*)> json_guard{raw_json, std::free};
+    if (ec < 0) {
+        return ec;
+    }
+
+    try {
+        _output = lite3cpp::Buffer();
+        _output.init_array();
+        if (raw_json && *raw_json != '\0') {
+            const auto rows = nlohmann::json::parse(raw_json);
+            if (rows.is_array()) {
+                for (const auto& row : rows) {
+                    if (!row.is_array()) {
+                        continue;
+                    }
+                    const std::size_t row_ofs = _output.arr_append_obj(0);
+                    const std::size_t proj_ofs = _output.set_arr(row_ofs, "proj");
+                    for (const auto& cell : row) {
+                        if (cell.is_string()) {
+                            _output.arr_append_str(proj_ofs, cell.get_ref<const std::string&>());
+                        }
+                        else {
+                            _output.arr_append_str(proj_ofs, cell.dump());
+                        }
+                    }
+                }
+            }
+        }
+        return 0;
+    }
+    catch (const std::exception& e) {
+        irods::log(ERROR(SYS_LIBRARY_ERROR, e.what()));
+        return SYS_LIBRARY_ERROR;
+    }
+} // chl_execute_genquery2_buffer
+
+auto chl_get_catalog_version(RsComm* _comm, int* _version) -> int
+{
+    irods::database_object_ptr db_obj_ptr;
+    if (const auto ret = irods::database_factory(database_plugin_type, db_obj_ptr); !ret.ok()) {
+        irods::log(PASS(ret));
+        return static_cast<int>(ret.code());
+    }
+    irods::plugin_ptr db_plug_ptr;
+    if (const auto ret = db_obj_ptr->resolve(irods::DATABASE_INTERFACE, db_plug_ptr); !ret.ok()) {
+        irods::log(PASSMSG("failed to resolve database interface", ret));
+        return static_cast<int>(ret.code());
+    }
+    irods::first_class_object_ptr ptr = db_obj_ptr;
+    irods::database_ptr db = std::dynamic_pointer_cast<irods::database>(db_plug_ptr);
+    if (!db->has_operation(irods::DATABASE_OP_GET_CATALOG_VERSION)) {
+        return SYS_NOT_SUPPORTED;
+    }
+    const auto ret = db->call(_comm, irods::DATABASE_OP_GET_CATALOG_VERSION, ptr, _version);
+    return static_cast<int>(ret.code());
+} // chl_get_catalog_version
+
+auto chl_atomic_apply(RsComm* _comm, const char* _json_input) -> int
+{
+    irods::database_object_ptr db_obj_ptr;
+    if (const auto ret = irods::database_factory(database_plugin_type, db_obj_ptr); !ret.ok()) {
+        irods::log(PASS(ret));
+        return static_cast<int>(ret.code());
+    }
+    irods::plugin_ptr db_plug_ptr;
+    if (const auto ret = db_obj_ptr->resolve(irods::DATABASE_INTERFACE, db_plug_ptr); !ret.ok()) {
+        irods::log(PASSMSG("failed to resolve database interface", ret));
+        return static_cast<int>(ret.code());
+    }
+    irods::first_class_object_ptr ptr = db_obj_ptr;
+    irods::database_ptr db = std::dynamic_pointer_cast<irods::database>(db_plug_ptr);
+    if (!db->has_operation(irods::DATABASE_OP_ATOMIC_APPLY)) {
+        return SYS_NOT_SUPPORTED;
+    }
+    const auto ret = db->call(_comm, irods::DATABASE_OP_ATOMIC_APPLY, ptr, _json_input);
+    return static_cast<int>(ret.code());
+} // chl_atomic_apply
+
+auto chl_atomic_apply_operations(RsComm* _comm,
+                                 const std::vector<irods::experimental::dml::operation_type>& _ops) -> int
+{
+    irods::database_object_ptr db_obj_ptr;
+    if (const auto ret = irods::database_factory(database_plugin_type, db_obj_ptr); !ret.ok()) {
+        irods::log(PASS(ret));
+        return static_cast<int>(ret.code());
+    }
+    irods::plugin_ptr db_plug_ptr;
+    if (const auto ret = db_obj_ptr->resolve(irods::DATABASE_INTERFACE, db_plug_ptr); !ret.ok()) {
+        irods::log(PASSMSG("failed to resolve database interface", ret));
+        return static_cast<int>(ret.code());
+    }
+    irods::first_class_object_ptr ptr = db_obj_ptr;
+    irods::database_ptr db = std::dynamic_pointer_cast<irods::database>(db_plug_ptr);
+    if (!db->has_operation(irods::DATABASE_OP_ATOMIC_APPLY)) {
+        return SYS_NOT_SUPPORTED;
+    }
+    const auto ret = db->call(_comm, irods::DATABASE_OP_ATOMIC_APPLY, ptr, &_ops);
+    return static_cast<int>(ret.code());
+} // chl_atomic_apply_operations
 
 auto chl_delay_rule_lock(RsComm& _comm, const char* _rule_id, const char* _lock_host, int _lock_host_pid) -> int
 {

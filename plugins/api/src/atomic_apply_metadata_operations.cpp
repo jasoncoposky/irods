@@ -23,6 +23,8 @@
 #include "irods/catalog.hpp"
 #include "irods/catalog_utilities.hpp"
 #include "irods/escape_utilities.hpp"
+#include "irods/icatHighLevelRoutines.hpp"
+#include "irods/irods_at_scope_exit.hpp"
 #include "irods/irods_get_full_path_for_config_file.hpp"
 #include "irods/irods_get_l1desc.hpp"
 #include "irods/irods_logger.hpp"
@@ -457,9 +459,10 @@ namespace
 
                 const std::string json_input(static_cast<const char*>(_input->buf), _input->len);
                 char* json_output = nullptr;
+                irods::at_scope_exit free_json_output{[&json_output] { std::free(json_output); }};
 
                 const auto ec = rc_atomic_apply_metadata_operations(host_info->conn, json_input.data(), &json_output);
-                *_output = irods::to_bytes_buffer(json_output);
+                *_output = irods::to_bytes_buffer(json_output ? json_output : "{}");
 
                 return ec;
             }
@@ -505,6 +508,80 @@ namespace
         catch (const std::exception& e) {
             *_output = irods::to_bytes_buffer(make_error_object(json{}, 0, e.what()).dump());
             return SYS_INVALID_INPUT_PARAM;
+        }
+
+        if (!ic::uses_odbc()) {
+            const bool admin_mode =
+                (input.contains("admin_mode") && input.at("admin_mode").get<bool>());
+            if (admin_mode && !irods::is_privileged_client(*_comm)) {
+                log::api::error("User is not an administrator.");
+                *_output = irods::to_bytes_buffer(make_error_object(json{}, 0, "User is not an administrator").dump());
+                return CAT_INSUFFICIENT_PRIVILEGE_LEVEL;
+            }
+
+            const char* chl_type = "-d";
+            if (entity_type == ic::entity_type::collection) {
+                chl_type = "-C";
+            }
+            else if (entity_type == ic::entity_type::resource) {
+                chl_type = "-R";
+            }
+            else if (entity_type == ic::entity_type::user) {
+                chl_type = "-u";
+            }
+
+            KeyValPair cond_input{};
+            if (admin_mode) {
+                addKeyVal(&cond_input, ADMIN_KW, "");
+            }
+            irods::at_scope_exit clear_cond{[&cond_input] { clearKeyVal(&cond_input); }};
+
+            try {
+                const auto& operations = input.at("operations");
+                for (json::size_type i = 0; i < operations.size(); ++i) {
+                    const auto& op_item = operations[i];
+                    const auto op_code = op_item.at("operation").get<std::string>();
+                    const auto attr = op_item.at("attribute").get<std::string>();
+                    const auto val = op_item.at("value").get<std::string>();
+                    std::string units;
+                    if (const auto u_iter = op_item.find("units"); u_iter != std::end(op_item)) {
+                        units = u_iter->get<std::string>();
+                    }
+                    if (attr.empty() || val.empty()) {
+                        *_output = irods::to_bytes_buffer(
+                            make_error_object(op_item, i, "Attribute and value cannot be empty.").dump());
+                        return SYS_INVALID_INPUT_PARAM;
+                    }
+                    int ec = 0;
+                    if (op_code == "add") {
+                        ec = chlAddAVUMetadata(
+                            _comm, chl_type, entity_name.c_str(), attr.c_str(), val.c_str(), units.c_str(), &cond_input);
+                        if (ec == CATALOG_ALREADY_HAS_ITEM_BY_THAT_NAME) {
+                            ec = 0;
+                        }
+                    }
+                    else if (op_code == "remove") {
+                        ec = chlDeleteAVUMetadata(
+                            _comm, 0, chl_type, entity_name.c_str(), attr.c_str(), val.c_str(), units.c_str(), 0, &cond_input);
+                    }
+                    else {
+                        *_output = irods::to_bytes_buffer(
+                            make_error_object(op_item, i, "Invalid metadata operation.").dump());
+                        return INVALID_OPERATION;
+                    }
+                    if (ec < 0) {
+                        *_output = irods::to_bytes_buffer(
+                            make_error_object(op_item, i, "Failed to apply metadata operation.").dump());
+                        return ec;
+                    }
+                }
+                *_output = irods::to_bytes_buffer("{}");
+                return 0;
+            }
+            catch (const std::exception& e) {
+                *_output = irods::to_bytes_buffer(make_error_object(json{}, 0, e.what()).dump());
+                return SYS_INTERNAL_ERR;
+            }
         }
 
         std::string db_instance_name;

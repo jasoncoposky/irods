@@ -760,6 +760,9 @@ namespace irods::experimental::genquery2
 #  if __has_include("irods/rodsGenQuery.h")
 #    include "irods/rodsGenQuery.h"
 #  endif
+#  if __has_include("buffer.hpp")
+#    include "buffer.hpp"
+#  endif
 #  include <algorithm>
 #  include <cstring>
 #  include <initializer_list>
@@ -892,6 +895,204 @@ namespace irods::experimental::genquery2
     {
         return rows_to_genquery_out(_json_rows, _col_indices, &_out, _continue_inx);
     }
+
+#    if __has_include("buffer.hpp")
+    namespace detail
+    {
+        inline auto resolve_rows_array_offset(const lite3cpp::Buffer& _rows_buf) noexcept -> std::optional<std::size_t>
+        {
+            if (_rows_buf.size() < sizeof(lite3cpp::PackedNodeLayout)) {
+                return std::nullopt;
+            }
+            const lite3cpp::NodeView root_nv{reinterpret_cast<const lite3cpp::PackedNodeLayout*>(_rows_buf.data())};
+            if (root_nv.type() == lite3cpp::Type::Array) {
+                return std::size_t{0};
+            }
+            if (root_nv.type() == lite3cpp::Type::Object) {
+                try {
+                    if (_rows_buf.get_type(0, "rows") == lite3cpp::Type::Array) {
+                        return _rows_buf.get_arr(0, "rows");
+                    }
+                }
+                catch (...) {
+                    return std::nullopt;
+                }
+            }
+            return std::nullopt;
+        }
+
+        inline auto format_cell_value(const lite3cpp::Buffer& _buf,
+                                      std::size_t _arr_ofs,
+                                      std::uint32_t _col_idx,
+                                      char (&_scratch)[64]) noexcept -> std::string_view
+        {
+            try {
+                const auto t = _buf.arr_get_type(_arr_ofs, _col_idx);
+                if (t == lite3cpp::Type::String) {
+                    return _buf.arr_get_str(_arr_ofs, _col_idx);
+                }
+                if (t == lite3cpp::Type::Int64) {
+                    const auto v = _buf.arr_get_i64(_arr_ofs, _col_idx);
+                    const auto res = fmt::format_to_n(_scratch, sizeof(_scratch) - 1, "{}", v);
+                    *res.out = '\0';
+                    return std::string_view{_scratch, static_cast<std::size_t>(res.out - _scratch)};
+                }
+                if (t == lite3cpp::Type::Float64) {
+                    const auto v = _buf.arr_get_f64(_arr_ofs, _col_idx);
+                    const auto res = fmt::format_to_n(_scratch, sizeof(_scratch) - 1, "{}", v);
+                    *res.out = '\0';
+                    return std::string_view{_scratch, static_cast<std::size_t>(res.out - _scratch)};
+                }
+                if (t == lite3cpp::Type::Bool) {
+                    return _buf.arr_get_bool(_arr_ofs, _col_idx) ? "1" : "0";
+                }
+            }
+            catch (...) {
+            }
+            return {};
+        }
+    } // namespace detail
+
+    /// Returns the number of rows in a `lite3cpp::Buffer` GenQuery2 result buffer
+    /// (either a top-level `Array` or an `Object` with a `"rows"` `Array`).
+    inline auto rows_buffer_get_row_count(const lite3cpp::Buffer& _rows_buf) noexcept -> std::size_t
+    {
+        const auto arr_ofs_opt = detail::resolve_rows_array_offset(_rows_buf);
+        if (!arr_ofs_opt || *arr_ofs_opt + sizeof(lite3cpp::PackedNodeLayout) > _rows_buf.size()) {
+            return 0;
+        }
+        const lite3cpp::NodeView arr_nv{
+            reinterpret_cast<const lite3cpp::PackedNodeLayout*>(_rows_buf.data() + *arr_ofs_opt)};
+        if (arr_nv.type() != lite3cpp::Type::Array) {
+            return 0;
+        }
+        return arr_nv.size();
+    }
+
+    /// Populates a legacy `GenQueryOut*` C structure directly from a `lite3cpp::Buffer`
+    /// of GenQuery2 result rows (either `{"proj": ["col0", ...]}` objects or `["col0", ...]` arrays)
+    /// using zero-copy `std::string_view` slices without intermediate `std::string` or JSON allocations.
+    inline auto rows_buffer_to_genquery_out(const lite3cpp::Buffer& _rows_buf,
+                                            std::span<const int> _col_indices,
+                                            GenQueryOut** _out,
+                                            int _continue_inx = 0,
+                                            std::size_t _max_rows = MAX_SQL_ROWS) -> int
+    {
+        if (!_out) {
+            return USER__NULL_INPUT_ERR;
+        }
+
+        if (*_out) {
+            for (int i = 0; i < (*_out)->attriCnt; ++i) {
+                std::free((*_out)->sqlResult[i].value);
+            }
+            std::free(*_out);
+            *_out = nullptr;
+        }
+
+        const auto rows_arr_ofs_opt = detail::resolve_rows_array_offset(_rows_buf);
+        if (!rows_arr_ofs_opt) {
+            return CAT_NO_ROWS_FOUND;
+        }
+        const std::size_t rows_arr_ofs = *rows_arr_ofs_opt;
+
+        const std::size_t total_rows = rows_buffer_get_row_count(_rows_buf);
+        if (total_rows == 0 || _max_rows == 0) {
+            return CAT_NO_ROWS_FOUND;
+        }
+
+        const std::size_t row_count =
+            std::min({total_rows, _max_rows, static_cast<std::size_t>(MAX_SQL_ROWS)});
+        const auto num_cols = _col_indices.size();
+        if (num_cols > MAX_SQL_ATTR) {
+            return SYS_INVALID_INPUT_PARAM;
+        }
+
+        struct row_proj_info
+        {
+            std::size_t ofs = 0;
+            std::uint32_t count = 0;
+        };
+        std::vector<row_proj_info> proj_rows(row_count);
+
+        for (std::size_t r = 0; r < row_count; ++r) {
+            const auto elem_type = _rows_buf.arr_get_type(rows_arr_ofs, static_cast<std::uint32_t>(r));
+            std::size_t proj_ofs = 0;
+            if (elem_type == lite3cpp::Type::Object) {
+                const std::size_t row_ofs = _rows_buf.arr_get_obj(rows_arr_ofs, static_cast<std::uint32_t>(r));
+                if (_rows_buf.get_type(row_ofs, "proj") == lite3cpp::Type::Array) {
+                    proj_ofs = _rows_buf.get_arr(row_ofs, "proj");
+                }
+            }
+            else if (elem_type == lite3cpp::Type::Array) {
+                proj_ofs = _rows_buf.arr_get_arr(rows_arr_ofs, static_cast<std::uint32_t>(r));
+            }
+
+            if (proj_ofs != 0 && proj_ofs + sizeof(lite3cpp::PackedNodeLayout) <= _rows_buf.size()) {
+                const lite3cpp::NodeView pnv{
+                    reinterpret_cast<const lite3cpp::PackedNodeLayout*>(_rows_buf.data() + proj_ofs)};
+                proj_rows[r] = row_proj_info{proj_ofs, pnv.size()};
+            }
+        }
+
+        auto* res = static_cast<GenQueryOut*>(std::calloc(1, sizeof(GenQueryOut)));
+        if (!res) {
+            return SYS_MALLOC_ERR;
+        }
+
+        res->rowCnt = static_cast<int>(row_count);
+        res->attriCnt = static_cast<int>(num_cols);
+        res->continueInx = _continue_inx;
+        res->totalRowCount = res->rowCnt;
+
+        char scratch[64]{};
+        std::size_t col_idx = 0;
+        for (const int attri_inx : _col_indices) {
+            std::size_t max_len = 50;
+            const auto col_u32 = static_cast<std::uint32_t>(col_idx);
+            for (std::size_t r = 0; r < row_count; ++r) {
+                if (proj_rows[r].ofs != 0 && col_u32 < proj_rows[r].count) {
+                    const auto sv = detail::format_cell_value(_rows_buf, proj_rows[r].ofs, col_u32, scratch);
+                    max_len = std::max(max_len, sv.size() + 1);
+                }
+            }
+
+            res->sqlResult[col_idx].attriInx = attri_inx;
+            res->sqlResult[col_idx].len = static_cast<int>(max_len);
+            res->sqlResult[col_idx].value = static_cast<char*>(std::calloc(row_count, max_len));
+            if (!res->sqlResult[col_idx].value) {
+                for (std::size_t j = 0; j < col_idx; ++j) {
+                    std::free(res->sqlResult[j].value);
+                }
+                std::free(res);
+                return SYS_MALLOC_ERR;
+            }
+
+            for (std::size_t r = 0; r < row_count; ++r) {
+                if (proj_rows[r].ofs != 0 && col_u32 < proj_rows[r].count) {
+                    const auto sv = detail::format_cell_value(_rows_buf, proj_rows[r].ofs, col_u32, scratch);
+                    if (!sv.empty()) {
+                        std::memcpy(&res->sqlResult[col_idx].value[r * max_len], sv.data(), sv.size());
+                    }
+                }
+            }
+
+            ++col_idx;
+        }
+
+        *_out = res;
+        return 0;
+    }
+
+    inline auto rows_buffer_to_genquery_out(const lite3cpp::Buffer& _rows_buf,
+                                            std::span<const int> _col_indices,
+                                            GenQueryOut*& _out,
+                                            int _continue_inx = 0,
+                                            std::size_t _max_rows = MAX_SQL_ROWS) -> int
+    {
+        return rows_buffer_to_genquery_out(_rows_buf, _col_indices, &_out, _continue_inx, _max_rows);
+    }
+#    endif
 #  endif
     int rs_genquery2(RsComm* _comm,
                      const select& _select,

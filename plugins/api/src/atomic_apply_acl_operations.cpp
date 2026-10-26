@@ -23,6 +23,9 @@
 #include "irods/catalog.hpp"
 #include "irods/catalog_utilities.hpp"
 #include "irods/escape_utilities.hpp"
+#include "irods/icatHighLevelRoutines.hpp"
+#include "irods/irods_at_scope_exit.hpp"
+#include "irods/modAccessControl.h"
 #include "irods/irods_get_full_path_for_config_file.hpp"
 #include "irods/irods_logger.hpp"
 #include "irods/irods_re_serialization.hpp"
@@ -403,9 +406,10 @@ namespace
 
                 const std::string json_input(static_cast<const char*>(_input->buf), _input->len);
                 char* json_output = nullptr;
+                irods::at_scope_exit free_json_output{[&json_output] { std::free(json_output); }};
 
                 const auto ec = rc_atomic_apply_acl_operations(host_info->conn, json_input.data(), &json_output);
-                *_output = irods::to_bytes_buffer(json_output);
+                *_output = irods::to_bytes_buffer(json_output ? json_output : "{}");
 
                 return ec;
             }
@@ -461,6 +465,54 @@ namespace
             const auto msg = fmt::format("Failed to retrieve object id [error_code={}]", object_id);
             *_output = irods::to_bytes_buffer(make_error_object(json{}, 0, msg).dump());
             return object_id;
+        }
+
+        if (!ic::uses_odbc()) {
+            const bool admin_mode =
+                (input.contains("admin_mode") && input.at("admin_mode").get<bool>());
+            if (admin_mode && !irods::is_privileged_client(*_comm)) {
+                const auto msg = fmt::format(
+                    "User [{}#{}] not allowed to modify ACLs [logical_path={}, object_id={}]. "
+                    "admin_mode cannot be enabled because user is not an administrator.",
+                    _comm->clientUser.userName,
+                    _comm->clientUser.rodsZone,
+                    logical_path,
+                    object_id);
+                log::api::error(msg);
+                *_output = irods::to_bytes_buffer(make_error_object(json{}, 0, msg).dump());
+                return CAT_INSUFFICIENT_PRIVILEGE_LEVEL;
+            }
+
+            try {
+                const auto& operations = input.at("operations");
+                for (json::size_type i = 0; i < operations.size(); ++i) {
+                    const auto& op_item = operations[i];
+                    const auto acl = op_item.at("acl").get<std::string>();
+                    throw_if_invalid_acl(acl);
+                    std::string zone = getLocalZoneName();
+                    if (const auto iter = op_item.find("zone"); iter != std::end(op_item)) {
+                        zone = iter->get<std::string>();
+                    }
+                    const auto entity_name = op_item.at("entity_name").get<std::string>();
+                    std::string access_level = (acl == "admin") ? "own" : acl;
+                    if (admin_mode) {
+                        access_level = std::string{MOD_ADMIN_MODE_PREFIX} + access_level;
+                    }
+                    const int ec = chlModAccessControl(
+                        _comm, 0, access_level.c_str(), entity_name.c_str(), zone.c_str(), logical_path.c_str());
+                    if (ec < 0) {
+                        *_output = irods::to_bytes_buffer(
+                            make_error_object(op_item, i, "Failed to apply ACL operation").dump());
+                        return ec;
+                    }
+                }
+                *_output = irods::to_bytes_buffer("{}");
+                return 0;
+            }
+            catch (const std::exception& e) {
+                *_output = irods::to_bytes_buffer(make_error_object(json{}, 0, e.what()).dump());
+                return SYS_INTERNAL_ERR;
+            }
         }
 
         std::string db_instance_name;
