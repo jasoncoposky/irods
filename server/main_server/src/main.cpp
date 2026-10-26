@@ -528,7 +528,7 @@ Signals:
             // NOLINTNEXTLINE(bugprone-lambda-function-name)
             const auto do_validate = [fn = __func__](const auto& _config, const std::string& _schema_file) {
                 const auto resolver = [](const jsoncons::uri& _uri) {
-                    std::ifstream in{(irods::get_irods_home_directory() / _uri.path()).c_str()};
+                    std::ifstream in{(irods::get_irods_home_directory() / fs::path{_uri.path()}.relative_path()).c_str()};
                     if (!in) {
                         return jsoncons::json::null();
                     }

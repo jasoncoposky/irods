@@ -30,6 +30,17 @@ namespace
     using json    = nlohmann::json;
     using log_api = irods::experimental::log::api;
     // clang-format on
+
+    auto extract_zone_name(std::string_view _zone_hint) noexcept -> std::string_view
+    {
+        if (_zone_hint.starts_with('/')) {
+            _zone_hint.remove_prefix(1);
+            if (const auto slash = _zone_hint.find('/'); slash != std::string_view::npos) {
+                return _zone_hint.substr(0, slash);
+            }
+        }
+        return _zone_hint;
+    }
 } // anonymous namespace
 
 auto rs_genquery2(RsComm* _comm, Genquery2Input* _input, char** _output) -> int
@@ -66,10 +77,11 @@ auto rs_genquery2(RsComm* _comm, Genquery2Input* _input, char** _output) -> int
     // Return an error if the host information does not point to the zone of interest.
     // getAndConnRcatHost() returns the local zone if the target zone does not exist. We must catch
     // this situation to avoid querying the wrong catalog.
-    if (_input->zone) {
+    if (_input->zone && *_input->zone != '\0') {
+        const auto hint_zone = extract_zone_name(_input->zone);
         const std::string_view resolved_zone = static_cast<zoneInfo*>(host_info->zoneInfo)->zoneName;
 
-        if (resolved_zone != _input->zone) {
+        if (!hint_zone.empty() && resolved_zone != hint_zone) {
             log_api::error("{}: Could not find zone [{}].", __func__, _input->zone);
             return SYS_INVALID_ZONE_NAME;
         }
@@ -213,7 +225,7 @@ namespace irods::experimental::genquery2
         if (zone_ptr) {
             const std::string_view resolved_zone = static_cast<zoneInfo*>(host_info->zoneInfo)->zoneName;
 
-            if (resolved_zone != zone_ptr) {
+            if (resolved_zone != extract_zone_name(zone_ptr)) {
                 log_api::error("{}: Could not find zone [{}].", __func__, zone_ptr);
                 return SYS_INVALID_ZONE_NAME;
             }
@@ -287,7 +299,7 @@ namespace irods::experimental::genquery2
         if (zone_ptr) {
             const std::string_view resolved_zone = static_cast<zoneInfo*>(host_info->zoneInfo)->zoneName;
 
-            if (resolved_zone != zone_ptr) {
+            if (resolved_zone != extract_zone_name(zone_ptr)) {
                 log_api::error("{}: Could not find zone [{}].", __func__, zone_ptr);
                 return SYS_INVALID_ZONE_NAME;
             }

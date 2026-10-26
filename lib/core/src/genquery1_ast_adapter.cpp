@@ -707,6 +707,11 @@ namespace irods::experimental::genquery2
         const bool upper_case_where = (_inp.options & UPPER_CASE_WHERE) != 0;
 
         bool has_aggregates = false;
+        bool projects_meta_data = false;
+        bool projects_meta_coll = false;
+        bool projects_meta_resc = false;
+        bool projects_meta_user = false;
+
         std::vector<column> non_aggregated_columns;
         non_aggregated_columns.reserve(static_cast<std::size_t>( std::max(0, _inp.selectInp.len)));
 
@@ -720,6 +725,19 @@ namespace irods::experimental::genquery2
             if (col_name.empty()) {
                 // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-array-to-pointer-decay)
                 THROW(CAT_INVALID_ARGUMENT, fmt::format("unknown GenQuery1 column ID: {}", col_id));
+            }
+
+            if (col_name.starts_with("META_DATA_")) {
+                projects_meta_data = true;
+            }
+            else if (col_name.starts_with("META_COLL_")) {
+                projects_meta_coll = true;
+            }
+            else if (col_name.starts_with("META_RESC_")) {
+                projects_meta_resc = true;
+            }
+            else if (col_name.starts_with("META_USER_")) {
+                projects_meta_user = true;
             }
 
             const int select_opt = val & 0xf;
@@ -876,6 +894,31 @@ namespace irods::experimental::genquery2
             else {
                 sel.conditions.emplace_back(logical_and{conditions{std::move(entry_wrapper)}});
             }
+        }
+
+        // GenQuery1 uses INNER JOIN on metadata tables when META_* columns are projected,
+        // whereas GenQuery2 uses LEFT JOIN. Append IS NOT NULL on the projected metadata ID
+        // so entities without metadata do not produce synthetic empty rows.
+        auto append_meta_not_null = [&](std::string_view _meta_id_col) {
+            condition nn_cond{column{std::string{_meta_id_col}}, condition_is_not_null{}};
+            if (sel.conditions.empty()) {
+                sel.conditions.emplace_back(std::move(nn_cond));
+            }
+            else {
+                sel.conditions.emplace_back(logical_and{conditions{std::move(nn_cond)}});
+            }
+        };
+        if (projects_meta_data) {
+            append_meta_not_null("META_DATA_ATTR_ID");
+        }
+        if (projects_meta_coll) {
+            append_meta_not_null("META_COLL_ATTR_ID");
+        }
+        if (projects_meta_resc) {
+            append_meta_not_null("META_RESC_ATTR_ID");
+        }
+        if (projects_meta_user) {
+            append_meta_not_null("META_USER_ATTR_ID");
         }
 
         if (_inp.rowOffset > 0) {

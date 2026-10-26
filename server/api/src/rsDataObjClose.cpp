@@ -710,7 +710,7 @@ int rsDataObjClose(rsComm_t* rsComm, openedDataObjInp_t* dataObjCloseInp)
         return USER__NULL_INPUT_ERR;
     }
 
-    const auto req_close_inp = irods::protocol::active_api_buffer_scope::try_get_active_request<irods::protocol::OpenedDataObjInp>();
+    const auto req_close_inp = irods::protocol::active_api_buffer_scope::try_get_active_request<irods::protocol::OpenedDataObjInp>(dataObjCloseInp);
     const auto fd = req_close_inp ? req_close_inp->l1desc_inx() : dataObjCloseInp->l1descInx;
     if (fd < 3 || fd >= NUM_L1_DESC) {
         irods::log(LOG_NOTICE, fmt::format("{}: l1descInx {} out of range", __FUNCTION__, fd));

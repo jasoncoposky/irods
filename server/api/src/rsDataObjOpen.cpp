@@ -1316,7 +1316,7 @@ int rsDataObjOpen(rsComm_t *rsComm, dataObjInp_t *dataObjInp)
         return SYS_INTERNAL_NULL_INPUT_ERR;
     }
 
-    if (const auto req_inp = irods::protocol::active_api_buffer_scope::try_get_active_request<irods::protocol::DataObjInp>()) {
+    if (const auto req_inp = irods::protocol::active_api_buffer_scope::try_get_active_request<irods::protocol::DataObjInp>(dataObjInp)) {
         if (has_trailing_path_separator(req_inp->obj_path().data())) {
             return USER_INPUT_PATH_ERR;
         }

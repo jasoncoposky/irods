@@ -1125,6 +1125,9 @@ _rsGenQuery( rsComm_t *rsComm, genQueryInp_t *genQueryInp,
         sql_opts.user_zone = rsComm->clientUser.rodsZone;
         sql_opts.admin_mode = irods::is_privileged_client(*rsComm) || disable_strict_acl;
         sql_opts.default_number_of_rows = MAX_SQL_ROWS;
+        if (const char* ticket_kw = getValByKey(&genQueryInp->condInput, TICKET_KW); ticket_kw && *ticket_kw != '\0') {
+            sql_opts.session_ticket = ticket_kw;
+        }
 
         // Compute total row count when requested on the initial page.
         if (genQueryInp->continueInx <= 0 && (genQueryInp->options & RETURN_TOTAL_ROW_COUNT) != 0) {

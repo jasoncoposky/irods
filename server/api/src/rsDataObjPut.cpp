@@ -493,7 +493,7 @@ namespace
         // rcDataObjClose.
         if (rsComm && rsComm->irodsProt == LITE3_PROT && portalOprOut && *portalOprOut) {
             if (auto reply_buf = irods::protocol::PortalOprOut::from_legacy(**portalOprOut)) {
-                irods::protocol::active_api_buffer_scope::set_active_reply(std::move(*reply_buf));
+                irods::protocol::active_api_buffer_scope::set_active_reply(std::move(*reply_buf), portalOprOut);
             }
         }
         ec = sendAndRecvBranchMsg(rsComm, rsComm->apiInx, ec, static_cast<void*>(*portalOprOut), nullptr);

@@ -3,6 +3,7 @@
 #include "irods/filesystem/path_utilities.hpp"
 
 #include <algorithm>
+#include <filesystem>
 #include <functional>
 #include <iomanip>
 #include <iostream>
@@ -170,40 +171,7 @@ namespace irods::filesystem
 
     auto path::lexically_normal() const -> path
     {
-        path p;
-
-        if (empty()) {
-            return p;
-        }
-
-        const path root_separator = std::string{&preferred_separator, 1};
-
-        for (const auto& next_element : *this)
-        {
-            if (next_element == dot) {
-                p /= {};
-            }
-            else if (next_element == dot_dot) {
-                if (p.has_object_name() && p.object_name_view() != dot_dot) {
-                    p.remove_object_name();
-                }
-                else if (root_separator != p) {
-                    p /= next_element;
-                }
-            }
-            else {
-                p /= next_element;
-            }
-        }
-
-        if (p.empty()) {
-            p = dot;
-        }
-        else if (auto it = std::rbegin(p); it->empty() && dot_dot == *std::next(it)) {
-            p = p.parent_path();
-        }
-
-        return p;
+        return path{std::filesystem::path{value_}.lexically_normal().native()};
     }
 
     auto path::lexically_relative(const path& _base) const -> path

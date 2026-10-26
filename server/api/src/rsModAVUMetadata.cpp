@@ -19,7 +19,7 @@ rsModAVUMetadata( rsComm_t *rsComm, modAVUMetadataInp_t *modAVUMetadataInp ) {
     int status;
     char *myHint;
 
-    if (const auto req_avu = irods::protocol::active_api_buffer_scope::try_get_active_request<irods::protocol::ModAVUMetadataInp>()) {
+    if (const auto req_avu = irods::protocol::active_api_buffer_scope::try_get_active_request<irods::protocol::ModAVUMetadataInp>(modAVUMetadataInp)) {
         const auto opt = req_avu->option();
         if (opt != "add" && opt != "rmi" && opt != "rm" && opt != "cp" && opt != "mod" && opt != "set") {
             return CAT_INVALID_ARGUMENT;

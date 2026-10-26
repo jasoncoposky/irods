@@ -116,7 +116,7 @@ int rsObjStat(rsComm_t *rsComm,
 
     if (status >= 0 && rsComm && rsComm->irodsProt == LITE3_PROT && *rodsObjStatOut != nullptr) {
         if (auto stat_buf = irods::protocol::RodsObjStat::from_legacy(**rodsObjStatOut)) {
-            irods::protocol::active_api_buffer_scope::set_active_reply(std::move(*stat_buf));
+            irods::protocol::active_api_buffer_scope::set_active_reply(std::move(*stat_buf), rodsObjStatOut);
         }
     }
     return status;

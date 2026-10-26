@@ -1886,9 +1886,16 @@ namespace irods::protocol
     class active_api_buffer_scope
     {
     public:
-        active_api_buffer_scope(const bytesBuf_t* _in_bbuf, irodsProt_t _prot) noexcept
+        active_api_buffer_scope(const bytesBuf_t* _in_bbuf,
+                                irodsProt_t _prot,
+                                const char* _in_pack_instruct = nullptr,
+                                const char* _out_pack_instruct = nullptr,
+                                const void* _out_struct_slot_ptr = nullptr) noexcept
             : prev_{current_scope_()}
             , prot_{_prot}
+            , in_pack_instruct_{_in_pack_instruct}
+            , out_pack_instruct_{_out_pack_instruct}
+            , out_struct_slot_ptr_{_out_struct_slot_ptr}
         {
             if (_in_bbuf && _in_bbuf->buf && _in_bbuf->len >= static_cast<int>(lite3cpp::config::node_size) &&
                 _prot == LITE3_PROT)
@@ -1901,6 +1908,11 @@ namespace irods::protocol
                 }
             }
             current_scope_() = this;
+        }
+
+        void bind_input_struct(const void* _in_struct_ptr) noexcept
+        {
+            in_struct_ptr_ = _in_struct_ptr;
         }
 
         ~active_api_buffer_scope() noexcept
@@ -1926,14 +1938,22 @@ namespace irods::protocol
         }
 
         template <typename StructBufT>
-        [[nodiscard]] static auto try_get_active_request() -> std::optional<StructBufT>
+        [[nodiscard]] static auto try_get_active_request(const void* _caller_in_struct = nullptr) -> std::optional<StructBufT>
         {
-            if (const auto* buf = active_request_buffer()) {
-                try {
-                    return StructBufT{lite3cpp::Buffer{buf->data(), buf->size()}};
-                }
-                catch (...) {
-                }
+            const auto* s = current_scope_();
+            if (!s || !s->req_buf_.has_value()) {
+                return std::nullopt;
+            }
+            if (s->in_pack_instruct_ && std::string_view{s->in_pack_instruct_} != StructBufT::pi_name) {
+                return std::nullopt;
+            }
+            if (_caller_in_struct && s->in_struct_ptr_ && _caller_in_struct != s->in_struct_ptr_) {
+                return std::nullopt;
+            }
+            try {
+                return StructBufT{lite3cpp::Buffer{s->req_buf_->data(), s->req_buf_->size()}};
+            }
+            catch (...) {
             }
             return std::nullopt;
         }
@@ -1946,9 +1966,17 @@ namespace irods::protocol
         }
 
         template <typename StructBufT>
-        static void set_active_reply(StructBufT&& _reply) noexcept
+        static void set_active_reply(StructBufT&& _reply, const void* _caller_out_slot = nullptr) noexcept
         {
-            set_active_reply_buffer(std::move(_reply.buffer()));
+            if (auto* s = current_scope_(); s && s->prot_ == LITE3_PROT) {
+                if (s->out_pack_instruct_ && std::string_view{s->out_pack_instruct_} != StructBufT::pi_name) {
+                    return;
+                }
+                if (_caller_out_slot && s->out_struct_slot_ptr_ && _caller_out_slot != s->out_struct_slot_ptr_) {
+                    return;
+                }
+                s->reply_buf_ = std::move(_reply.buffer());
+            }
         }
 
         [[nodiscard]] static auto has_active_reply_buffer() noexcept -> bool
@@ -1976,6 +2004,10 @@ namespace irods::protocol
 
         active_api_buffer_scope* prev_{nullptr};
         irodsProt_t prot_{NATIVE_PROT};
+        const char* in_pack_instruct_{nullptr};
+        const char* out_pack_instruct_{nullptr};
+        const void* in_struct_ptr_{nullptr};
+        const void* out_struct_slot_ptr_{nullptr};
         std::optional<lite3cpp::Buffer> req_buf_;
         std::optional<lite3cpp::Buffer> reply_buf_;
     };

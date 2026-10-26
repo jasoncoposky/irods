@@ -135,7 +135,7 @@ namespace irods::experimental::metadata
         switch (_et) {
             case entity_type::collection:
                 q = gq2::builder::select({"META_COLL_ATTR_NAME", "META_COLL_ATTR_VALUE", "META_COLL_ATTR_UNITS"})
-                        .where(col("COLL_NAME") == _tgt)
+                        .where(col("COLL_NAME") == _tgt && col("META_COLL_ATTR_NAME").is_not_null())
                         .build();
                 break;
 
@@ -143,20 +143,21 @@ namespace irods::experimental::metadata
                 const fs::path p{_tgt};
                 q = gq2::builder::select({"META_DATA_ATTR_NAME", "META_DATA_ATTR_VALUE", "META_DATA_ATTR_UNITS"})
                         .where(col("COLL_NAME") == p.parent_path_view() &&
-                               col("DATA_NAME") == p.object_name_view())
+                               col("DATA_NAME") == p.object_name_view() &&
+                               col("META_DATA_ATTR_NAME").is_not_null())
                         .build();
                 break;
             }
 
             case entity_type::user:
                 q = gq2::builder::select({"META_USER_ATTR_NAME", "META_USER_ATTR_VALUE", "META_USER_ATTR_UNITS"})
-                        .where(col("USER_NAME") == _tgt)
+                        .where(col("USER_NAME") == _tgt && col("META_USER_ATTR_NAME").is_not_null())
                         .build();
                 break;
 
             case entity_type::resource:
                 q = gq2::builder::select({"META_RESC_ATTR_NAME", "META_RESC_ATTR_VALUE", "META_RESC_ATTR_UNITS"})
-                        .where(col("RESC_NAME") == _tgt)
+                        .where(col("RESC_NAME") == _tgt && col("META_RESC_ATTR_NAME").is_not_null())
                         .build();
                 break;
 

@@ -16,6 +16,7 @@ namespace irods::experimental::genquery2
         std::string_view user_name;
         std::string_view user_zone;
         std::string_view database;
+        std::string_view session_ticket;
         std::uint16_t default_number_of_rows = 16;
         bool admin_mode = false;
     }; // struct options

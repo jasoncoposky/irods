@@ -181,7 +181,7 @@ rsExecCmd( rsComm_t *rsComm, execCmd_t *execCmdInp, execCmdOut_t **execCmdOut ) 
     if ( status >= 0 && rsComm != nullptr && rsComm->irodsProt == LITE3_PROT &&
          execCmdOut != nullptr && *execCmdOut != nullptr ) {
         if ( auto reply_buf = irods::protocol::ExecCmdOut::from_legacy( **execCmdOut ) ) {
-            irods::protocol::active_api_buffer_scope::set_active_reply( std::move( *reply_buf ) );
+            irods::protocol::active_api_buffer_scope::set_active_reply( std::move( *reply_buf ), execCmdOut );
         }
     }
 

@@ -157,6 +157,7 @@ namespace irods::experimental::genquery2
         {"DELAY_RULE_USER_NAME", {"R_RULE_EXEC", "user_name"}},
         {"DELAY_RULE_EXE_ADDRESS", {"R_RULE_EXEC", "exe_address"}},
         {"DELAY_RULE_EXE_TIME", {"R_RULE_EXEC", "exe_time"}},
+        {"DELAY_RULE_TIME", {"R_RULE_EXEC", "exe_time"}},
         {"DELAY_RULE_EXE_FREQUENCY", {"R_RULE_EXEC", "exe_frequency"}},
         {"DELAY_RULE_PRIORITY", {"R_RULE_EXEC", "priority"}},
         {"DELAY_RULE_ESTIMATED_EXE_TIME", {"R_RULE_EXEC", "estimated_exe_time"}},

@@ -51,7 +51,7 @@ namespace
         if (!_qh || !_qh->conn) {
             return USER__NULL_INPUT_ERR;
         }
-#ifdef RODS_SERVER
+#if defined(RODS_SERVER) || defined(RODS_CLERVER)
         if (_qh->connType == RS_COMM) {
             return gq2::try_execute(*static_cast<RsComm*>(_qh->conn), _ast, _rows, _zone_hint);
         }

@@ -223,6 +223,20 @@ namespace
         return CAT_SQL_ERR;
     }
 
+    auto translate_nanodbc_error(const std::exception& e) -> int
+    {
+        if (const auto* db_err = dynamic_cast<const nanodbc::database_error*>(&e)) {
+            return translate_nanodbc_error(*db_err);
+        }
+        const std::string msg = e.what();
+        if (msg.find("duplicate key") != std::string::npos ||
+            msg.find("Duplicate entry") != std::string::npos ||
+            msg.find("unique constraint") != std::string::npos) {
+            return CATALOG_ALREADY_HAS_ITEM_BY_THAT_NAME;
+        }
+        return CAT_SQL_ERR;
+    }
+
     auto get_auth_config(const char* _namespace, auth_config& _out) -> irods::error
     {
         try {
@@ -674,7 +688,7 @@ irods::error getLocalZone(
         }
         catch (const nanodbc::database_error& e) {
             log_db::error("{}: database error: {}", __FUNCTION__, e.what());
-            return ERROR(CAT_SQL_ERR, e.what());
+            return ERROR(translate_nanodbc_error(e), e.what());
         }
         catch (const std::exception& e) {
             log_db::error("{}: exception: {}", __FUNCTION__, e.what());
@@ -891,7 +905,7 @@ irods::error _childIsValid(
     }
     catch (const nanodbc::database_error& e) {
         log_db::error("{}: database error: {}", __FUNCTION__, e.what());
-        return ERROR( CAT_SQL_ERR, e.what() );
+        return ERROR(translate_nanodbc_error(e), e.what());
     }
     catch (const std::exception& e) {
         log_db::error("{}: exception: {}", __FUNCTION__, e.what());
@@ -926,7 +940,7 @@ irods::error update_child_parent(const std::string& _child_resc_id,
     }
     catch (const nanodbc::database_error& e) {
         log_db::error("{}: database error: {}", __FUNCTION__, e.what());
-        return ERROR( CAT_SQL_ERR, e.what() );
+        return ERROR(translate_nanodbc_error(e), e.what());
     }
     catch (const std::exception& e) {
         log_db::error("{}: exception: {}", __FUNCTION__, e.what());
@@ -2617,7 +2631,7 @@ irods::error db_mod_data_obj_meta_op(
     }
     catch (const nanodbc::database_error& e) {
         log_db::error("{}: database error: {}", __FUNCTION__, e.what());
-        return ERROR(CAT_SQL_ERR, e.what());
+        return ERROR(translate_nanodbc_error(e), e.what());
     }
     catch (const std::exception& e) {
         log_db::error("{}: exception: {}", __FUNCTION__, e.what());
@@ -2859,7 +2873,7 @@ irods::error db_reg_data_obj_op(
     }
     catch (const nanodbc::database_error& e) {
         log_db::error("{}: database error: {}", __FUNCTION__, e.what());
-        return ERROR(CAT_SQL_ERR, e.what());
+        return ERROR(translate_nanodbc_error(e), e.what());
     }
     catch (const std::exception& e) {
         log_db::error("{}: exception: {}", __FUNCTION__, e.what());
@@ -3020,7 +3034,7 @@ irods::error db_reg_replica_op(
     catch (const std::exception& e) {
         log_db::error("chlRegReplica select source replica failure {}", e.what());
         _rollback("chlRegReplica");
-        return ERROR(CAT_SQL_ERR, e.what());
+        return ERROR(translate_nanodbc_error(e), e.what());
     }
 
     std::string resc_id_str = std::to_string(_dst_data_obj_info->rescId);
@@ -3096,7 +3110,7 @@ irods::error db_reg_replica_op(
     }
     catch (const nanodbc::database_error& e) {
         log_db::error("{}: database error: {}", __FUNCTION__, e.what());
-        return ERROR(CAT_SQL_ERR, e.what());
+        return ERROR(translate_nanodbc_error(e), e.what());
     }
     catch (const std::exception& e) {
         log_db::error("{}: exception: {}", __FUNCTION__, e.what());
@@ -3295,7 +3309,7 @@ irods::error db_unreg_replica_op(
     }
     catch (const nanodbc::database_error& e) {
         log_db::error("{}: database error: {}", __FUNCTION__, e.what());
-        return ERROR(CAT_SQL_ERR, e.what());
+        return ERROR(translate_nanodbc_error(e), e.what());
     }
     catch (const std::exception& e) {
         log_db::error("{}: exception: {}", __FUNCTION__, e.what());
@@ -3378,7 +3392,7 @@ irods::error db_reg_rule_exec_op(
     }
     catch (const nanodbc::database_error& e) {
         log_db::error("{}: database error: {}", __FUNCTION__, e.what());
-        return ERROR( CAT_SQL_ERR, e.what() );
+        return ERROR(translate_nanodbc_error(e), e.what());
     }
     catch (const std::exception& e) {
         log_db::error("{}: exception: {}", __FUNCTION__, e.what());
@@ -3505,7 +3519,7 @@ irods::error db_mod_rule_exec_op(
     }
     catch (const nanodbc::database_error& e) {
         log_db::error("{}: database error: {}", __FUNCTION__, e.what());
-        return ERROR( CAT_SQL_ERR, e.what() );
+        return ERROR(translate_nanodbc_error(e), e.what());
     }
     catch (const std::exception& e) {
         log_db::error("{}: exception: {}", __FUNCTION__, e.what());
@@ -3541,7 +3555,7 @@ irods::error db_del_rule_exec_op(irods::plugin_context& _ctx, const char* _re_id
     }
     catch (const nanodbc::database_error& e) {
         log_db::error("{}: database error: {}", __FUNCTION__, e.what());
-        return ERROR( CAT_SQL_ERR, e.what() );
+        return ERROR(translate_nanodbc_error(e), e.what());
     }
     catch (const std::exception& e) {
         log_db::error("{}: exception: {}", __FUNCTION__, e.what());
@@ -3821,7 +3835,7 @@ irods::error db_reg_resc_op(
     }
     catch (const nanodbc::database_error& e) {
         log_db::error("{}: database error: {}", __FUNCTION__, e.what());
-        return ERROR( CAT_SQL_ERR, e.what() );
+        return ERROR(translate_nanodbc_error(e), e.what());
     }
     catch (const std::exception& e) {
         log_db::error("{}: exception: {}", __FUNCTION__, e.what());
@@ -4037,7 +4051,7 @@ irods::error db_del_resc_op(
     }
     catch (const nanodbc::database_error& e) {
         log_db::error("{}: database error: {}", __FUNCTION__, e.what());
-        return ERROR( CAT_SQL_ERR, e.what() );
+        return ERROR(translate_nanodbc_error(e), e.what());
     }
     catch (const std::exception& e) {
         log_db::error("{}: exception: {}", __FUNCTION__, e.what());
@@ -4238,7 +4252,7 @@ irods::error db_del_user_re_op(
     }
     catch (const nanodbc::database_error& e) {
         log_db::error("{}: database error: {}", __FUNCTION__, e.what());
-        return ERROR( CAT_SQL_ERR, e.what() );
+        return ERROR(translate_nanodbc_error(e), e.what());
     }
     catch (const std::exception& e) {
         log_db::error("{}: exception: {}", __FUNCTION__, e.what());
@@ -4596,7 +4610,7 @@ irods::error db_reg_coll_op(
     }
     catch (const nanodbc::database_error& e) {
         log_db::error("{}: database error: {}", __FUNCTION__, e.what());
-        return ERROR( CAT_SQL_ERR, e.what() );
+        return ERROR(translate_nanodbc_error(e), e.what());
     }
     catch (const std::exception& e) {
         log_db::error("{}: exception: {}", __FUNCTION__, e.what());
@@ -4735,7 +4749,7 @@ irods::error db_mod_coll_op(
     }
     catch (const nanodbc::database_error& e) {
         log_db::error("{}: database error: {}", __FUNCTION__, e.what());
-        return ERROR( CAT_SQL_ERR, e.what() );
+        return ERROR(translate_nanodbc_error(e), e.what());
     }
     catch (const std::exception& e) {
         log_db::error("{}: exception: {}", __FUNCTION__, e.what());
@@ -4834,7 +4848,7 @@ irods::error db_reg_zone_op(
     }
     catch (const nanodbc::database_error& e) {
         log_db::error("{}: database error: {}", __FUNCTION__, e.what());
-        return ERROR( CAT_SQL_ERR, e.what() );
+        return ERROR(translate_nanodbc_error(e), e.what());
     }
     catch (const std::exception& e) {
         log_db::error("{}: exception: {}", __FUNCTION__, e.what());
@@ -4968,7 +4982,7 @@ irods::error db_mod_zone_op(
     }
     catch (const std::exception& e) {
         log_db::error("{}: exception: {}", __func__, e.what());
-        return ERROR( CAT_SQL_ERR, e.what() );
+        return ERROR(translate_nanodbc_error(e), e.what());
     }
 } // db_mod_zone_op
 
@@ -5020,7 +5034,7 @@ irods::error db_rename_coll_op(
     }
     catch (const nanodbc::database_error& e) {
         log_db::error("{}: database error: {}", __FUNCTION__, e.what());
-        return ERROR( CAT_SQL_ERR, e.what() );
+        return ERROR(translate_nanodbc_error(e), e.what());
     }
     catch (const std::exception& e) {
         log_db::error("{}: exception: {}", __FUNCTION__, e.what());
@@ -5202,7 +5216,7 @@ irods::error db_rename_local_zone_op(
     }
     catch (const std::exception& e) {
         log_db::error("{}: exception: {}", __func__, e.what());
-        return ERROR( CAT_SQL_ERR, e.what() );
+        return ERROR(translate_nanodbc_error(e), e.what());
     }
 } // db_rename_local_zone_op
 
@@ -5271,7 +5285,7 @@ irods::error db_del_zone_op(
     }
     catch (const std::exception& e) {
         log_db::error("{}: exception: {}", __func__, e.what());
-        return ERROR( CAT_SQL_ERR, e.what() );
+        return ERROR(translate_nanodbc_error(e), e.what());
     }
 } // db_del_zone_op
 
@@ -5384,7 +5398,7 @@ irods::error db_del_coll_by_admin_op(
     }
     catch (const nanodbc::database_error& e) {
         log_db::error("{}: database error: {}", __FUNCTION__, e.what());
-        return ERROR( CAT_SQL_ERR, e.what() );
+        return ERROR(translate_nanodbc_error(e), e.what());
     }
     catch (const std::exception& e) {
         log_db::error("{}: exception: {}", __FUNCTION__, e.what());
@@ -5718,7 +5732,7 @@ irods::error db_check_auth_op(
     }
     catch (const nanodbc::database_error& e) {
         log_db::error("{}: database error: {}", __FUNCTION__, e.what());
-        return ERROR(CAT_SQL_ERR, e.what());
+        return ERROR(translate_nanodbc_error(e), e.what());
     }
     catch (const irods::exception& e) {
         return irods::error(e);
@@ -5848,7 +5862,7 @@ irods::error db_make_temp_pw_op(
     }
     catch (const nanodbc::database_error& e) {
         log_db::error("{}: database error: {}", __FUNCTION__, e.what());
-        return ERROR(CAT_SQL_ERR, e.what());
+        return ERROR(translate_nanodbc_error(e), e.what());
     }
     catch (const std::exception& e) {
         log_db::error("{}: exception: {}", __FUNCTION__, e.what());
@@ -6017,7 +6031,7 @@ irods::error db_make_limited_pw_op(
     }
     catch (const nanodbc::database_error& e) {
         log_db::error("{}: database error: {}", __FUNCTION__, e.what());
-        return ERROR(CAT_SQL_ERR, e.what());
+        return ERROR(translate_nanodbc_error(e), e.what());
     }
     catch (const std::exception& e) {
         log_db::error("{}: exception: {}", __FUNCTION__, e.what());
@@ -6180,7 +6194,7 @@ auto db_update_pam_password_op(irods::plugin_context& _ctx,
     }
     catch (const nanodbc::database_error& e) {
         log_db::error("{}: database error: {}", __FUNCTION__, e.what());
-        return ERROR(CAT_SQL_ERR, e.what());
+        return ERROR(translate_nanodbc_error(e), e.what());
     }
     catch (const std::exception& e) {
         log_db::error("{}: exception: {}", __FUNCTION__, e.what());
@@ -6541,7 +6555,7 @@ irods::error db_mod_user_op(
     }
     catch (const nanodbc::database_error& e) {
         log_db::error("{}: database error: {}", __FUNCTION__, e.what());
-        return ERROR( CAT_SQL_ERR, e.what() );
+        return ERROR(translate_nanodbc_error(e), e.what());
     }
     catch (const std::exception& e) {
         log_db::error("{}: exception: {}", __FUNCTION__, e.what());
@@ -6677,7 +6691,7 @@ irods::error db_mod_group_op(
     }
     catch (const nanodbc::database_error& e) {
         log_db::error("{}: database error: {}", __FUNCTION__, e.what());
-        return ERROR( CAT_SQL_ERR, e.what() );
+        return ERROR(translate_nanodbc_error(e), e.what());
     }
     catch (const std::exception& e) {
         log_db::error("{}: exception: {}", __FUNCTION__, e.what());
@@ -6772,11 +6786,7 @@ irods::error db_mod_resc_op(
             irods::experimental::catalog::execute_catalog(executor, db_conn, stmt);
             OK = 1;
         }
-        else if ( *_option_value == '\0' ) {
-            return ERROR( CAT_INVALID_ARGUMENT, "argument is empty" );
-        }
-
-        if ( strcmp( _option, "info" ) == 0 ) {
+        else if ( strcmp( _option, "info" ) == 0 ) {
             auto stmt = gq2::builder::update("RESOURCE")
                 .set("resc_info", _option_value)
                 .set("modify_ts", current_time_secs)
@@ -6785,6 +6795,29 @@ irods::error db_mod_resc_op(
                 .build();
             irods::experimental::catalog::execute_catalog(executor, db_conn, stmt);
             OK = 1;
+        }
+        else if ( strcmp( _option, "context" ) == 0 ) {
+            auto stmt = gq2::builder::update("RESOURCE")
+                .set("resc_context", _option_value)
+                .set("modify_ts", current_time_secs)
+                .set("modify_ts_millis", current_time_msecs)
+                .where(col("resc_id") == resc_id)
+                .build();
+            irods::experimental::catalog::execute_catalog(executor, db_conn, stmt);
+            OK = 1;
+        }
+        else if ( strcmp( _option, "parent_context" ) == 0 ) {
+            auto stmt = gq2::builder::update("RESOURCE")
+                .set("resc_parent_context", _option_value)
+                .set("modify_ts", current_time_secs)
+                .set("modify_ts_millis", current_time_msecs)
+                .where(col("resc_id") == resc_id)
+                .build();
+            irods::experimental::catalog::execute_catalog(executor, db_conn, stmt);
+            OK = 1;
+        }
+        else if ( *_option_value == '\0' ) {
+            return ERROR( CAT_INVALID_ARGUMENT, "argument is empty" );
         }
 
         if ( strcmp( _option, "freespace" ) == 0 || strcmp( _option, "free_space" ) == 0 ) {
@@ -6921,28 +6954,6 @@ irods::error db_mod_resc_op(
             OK = 1;
         }
 
-        if ( strcmp( _option, "context" ) == 0 ) {
-            auto stmt = gq2::builder::update("RESOURCE")
-                .set("resc_context", _option_value)
-                .set("modify_ts", current_time_secs)
-                .set("modify_ts_millis", current_time_msecs)
-                .where(col("resc_id") == resc_id)
-                .build();
-            irods::experimental::catalog::execute_catalog(executor, db_conn, stmt);
-            OK = 1;
-        }
-
-        if ( strcmp( _option, "parent_context" ) == 0 ) {
-            auto stmt = gq2::builder::update("RESOURCE")
-                .set("resc_parent_context", _option_value)
-                .set("modify_ts", current_time_secs)
-                .set("modify_ts_millis", current_time_msecs)
-                .where(col("resc_id") == resc_id)
-                .build();
-            irods::experimental::catalog::execute_catalog(executor, db_conn, stmt);
-            OK = 1;
-        }
-
         if ( OK == 0 ) {
             return ERROR( CAT_INVALID_ARGUMENT, "invalid option" );
         }
@@ -6960,7 +6971,7 @@ irods::error db_mod_resc_op(
     }
     catch (const nanodbc::database_error& e) {
         log_db::error("{}: database error: {}", __FUNCTION__, e.what());
-        return ERROR( CAT_SQL_ERR, e.what() );
+        return ERROR(translate_nanodbc_error(e), e.what());
     }
     catch (const std::exception& e) {
         log_db::error("{}: exception: {}", __FUNCTION__, e.what());
@@ -7117,7 +7128,7 @@ irods::error db_mod_resc_data_paths_op(
     }
     catch (const nanodbc::database_error& e) {
         log_db::error("{}: database error: {}", __FUNCTION__, e.what());
-        return ERROR( CAT_SQL_ERR, e.what() );
+        return ERROR(translate_nanodbc_error(e), e.what());
     }
     catch (const std::exception& e) {
         log_db::error("{}: exception: {}", __FUNCTION__, e.what());
@@ -7182,7 +7193,7 @@ irods::error db_mod_resc_freespace_op(
     }
     catch (const nanodbc::database_error& e) {
         log_db::error("{}: database error: {}", __FUNCTION__, e.what());
-        return ERROR( CAT_SQL_ERR, e.what() );
+        return ERROR(translate_nanodbc_error(e), e.what());
     }
     catch (const std::exception& e) {
         log_db::error("{}: exception: {}", __FUNCTION__, e.what());
@@ -8187,7 +8198,7 @@ irods::error db_del_avu_metadata_op(
         }
         catch (const nanodbc::database_error& e) {
             log_db::error("{}: database error: {}", __FUNCTION__, e.what());
-            return ERROR( CAT_SQL_ERR, e.what() );
+            return ERROR(translate_nanodbc_error(e), e.what());
         }
         catch (const std::exception& e) {
             log_db::error("{}: exception: {}", __FUNCTION__, e.what());
@@ -8274,7 +8285,7 @@ irods::error db_del_avu_metadata_op(
     }
     catch (const nanodbc::database_error& e) {
         log_db::error("{}: database error: {}", __FUNCTION__, e.what());
-        return ERROR( CAT_SQL_ERR, e.what() );
+        return ERROR(translate_nanodbc_error(e), e.what());
     }
     catch (const std::exception& e) {
         log_db::error("{}: exception: {}", __FUNCTION__, e.what());
@@ -8497,7 +8508,7 @@ irods::error db_mod_access_control_resc_op(
     }
     catch (const nanodbc::database_error& e) {
         log_db::error("{}: database error: {}", __FUNCTION__, e.what());
-        return ERROR( CAT_SQL_ERR, e.what() );
+        return ERROR(translate_nanodbc_error(e), e.what());
     }
     catch (const std::exception& e) {
         log_db::error("{}: exception: {}", __FUNCTION__, e.what());
@@ -8843,7 +8854,7 @@ irods::error db_mod_access_control_op(
         }
         catch (const nanodbc::database_error& e) {
             log_db::error("{}: database error: {}", __FUNCTION__, e.what());
-            return ERROR( CAT_SQL_ERR, e.what() );
+            return ERROR(translate_nanodbc_error(e), e.what());
         }
         catch (const std::exception& e) {
             log_db::error("{}: exception: {}", __FUNCTION__, e.what());
@@ -9184,7 +9195,7 @@ irods::error db_rename_object_op(
     }
     catch (const nanodbc::database_error& e) {
         log_db::error("{}: database error: {}", __FUNCTION__, e.what());
-        return ERROR( CAT_SQL_ERR, e.what() );
+        return ERROR(translate_nanodbc_error(e), e.what());
     }
     catch (const std::exception& e) {
         log_db::error("{}: exception: {}", __FUNCTION__, e.what());
@@ -9418,7 +9429,7 @@ irods::error db_move_object_op(
     }
     catch (const nanodbc::database_error& e) {
         log_db::error("{}: database error: {}", __FUNCTION__, e.what());
-        return ERROR( CAT_SQL_ERR, e.what() );
+        return ERROR(translate_nanodbc_error(e), e.what());
     }
     catch (const std::exception& e) {
         log_db::error("{}: exception: {}", __FUNCTION__, e.what());
@@ -9515,7 +9526,7 @@ irods::error db_reg_token_op(
     }
     catch (const nanodbc::database_error& e) {
         log_db::error("{}: database error: {}", __FUNCTION__, e.what());
-        return ERROR( CAT_SQL_ERR, e.what() );
+        return ERROR(translate_nanodbc_error(e), e.what());
     }
     catch (const std::exception& e) {
         log_db::error("{}: exception: {}", __FUNCTION__, e.what());
@@ -9576,7 +9587,7 @@ irods::error db_del_token_op(
     }
     catch (const nanodbc::database_error& e) {
         log_db::error("{}: database error: {}", __FUNCTION__, e.what());
-        return ERROR( CAT_SQL_ERR, e.what() );
+        return ERROR(translate_nanodbc_error(e), e.what());
     }
     catch (const std::exception& e) {
         log_db::error("{}: exception: {}", __FUNCTION__, e.what());
@@ -9634,7 +9645,7 @@ irods::error db_reg_server_load_op(
     }
     catch (const nanodbc::database_error& e) {
         log_db::error("{}: database error: {}", __FUNCTION__, e.what());
-        return ERROR( CAT_SQL_ERR, e.what() );
+        return ERROR(translate_nanodbc_error(e), e.what());
     }
     catch (const std::exception& e) {
         log_db::error("{}: exception: {}", __FUNCTION__, e.what());
@@ -9680,7 +9691,7 @@ irods::error db_purge_server_load_op(
     }
     catch (const nanodbc::database_error& e) {
         log_db::error("{}: database error: {}", __FUNCTION__, e.what());
-        return ERROR( CAT_SQL_ERR, e.what() );
+        return ERROR(translate_nanodbc_error(e), e.what());
     }
     catch (const std::exception& e) {
         log_db::error("{}: exception: {}", __FUNCTION__, e.what());
@@ -9724,7 +9735,7 @@ irods::error db_reg_server_load_digest_op(
     }
     catch (const nanodbc::database_error& e) {
         log_db::error("{}: database error: {}", __FUNCTION__, e.what());
-        return ERROR( CAT_SQL_ERR, e.what() );
+        return ERROR(translate_nanodbc_error(e), e.what());
     }
     catch (const std::exception& e) {
         log_db::error("{}: exception: {}", __FUNCTION__, e.what());
@@ -9770,7 +9781,7 @@ irods::error db_purge_server_load_digest_op(
     }
     catch (const nanodbc::database_error& e) {
         log_db::error("{}: database error: {}", __FUNCTION__, e.what());
-        return ERROR( CAT_SQL_ERR, e.what() );
+        return ERROR(translate_nanodbc_error(e), e.what());
     }
     catch (const std::exception& e) {
         log_db::error("{}: exception: {}", __FUNCTION__, e.what());
@@ -9817,7 +9828,7 @@ irods::error db_get_grid_configuration_value_op(
     }
     catch (const nanodbc::database_error& e) {
         log_db::error("{}: database error: {}", __FUNCTION__, e.what());
-        return ERROR(CAT_SQL_ERR, e.what());
+        return ERROR(translate_nanodbc_error(e), e.what());
     }
     catch (const std::exception& e) {
         log_db::error("{}: exception: {}", __FUNCTION__, e.what());
@@ -9875,7 +9886,7 @@ irods::error db_set_grid_configuration_value_op(
     }
     catch (const nanodbc::database_error& e) {
         log_db::error("{}: database error: {}", __FUNCTION__, e.what());
-        return ERROR(CAT_SQL_ERR, e.what());
+        return ERROR(translate_nanodbc_error(e), e.what());
     }
     catch (const std::exception& e) {
         log_db::error("{}: exception: {}", __FUNCTION__, e.what());
@@ -9956,7 +9967,7 @@ irods::error db_calc_usage_and_quota_op(
     }
     catch (const std::exception& e) {
         log_db::error("{}: exception: {}", __func__, e.what());
-        return ERROR( CAT_SQL_ERR, e.what() );
+        return ERROR(translate_nanodbc_error(e), e.what());
     }
 
     /* Set the over_quota flags where appropriate */
@@ -10130,7 +10141,7 @@ irods::error db_set_quota_op(
     }
     catch (const nanodbc::database_error& e) {
         log_db::error("{}: database error: {}", __FUNCTION__, e.what());
-        return ERROR( CAT_SQL_ERR, e.what() );
+        return ERROR(translate_nanodbc_error(e), e.what());
     }
     catch (const std::exception& e) {
         log_db::error("{}: exception: {}", __FUNCTION__, e.what());
@@ -10250,7 +10261,7 @@ irods::error db_check_quota_op(
     }
     catch (const std::exception& e) {
         log_db::error("{}: check quota query failed: {}", __func__, e.what());
-        return ERROR( CAT_SQL_ERR, e.what() );
+        return ERROR(translate_nanodbc_error(e), e.what());
     }
 } // db_check_quota_op
 
@@ -10359,7 +10370,7 @@ irods::error db_ins_rule_table_op(
     }
     catch (const nanodbc::database_error& e) {
         log_db::error("{}: database error: {}", __FUNCTION__, e.what());
-        return ERROR( CAT_SQL_ERR, e.what() );
+        return ERROR(translate_nanodbc_error(e), e.what());
     }
     catch (const std::exception& e) {
         log_db::error("{}: exception: {}", __FUNCTION__, e.what());
@@ -10443,7 +10454,7 @@ irods::error db_ins_dvm_table_op(
     }
     catch (const nanodbc::database_error& e) {
         log_db::error("{}: database error: {}", __FUNCTION__, e.what());
-        return ERROR( CAT_SQL_ERR, e.what() );
+        return ERROR(translate_nanodbc_error(e), e.what());
     }
     catch (const std::exception& e) {
         log_db::error("{}: exception: {}", __FUNCTION__, e.what());
@@ -10526,7 +10537,7 @@ irods::error db_ins_fnm_table_op(
     }
     catch (const nanodbc::database_error& e) {
         log_db::error("{}: database error: {}", __FUNCTION__, e.what());
-        return ERROR( CAT_SQL_ERR, e.what() );
+        return ERROR(translate_nanodbc_error(e), e.what());
     }
     catch (const std::exception& e) {
         log_db::error("{}: exception: {}", __FUNCTION__, e.what());
@@ -10648,7 +10659,7 @@ irods::error db_ins_msrvc_table_op(
     }
     catch (const nanodbc::database_error& e) {
         log_db::error("{}: database error: {}", __FUNCTION__, e.what());
-        return ERROR( CAT_SQL_ERR, e.what() );
+        return ERROR(translate_nanodbc_error(e), e.what());
     }
     catch (const std::exception& e) {
         log_db::error("{}: exception: {}", __FUNCTION__, e.what());
@@ -10690,7 +10701,7 @@ irods::error db_version_rule_base_op(
     }
     catch (const nanodbc::database_error& e) {
         log_db::error("{}: database error: {}", __FUNCTION__, e.what());
-        return ERROR( CAT_SQL_ERR, e.what() );
+        return ERROR(translate_nanodbc_error(e), e.what());
     }
     catch (const std::exception& e) {
         log_db::error("{}: exception: {}", __FUNCTION__, e.what());
@@ -10732,7 +10743,7 @@ irods::error db_version_dvm_base_op(
     }
     catch (const nanodbc::database_error& e) {
         log_db::error("{}: database error: {}", __FUNCTION__, e.what());
-        return ERROR( CAT_SQL_ERR, e.what() );
+        return ERROR(translate_nanodbc_error(e), e.what());
     }
     catch (const std::exception& e) {
         log_db::error("{}: exception: {}", __FUNCTION__, e.what());
@@ -10774,7 +10785,7 @@ irods::error db_version_fnm_base_op(
     }
     catch (const nanodbc::database_error& e) {
         log_db::error("{}: database error: {}", __FUNCTION__, e.what());
-        return ERROR( CAT_SQL_ERR, e.what() );
+        return ERROR(translate_nanodbc_error(e), e.what());
     }
     catch (const std::exception& e) {
         log_db::error("{}: exception: {}", __FUNCTION__, e.what());
@@ -10850,7 +10861,7 @@ irods::error db_add_specific_query_op(
     }
     catch (const nanodbc::database_error& e) {
         log_db::error("{}: database error: {}", __FUNCTION__, e.what());
-        return ERROR( CAT_SQL_ERR, e.what() );
+        return ERROR(translate_nanodbc_error(e), e.what());
     }
     catch (const std::exception& e) {
         log_db::error("{}: exception: {}", __FUNCTION__, e.what());
@@ -10903,7 +10914,7 @@ irods::error db_del_specific_query_op(
     }
     catch (const nanodbc::database_error& e) {
         log_db::error("{}: database error: {}", __FUNCTION__, e.what());
-        return ERROR( CAT_SQL_ERR, e.what() );
+        return ERROR(translate_nanodbc_error(e), e.what());
     }
     catch (const std::exception& e) {
         log_db::error("{}: exception: {}", __FUNCTION__, e.what());
@@ -10988,7 +10999,7 @@ irods::error db_specific_query_op(
         }
         catch (const nanodbc::database_error& e) {
             log_db::error("{}: database error: {}", __func__, e.what());
-            return ERROR(CAT_SQL_ERR, e.what());
+            return ERROR(translate_nanodbc_error(e), e.what());
         }
         catch (const std::exception& e) {
             log_db::error("{}: exception: {}", __func__, e.what());
@@ -11031,7 +11042,7 @@ irods::error db_specific_query_op(
         }
         catch (const nanodbc::database_error& e) {
             log_db::info("chlSpecificQuery query execution failure: {}", e.what());
-            return ERROR(CAT_SQL_ERR, e.what());
+            return ERROR(translate_nanodbc_error(e), e.what());
         }
         catch (const std::exception& e) {
             log_db::info("chlSpecificQuery query execution failure: {}", e.what());
@@ -11217,7 +11228,7 @@ irods::error db_get_distinct_data_obj_count_on_resource_op(
     }
     catch (const nanodbc::database_error& e) {
         log_db::error("{}: database error: {}", __FUNCTION__, e.what());
-        return ERROR( CAT_SQL_ERR, e.what() );
+        return ERROR(translate_nanodbc_error(e), e.what());
     }
     catch (const std::exception& e) {
         log_db::error("{}: exception: {}", __FUNCTION__, e.what());
@@ -11278,7 +11289,7 @@ irods::error db_get_distinct_data_objs_missing_from_child_given_parent_op(
     }
     catch (const nanodbc::database_error& e) {
         log_db::error("{}: database error: {}", __FUNCTION__, e.what());
-        return ERROR( CAT_SQL_ERR, e.what() );
+        return ERROR(translate_nanodbc_error(e), e.what());
     }
     catch (const std::exception& e) {
         log_db::error("{}: exception: {}", __FUNCTION__, e.what());
@@ -11370,7 +11381,7 @@ irods::error db_get_repl_list_for_leaf_bundles_op(
     }
     catch (const nanodbc::database_error& e) {
         log_db::error("{}: database error: {}", __FUNCTION__, e.what());
-        return ERROR( CAT_SQL_ERR, e.what() );
+        return ERROR(translate_nanodbc_error(e), e.what());
     }
     catch (const std::exception& e) {
         log_db::error("{}: exception: {}", __FUNCTION__, e.what());
@@ -11492,7 +11503,7 @@ irods::error db_get_repl_list_for_leaf_bundles_offset_op(irods::plugin_context& 
     }
     catch (const nanodbc::database_error& e) {
         log_db::error("{}: database error: {}", __func__, e.what());
-        return ERROR(CAT_SQL_ERR, e.what());
+        return ERROR(translate_nanodbc_error(e), e.what());
     }
     catch (const std::exception& e) {
         log_db::error("{}: exception: {}", __func__, e.what());
@@ -11573,7 +11584,7 @@ irods::error db_get_hierarchy_for_resc_op(
     }
     catch (const nanodbc::database_error& e) {
         log_db::error("{}: database error: {}", __FUNCTION__, e.what());
-        return ERROR( CAT_SQL_ERR, e.what() );
+        return ERROR(translate_nanodbc_error(e), e.what());
     }
     catch (const std::exception& e) {
         log_db::error("{}: exception: {}", __FUNCTION__, e.what());
@@ -12764,7 +12775,7 @@ auto db_update_ticket_write_byte_count_op(
     }
     catch (const std::exception& e) {
         log_db::error("{}: Exception caught: {}", __func__, e.what());
-        return ERROR(CAT_SQL_ERR, e.what());
+        return ERROR(translate_nanodbc_error(e), e.what());
     }
 } // db_update_ticket_write_byte_count_op
 
@@ -13048,7 +13059,7 @@ auto db_execute_genquery2_sql(irods::plugin_context& _ctx,
 } // db_execute_genquery2_sql
 
 auto db_execute_genquery2_op(irods::plugin_context& _ctx,
-                             const irods::experimental::genquery2::select* _ast,
+                             const irods::experimental::genquery2::statement* _stmt,
                              const irods::experimental::genquery2::options* _opts,
                              char** _output) -> irods::error
 {
@@ -13056,7 +13067,7 @@ auto db_execute_genquery2_op(irods::plugin_context& _ctx,
         return PASS(ret);
     }
 
-    if (!_ast || !_opts || !_output) {
+    if (!_stmt || !_opts || !_output) {
         log_db::error("{}: Received one or more null pointers.", __func__);
         return ERROR(SYS_INTERNAL_NULL_INPUT_ERR, "Received one or more null pointers.");
     }
@@ -13065,6 +13076,9 @@ auto db_execute_genquery2_op(irods::plugin_context& _ctx,
 
     try {
         auto opts = *_opts;
+        if (opts.session_ticket.empty() && mySessionTicket[0] != '\0') {
+            opts.session_ticket = mySessionTicket;
+        }
         if (opts.database.empty()) {
             const auto config_handle = irods::server_properties::instance().map();
             opts.database = config_handle.get_json()
@@ -13074,7 +13088,15 @@ auto db_execute_genquery2_op(irods::plugin_context& _ctx,
                                 .get<std::string>();
         }
 
-        const auto [sql, values] = irods::experimental::genquery2::to_sql(*_ast, opts);
+        const auto* select_ast = std::get_if<irods::experimental::genquery2::select>(_stmt);
+        if (!select_ast) {
+            return ERROR(SYS_NOT_SUPPORTED, "Non-SELECT statements must use DATABASE_OP_ATOMIC_APPLY.");
+        }
+
+        const auto [sql, values] = irods::experimental::genquery2::to_sql(*select_ast, opts);
+        if (sql.empty()) {
+            return ERROR(SYS_INVALID_INPUT_PARAM, "Could not generate SQL from GenQuery2 string.");
+        }
         return db_execute_genquery2_sql(_ctx, sql.c_str(), &values, _output);
     }
     catch (const irods::exception& e) {
@@ -13088,7 +13110,7 @@ auto db_execute_genquery2_op(irods::plugin_context& _ctx,
 } // db_execute_genquery2_op
 
 auto db_execute_genquery2_buffer_op(irods::plugin_context& _ctx,
-                                    const irods::experimental::genquery2::select* _ast,
+                                    const irods::experimental::genquery2::statement* _stmt,
                                     const irods::experimental::genquery2::options* _opts,
                                     lite3cpp::Buffer* _output) -> irods::error
 {
@@ -13096,13 +13118,16 @@ auto db_execute_genquery2_buffer_op(irods::plugin_context& _ctx,
         return PASS(ret);
     }
 
-    if (!_ast || !_opts || !_output) {
+    if (!_stmt || !_opts || !_output) {
         log_db::error("{}: Received one or more null pointers.", __func__);
         return ERROR(SYS_INTERNAL_NULL_INPUT_ERR, "Received one or more null pointers.");
     }
 
     try {
         auto opts = *_opts;
+        if (opts.session_ticket.empty() && mySessionTicket[0] != '\0') {
+            opts.session_ticket = mySessionTicket;
+        }
         if (opts.database.empty()) {
             const auto config_handle = irods::server_properties::instance().map();
             opts.database = config_handle.get_json()
@@ -13112,7 +13137,15 @@ auto db_execute_genquery2_buffer_op(irods::plugin_context& _ctx,
                                 .get<std::string>();
         }
 
-        const auto [sql, values] = irods::experimental::genquery2::to_sql(*_ast, opts);
+        const auto* select_ast = std::get_if<irods::experimental::genquery2::select>(_stmt);
+        if (!select_ast) {
+            return ERROR(SYS_NOT_SUPPORTED, "Non-SELECT statements must use DATABASE_OP_ATOMIC_APPLY.");
+        }
+
+        const auto [sql, values] = irods::experimental::genquery2::to_sql(*select_ast, opts);
+        if (sql.empty()) {
+            return ERROR(SYS_INVALID_INPUT_PARAM, "Could not generate SQL from GenQuery2 string.");
+        }
         auto [db_instance, db_conn, executor] = irods::experimental::catalog::get_session();
         auto row = executor.execute_query(db_conn, sql, values);
 
@@ -13142,8 +13175,7 @@ auto db_execute_genquery2_buffer_op(irods::plugin_context& _ctx,
 } // db_execute_genquery2_buffer_op
 
 auto db_atomic_apply_op(irods::plugin_context& _ctx,
-                        const std::vector<irods::experimental::dml::operation_type>* _ops,
-                        int* _affected_rows) -> irods::error
+                        const std::vector<irods::experimental::dml::operation_type>* _ops) -> irods::error
 {
     if (const auto ret = _ctx.valid(); !ret.ok()) {
         return PASS(ret);
@@ -13155,10 +13187,7 @@ auto db_atomic_apply_op(irods::plugin_context& _ctx,
 
     try {
         auto [db_instance, db_conn] = irods::experimental::catalog::get_session_connection();
-        const auto rows = irods::experimental::catalog::apply_atomic_operations(db_conn, db_instance, *_ops);
-        if (_affected_rows) {
-            *_affected_rows = rows;
-        }
+        irods::experimental::catalog::apply_atomic_operations(db_conn, db_instance, *_ops);
         return SUCCESS();
     }
     catch (const irods::exception& e) {
@@ -13935,7 +13964,7 @@ irods::error db_calc_logical_usage_and_quota_op(irods::plugin_context& _ctx, [[m
     }
     catch (const nanodbc::database_error& e) {
         log_db::error("{}: database error: {}", __func__, e.what());
-        return ERROR(CAT_SQL_ERR, e.what());
+        return ERROR(translate_nanodbc_error(e), e.what());
     }
     catch (const std::exception& e) {
         log_db::error("{}: exception: {}", __func__, e.what());
@@ -14065,7 +14094,7 @@ irods::error db_set_logical_quota_op(irods::plugin_context& _ctx,
     }
     catch (const nanodbc::database_error& e) {
         log_db::error("{}: database error: {}", __func__, e.what());
-        return ERROR(CAT_SQL_ERR, e.what());
+        return ERROR(translate_nanodbc_error(e), e.what());
     }
     catch (const std::exception& e) {
         log_db::error("{}: exception: {}", __func__, e.what());
@@ -14178,7 +14207,7 @@ irods::error db_check_logical_quota_op(irods::plugin_context& _ctx,
     }
     catch (const nanodbc::database_error& e) {
         log_db::error("{}: database error: {}", __func__, e.what());
-        return ERROR(CAT_SQL_ERR, e.what());
+        return ERROR(translate_nanodbc_error(e), e.what());
     }
     catch (const std::exception& e) {
         log_db::error("{}: exception: {}", __func__, e.what());
@@ -14583,25 +14612,25 @@ irods::database* plugin_factory(
         DATABASE_OP_EXECUTE_GENQUERY2_SQL,
         function<error(plugin_context&, const char*, const std::vector<std::string>*, char**)>(
             db_execute_genquery2_sql));
-    pg->add_operation<const irods::experimental::genquery2::select*,
+    pg->add_operation<const irods::experimental::genquery2::statement*,
                       const irods::experimental::genquery2::options*,
                       char**>(
         DATABASE_OP_EXECUTE_GENQUERY2,
         function<error(plugin_context&,
-                       const irods::experimental::genquery2::select*,
+                       const irods::experimental::genquery2::statement*,
                        const irods::experimental::genquery2::options*,
                        char**)>(db_execute_genquery2_op));
-    pg->add_operation<const irods::experimental::genquery2::select*,
+    pg->add_operation<const irods::experimental::genquery2::statement*,
                       const irods::experimental::genquery2::options*,
                       lite3cpp::Buffer*>(
         DATABASE_OP_EXECUTE_GENQUERY2_BUFFER,
         function<error(plugin_context&,
-                       const irods::experimental::genquery2::select*,
+                       const irods::experimental::genquery2::statement*,
                        const irods::experimental::genquery2::options*,
                        lite3cpp::Buffer*)>(db_execute_genquery2_buffer_op));
-    pg->add_operation<const std::vector<irods::experimental::dml::operation_type>*, int*>(
+    pg->add_operation<const std::vector<irods::experimental::dml::operation_type>*>(
         DATABASE_OP_ATOMIC_APPLY,
-        function<error(plugin_context&, const std::vector<irods::experimental::dml::operation_type>*, int*)>(
+        function<error(plugin_context&, const std::vector<irods::experimental::dml::operation_type>*)>(
             db_atomic_apply_op));
     pg->add_operation<int*>(
         DATABASE_OP_GET_CATALOG_VERSION,

@@ -168,7 +168,7 @@ namespace
          * call. That is when the parallel I/O is done */
         if (rsComm && rsComm->irodsProt == LITE3_PROT && portalOprOut && *portalOprOut) {
             if (auto reply_buf = irods::protocol::PortalOprOut::from_legacy(**portalOprOut)) {
-                irods::protocol::active_api_buffer_scope::set_active_reply(std::move(*reply_buf));
+                irods::protocol::active_api_buffer_scope::set_active_reply(std::move(*reply_buf), portalOprOut);
             }
         }
         int retval = sendAndRecvBranchMsg( rsComm, rsComm->apiInx, status,

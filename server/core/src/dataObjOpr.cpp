@@ -98,6 +98,9 @@ getDataObjInfo(
     }
     else {
         const irods::filesystem::path p{dataObjInp->objPath};
+        if ( p.string_view().empty() ) {
+            return CAT_NO_ROWS_FOUND;
+        }
         if ( p.string_view().find('/') == std::string_view::npos ) {
             rodsLog( LOG_NOTICE,
                      "initDataObjInfoQuery: invalid path for %s, status = %d",
@@ -128,7 +131,7 @@ getDataObjInfo(
                                          "DATA_CREATE_TIME",
                                          "DATA_MODIFY_TIME",
                                          "DATA_MODE",
-                                         "DATA_RESC_HIER"})
+                                         "DATA_RESC_ID"})
                        .where(std::move(cond))
                        .order_by("COLL_NAME")
                        .order_by("DATA_NAME")
@@ -171,18 +174,19 @@ getDataObjInfo(
         char scratch_name[64]{};
         const auto tmpCollName = rows.cell(r, 2, scratch_coll);
         const auto tmpDataName = rows.cell(r, 1, scratch_name);
-        const auto tmpHierString = rows.cell_str(r, 21);
 
         snprintf( dataObjInfo->objPath, MAX_NAME_LEN, "%.*s/%.*s",
                   static_cast<int>(tmpCollName.size()), tmpCollName.data(),
                   static_cast<int>(tmpDataName.size()), tmpDataName.data() );
-        rstrcpy( dataObjInfo->rescHier, tmpHierString.c_str(), MAX_NAME_LEN );
-        irods::error ret = resc_mgr.hier_to_leaf_id( tmpHierString, dataObjInfo->rescId );
+        rows.cell_int(r, 21, dataObjInfo->rescId);
+        std::string tmpHierString;
+        irods::error ret = resc_mgr.leaf_id_to_hier( dataObjInfo->rescId, tmpHierString );
         if (!ret.ok()) {
             freeDataObjInfo(dataObjInfo);
             irods::log(PASS(ret));
             return ret.code();
         }
+        rstrcpy( dataObjInfo->rescHier, tmpHierString.c_str(), MAX_NAME_LEN );
 
         irods::hierarchy_parser parser;
         parser.set_string( tmpHierString );

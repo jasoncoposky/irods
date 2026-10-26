@@ -696,20 +696,42 @@ namespace
         // "read_object" permission. These conditions apply to non-admin only.
 
         if (c_iter != end) {
-            sql += fmt::format(" {} exists ("
-                               "select 1 "
-                               "from R_OBJT_ACCESS oa"
-                               " left join R_USER_GROUP ug on oa.user_id = ug.group_user_id"
-                               " left join R_USER_MAIN u on ug.user_id = u.user_id "
-                               "where oa.object_id = {}.coll_id"
-                               " and u.user_name = ?"
-                               " and u.zone_name = '{}'"
-                               " and u.user_type_name != 'rodsgroup'"
-                               " and oa.access_type_id >= 1050)",
-                               condition_clause_prefix,
-                               c_iter->second,
-                               _opts.user_zone);
-            _state.values.emplace_back(_opts.user_name);
+            if (_opts.session_ticket.empty()) {
+                sql += fmt::format(" {} exists ("
+                                   "select 1 "
+                                   "from R_OBJT_ACCESS oa"
+                                   " left join R_USER_GROUP ug on oa.user_id = ug.group_user_id"
+                                   " left join R_USER_MAIN u on ug.user_id = u.user_id "
+                                   "where oa.object_id = {}.coll_id"
+                                   " and u.user_name = ?"
+                                   " and u.zone_name = '{}'"
+                                   " and u.user_type_name != 'rodsgroup'"
+                                   " and oa.access_type_id >= 1050)",
+                                   condition_clause_prefix,
+                                   c_iter->second,
+                                   _opts.user_zone);
+                _state.values.emplace_back(_opts.user_name);
+            }
+            else {
+                sql += fmt::format(" {0} (exists ("
+                                   "select 1 "
+                                   "from R_OBJT_ACCESS oa"
+                                   " left join R_USER_GROUP ug on oa.user_id = ug.group_user_id"
+                                   " left join R_USER_MAIN u on ug.user_id = u.user_id "
+                                   "where oa.object_id = {1}.coll_id"
+                                   " and u.user_name = ?"
+                                   " and u.zone_name = '{2}'"
+                                   " and u.user_type_name != 'rodsgroup'"
+                                   " and oa.access_type_id >= 1050)"
+                                   " or {1}.coll_id in (select object_id from R_TICKET_MAIN TICK where TICK.ticket_string = ?)"
+                                   " or {1}.coll_name like (select concat(coll_name, '/%') from R_COLL_MAIN where coll_id in (select object_id from R_TICKET_MAIN TICK where TICK.ticket_string = ?)))",
+                                   condition_clause_prefix,
+                                   c_iter->second,
+                                   _opts.user_zone);
+                _state.values.emplace_back(_opts.user_name);
+                _state.values.emplace_back(_opts.session_ticket);
+                _state.values.emplace_back(_opts.session_ticket);
+            }
 
             // Update the condition prefix in case we need to add the permission checks for
             // data objects.
@@ -717,20 +739,44 @@ namespace
         }
 
         if (d_iter != end) {
-            sql += fmt::format(" {} exists ("
-                               "select 1 "
-                               "from R_OBJT_ACCESS oa"
-                               " left join R_USER_GROUP ug on oa.user_id = ug.group_user_id"
-                               " left join R_USER_MAIN u on ug.user_id = u.user_id "
-                               "where oa.object_id = {}.data_id"
-                               " and u.user_name = ?"
-                               " and u.zone_name = '{}'"
-                               " and u.user_type_name != 'rodsgroup'"
-                               " and oa.access_type_id >= 1050)",
-                               condition_clause_prefix,
-                               d_iter->second,
-                               _opts.user_zone);
-            _state.values.emplace_back(_opts.user_name);
+            if (_opts.session_ticket.empty()) {
+                sql += fmt::format(" {} exists ("
+                                   "select 1 "
+                                   "from R_OBJT_ACCESS oa"
+                                   " left join R_USER_GROUP ug on oa.user_id = ug.group_user_id"
+                                   " left join R_USER_MAIN u on ug.user_id = u.user_id "
+                                   "where oa.object_id = {}.data_id"
+                                   " and u.user_name = ?"
+                                   " and u.zone_name = '{}'"
+                                   " and u.user_type_name != 'rodsgroup'"
+                                   " and oa.access_type_id >= 1050)",
+                                   condition_clause_prefix,
+                                   d_iter->second,
+                                   _opts.user_zone);
+                _state.values.emplace_back(_opts.user_name);
+            }
+            else {
+                sql += fmt::format(" {0} (exists ("
+                                   "select 1 "
+                                   "from R_OBJT_ACCESS oa"
+                                   " left join R_USER_GROUP ug on oa.user_id = ug.group_user_id"
+                                   " left join R_USER_MAIN u on ug.user_id = u.user_id "
+                                   "where oa.object_id = {1}.data_id"
+                                   " and u.user_name = ?"
+                                   " and u.zone_name = '{2}'"
+                                   " and u.user_type_name != 'rodsgroup'"
+                                   " and oa.access_type_id >= 1050)"
+                                   " or {1}.data_id in (select object_id from R_TICKET_MAIN TICK where TICK.ticket_string = ?)"
+                                   " or {1}.coll_id in (select object_id from R_TICKET_MAIN TICK where TICK.ticket_string = ?)"
+                                   " or {1}.coll_id in (select c_sub.coll_id from R_COLL_MAIN c_sub where c_sub.coll_name like (select concat(coll_name, '/%') from R_COLL_MAIN where coll_id in (select object_id from R_TICKET_MAIN TICK where TICK.ticket_string = ?))))",
+                                   condition_clause_prefix,
+                                   d_iter->second,
+                                   _opts.user_zone);
+                _state.values.emplace_back(_opts.user_name);
+                _state.values.emplace_back(_opts.session_ticket);
+                _state.values.emplace_back(_opts.session_ticket);
+                _state.values.emplace_back(_opts.session_ticket);
+            }
             condition_clause_prefix = "and";
         }
 
@@ -1073,7 +1119,7 @@ namespace
                     "resc_id, "
                     "resc_name hier, "
                     "case "
-                        "when resc_parent = '' then 0 "
+                        "when resc_parent is null or resc_parent = '' then 0 "
                         "else cast(resc_parent as {int_type}) "
                     "end parent_id "
                 "from R_RESC_MAIN "
@@ -1083,7 +1129,7 @@ namespace
                     "cte_drh.resc_id, "
                     "cast(concat(concat(U.resc_name, ';'), cte_drh.hier) as {char_type}(250)), "
                     "case "
-                        "when U.resc_parent = '' then 0 "
+                        "when U.resc_parent is null or U.resc_parent = '' then 0 "
                         "else cast(U.resc_parent as {int_type}) "
                     "end parent_id "
                 "from cte_drh "
@@ -1756,7 +1802,8 @@ namespace irods::experimental::genquery2
 
             if (state.add_sql_for_data_resc_hier) {
                 sql += fmt::format(
-                    " inner join cte_drh on cte_drh.resc_id = {}.resc_id", state.table_aliases.at("R_RESC_MAIN"));
+                    " inner join cte_drh on (cte_drh.resc_id = {}.resc_id and cte_drh.parent_id = 0)",
+                    state.table_aliases.at("R_RESC_MAIN"));
             }
 
             if (state.add_joins_for_user_group) {

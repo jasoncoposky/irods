@@ -190,7 +190,7 @@ namespace
 
 int rsCollCreate(rsComm_t* rsComm, collInp_t* collCreateInp)
 {
-    if (const auto req_coll = irods::protocol::active_api_buffer_scope::try_get_active_request<irods::protocol::CollInp>()) {
+    if (const auto req_coll = irods::protocol::active_api_buffer_scope::try_get_active_request<irods::protocol::CollInp>(collCreateInp)) {
         if (is_special_path(std::string{req_coll->coll_name()})) {
             return USER_INPUT_PATH_ERR;
         }

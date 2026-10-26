@@ -168,7 +168,12 @@ int rsApiHandler(rsComm_t*   rsComm,
         }
     }};
 
-    irods::protocol::active_api_buffer_scope active_lite3_scope{inputStructBBuf, rsComm->irodsProt};
+    irods::protocol::active_api_buffer_scope active_lite3_scope{
+        inputStructBBuf,
+        rsComm->irodsProt,
+        RsApiTable[apiInx]->inPackInstruct,
+        RsApiTable[apiInx]->outPackInstruct,
+        static_cast<const void*>(&myOutStruct)};
 
     if ( inputStructBBuf->len > 0 ) {
         log_agent::debug("Unpacking byte buffer based on packing instruction [{}]", RsApiTable[apiInx]->inPackInstruct);
@@ -181,6 +186,7 @@ int rsApiHandler(rsComm_t*   rsComm,
             sendApiReply( rsComm, apiInx, status, myOutStruct, &myOutBsBBuf );
             return status;
         }
+        active_lite3_scope.bind_input_struct(myInStruct);
     }
 
     /* ready to call the handler functions */
