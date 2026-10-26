@@ -190,6 +190,42 @@ TEST_CASE("irods::protocol::DataObjInfoList contiguous replica list & other faca
         CHECK(verify_reply.obj_size() == 8192);
         CHECK(verify_reply.data_id() == "42001");
         CHECK(verify_reply.owner_name() == "rods");
+
+        // Verify PortalOprOut_PI / PortList_PI zero-copy struct_buffer facade & legacy round-trip
+        irods::protocol::PortalOprOut portal_reply;
+        portal_reply.status(0);
+        portal_reply.l1desc_inx(7);
+        portal_reply.num_threads(4);
+        portal_reply.chksum("sha2:abcd1234");
+        portal_reply.port_list().port_num(20124);
+        portal_reply.port_list().cookie(998877);
+        portal_reply.port_list().window_size(65536);
+        portal_reply.port_list().host_addr("icat.example.org");
+
+        auto legacy_portal = portal_reply.to_legacy();
+        REQUIRE(legacy_portal.has_value());
+        ::portalOprOut_t* c_portal = *legacy_portal;
+        const auto free_c_portal = irods::at_scope_exit{[&c_portal] { std::free(c_portal); }};
+        CHECK(c_portal->l1descInx == 7);
+        CHECK(c_portal->numThreads == 4);
+        CHECK(std::string_view{c_portal->chksum} == "sha2:abcd1234");
+        CHECK(c_portal->portList.portNum == 20124);
+        CHECK(c_portal->portList.cookie == 998877);
+        CHECK(std::string_view{c_portal->portList.hostAddr} == "icat.example.org");
+
+        auto roundtrip_portal = irods::protocol::PortalOprOut::from_legacy(*c_portal);
+        REQUIRE(roundtrip_portal.has_value());
+        irods::protocol::active_api_buffer_scope::set_active_reply(std::move(*roundtrip_portal));
+        REQUIRE(irods::protocol::active_api_buffer_scope::has_active_reply_buffer());
+
+        auto taken_portal_buf = irods::protocol::active_api_buffer_scope::take_active_reply_buffer();
+        REQUIRE(taken_portal_buf.has_value());
+        irods::protocol::PortalOprOut verify_portal{std::move(*taken_portal_buf)};
+        CHECK(verify_portal.l1desc_inx() == 7);
+        CHECK(verify_portal.num_threads() == 4);
+        CHECK(verify_portal.chksum() == "sha2:abcd1234");
+        CHECK(verify_portal.port_list().port_num() == 20124);
+        CHECK(verify_portal.port_list().host_addr() == "icat.example.org");
     }
     CHECK_FALSE(irods::protocol::active_api_buffer_scope::has_active_request_buffer());
 }

@@ -24,6 +24,8 @@
 #include "irods/irods_database_constants.hpp"
 #include "irods/irods_server_properties.hpp"
 #include "irods/logical_quota_utilities.hpp"
+#include "irods/rcMisc.h"
+#include "irods/rodsKeyWdDef.h"
 #include "irods/genquery2_builder.hpp"
 #include "irods/private/genquery2_ast_types.hpp"
 #include "irods/private/genquery2_sql.hpp"
@@ -142,9 +144,11 @@ int chlOpen() {
                                        irods::database > ( db_plug_ptr );
     // =-=-=-=-=-=-=-
     // call the operation on the plugin
-    ret = db->call( 0,
-                    irods::DATABASE_OP_OPEN,
-                    ptr );
+    if (db->has_operation(irods::DATABASE_OP_OPEN)) {
+        ret = db->call( 0,
+                        irods::DATABASE_OP_OPEN,
+                        ptr );
+    }
 
     // =-=-=-=-=-=-=-
     // call the start operation, as it may have opinions
@@ -205,6 +209,10 @@ int chlClose() {
 
     // =-=-=-=-=-=-=-
     // call the close operation on the plugin
+    if (!db->has_operation(irods::DATABASE_OP_CLOSE)) {
+        return 0;
+    }
+
     ret = db->call( 0,
                     irods::DATABASE_OP_CLOSE,
                     ptr );
@@ -413,6 +421,10 @@ int chlUpdateRescObjCount(
 
     // =-=-=-=-=-=-=-
     // call the operation on the plugin
+    if (!db->has_operation(irods::DATABASE_OP_UPDATE_RESC_OBJ_COUNT)) {
+        return 0;
+    }
+
     ret = db->call <
           const std::string*,
           int > (
@@ -749,6 +761,25 @@ int chlModRuleExec(
 
     // =-=-=-=-=-=-=-
     // call the operation on the plugin
+    if (!db->has_operation(irods::DATABASE_OP_MOD_RULE_EXEC)) {
+        if (!_re_id || !_reg_param) {
+            return SYS_INTERNAL_NULL_INPUT_ERR;
+        }
+        namespace dml = irods::experimental::dml;
+        std::vector<dml::column> cols;
+        for (int i = 0; i < _reg_param->len; ++i) {
+            if (_reg_param->keyWord[i] && _reg_param->value[i]) {
+                cols.push_back({_reg_param->keyWord[i], _reg_param->value[i]});
+            }
+        }
+        if (cols.empty()) {
+            return 0;
+        }
+        return chl_atomic_apply_operations(
+            _comm,
+            {dml::update_op{"R_RULE_EXEC", std::move(cols), {dml::condition{"rule_exec_id", "=", {_re_id}}}}});
+    }
+
     ret = db->call <
           const char*,
           keyValPair_t* > (
@@ -1073,6 +1104,10 @@ int chlRollback(
 
     // =-=-=-=-=-=-=-
     // call the operation on the plugin
+    if (!db->has_operation(irods::DATABASE_OP_ROLLBACK)) {
+        return 0;
+    }
+
     ret = db->call(
               _comm,
               irods::DATABASE_OP_ROLLBACK,
@@ -1123,6 +1158,10 @@ int chlCommit(
 
     // =-=-=-=-=-=-=-
     // call the operation on the plugin
+    if (!db->has_operation(irods::DATABASE_OP_COMMIT)) {
+        return 0;
+    }
+
     ret = db->call(
               _comm,
               irods::DATABASE_OP_COMMIT,
@@ -1222,6 +1261,36 @@ int chlRegCollByAdmin(
 
     // =-=-=-=-=-=-=-
     // call the operation on the plugin
+    if (!db->has_operation(irods::DATABASE_OP_REG_COLL_BY_ADMIN)) {
+        if (!_coll_info) {
+            return SYS_INVALID_INPUT_PARAM;
+        }
+        std::string coll_name = _coll_info->collName;
+        if (coll_name.size() > 1 && coll_name.back() == '/') {
+            coll_name.pop_back();
+        }
+        namespace gq2 = irods::experimental::genquery2;
+        using gq2::builder::col;
+        const auto q = gq2::builder::select({"COLL_ID"}).where(col("COLL_NAME") == coll_name).limit(1).build();
+        RsComm dummy_comm{};
+        dummy_comm.clientUser.authInfo.authFlag = LOCAL_PRIV_USER_AUTH;
+        gq2::options opts{};
+        opts.database = database_plugin_type;
+        opts.admin_mode = true;
+        lite3cpp::Buffer rows_buf;
+        const gq2::statement stmt = q;
+        if (chl_execute_genquery2_buffer(_comm ? *_comm : dummy_comm, stmt, opts, rows_buf) == 0) {
+            const gq2::rows_buffer_view view{rows_buf};
+            if (!view.empty() && view.col_count(0) > 0) {
+                char scratch[64]{};
+                const auto sv = view.cell(0, 0, scratch);
+                std::from_chars(sv.data(), sv.data() + sv.size(), _coll_info->collId);
+                return 0;
+            }
+        }
+        return chlRegColl(_comm, _coll_info);
+    }
+
     ret = db->call <
           collInfo_t* > (
               _comm,
@@ -1384,6 +1453,20 @@ int chlRegZone(
 
     // =-=-=-=-=-=-=-
     // call the operation on the plugin
+    if (!db->has_operation(irods::DATABASE_OP_REG_ZONE)) {
+        if (!_zone_name || !_zone_type) {
+            return SYS_INTERNAL_NULL_INPUT_ERR;
+        }
+        namespace dml = irods::experimental::dml;
+        return chl_atomic_apply_operations(
+            _comm,
+            {dml::insert_op{"R_ZONE_MAIN",
+                            {{"zone_name", _zone_name},
+                             {"zone_type_name", _zone_type},
+                             {"zone_conn_string", _zone_conn_info ? _zone_conn_info : ""},
+                             {"r_comment", _zone_comment ? _zone_comment : ""}}}});
+    }
+
     ret = db->call <
           const char*,
           const char*,
@@ -1441,6 +1524,18 @@ int chlModZone(
 
     // =-=-=-=-=-=-=-
     // call the operation on the plugin
+    if (!db->has_operation(irods::DATABASE_OP_MOD_ZONE)) {
+        if (!_zone_name || !_option || !_option_value) {
+            return SYS_INTERNAL_NULL_INPUT_ERR;
+        }
+        namespace dml = irods::experimental::dml;
+        return chl_atomic_apply_operations(
+            _comm,
+            {dml::update_op{"R_ZONE_MAIN",
+                            {{_option, _option_value}},
+                            {dml::condition{"zone_name", "=", {_zone_name}}}}});
+    }
+
     ret = db->call <
           const char*,
           const char*,
@@ -1652,6 +1747,16 @@ int chlDelZone(
 
     // =-=-=-=-=-=-=-
     // call the operation on the plugin
+    if (!db->has_operation(irods::DATABASE_OP_DEL_ZONE)) {
+        if (!_zone_name) {
+            return SYS_INTERNAL_NULL_INPUT_ERR;
+        }
+        namespace dml = irods::experimental::dml;
+        return chl_atomic_apply_operations(
+            _comm,
+            {dml::delete_op{"R_ZONE_MAIN", {dml::condition{"zone_name", "=", {_zone_name}}}}});
+    }
+
     ret = db->call <
           const char* > (
               _comm,
@@ -1702,6 +1807,25 @@ int chlDelCollByAdmin(
 
     // =-=-=-=-=-=-=-
     // call the operation on the plugin
+    if (!db->has_operation(irods::DATABASE_OP_DEL_COLL_BY_ADMIN)) {
+        if (!_coll_info) {
+            return CAT_INVALID_ARGUMENT;
+        }
+        if (_comm && (_comm->clientUser.authInfo.authFlag < LOCAL_PRIV_USER_AUTH ||
+                      _comm->proxyUser.authInfo.authFlag < LOCAL_PRIV_USER_AUTH)) {
+            return CAT_INSUFFICIENT_PRIVILEGE_LEVEL;
+        }
+        const bool had_admin_kw = (getValByKey(&_coll_info->condInput, ADMIN_KW) != nullptr);
+        if (!had_admin_kw) {
+            addKeyVal(&_coll_info->condInput, ADMIN_KW, "");
+        }
+        const int ec = chlDelColl(_comm, _coll_info);
+        if (!had_admin_kw) {
+            rmKeyVal(&_coll_info->condInput, ADMIN_KW);
+        }
+        return ec;
+    }
+
     ret = db->call <
           collInfo_t* > (
               _comm,
@@ -2199,6 +2323,10 @@ int chlModRescDataPaths(
 
     // =-=-=-=-=-=-=-
     // call the operation on the plugin
+    if (!db->has_operation(irods::DATABASE_OP_MOD_RESC_DATA_PATHS)) {
+        return 0;
+    }
+
     ret = db->call <
           const char*,
           const char*,
@@ -2256,6 +2384,10 @@ int chlModRescFreeSpace(
 
     // =-=-=-=-=-=-=-
     // call the operation on the plugin
+    if (!db->has_operation(irods::DATABASE_OP_MOD_RESC_FREESPACE)) {
+        return 0;
+    }
+
     ret = db->call <
           const char*,
           int > (
@@ -2882,6 +3014,22 @@ int chlRegToken(
 
     // =-=-=-=-=-=-=-
     // call the operation on the plugin
+    if (!db->has_operation(irods::DATABASE_OP_REG_TOKEN)) {
+        if (!_name_space || !_name || !_value) {
+            return SYS_INTERNAL_NULL_INPUT_ERR;
+        }
+        namespace dml = irods::experimental::dml;
+        return chl_atomic_apply_operations(
+            _comm,
+            {dml::insert_op{"R_TOKN_MAIN",
+                            {{"token_namespace", _name_space},
+                             {"token_name", _name},
+                             {"token_value", _value},
+                             {"token_value2", _value2 ? _value2 : ""},
+                             {"token_value3", _value3 ? _value3 : ""},
+                             {"r_comment", _comment ? _comment : ""}}}});
+    }
+
     ret = db->call <
           const char*,
           const char*,
@@ -3016,6 +3164,10 @@ int chlRegServerLoad(
 
     // =-=-=-=-=-=-=-
     // call the operation on the plugin
+    if (!db->has_operation(irods::DATABASE_OP_REG_SERVER_LOAD)) {
+        return 0;
+    }
+
     ret = db->call <
           const char*,
           const char*,
@@ -3084,6 +3236,10 @@ int chlPurgeServerLoad(
 
     // =-=-=-=-=-=-=-
     // call the operation on the plugin
+    if (!db->has_operation(irods::DATABASE_OP_PURGE_SERVER_LOAD)) {
+        return 0;
+    }
+
     ret = db->call <
           const char* > (
               _comm,
@@ -3136,6 +3292,10 @@ int chlRegServerLoadDigest(
 
     // =-=-=-=-=-=-=-
     // call the operation on the plugin
+    if (!db->has_operation(irods::DATABASE_OP_REG_SERVER_LOAD_DIGEST)) {
+        return 0;
+    }
+
     ret = db->call <
           const char*,
           const char* > (
@@ -3190,6 +3350,10 @@ int chlPurgeServerLoadDigest(
 
     // =-=-=-=-=-=-=-
     // call the operation on the plugin
+    if (!db->has_operation(irods::DATABASE_OP_PURGE_SERVER_LOAD_DIGEST)) {
+        return 0;
+    }
+
     ret = db->call <
           const char* > (
               _comm,
@@ -3236,6 +3400,10 @@ int chlCalcUsageAndQuota(
 
     // =-=-=-=-=-=-=-
     // call the operation on the plugin
+    if (!db->has_operation(irods::DATABASE_OP_CALC_USAGE_AND_QUOTA)) {
+        return 0;
+    }
+
     ret = db->call(
               _comm,
               irods::DATABASE_OP_CALC_USAGE_AND_QUOTA,
@@ -3493,6 +3661,10 @@ chlDelUnusedAVUs(
 
     // =-=-=-=-=-=-=-
     // call the operation on the plugin
+    if (!db->has_operation(irods::DATABASE_OP_DEL_UNUSED_AVUS)) {
+        return 0;
+    }
+
     ret = db->call(
               _comm,
               irods::DATABASE_OP_DEL_UNUSED_AVUS,
@@ -3980,6 +4152,16 @@ int chlAddSpecificQuery(
 
     // =-=-=-=-=-=-=-
     // call the operation on the plugin
+    if (!db->has_operation(irods::DATABASE_OP_ADD_SPECIFIC_QUERY)) {
+        if (!_sql || !_alias) {
+            return SYS_INTERNAL_NULL_INPUT_ERR;
+        }
+        namespace dml = irods::experimental::dml;
+        return chl_atomic_apply_operations(
+            _comm,
+            {dml::insert_op{"R_SPECIFIC_QUERY", {{"alias", _alias}, {"sqlStr", _sql}}}});
+    }
+
     ret = db->call <
           const char*,
           const char* > (
@@ -4029,6 +4211,16 @@ int chlDelSpecificQuery(
 
     // =-=-=-=-=-=-=-
     // call the operation on the plugin
+    if (!db->has_operation(irods::DATABASE_OP_DEL_SPECIFIC_QUERY)) {
+        if (!_sql_or_alias) {
+            return SYS_INTERNAL_NULL_INPUT_ERR;
+        }
+        namespace dml = irods::experimental::dml;
+        return chl_atomic_apply_operations(
+            _comm,
+            {dml::delete_op{"R_SPECIFIC_QUERY", {dml::condition{"alias", "=", {_sql_or_alias}}}}});
+    }
+
     ret = db->call <
           const char* > (
               _comm,
@@ -4962,6 +5154,40 @@ auto chl_update_replica_access_time(RsComm& _comm, const char* _json_input, char
     irods::first_class_object_ptr ptr = db_obj_ptr;
     irods::database_ptr db = std::dynamic_pointer_cast<irods::database>(db_plug_ptr);
 
+    if (!db->has_operation(irods::DATABASE_OP_UPDATE_REPLICA_ACCESS_TIME)) {
+        if (!_json_input || !_output) {
+            return SYS_INTERNAL_NULL_INPUT_ERR;
+        }
+        try {
+            namespace dml = irods::experimental::dml;
+            const auto j = nlohmann::json::parse(_json_input);
+            std::vector<dml::operation_type> ops;
+            if (j.contains("access_time_updates") && j.at("access_time_updates").is_array()) {
+                for (const auto& item : j.at("access_time_updates")) {
+                    const auto data_id = item.at("data_id").is_string()
+                        ? item.at("data_id").get<std::string>()
+                        : std::to_string(item.at("data_id").get<std::uint64_t>());
+                    const auto repl_num = item.at("replica_number").is_string()
+                        ? item.at("replica_number").get<std::string>()
+                        : std::to_string(item.at("replica_number").get<std::uint32_t>());
+                    const auto atime = item.value("atime", std::string{});
+                    ops.emplace_back(dml::update_op{
+                        "R_DATA_MAIN",
+                        {{"DATA_ACCESS_TIME", atime}},
+                        {dml::condition{"DATA_ID", "=", {data_id}},
+                         dml::condition{"DATA_REPL_NUM", "=", {repl_num}}}});
+                }
+            }
+            if (ops.empty()) {
+                return 0;
+            }
+            return chl_atomic_apply_operations(&_comm, ops);
+        }
+        catch (...) {
+            return SYS_LIBRARY_ERROR;
+        }
+    }
+
     const auto ret = db->call(&_comm, irods::DATABASE_OP_UPDATE_REPLICA_ACCESS_TIME, ptr, _json_input, _output);
 
     // NOLINTNEXTLINE(bugprone-narrowing-conversions,cppcoreguidelines-narrowing-conversions)
@@ -4984,6 +5210,12 @@ auto chl_check_password(RsComm* _comm, const char* _json_input, int* _valid) -> 
     irods::first_class_object_ptr ptr = db_obj_ptr;
     // NOLINTNEXTLINE(misc-const-correctness)
     irods::database_ptr db = std::dynamic_pointer_cast<irods::database>(db_plug_ptr);
+    if (!db->has_operation(irods::DATABASE_OP_CHECK_PASSWORD)) {
+        if (_valid) {
+            *_valid = 0;
+        }
+        return 0;
+    }
     const auto ret = db->call(_comm, irods::DATABASE_OP_CHECK_PASSWORD, ptr, _json_input, _valid);
     return static_cast<int>(ret.code());
 } // chl_check_password
@@ -5004,6 +5236,12 @@ auto chl_check_session_token(RsComm* _comm, const char* _json_input, int* _valid
     irods::first_class_object_ptr ptr = db_obj_ptr;
     // NOLINTNEXTLINE(misc-const-correctness)
     irods::database_ptr db = std::dynamic_pointer_cast<irods::database>(db_plug_ptr);
+    if (!db->has_operation(irods::DATABASE_OP_CHECK_SESSION_TOKEN)) {
+        if (_valid) {
+            *_valid = 0;
+        }
+        return 0;
+    }
     const auto ret = db->call(_comm, irods::DATABASE_OP_CHECK_SESSION_TOKEN, ptr, _json_input, _valid);
     return static_cast<int>(ret.code());
 } // chl_check_session_token
@@ -5024,6 +5262,9 @@ auto chl_make_session_token(RsComm* _comm, const char* _json_input, char** _toke
     irods::first_class_object_ptr ptr = db_obj_ptr;
     // NOLINTNEXTLINE(misc-const-correctness)
     irods::database_ptr db = std::dynamic_pointer_cast<irods::database>(db_plug_ptr);
+    if (!db->has_operation(irods::DATABASE_OP_MAKE_SESSION_TOKEN)) {
+        return 0;
+    }
     const auto ret = db->call(_comm, irods::DATABASE_OP_MAKE_SESSION_TOKEN, ptr, _json_input, _token);
     return static_cast<int>(ret.code());
 } // chl_make_session_token
@@ -5044,6 +5285,9 @@ auto chl_remove_session_tokens(RsComm* _comm, const char* _json_input) -> int
     irods::first_class_object_ptr ptr = db_obj_ptr;
     // NOLINTNEXTLINE(misc-const-correctness)
     irods::database_ptr db = std::dynamic_pointer_cast<irods::database>(db_plug_ptr);
+    if (!db->has_operation(irods::DATABASE_OP_REMOVE_SESSION_TOKENS)) {
+        return 0;
+    }
     const auto ret = db->call(_comm, irods::DATABASE_OP_REMOVE_SESSION_TOKENS, ptr, _json_input);
     return static_cast<int>(ret.code());
 } // chl_remove_session_tokens
@@ -5064,6 +5308,9 @@ auto chl_remove_password(RsComm* _comm, const char* _json_input) -> int
     irods::first_class_object_ptr ptr = db_obj_ptr;
     // NOLINTNEXTLINE(misc-const-correctness)
     irods::database_ptr db = std::dynamic_pointer_cast<irods::database>(db_plug_ptr);
+    if (!db->has_operation(irods::DATABASE_OP_REMOVE_PASSWORD)) {
+        return 0;
+    }
     const auto ret = db->call(_comm, irods::DATABASE_OP_REMOVE_PASSWORD, ptr, _json_input);
     return static_cast<int>(ret.code());
 } // chl_remove_password

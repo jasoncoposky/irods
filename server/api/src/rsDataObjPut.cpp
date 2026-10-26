@@ -57,6 +57,7 @@
 #include "irods/data_object_proxy.hpp"
 
 #include "irods/logical_locking.hpp"
+#include "irods/protocol/lite3_structs.hpp"
 
 #include <cstring>
 #include <chrono>
@@ -490,6 +491,11 @@ namespace
         // Return portalOprOut to the client and wait for the rcOprComplete
         // call. That is when the parallel I/O is done. rcOprComplete invokes
         // rcDataObjClose.
+        if (rsComm && rsComm->irodsProt == LITE3_PROT && portalOprOut && *portalOprOut) {
+            if (auto reply_buf = irods::protocol::PortalOprOut::from_legacy(**portalOprOut)) {
+                irods::protocol::active_api_buffer_scope::set_active_reply(std::move(*reply_buf));
+            }
+        }
         ec = sendAndRecvBranchMsg(rsComm, rsComm->apiInx, ec, static_cast<void*>(*portalOprOut), nullptr);
 
         if (ec < 0) {
@@ -721,6 +727,12 @@ int rsDataObjPut(rsComm_t* rsComm,
     namespace fs = ix::filesystem;
 
     const auto ec = rsDataObjPut_impl(rsComm, dataObjInp, dataObjInpBBuf, portalOprOut);
+
+    if (ec >= 0 && rsComm && rsComm->irodsProt == LITE3_PROT && portalOprOut && *portalOprOut) {
+        if (auto reply_buf = irods::protocol::PortalOprOut::from_legacy(**portalOprOut)) {
+            irods::protocol::active_api_buffer_scope::set_active_reply(std::move(*reply_buf));
+        }
+    }
 
     // Do not update the collection mtime if the logical path refers to a remote
     // zone. There is a known limitation in the iRODS protocol which does not allow

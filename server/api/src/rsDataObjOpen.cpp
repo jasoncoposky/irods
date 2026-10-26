@@ -78,6 +78,7 @@
 #include "irods/data_object_proxy.hpp"
 
 #include "irods/logical_locking.hpp"
+#include "irods/protocol/lite3_structs.hpp"
 
 #include <fmt/format.h>
 
@@ -1313,6 +1314,15 @@ int rsDataObjOpen(rsComm_t *rsComm, dataObjInp_t *dataObjInp)
 
     if (!dataObjInp) {
         return SYS_INTERNAL_NULL_INPUT_ERR;
+    }
+
+    if (const auto req_inp = irods::protocol::active_api_buffer_scope::try_get_active_request<irods::protocol::DataObjInp>()) {
+        if (has_trailing_path_separator(req_inp->obj_path().data())) {
+            return USER_INPUT_PATH_ERR;
+        }
+        if ((req_inp->open_flags() & O_ACCMODE) == O_RDONLY && (req_inp->open_flags() & O_TRUNC)) {
+            return USER_INCOMPATIBLE_OPEN_FLAGS;
+        }
     }
 
     if (has_trailing_path_separator(dataObjInp->objPath)) {

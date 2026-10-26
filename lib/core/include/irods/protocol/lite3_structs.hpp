@@ -1644,6 +1644,136 @@ namespace irods::protocol
         }
     };
 
+    /// \brief Non-owning view over a `PortList_PI` (`portList_t`) sub-object inside a `lite3cpp::Buffer`.
+    class PortListView
+    {
+    public:
+        PortListView(lite3cpp::Buffer* _buf, std::size_t _ofs) noexcept
+            : buf_{_buf}
+            , ofs_{_ofs}
+        {
+        }
+
+        [[nodiscard]] auto port_num() const noexcept -> int
+        {
+            return buf_ ? static_cast<int>(detail::get_i64_or(*buf_, ofs_, "portNum")) : 0;
+        }
+        void port_num(int _val)
+        {
+            if (buf_) {
+                buf_->set_i64(ofs_, "portNum", _val);
+            }
+        }
+
+        [[nodiscard]] auto cookie() const noexcept -> int
+        {
+            return buf_ ? static_cast<int>(detail::get_i64_or(*buf_, ofs_, "cookie")) : 0;
+        }
+        void cookie(int _val)
+        {
+            if (buf_) {
+                buf_->set_i64(ofs_, "cookie", _val);
+            }
+        }
+
+        [[nodiscard]] auto sock() const noexcept -> int
+        {
+            return buf_ ? static_cast<int>(detail::get_i64_or(*buf_, ofs_, "sock")) : 0;
+        }
+        void sock(int _val)
+        {
+            if (buf_) {
+                buf_->set_i64(ofs_, "sock", _val);
+            }
+        }
+
+        [[nodiscard]] auto window_size() const noexcept -> int
+        {
+            return buf_ ? static_cast<int>(detail::get_i64_or(*buf_, ofs_, "windowSize")) : 0;
+        }
+        void window_size(int _val)
+        {
+            if (buf_) {
+                buf_->set_i64(ofs_, "windowSize", _val);
+            }
+        }
+
+        [[nodiscard]] auto host_addr() const noexcept -> std::string_view
+        {
+            return buf_ ? detail::get_str_or(*buf_, ofs_, "hostAddr") : std::string_view{};
+        }
+        void host_addr(std::string_view _val)
+        {
+            if (buf_) {
+                buf_->set_str(ofs_, "hostAddr", _val);
+            }
+        }
+
+    private:
+        lite3cpp::Buffer* buf_{nullptr};
+        std::size_t ofs_{0};
+    };
+
+    /// \brief `PortalOprOut_PI` (`portalOprOut_t`) facade over a `lite3cpp::Buffer`.
+    class PortalOprOut : public struct_buffer<PortalOprOut, ::portalOprOut_t>
+    {
+    public:
+        static constexpr std::string_view pi_name = "PortalOprOut_PI";
+
+        using struct_buffer<PortalOprOut, ::portalOprOut_t>::struct_buffer;
+
+        [[nodiscard]] auto status() const noexcept -> int
+        {
+            return static_cast<int>(detail::get_i64_or(buffer(), offset(), "status"));
+        }
+        void status(int _val)
+        {
+            buffer().set_i64(offset(), "status", _val);
+        }
+
+        [[nodiscard]] auto l1desc_inx() const noexcept -> int
+        {
+            return static_cast<int>(detail::get_i64_or(buffer(), offset(), "l1descInx"));
+        }
+        void l1desc_inx(int _val)
+        {
+            buffer().set_i64(offset(), "l1descInx", _val);
+        }
+
+        [[nodiscard]] auto num_threads() const noexcept -> int
+        {
+            return static_cast<int>(detail::get_i64_or(buffer(), offset(), "numThreads"));
+        }
+        void num_threads(int _val)
+        {
+            buffer().set_i64(offset(), "numThreads", _val);
+        }
+
+        [[nodiscard]] auto chksum() const noexcept -> std::string_view
+        {
+            return detail::get_str_or(buffer(), offset(), "chksum");
+        }
+        void chksum(std::string_view _val)
+        {
+            buffer().set_str(offset(), "chksum", _val);
+        }
+
+        [[nodiscard]] auto port_list() -> PortListView
+        {
+            const auto pl_ofs = detail::ensure_sub_obj(buffer(), offset(), "PortList_PI");
+            return PortListView{&buffer(), pl_ofs};
+        }
+
+        [[nodiscard]] auto port_list() const noexcept -> PortListView
+        {
+            if (buffer().get_type(offset(), "PortList_PI") == lite3cpp::Type::Object) {
+                return PortListView{
+                    const_cast<lite3cpp::Buffer*>(&buffer()), buffer().get_obj(offset(), "PortList_PI")};
+            }
+            return PortListView{nullptr, 0};
+        }
+    };
+
     // Domain Type Aliases (preserving readability across server, client, and plugins):
     using keyValPair_t = KeyValPair;
     using specColl_t = SpecColl;
@@ -1656,6 +1786,7 @@ namespace irods::protocol
     using modAVUMetadataInp_t = ModAVUMetadataInp;
     using execCmd_t = ExecCmdInp;
     using execCmdOut_t = ExecCmdOut;
+    using portalOprOut_t = PortalOprOut;
 
     // Transitional C-style helper overloads for KeyValPairView / KeyValPair:
     inline auto addKeyVal(KeyValPairView* _cond_input, const char* _kw, const char* _value) -> int

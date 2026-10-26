@@ -31,6 +31,7 @@
 #include "irods/irods_configuration_keywords.hpp"
 #include "irods/scoped_privileged_client.hpp"
 #include "irods/irods_logger.hpp"
+#include "irods/protocol/lite3_structs.hpp"
 
 #define IRODS_FILESYSTEM_ENABLE_SERVER_SIDE_API
 #include "irods/filesystem.hpp"
@@ -189,6 +190,12 @@ namespace
 
 int rsCollCreate(rsComm_t* rsComm, collInp_t* collCreateInp)
 {
+    if (const auto req_coll = irods::protocol::active_api_buffer_scope::try_get_active_request<irods::protocol::CollInp>()) {
+        if (is_special_path(std::string{req_coll->coll_name()})) {
+            return USER_INPUT_PATH_ERR;
+        }
+    }
+
     const auto ec = rsCollCreate_impl(rsComm, collCreateInp);
     const auto parent_path = fs::path{collCreateInp->collName}.parent_path();
 

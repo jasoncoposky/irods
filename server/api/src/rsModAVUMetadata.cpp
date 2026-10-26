@@ -9,6 +9,7 @@
 #include "irods/rodsError.h"
 #include "irods/rodsErrorTable.h"
 #include "irods/irods_logger.hpp"
+#include "irods/protocol/lite3_structs.hpp"
 
 namespace logger = irods::experimental::log;
 
@@ -17,6 +18,13 @@ rsModAVUMetadata( rsComm_t *rsComm, modAVUMetadataInp_t *modAVUMetadataInp ) {
     rodsServerHost_t *rodsServerHost;
     int status;
     char *myHint;
+
+    if (const auto req_avu = irods::protocol::active_api_buffer_scope::try_get_active_request<irods::protocol::ModAVUMetadataInp>()) {
+        const auto opt = req_avu->option();
+        if (opt != "add" && opt != "rmi" && opt != "rm" && opt != "cp" && opt != "mod" && opt != "set") {
+            return CAT_INVALID_ARGUMENT;
+        }
+    }
 
     if ( strcmp( modAVUMetadataInp->arg0, "add" ) == 0 ) {
         myHint = modAVUMetadataInp->arg2;

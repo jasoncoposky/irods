@@ -25,6 +25,7 @@
 #include "irods/irods_hierarchy_parser.hpp"
 #include "irods/irods_resource_backport.hpp"
 #include "irods/key_value_proxy.hpp"
+#include "irods/protocol/lite3_structs.hpp"
 #include "irods/replica_proxy.hpp"
 
 namespace
@@ -165,6 +166,11 @@ namespace
 
         /* return portalOprOut to the client and wait for the rcOprComplete
          * call. That is when the parallel I/O is done */
+        if (rsComm && rsComm->irodsProt == LITE3_PROT && portalOprOut && *portalOprOut) {
+            if (auto reply_buf = irods::protocol::PortalOprOut::from_legacy(**portalOprOut)) {
+                irods::protocol::active_api_buffer_scope::set_active_reply(std::move(*reply_buf));
+            }
+        }
         int retval = sendAndRecvBranchMsg( rsComm, rsComm->apiInx, status,
                                        ( void * ) * portalOprOut, dataObjOutBBuf );
 
@@ -297,7 +303,13 @@ int rsDataObjGet(
             std::memset(dataObjOutBBuf->buf, 0, buffer_size_in_bytes);
             dataObjOutBBuf->len = buffer_size_in_bytes;
 
-            return single_buffer_get(*rsComm, fd, portalOprOut, dataObjOutBBuf);
+            const auto get_ec = single_buffer_get(*rsComm, fd, portalOprOut, dataObjOutBBuf);
+            if (get_ec >= 0 && rsComm && rsComm->irodsProt == LITE3_PROT && portalOprOut && *portalOprOut) {
+                if (auto reply_buf = irods::protocol::PortalOprOut::from_legacy(**portalOprOut)) {
+                    irods::protocol::active_api_buffer_scope::set_active_reply(std::move(*reply_buf));
+                }
+            }
+            return get_ec;
         }
     }
     catch (const irods::exception& e) {
