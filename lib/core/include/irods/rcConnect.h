@@ -79,6 +79,115 @@ typedef enum ProcLogFlag {
 
 /* The client connection handle */
 
+#ifdef __cplusplus
+struct RcComm;
+extern "C" int cleanRcComm(struct RcComm* conn);
+
+typedef struct RcComm {
+    irodsProt_t                irodsProt{};
+    char                       host[NAME_LEN]{};
+    int                        sock{};
+    int                        portNum{};
+    int                        loggedIn{};        /* already logged in ? */
+    struct sockaddr_in         localAddr{};   /* local address */
+    struct sockaddr_in         remoteAddr{};  /* remote address */
+    userInfo_t                 proxyUser{};
+    userInfo_t                 clientUser{};
+    version_t*                 svrVersion{};      /* the server's version */
+    rError_t*                  rError{};
+    int                        flag{};
+    transferStat_t             transStat{};
+    int                        apiInx{};
+    int                        status{};
+    int                        windowSize{};
+    int                        reconnectedSock{};
+    time_t                     reconnTime{};
+    volatile int               exit_flg{};
+    struct thread_context*     thread_ctx{};
+    procState_t                agentState{};
+    procState_t                clientState{};
+    procState_t                reconnThrState{};
+    operProgress_t             operProgress{};
+
+    int  key_size{};
+    int  salt_size{};
+    int  num_hash_rounds{};
+    char encryption_algorithm[ NAME_LEN ]{};
+    char negotiation_results[ MAX_NAME_LEN ]{};
+    unsigned char shared_secret[ NAME_LEN ]{};
+
+    int                        ssl_on{};
+    SSL_CTX*                   ssl_ctx{};
+    SSL*                       ssl{};
+
+    // =-=-=-=-=-=-=-
+    // this struct needs to stay at the bottom of
+    // rcComm_t
+    fileRestart_t              fileRestart{};
+
+    // NOLINTNEXTLINE(cppcoreguidelines-avoid-magic-numbers, readability-magic-numbers)
+    char session_signature[33]{}; // NOLINT(cppcoreguidelines-avoid-c-arrays, modernize-avoid-c-arrays)
+} rcComm_t;
+
+typedef struct PerfStat {
+    int orphanCnt{};
+    int nonOrphanCnt{};
+} perfStat_t;
+
+/* the server connection handle. probably should go somewhere else */
+typedef struct RsComm {
+    irodsProt_t irodsProt{};
+    int sock{};
+    int connectCnt{};
+    struct sockaddr_in localAddr{};           // local address
+    struct sockaddr_in remoteAddr{};          // remote address
+    char clientAddr[NAME_LEN]{};              // str version of remoteAddr
+    userInfo_t proxyUser{};
+    userInfo_t clientUser{};
+    rodsEnv myEnv{};                          // the local user
+    version_t cliVersion{};                   // the client's version
+    char option[LONG_NAME_LEN]{};
+    procLogFlag_t procLogFlag{};
+    rError_t rError{};
+    portalOpr_t *portalOpr{};
+    int apiInx{};
+    int status{};
+    perfStat_t perfStat{};
+    int windowSize{};
+    int reconnFlag{};
+    int reconnSock{};
+    int reconnPort{};
+    int reconnectedSock{};
+    char *reconnAddr{};
+    int cookie{};
+
+    struct thread_context* thread_ctx{};
+
+    procState_t agentState{};
+    procState_t clientState{};
+    procState_t reconnThrState{};
+    int gsiRequest{};
+    char* auth_scheme{};
+
+    int ssl_on{};
+    SSL_CTX *ssl_ctx{};
+    SSL *ssl{};
+    int ssl_do_accept{};
+    int ssl_do_shutdown{};
+
+    char negotiation_results[MAX_NAME_LEN]{};
+    unsigned char shared_secret[NAME_LEN]{};
+
+    int  key_size{};
+    int  salt_size{};
+    int  num_hash_rounds{};
+    char encryption_algorithm[NAME_LEN]{};
+
+    // A key-value container that is available for general purpose
+    // use throughout server-side operations.
+    keyValPair_t session_props{};
+} rsComm_t;
+#else
 typedef struct RcComm {
     irodsProt_t                irodsProt;
     char                       host[NAME_LEN];
@@ -183,6 +292,7 @@ typedef struct RsComm {
     // use throughout server-side operations.
     keyValPair_t session_props;
 } rsComm_t;
+#endif
 
 #ifdef __cplusplus
 #include <fmt/format.h>
@@ -302,6 +412,24 @@ isLoopbackAddress( const char* ip_address );
 
 #ifdef __cplusplus
 } // extern "C"
+
+#include <memory>
+
+namespace irods {
+
+struct rc_comm_deleter {
+    void operator()(rcComm_t* _conn) const noexcept
+    {
+        if (_conn) {
+            rcDisconnect(_conn);
+        }
+    }
+};
+
+using unique_rcComm_ptr = std::unique_ptr<rcComm_t, rc_comm_deleter>;
+using client_connection_handle = unique_rcComm_ptr;
+
+} // namespace irods
 #endif
 
 #endif // IRODS_RC_CONNECT_H

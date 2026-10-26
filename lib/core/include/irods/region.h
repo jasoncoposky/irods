@@ -3,12 +3,12 @@
 #ifndef _REGION_H__
 #define _REGION_H__
 
+#include <stddef.h>
 #include <stdio.h>
-#include <setjmp.h>
 
 #define DEFAULT_BLOCK_SIZE 1024
 /* the alignment in the region in bytes */
-#define REGION_ALIGNMENT 8
+#define REGION_ALIGNMENT 16
 #define roundToAlignment(x) ((x)%REGION_ALIGNMENT == 0?(x):(((x)/REGION_ALIGNMENT)+1)*REGION_ALIGNMENT)
 /* the point the elem i of type t starting from p in the cache, aligned */
 #define CACHE_ELEM(t, p, i) (((t)p)+i)
@@ -21,43 +21,19 @@ struct region_error {
     void *obj; /* a generic point to an object which is the source of the error */
 };
 
-/* #define REGION_MALLOC */
-#ifdef REGION_MALLOC
-struct region_node {
-    size_t size;
-    void *ptr;
-    struct region_node *next;
-};
+typedef struct region Region;
 
-typedef struct region {
-    struct region_node *head, *tail;
-} Region;
-#else
-struct region_node {
-    unsigned char *block; /* pointer to memory block */
-    size_t size; /* size of the memory block in bytes */
-    size_t used; /* used bytes of the memory block */
-    struct region_node *next; /* pointer to the next region */
-
-};
-
-
-typedef struct region {
-    struct region_node *head, *active;
-    jmp_buf *label;
-    struct region_error error;
-} Region;
-#endif
 typedef struct region_desc {
     Region *region;
     size_t size;
     int del;
 } RegionDesc;
 
-#define IN_REGION(x,r) (((RegionDesc *)(((const unsigned char*)(x))-CACHE_SIZE(RegionDesc, 1)))->region == (r))
-#define SET_DELETE(x) (((RegionDesc *)(((const unsigned char*)(x))-CACHE_SIZE(RegionDesc, 1)))->del=1)
-#define DELETED(x) (((RegionDesc *)(((const unsigned char*)(x))-CACHE_SIZE(RegionDesc, 1)))->del)
-#define SIZE(x) (((RegionDesc *)(((const unsigned char*)(x))-CACHE_SIZE(RegionDesc, 1)))->size)
+#define REGION_DESC(x) ((RegionDesc *)(((const unsigned char*)(x))-CACHE_SIZE(RegionDesc, 1)))
+#define IN_REGION(x,r) (REGION_DESC(x)->region == (r))
+#define SET_DELETE(x) (REGION_DESC(x)->del=1)
+#define DELETED(x) (REGION_DESC(x)->del)
+#define SIZE(x) (REGION_DESC(x)->size)
 
 #ifdef __cplusplus
 extern "C" {
@@ -66,7 +42,7 @@ extern "C" {
 /* create a region with initial size is */
 /* if s == 0 then the initial size is DEFAULT_BLOCK_SIZE */
 /* returns NULL if it runs out of memory */
-Region *make_region( size_t is, jmp_buf *label );
+Region *make_region( size_t is, void *label );
 /* allocation s bytes in region r */
 /* return NULL if it runs out of memory */
 void *region_alloc( Region *r, size_t s );
@@ -78,4 +54,4 @@ size_t region_size( Region *r );
 }
 #endif
 
-#endif // REGION_H__
+#endif // _REGION_H__

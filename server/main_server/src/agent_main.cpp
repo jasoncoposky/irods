@@ -850,6 +850,7 @@ namespace
         //
 
         RsComm rsComm{};
+        irods::server_comm_guard comm_guard{rsComm};
 
         // Originally set via an environment variable in initRsCommWithStartupPack in iRODS 4.2+.
         rsComm.sock = _socket_fd;
@@ -857,7 +858,12 @@ namespace
         irods::experimental::log::set_error_object(&rsComm.rError);
         irods::at_scope_exit release_error_stack{[] { irods::experimental::log::set_error_object(nullptr); }};
 
-        rsComm.thread_ctx = static_cast<thread_context*>(std::malloc(sizeof(thread_context)));
+        rsComm.thread_ctx = new thread_context{};
+
+        const auto cleanup_and_exit = [&rsComm](int _status) {
+            cleanup_rs_comm_members(rsComm);
+            cleanupAndExit(_status);
+        };
 
         bool require_cs_neg = false;
         int status = initRsCommWithStartupPack(rsComm, *startupPack, require_cs_neg);
@@ -871,7 +877,7 @@ namespace
         if (status < 0) {
             log_agent::error("initRsCommWithStartupPack error: [{}]", status);
             sendVersion(net_obj, status, 0, nullptr, 0);
-            cleanupAndExit(status);
+            cleanup_and_exit(status);
         }
 
         status = getRodsEnv(&rsComm.myEnv);
@@ -879,7 +885,7 @@ namespace
         if (status < 0) {
             log_agent::error("{}: getRodsEnv failed.", __func__);
             sendVersion(net_obj, status, 0, nullptr, 0);
-            cleanupAndExit(status);
+            cleanup_and_exit(status);
         }
 
         std::string svc_role;
@@ -894,7 +900,7 @@ namespace
         if (status < 0) {
             log_agent::error("{}: initAgent failed: {}", __func__, status);
             sendVersion(net_obj, status, 0, nullptr, 0);
-            cleanupAndExit(status);
+            cleanup_and_exit(status);
         }
 
         if (rsComm.clientUser.userName[0] != '\0') {
@@ -902,7 +908,7 @@ namespace
 
             if (status < 0) {
                 sendVersion(net_obj, status, 0, nullptr, 0);
-                cleanupAndExit(status);
+                cleanup_and_exit(status);
             }
         }
 
@@ -916,7 +922,7 @@ namespace
                 // or use the error stack rule engine thingie
                 log_agent::error(PASS(ret).result());
                 sendVersion(net_obj, ret.code(), 0, nullptr, 0);
-                cleanupAndExit(ret.code());
+                cleanup_and_exit(ret.code());
             }
             else {
                 // copy negotiation results to comm for action by network objects
@@ -932,7 +938,7 @@ namespace
         if (!ret.ok()) {
             log_agent::error(PASS(ret).result());
             sendVersion(net_obj, ret.code(), 0, nullptr, 0);
-            cleanupAndExit(status);
+            cleanup_and_exit(status);
         }
 
         create_agent_pid_file_for_ips(rsComm, _created_at);
@@ -953,12 +959,7 @@ namespace
 
         const auto cleanup_and_free_rsComm_members = [&rsComm] {
             cleanup();
-            if (rsComm.thread_ctx) {
-                std::free(rsComm.thread_ctx); // NOLINT(cppcoreguidelines-no-malloc, cppcoreguidelines-owning-memory)
-            }
-            if (rsComm.auth_scheme) {
-                std::free(rsComm.auth_scheme); // NOLINT(cppcoreguidelines-no-malloc, cppcoreguidelines-owning-memory)
-            }
+            cleanup_rs_comm_members(rsComm);
         };
 
         new_net_obj->to_server(&rsComm);

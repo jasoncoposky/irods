@@ -17,6 +17,7 @@
 #include <ctime>
 #include <cstring>
 #include <mutex>
+#include <new>
 #include <system_error>
 #include <thread>
 
@@ -55,15 +56,21 @@ rcComm_t* _rcConnect(
     rErrMsg_t *errMsg,
     int connectCnt,
     int reconnFlag ) {
-    rcComm_t *conn;
     int status;
     char *tmpStr;
 
-    conn = ( rcComm_t* )malloc( sizeof( rcComm_t ) );
-    memset( conn, 0, sizeof( rcComm_t ) );
+    auto* conn = new (std::nothrow) rcComm_t{};
+    if (!conn) {
+        return nullptr;
+    }
 
-    conn->thread_ctx = ( thread_context* ) malloc( sizeof( thread_context ) );
-    memset( conn->thread_ctx, 0, sizeof( thread_context ) );
+    try {
+        conn->thread_ctx = new thread_context{};
+    }
+    catch (...) {
+        delete conn;
+        return nullptr;
+    }
 
     allocate_error_stack_if_necessary(&conn->rError);
 
@@ -78,6 +85,7 @@ rcComm_t* _rcConnect(
 
         if (conn->irodsProt != NATIVE_PROT && conn->irodsProt != XML_PROT) {
             rodsLog(LOG_ERROR, "Invalid protocol value.");
+            freeRcComm(conn);
             return nullptr;
         }
     }
@@ -94,17 +102,7 @@ rcComm_t* _rcConnect(
             snprintf( errMsg->msg, ERR_MSG_LEN - 1,
                       "_rcConnect: setUserInfo failed\n" );
         }
-        if ( conn->thread_ctx != NULL ) {
-            if ( conn->thread_ctx->reconnThr && conn->thread_ctx->reconnThr->joinable() ) {
-                conn->thread_ctx->reconnThr->detach();
-            }
-            delete  conn->thread_ctx->reconnThr;
-            delete  conn->thread_ctx->lock;
-            delete  conn->thread_ctx->cond;
-            free( conn->thread_ctx );
-        }
-        freeRError(conn->rError);
-        free( conn );
+        freeRcComm(conn);
         return NULL;
     }
 
@@ -118,17 +116,7 @@ rcComm_t* _rcConnect(
             snprintf( errMsg->msg, ERR_MSG_LEN - 1,
                       "_rcConnect: setRhostInfo failed\n" );
         }
-        if ( conn->thread_ctx != NULL ) {
-            if ( conn->thread_ctx->reconnThr && conn->thread_ctx->reconnThr->joinable() ) {
-                conn->thread_ctx->reconnThr->detach();
-            }
-            delete  conn->thread_ctx->reconnThr;
-            delete  conn->thread_ctx->lock;
-            delete  conn->thread_ctx->cond;
-            free( conn->thread_ctx );
-        }
-        freeRError(conn->rError);
-        free( conn );
+        freeRcComm(conn);
         return NULL;
     }
     status = connectToRhost( conn, connectCnt, reconnFlag );
@@ -151,17 +139,7 @@ rcComm_t* _rcConnect(
             snprintf( errMsg->msg, ERR_MSG_LEN - 1,
                       "_rcConnect: connectToRhost failed\n" );
         }
-        if ( conn->thread_ctx != NULL ) {
-            if ( conn->thread_ctx->reconnThr && conn->thread_ctx->reconnThr->joinable() ) {
-                conn->thread_ctx->reconnThr->detach();
-            }
-            delete  conn->thread_ctx->reconnThr;
-            delete  conn->thread_ctx->lock;
-            delete  conn->thread_ctx->cond;
-            free( conn->thread_ctx );
-        }
-        freeRError(conn->rError);
-        free( conn );
+        freeRcComm(conn);
         return NULL;
     }
 
@@ -177,12 +155,14 @@ rcComm_t* _rcConnect(
         }
         conn->exit_flg = false;
         try {
-            conn->thread_ctx->lock      = new std::mutex;
-            conn->thread_ctx->cond      = new std::condition_variable;
+            if (!conn->thread_ctx) {
+                conn->thread_ctx = new thread_context{};
+            }
             conn->thread_ctx->reconnThr = new std::thread( cliReconnManager, conn );
         }
-        catch ( const std::system_error& ) {
+        catch ( const std::exception& ) {
             rodsLog( LOG_ERROR, "failure initializing the thread context in _rcConnect" );
+            freeRcComm(conn);
             return NULL;
         }
     }
@@ -331,16 +311,12 @@ int rcDisconnect(
 
 int
 freeRcComm( rcComm_t *conn ) {
-    int status;
-
     if ( conn == NULL ) {
         return 0;
     }
 
-    status = cleanRcComm( conn );
-    if (status != 0) {
-        free(conn);
-    }
+    cleanRcComm( conn );
+    delete conn;
 
     return 0;
 }
@@ -365,13 +341,17 @@ cleanRcComm( rcComm_t *conn ) {
         ret = 1;
     }
     if ( conn->thread_ctx != NULL ) {
-        if ( conn->thread_ctx->reconnThr && conn->thread_ctx->reconnThr->joinable() ) {
-            conn->thread_ctx->reconnThr->detach();
+        if (conn->thread_ctx->reconnThr) {
+            if (conn->thread_ctx->lock && conn->thread_ctx->cond) {
+                std::lock_guard<std::mutex> lock{*conn->thread_ctx->lock};
+                conn->exit_flg = true;
+                conn->thread_ctx->cond->notify_all();
+            }
+            else {
+                conn->exit_flg = true;
+            }
         }
-        delete  conn->thread_ctx->reconnThr;
-        delete  conn->thread_ctx->lock;
-        delete  conn->thread_ctx->cond;
-        free(conn->thread_ctx);
+        delete conn->thread_ctx;
         conn->thread_ctx = nullptr;
         ret = 1;
     }

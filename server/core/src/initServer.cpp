@@ -51,6 +51,7 @@
 #include <filesystem>
 #include <fstream>
 #include <mutex>
+#include <new>
 #include <optional>
 #include <set>
 #include <string>
@@ -503,8 +504,15 @@ initAgent( int processType, rsComm_t *rsComm ) {
             rsComm->cookie = ( int )( irods::getRandom<unsigned int>() >> 1 );
         }
         try {
-            rsComm->thread_ctx->lock      = new std::mutex;
-            rsComm->thread_ctx->cond      = new std::condition_variable;
+            if (!rsComm->thread_ctx) {
+                rsComm->thread_ctx = new thread_context{};
+            }
+            if (!rsComm->thread_ctx->lock) {
+                rsComm->thread_ctx->lock = new std::mutex{};
+            }
+            if (!rsComm->thread_ctx->cond) {
+                rsComm->thread_ctx->cond = new std::condition_variable{};
+            }
             rsComm->thread_ctx->reconnThr = new std::thread( reconnManager, rsComm );
             rsComm->thread_ctx->reconnThr->detach();
         }
@@ -601,7 +609,7 @@ int initHostConfigByFile()
 
 int
 initRsComm( rsComm_t *rsComm ) {
-    memset( rsComm, 0, sizeof( rsComm_t ) );
+    *rsComm = rsComm_t{};
 
     if ( int status = getRodsEnv( &rsComm->myEnv ) ) {
         irods::log( ERROR( status, "getRodsEnv failed in initRsComm" ) );
@@ -826,3 +834,36 @@ void close_all_l1_descriptors(RsComm& _comm)
         }
     }
 } // close_all_l1_descriptors
+
+void cleanup_rs_comm_members(rsComm_t& _comm) noexcept
+{
+    freeRErrorContent(&_comm.rError);
+    clearKeyVal(&_comm.session_props);
+    std::free(_comm.auth_scheme);
+    _comm.auth_scheme = nullptr;
+    std::free(_comm.reconnAddr);
+    _comm.reconnAddr = nullptr;
+    std::free(_comm.portalOpr);
+    _comm.portalOpr = nullptr;
+    delete _comm.thread_ctx;
+    _comm.thread_ctx = nullptr;
+}
+
+void cleanupRsComm(rsComm_t& _comm) noexcept
+{
+    cleanup_rs_comm_members(_comm);
+}
+
+void reset_rs_comm_session(rsComm_t& _comm) noexcept
+{
+    const rodsEnv saved_env = _comm.myEnv;
+    cleanup_rs_comm_members(_comm);
+    _comm = rsComm_t{};
+    _comm.myEnv = saved_env;
+    try {
+        _comm.thread_ctx = new thread_context{};
+    }
+    catch (...) {
+        _comm.thread_ctx = nullptr;
+    }
+}

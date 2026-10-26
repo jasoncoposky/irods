@@ -2005,7 +2005,7 @@ reconnManager( rsComm_t *rsComm ) {
     reconnMsg_t *reconnMsg;
     int acceptFailCnt = 0;
 
-    if ( rsComm == NULL || rsComm->reconnSock <= 0 ) {
+    if ( rsComm == NULL || rsComm->reconnSock <= 0 || !rsComm->thread_ctx || !rsComm->thread_ctx->lock || !rsComm->thread_ctx->cond ) {
         return;
     }
 
