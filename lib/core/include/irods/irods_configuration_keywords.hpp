@@ -88,6 +88,8 @@ namespace irods
     extern const char* const KW_CFG_MAX_SIZE_OF_DELAY_QUEUE_IN_BYTES;
     extern const char* const KW_CFG_STACKTRACE_FILE_PROCESSOR_SLEEP_TIME_IN_SECONDS;
     extern const char* const KW_CFG_MIGRATE_DELAY_SERVER_SLEEP_TIME_IN_SECONDS;
+    extern const char* const KW_CFG_AGENT_POOL_SIZE;
+    extern const char* const KW_CFG_MAX_SESSIONS_PER_AGENT;
 
     extern const char* const KW_CFG_RE_CACHE_SALT;
     extern const char* const KW_CFG_DELAY_SERVER_SLEEP_TIME_IN_SECONDS;

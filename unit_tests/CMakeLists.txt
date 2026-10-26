@@ -50,6 +50,7 @@ include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/utils.cmake")
 set(
   IRODS_UNIT_TESTS
   access_time_queue
+  agent_worker_pool
   atomic_apply_acl_operations
   atomic_apply_metadata_operations
   authenticate_client

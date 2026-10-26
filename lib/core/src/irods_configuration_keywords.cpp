@@ -84,6 +84,8 @@ namespace irods
     const char* const KW_CFG_MAX_SIZE_OF_DELAY_QUEUE_IN_BYTES{"maximum_size_of_delay_queue_in_bytes"};
     const char* const KW_CFG_STACKTRACE_FILE_PROCESSOR_SLEEP_TIME_IN_SECONDS{"stacktrace_file_processor_sleep_time_in_seconds"};
     const char* const KW_CFG_MIGRATE_DELAY_SERVER_SLEEP_TIME_IN_SECONDS{"migrate_delay_server_sleep_time_in_seconds"};
+    const char* const KW_CFG_AGENT_POOL_SIZE{"agent_pool_size"};
+    const char* const KW_CFG_MAX_SESSIONS_PER_AGENT{"max_sessions_per_agent"};
 
     const char* const KW_CFG_RE_CACHE_SALT{"reCacheSalt"};
     const char* const KW_CFG_DELAY_SERVER_SLEEP_TIME_IN_SECONDS{"delay_server_sleep_time_in_seconds"};

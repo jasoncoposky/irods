@@ -135,6 +135,10 @@ namespace
 
 int initServerInfo(int processType, rsComm_t* rsComm)
 {
+    if (INITIAL_DONE == InitialState) {
+        return 0;
+    }
+
     int status = 0;
 
     try {
@@ -866,6 +870,7 @@ void reset_rs_comm_session(rsComm_t& _comm) noexcept
     const rodsEnv saved_env = _comm.myEnv;
     cleanup_rs_comm_members(_comm);
     _comm = rsComm_t{};
+    _comm.sock = -1;
     _comm.myEnv = saved_env;
     try {
         _comm.thread_ctx = new thread_context{};

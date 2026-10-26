@@ -1,5 +1,7 @@
 #include "irods/access_time_queue.hpp"
 #include "irods/agent_globals.hpp"
+#include "irods/agent_session_sanitizer.hpp"
+#include "irods/agent_worker_pool.hpp"
 #include "irods/client_api_allowlist.hpp"
 #include "irods/dns_cache.hpp"
 #include "irods/hostname_cache.hpp"
@@ -115,7 +117,10 @@ namespace
 
     auto initServerMain(RsComm& _comm) -> int;
 
-    auto handle_client_request(int _socket_fd, std::time_t _created_at) -> int;
+    auto handle_client_request(int _socket_fd,
+                               std::time_t _created_at,
+                               bool _pooled_mode = false,
+                               bool _keep_db_open = false) -> int;
     auto log_stacktrace_files() -> void;
     auto cleanup() -> void;
     auto cleanupAndExit(int status) -> void;
@@ -313,6 +318,44 @@ auto main(int _argc, char* _argv[]) -> int
         // This allows rule engine plugins to setup state which doesn't change frequently.
         irods::re_plugin_globals->global_re_mgr.call_setup_operations();
 
+        // Optional pre-forked warm agent worker pool (Stage 22):
+        irods::server::agent_worker_pool::config pool_cfg{};
+        try {
+            pool_cfg.pool_size = irods::get_advanced_setting<int>(irods::KW_CFG_AGENT_POOL_SIZE);
+        }
+        catch (...) {
+            pool_cfg.pool_size = 0;
+        }
+        try {
+            pool_cfg.max_sessions_per_agent = irods::get_advanced_setting<int>(irods::KW_CFG_MAX_SESSIONS_PER_AGENT);
+        }
+        catch (...) {
+            pool_cfg.max_sessions_per_agent = 1000;
+        }
+
+        pool_cfg.close_fd_in_child = svrComm.sock;
+
+        irods::server::agent_worker_pool worker_pool{
+            pool_cfg,
+            [&svrComm](int _client_fd, std::time_t _created_at, bool _is_last_session) -> int {
+                svrComm.sock = -1;
+                try {
+                    return handle_client_request(
+                        _client_fd, _created_at, /*_pooled_mode=*/true, /*_keep_db_open=*/!_is_last_session);
+                }
+                catch (const std::exception& e) {
+                    log_agent::critical("{}: Exception in pooled agent worker: {}", __func__, e.what());
+                    return 1;
+                }
+            }};
+        if (worker_pool.enabled()) {
+            log_af::info("{}: Starting pre-forked agent worker pool [size={}, max_sessions={}].",
+                         __func__,
+                         pool_cfg.pool_size,
+                         pool_cfg.max_sessions_per_agent);
+            worker_pool.start();
+        }
+
         // Notify the main server process that the agent factory has completed initialization and
         // is ready for client requests.
         kill(getppid(), SIGUSR2);
@@ -397,6 +440,13 @@ auto main(int _argc, char* _argv[]) -> int
                 continue;
             }
 
+            if (worker_pool.enabled()) {
+                if (worker_pool.dispatch_client(newSock, std::time(nullptr)) == 0) {
+                    close(newSock);
+                    continue;
+                }
+            }
+
             // Fork agent to handle client request.
 
             const auto agent_pid = fork();
@@ -424,6 +474,7 @@ auto main(int _argc, char* _argv[]) -> int
 
         // Do not accept new client requests (i.e. close the listening socket).
         close(svrComm.sock);
+        worker_pool.stop();
 
         // Give the rule engine plugins a chance to free any resources established during setup().
         irods::re_plugin_globals->global_re_mgr.call_teardown_operations();
@@ -718,8 +769,16 @@ namespace
         return 0;
     } // initServerMain
 
-    auto handle_client_request(int _socket_fd, std::time_t _created_at) -> int
+    auto handle_client_request(int _socket_fd, std::time_t _created_at, bool _pooled_mode, bool _keep_db_open) -> int
     {
+        bool socket_closed = false;
+        irods::at_scope_exit close_client_socket{[&_socket_fd, &socket_closed] {
+            if (!socket_closed && _socket_fd >= 0) {
+                mySockClose(_socket_fd);
+                socket_closed = true;
+            }
+        }};
+
         // Setup signal handlers for agent.
 
         // SIGINT is ignored to protect the agents from being killed when running the
@@ -768,6 +827,13 @@ namespace
         // This is very important because some rule engine plugins require initialization before
         // they can process any PEPs (e.g. Python REP).
         irods::re_plugin_globals->global_re_mgr.call_start_operations();
+        bool re_stopped = false;
+        irods::at_scope_exit stop_re_ops{[&_pooled_mode, &re_stopped] {
+            if (_pooled_mode && !re_stopped) {
+                irods::re_plugin_globals->global_re_mgr.call_stop_operations();
+                re_stopped = true;
+            }
+        }};
 
         // Artificially create a conn object in order to create a network object.
         // This is gratuitous but necessary to maintain the consistent interface.
@@ -794,6 +860,7 @@ namespace
             log_agent::error("{}: readStartupPack failed, [error code={}]", __func__, res.code());
             sendVersion(net_obj, res.code(), 0, nullptr, 0);
             mySockClose(net_obj->socket_handle());
+            socket_closed = true;
             return 0;
         }
 
@@ -804,6 +871,7 @@ namespace
                              max_svr_to_svr_connect_count);
             sendVersion(net_obj, SYS_EXCEED_CONNECT_CNT, 0, nullptr, 0);
             mySockClose(net_obj->socket_handle());
+            socket_closed = true;
             return 0;
         }
 
@@ -834,6 +902,7 @@ namespace
             }
 
             mySockClose(net_obj->socket_handle());
+            socket_closed = true;
             return 0;
         }
 
@@ -841,6 +910,7 @@ namespace
             if (const auto ec = chkAllowedUser(startupPack->clientUser, startupPack->clientRodsZone); ec < 0) {
                 sendVersion(net_obj, ec, 0, nullptr, 0);
                 mySockClose(net_obj->socket_handle());
+                socket_closed = true;
                 return 0;
             }
         }
@@ -851,6 +921,7 @@ namespace
 
         RsComm rsComm{};
         irods::server_comm_guard comm_guard{rsComm};
+        ThisComm = &rsComm;
 
         // Originally set via an environment variable in initRsCommWithStartupPack in iRODS 4.2+.
         rsComm.sock = _socket_fd;
@@ -860,7 +931,21 @@ namespace
 
         rsComm.thread_ctx = new thread_context{};
 
-        const auto cleanup_and_exit = [&rsComm](int _status) {
+        const auto cleanup_and_exit = [&rsComm, &_socket_fd, &socket_closed, _pooled_mode, _keep_db_open](int _status) {
+            if (!socket_closed && _socket_fd >= 0) {
+                mySockClose(_socket_fd);
+                socket_closed = true;
+            }
+            if (rsComm.reconnSock > 0) {
+                mySockClose(rsComm.reconnSock);
+                rsComm.reconnSock = 0;
+            }
+            if (_pooled_mode) {
+                const auto pid_file = fmt::format("{}/{}", irods::get_irods_proc_directory().c_str(), getpid());
+                ::unlink(pid_file.c_str());
+                irods::server::sanitize_agent_session(rsComm, _keep_db_open);
+                return;
+            }
             cleanup_rs_comm_members(rsComm);
             cleanupAndExit(_status);
         };
@@ -878,6 +963,7 @@ namespace
             log_agent::error("initRsCommWithStartupPack error: [{}]", status);
             sendVersion(net_obj, status, 0, nullptr, 0);
             cleanup_and_exit(status);
+            return 1;
         }
 
         status = getRodsEnv(&rsComm.myEnv);
@@ -886,12 +972,14 @@ namespace
             log_agent::error("{}: getRodsEnv failed.", __func__);
             sendVersion(net_obj, status, 0, nullptr, 0);
             cleanup_and_exit(status);
+            return 1;
         }
 
         std::string svc_role;
         ret = get_catalog_service_role(svc_role);
         if (!ret.ok()) {
             log_agent::error(PASS(ret).result());
+            cleanup_and_exit(ret.code());
             return 1;
         }
 
@@ -901,6 +989,7 @@ namespace
             log_agent::error("{}: initAgent failed: {}", __func__, status);
             sendVersion(net_obj, status, 0, nullptr, 0);
             cleanup_and_exit(status);
+            return 1;
         }
 
         if (rsComm.clientUser.userName[0] != '\0') {
@@ -909,6 +998,7 @@ namespace
             if (status < 0) {
                 sendVersion(net_obj, status, 0, nullptr, 0);
                 cleanup_and_exit(status);
+                return 1;
             }
         }
 
@@ -923,6 +1013,7 @@ namespace
                 log_agent::error(PASS(ret).result());
                 sendVersion(net_obj, ret.code(), 0, nullptr, 0);
                 cleanup_and_exit(ret.code());
+                return 1;
             }
             else {
                 // copy negotiation results to comm for action by network objects
@@ -939,6 +1030,7 @@ namespace
             log_agent::error(PASS(ret).result());
             sendVersion(net_obj, ret.code(), 0, nullptr, 0);
             cleanup_and_exit(status);
+            return 1;
         }
 
         create_agent_pid_file_for_ips(rsComm, _created_at);
@@ -948,19 +1040,41 @@ namespace
         ret = irods::network_factory(&rsComm, new_net_obj);
         if (!ret.ok()) {
             log_agent::error(PASS(ret).result());
+            cleanup_and_exit(ret.code());
             return 1;
         }
 
         ret = sockAgentStart(new_net_obj);
         if (!ret.ok()) {
             log_agent::error(PASS(ret).result());
+            cleanup_and_exit(ret.code());
             return 1;
         }
 
-        const auto cleanup_and_free_rsComm_members = [&rsComm] {
-            cleanup();
-            cleanup_rs_comm_members(rsComm);
-        };
+        const auto cleanup_and_free_rsComm_members =
+            [&rsComm, &_socket_fd, &socket_closed, &re_stopped, _pooled_mode, _keep_db_open] {
+                if (!socket_closed && _socket_fd >= 0) {
+                    mySockClose(_socket_fd);
+                    socket_closed = true;
+                }
+                if (rsComm.reconnSock > 0) {
+                    mySockClose(rsComm.reconnSock);
+                    rsComm.reconnSock = 0;
+                }
+                if (_pooled_mode) {
+                    const auto pid_file = fmt::format("{}/{}", irods::get_irods_proc_directory().c_str(), getpid());
+                    ::unlink(pid_file.c_str());
+                    irods::server::sanitize_agent_session(rsComm, _keep_db_open);
+                    if (!re_stopped) {
+                        irods::re_plugin_globals->global_re_mgr.call_stop_operations();
+                        re_stopped = true;
+                    }
+                }
+                else {
+                    cleanup();
+                    cleanup_rs_comm_members(rsComm);
+                }
+            };
 
         new_net_obj->to_server(&rsComm);
         status = agentMain(rsComm);
