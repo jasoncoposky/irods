@@ -551,10 +551,11 @@ irods::error get_load_lists(
         .limit(MAX_SQL_ROWS * 10)
         .build();
 
-    nlohmann::json rows;
-    if (const int status = gq2::try_execute(*_ctx.comm(), q, rows); status < 0) {
+    lite3cpp::Buffer rows_buf;
+    if (const int status = gq2::try_execute_buffer(*_ctx.comm(), q, rows_buf); status < 0) {
         return ERROR( status, "genquery failed" );
     }
+    const gq2::rows_buffer_view rows{rows_buf};
     if (rows.empty()) {
         return ERROR( CAT_NO_ROWS_FOUND, "genquery failed" );
     }
@@ -565,17 +566,14 @@ irods::error get_load_lists(
     _resc_times.resize( nresc );
 
     for ( std::size_t j = 0; j < nresc; ++j ) {
-        const auto& row = rows[j];
-        _resc_names[j] = row[0].get_ref<const std::string&>();
+        _resc_names[j] = rows.cell_str(j, 0);
 
         int load = 0;
-        const auto& load_str = row[1].get_ref<const std::string&>();
-        std::from_chars(load_str.data(), load_str.data() + load_str.size(), load);
+        rows.cell_int(j, 1, load);
         _resc_loads[j] = load;
 
         int time_val = 0;
-        const auto& time_str = row[2].get_ref<const std::string&>();
-        std::from_chars(time_str.data(), time_str.data() + time_str.size(), time_val);
+        rows.cell_int(j, 2, time_val);
         _resc_times[j] = time_val;
     }
 

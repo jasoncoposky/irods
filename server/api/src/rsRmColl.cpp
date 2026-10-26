@@ -685,16 +685,16 @@ rsMvCollToTrash( rsComm_t *rsComm, collInp_t *rmCollInp ) {
                             .limit(1)
                             .build();
 
-    nlohmann::json perm_rows;
+    lite3cpp::Buffer perm_rows_buf;
     {
         irods::experimental::scoped_privileged_client spc{*rsComm};
-        status = gq2::try_execute( *rsComm, perm_q, perm_rows );
+        status = gq2::try_execute_buffer( *rsComm, perm_q, perm_rows_buf );
     }
 
+    const gq2::rows_buffer_view perm_rows{perm_rows_buf};
     if ( status >= 0 && !perm_rows.empty() ) {
-        const auto& data_id_str = perm_rows.front().at(0).get_ref<const std::string&>();
         rodsLong_t data_id_val = 0;
-        std::from_chars(data_id_str.data(), data_id_str.data() + data_id_str.size(), data_id_val);
+        perm_rows.cell_int(0, 0, data_id_val);
         status = chl_check_data_object_access( *rsComm, data_id_val, ACCESS_DELETE_OBJECT );
     }
 
@@ -711,21 +711,24 @@ rsMvCollToTrash( rsComm_t *rsComm, collInp_t *rmCollInp ) {
                                .limit(MAX_SQL_ROWS)
                                .build();
 
-            nlohmann::json rows;
-            status = gq2::try_execute( *rsComm, q, rows );
+            lite3cpp::Buffer rows_buf;
+            status = gq2::try_execute_buffer( *rsComm, q, rows_buf );
+            const gq2::rows_buffer_view rows{rows_buf};
             if ( status < 0 || rows.empty() ) {
                 break;
             }
 
-            for ( const auto& row : rows ) {
+            for ( std::size_t r = 0; r < rows.size(); ++r ) {
                 ruleExecInfo_t rei;
-                const auto& sub_coll = row.at(0).get_ref<const std::string&>();
-                const auto& data_obj = row.at(1).get_ref<const std::string&>();
-                const auto& resc_name = row.at(2).get_ref<const std::string&>();
+                char scratch_coll[64]{};
+                char scratch_name[64]{};
+                const auto sub_coll = rows.cell(r, 0, scratch_coll);
+                const auto data_obj = rows.cell(r, 1, scratch_name);
 
-                snprintf( dataObjInfo.objPath, MAX_NAME_LEN, "%s/%s",
-                          sub_coll.c_str(), data_obj.c_str() );
-                rstrcpy( dataObjInfo.rescName, resc_name.c_str(), NAME_LEN );
+                snprintf( dataObjInfo.objPath, MAX_NAME_LEN, "%.*s/%.*s",
+                          static_cast<int>(sub_coll.size()), sub_coll.data(),
+                          static_cast<int>(data_obj.size()), data_obj.data() );
+                rows.copy_cell(r, 2, dataObjInfo.rescName, NAME_LEN);
 
                 initReiWithDataObjInp( &rei, rsComm, NULL );
                 rei.doi = &dataObjInfo;

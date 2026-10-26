@@ -13,6 +13,7 @@
 #include "irods/irods_server_properties.hpp"
 #include "irods/miscServerFunct.hpp"
 #include "irods/objMetaOpr.hpp"
+#include "irods/protocol/lite3_structs.hpp"
 #include "irods/rcGlobalExtern.h"
 #include "irods/rodsLog.h"
 #include "irods/rsGlobalExtern.hpp"
@@ -175,6 +176,13 @@ rsExecCmd( rsComm_t *rsComm, execCmd_t *execCmdInp, execCmdOut_t **execCmdOut ) 
                  "rsFileOpenByHost: resolveHost of %s error, status = %d",
                  addr.hostAddr, remoteFlag );
         status = SYS_UNRECOGNIZED_REMOTE_FLAG;
+    }
+
+    if ( status >= 0 && rsComm != nullptr && rsComm->irodsProt == LITE3_PROT &&
+         execCmdOut != nullptr && *execCmdOut != nullptr ) {
+        if ( auto reply_buf = irods::protocol::ExecCmdOut::from_legacy( **execCmdOut ) ) {
+            irods::protocol::active_api_buffer_scope::set_active_reply( std::move( *reply_buf ) );
+        }
     }
 
     return status;

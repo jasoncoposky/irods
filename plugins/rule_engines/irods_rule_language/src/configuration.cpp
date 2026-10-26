@@ -705,15 +705,16 @@ int readICatUserInfo( char *userName, char *attr, char userInfo[MAX_NAME_LEN], r
         .limit(1)
         .build();
 
-    nlohmann::json rows;
-    if (const int ec = gq2::try_execute(*rsComm, q, rows); ec < 0) {
+    lite3cpp::Buffer rows_buf;
+    if (const int ec = gq2::try_execute_buffer(*rsComm, q, rows_buf); ec < 0) {
         return ec;
     }
+    const gq2::rows_buffer_view rows{rows_buf};
     if (rows.empty()) {
         return CAT_NO_ROWS_FOUND;
     }
 
-    rstrcpy( userInfo, rows[0][0].get_ref<const std::string&>().c_str(), MAX_NAME_LEN );
+    rows.copy_cell(0, 0, userInfo, MAX_NAME_LEN);
     return 0;
 }
 

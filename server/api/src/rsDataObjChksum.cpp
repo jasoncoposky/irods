@@ -96,21 +96,20 @@ namespace
                            .limit(1)
                            .build();
 
-        nlohmann::json rows;
-        if (const int ec = gq2::try_execute(rsComm, q, rows); ec < 0) {
+        lite3cpp::Buffer rows_buf;
+        if (const int ec = gq2::try_execute_buffer(rsComm, q, rows_buf); ec < 0) {
             return ec;
         }
 
+        const gq2::rows_buffer_view rows{rows_buf};
         if (rows.empty()) {
             return CAT_NO_ROWS_FOUND;
         }
 
-        const auto size_str = rows[0][0].get_ref<const std::string&>();
         rodsLong_t size_in_database = 0;
-        const auto [ptr, err] = std::from_chars(size_str.data(), size_str.data() + size_str.size(), size_in_database);
-        if (err != std::errc{} || ptr != size_str.data() + size_str.size()) {
+        if (!rows.cell_int(0, 0, size_in_database)) {
             log::api::error("_rsFileChksum: from_chars of [{}] for [{}] [{}] [{}] failed",
-                size_str,
+                rows.cell_str(0, 0),
                 dataObjInfo.filePath,
                 dataObjInfo.rescHier,
                 dataObjInfo.objPath);

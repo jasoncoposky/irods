@@ -441,18 +441,23 @@ readRuleSetFromDB( char *ruleBaseName, char *versionStr, RuleSet *ruleSet, ruleE
                            .limit(MAX_SQL_ROWS)
                            .build();
 
-        nlohmann::json rows;
-        if ( gq2::try_execute( *rei->rsComm, q, rows ) < 0 || rows.empty() ) {
+        lite3cpp::Buffer rows_buf;
+        if ( gq2::try_execute_buffer( *rei->rsComm, q, rows_buf ) < 0 ) {
+            break;
+        }
+        const gq2::rows_buffer_view rows{rows_buf};
+        if ( rows.empty() ) {
             break;
         }
 
-        for ( const auto& row : rows ) {
+        for ( std::size_t r = 0; r < rows.size(); ++r ) {
             char ruleStr[MAX_RULE_LEN * 4];
-            const auto& ruleHead = row.at(2).get_ref<const std::string&>();
-            const auto& ruleCondition = row.at(3).get_ref<const std::string&>();
-            const auto& ruleAction = row.at(4).get_ref<const std::string&>();
-            const auto& ruleRecovery = row.at(5).get_ref<const std::string&>();
-            const long ruleId = std::atol( row.at(6).get_ref<const std::string&>().c_str() );
+            const auto ruleHead = rows.cell_str(r, 2);
+            const auto ruleCondition = rows.cell_str(r, 3);
+            const auto ruleAction = rows.cell_str(r, 4);
+            const auto ruleRecovery = rows.cell_str(r, 5);
+            long ruleId = 0;
+            rows.cell_int(r, 6, ruleId);
 
             if ( !ruleRecovery.empty() && ruleRecovery[0] == '@' ) {
                 const auto tag = std::string_view{ruleRecovery}.substr(1);
@@ -514,20 +519,26 @@ readRuleStructFromDB( char *ruleBaseName, char *versionStr, ruleStruct_t *inRule
                            .limit(MAX_SQL_ROWS)
                            .build();
 
-        nlohmann::json rows;
-        if ( gq2::try_execute( *rei->rsComm, q, rows ) < 0 || rows.empty() ) {
+        lite3cpp::Buffer rows_buf;
+        if ( gq2::try_execute_buffer( *rei->rsComm, q, rows_buf ) < 0 ) {
+            break;
+        }
+        const gq2::rows_buffer_view rows{rows_buf};
+        if ( rows.empty() ) {
             break;
         }
 
-        for ( const auto& row : rows ) {
+        for ( std::size_t r = 0; r < rows.size(); ++r ) {
             const int idx = inRuleStrct->MaxNumOfRules;
-            inRuleStrct->ruleBase[idx] = strdup( row.at(0).get_ref<const std::string&>().c_str() );
-            inRuleStrct->action[idx] = strdup( row.at(1).get_ref<const std::string&>().c_str() );
-            inRuleStrct->ruleHead[idx] = strdup( row.at(2).get_ref<const std::string&>().c_str() );
-            inRuleStrct->ruleCondition[idx] = strdup( row.at(3).get_ref<const std::string&>().c_str() );
-            inRuleStrct->ruleAction[idx] = strdup( row.at(4).get_ref<const std::string&>().c_str() );
-            inRuleStrct->ruleRecovery[idx] = strdup( row.at(5).get_ref<const std::string&>().c_str() );
-            inRuleStrct->ruleId[idx] = std::atol( row.at(6).get_ref<const std::string&>().c_str() );
+            inRuleStrct->ruleBase[idx] = rows.cell_strdup(r, 0);
+            inRuleStrct->action[idx] = rows.cell_strdup(r, 1);
+            inRuleStrct->ruleHead[idx] = rows.cell_strdup(r, 2);
+            inRuleStrct->ruleCondition[idx] = rows.cell_strdup(r, 3);
+            inRuleStrct->ruleAction[idx] = rows.cell_strdup(r, 4);
+            inRuleStrct->ruleRecovery[idx] = rows.cell_strdup(r, 5);
+            long rule_id = 0;
+            rows.cell_int(r, 6, rule_id);
+            inRuleStrct->ruleId[idx] = rule_id;
             inRuleStrct->MaxNumOfRules++;
         }
 
@@ -558,16 +569,22 @@ readDVMapStructFromDB( char *dvmBaseName, char *versionStr, rulevardef_t *inDvmS
                            .limit(MAX_SQL_ROWS)
                            .build();
 
-        nlohmann::json rows;
-        if ( gq2::try_execute( *rei->rsComm, q, rows ) < 0 || rows.empty() ) {
+        lite3cpp::Buffer rows_buf;
+        if ( gq2::try_execute_buffer( *rei->rsComm, q, rows_buf ) < 0 ) {
+            break;
+        }
+        const gq2::rows_buffer_view rows{rows_buf};
+        if ( rows.empty() ) {
             break;
         }
 
-        for ( const auto& row : rows ) {
-            inDvmStrct->varName[l] = strdup( row.at(0).get_ref<const std::string&>().c_str() );
-            inDvmStrct->action[l] = strdup( row.at(1).get_ref<const std::string&>().c_str() );
-            inDvmStrct->var2CMap[l] = strdup( row.at(2).get_ref<const std::string&>().c_str() );
-            inDvmStrct->varId[l] = std::atol( row.at(3).get_ref<const std::string&>().c_str() );
+        for ( std::size_t r = 0; r < rows.size(); ++r ) {
+            inDvmStrct->varName[l] = rows.cell_strdup(r, 0);
+            inDvmStrct->action[l] = rows.cell_strdup(r, 1);
+            inDvmStrct->var2CMap[l] = rows.cell_strdup(r, 2);
+            long var_id = 0;
+            rows.cell_int(r, 3, var_id);
+            inDvmStrct->varId[l] = var_id;
             l++;
         }
 
@@ -600,15 +617,21 @@ readFNMapStructFromDB( char *fnmBaseName, char *versionStr, fnmapStruct_t *inFnm
                            .limit(MAX_SQL_ROWS)
                            .build();
 
-        nlohmann::json rows;
-        if ( gq2::try_execute( *rei->rsComm, q, rows ) < 0 || rows.empty() ) {
+        lite3cpp::Buffer rows_buf;
+        if ( gq2::try_execute_buffer( *rei->rsComm, q, rows_buf ) < 0 ) {
+            break;
+        }
+        const gq2::rows_buffer_view rows{rows_buf};
+        if ( rows.empty() ) {
             break;
         }
 
-        for ( const auto& row : rows ) {
-            inFnmStrct->funcName[l] = strdup( row.at(0).get_ref<const std::string&>().c_str() );
-            inFnmStrct->func2CMap[l] = strdup( row.at(1).get_ref<const std::string&>().c_str() );
-            inFnmStrct->fmapId[l] = std::atol( row.at(2).get_ref<const std::string&>().c_str() );
+        for ( std::size_t r = 0; r < rows.size(); ++r ) {
+            inFnmStrct->funcName[l] = rows.cell_strdup(r, 0);
+            inFnmStrct->func2CMap[l] = rows.cell_strdup(r, 1);
+            long fmap_id = 0;
+            rows.cell_int(r, 2, fmap_id);
+            inFnmStrct->fmapId[l] = fmap_id;
             l++;
         }
 
@@ -650,22 +673,30 @@ readMsrvcStructFromDB( int inStatus, msrvcStruct_t *inMsrvcStrct, ruleExecInfo_t
                            .limit(MAX_SQL_ROWS)
                            .build();
 
-        nlohmann::json rows;
-        if ( gq2::try_execute( *rei->rsComm, q, rows ) < 0 || rows.empty() ) {
+        lite3cpp::Buffer rows_buf;
+        if ( gq2::try_execute_buffer( *rei->rsComm, q, rows_buf ) < 0 ) {
+            break;
+        }
+        const gq2::rows_buffer_view rows{rows_buf};
+        if ( rows.empty() ) {
             break;
         }
 
-        for ( const auto& row : rows ) {
-            inMsrvcStrct->moduleName[l] = strdup( row.at(0).get_ref<const std::string&>().c_str() );
-            inMsrvcStrct->msrvcName[l] = strdup( row.at(1).get_ref<const std::string&>().c_str() );
-            inMsrvcStrct->msrvcSignature[l] = strdup( row.at(2).get_ref<const std::string&>().c_str() );
-            inMsrvcStrct->msrvcVersion[l] = strdup( row.at(3).get_ref<const std::string&>().c_str() );
-            inMsrvcStrct->msrvcHost[l] = strdup( row.at(4).get_ref<const std::string&>().c_str() );
-            inMsrvcStrct->msrvcLocation[l] = strdup( row.at(5).get_ref<const std::string&>().c_str() );
-            inMsrvcStrct->msrvcLanguage[l] = strdup( row.at(6).get_ref<const std::string&>().c_str() );
-            inMsrvcStrct->msrvcTypeName[l] = strdup( row.at(7).get_ref<const std::string&>().c_str() );
-            inMsrvcStrct->msrvcStatus[l] = std::atol( row.at(8).get_ref<const std::string&>().c_str() );
-            inMsrvcStrct->msrvcId[l] = std::atol( row.at(9).get_ref<const std::string&>().c_str() );
+        for ( std::size_t r = 0; r < rows.size(); ++r ) {
+            inMsrvcStrct->moduleName[l] = rows.cell_strdup(r, 0);
+            inMsrvcStrct->msrvcName[l] = rows.cell_strdup(r, 1);
+            inMsrvcStrct->msrvcSignature[l] = rows.cell_strdup(r, 2);
+            inMsrvcStrct->msrvcVersion[l] = rows.cell_strdup(r, 3);
+            inMsrvcStrct->msrvcHost[l] = rows.cell_strdup(r, 4);
+            inMsrvcStrct->msrvcLocation[l] = rows.cell_strdup(r, 5);
+            inMsrvcStrct->msrvcLanguage[l] = rows.cell_strdup(r, 6);
+            inMsrvcStrct->msrvcTypeName[l] = rows.cell_strdup(r, 7);
+            long msrvc_status = 0;
+            rows.cell_int(r, 8, msrvc_status);
+            inMsrvcStrct->msrvcStatus[l] = msrvc_status;
+            long msrvc_id = 0;
+            rows.cell_int(r, 9, msrvc_id);
+            inMsrvcStrct->msrvcId[l] = msrvc_id;
             l++;
         }
 

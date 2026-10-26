@@ -293,18 +293,21 @@ int _check_rebalance_timestamp_avu_on_resource(
                        .limit(1)
                        .build();
 
-    nlohmann::json rows;
-    if (gq2::try_execute(*_rsComm, q, rows) >= 0 && !rows.empty()) {
-        const auto& hostname_and_pid = rows[0][0].get_ref<const std::string&>();
-        const auto& timestamp = rows[0][1].get_ref<const std::string&>();
-        const auto msg = fmt::format(
-            "A rebalance_operation on resource [{}] is still active (or stale) [{}] [{}]",
-            _resource_name,
-            hostname_and_pid,
-            timestamp);
-        log_api::error("{}: {}", __func__, msg);
-        addRErrorMsg(&_rsComm->rError, REBALANCE_ALREADY_ACTIVE_ON_RESOURCE, msg.c_str());
-        return REBALANCE_ALREADY_ACTIVE_ON_RESOURCE;
+    lite3cpp::Buffer rows_buf;
+    if (gq2::try_execute_buffer(*_rsComm, q, rows_buf) >= 0) {
+        const gq2::rows_buffer_view rows{rows_buf};
+        if (!rows.empty()) {
+            const auto hostname_and_pid = rows.cell_str(0, 0);
+            const auto timestamp = rows.cell_str(0, 1);
+            const auto msg = fmt::format(
+                "A rebalance_operation on resource [{}] is still active (or stale) [{}] [{}]",
+                _resource_name,
+                hostname_and_pid,
+                timestamp);
+            log_api::error("{}: {}", __func__, msg);
+            addRErrorMsg(&_rsComm->rError, REBALANCE_ALREADY_ACTIVE_ON_RESOURCE, msg.c_str());
+            return REBALANCE_ALREADY_ACTIVE_ON_RESOURCE;
+        }
     }
 
     return 0;
@@ -359,8 +362,8 @@ int _remove_rebalance_timestamp_avu_from_resource(rsComm_t* _rsComm,
                        .limit(1)
                        .build();
 
-    nlohmann::json rows;
-    if (gq2::try_execute(*_rsComm, q, rows) >= 0 && !rows.empty()) {
+    lite3cpp::Buffer rows_buf;
+    if (gq2::try_execute_buffer(*_rsComm, q, rows_buf) >= 0 && !gq2::rows_buffer_view{rows_buf}.empty()) {
         modAVUMetadataInp_t modAVUMetadataInp{};
         modAVUMetadataInp.arg0 = const_cast<char*>("rm");
         modAVUMetadataInp.arg1 = const_cast<char*>("-R");

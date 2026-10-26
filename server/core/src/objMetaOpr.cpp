@@ -49,18 +49,18 @@ isData(rsComm_t *rsComm, char *objName, rodsLong_t *dataId) {
                        .limit(1)
                        .build();
 
-    nlohmann::json rows;
-    if (const int status = gq2::try_execute(*rsComm, q, rows); status < 0) {
+    lite3cpp::Buffer rows_buf;
+    if (const int status = gq2::try_execute_buffer(*rsComm, q, rows_buf); status < 0) {
         return status;
     }
+    const gq2::rows_buffer_view rows{rows_buf};
     if (rows.empty()) {
         return CAT_NO_ROWS_FOUND;
     }
 
     if (nullptr != dataId) {
         *dataId = 0;
-        const auto& id_str = rows.front().at(0).get_ref<const std::string&>();
-        std::from_chars(id_str.data(), id_str.data() + id_str.size(), *dataId);
+        rows.cell_int(0, 0, *dataId);
     }
 
     return 0;
@@ -107,17 +107,17 @@ getPhyPath(
                        .limit(1)
                        .build();
 
-    nlohmann::json rows;
-    const int status = gq2::try_execute(*_comm, q, rows);
+    lite3cpp::Buffer rows_buf;
+    const int status = gq2::try_execute_buffer(*_comm, q, rows_buf);
     if ( status < 0 ) {
         return status;
     }
+    const gq2::rows_buffer_view rows{rows_buf};
     if ( rows.empty() ) {
         return CAT_NO_ROWS_FOUND;
     }
 
-    const auto& phy_path_str = rows.front().at(0).get_ref<const std::string&>();
-    rstrcpy( _phy_path,  phy_path_str.c_str(), MAX_NAME_LEN );
+    rows.copy_cell(0, 0, _phy_path, MAX_NAME_LEN);
     rstrcpy( _resource,  root_resc.c_str(),    NAME_LEN );
     rstrcpy( _resc_hier, resc_hier.c_str(),    MAX_NAME_LEN );
 
@@ -152,19 +152,19 @@ isColl( rsComm_t *rsComm, char *objName, rodsLong_t *collId ) {
                        .limit(1)
                        .build();
 
-    nlohmann::json rows;
-    const int status = gq2::try_execute(*rsComm, q, rows);
+    lite3cpp::Buffer rows_buf;
+    const int status = gq2::try_execute_buffer(*rsComm, q, rows_buf);
     if ( status < 0 ) {
         return status;
     }
+    const gq2::rows_buffer_view rows{rows_buf};
     if ( rows.empty() ) {
         return CAT_NO_ROWS_FOUND;
     }
 
     if ( collId != NULL ) {
         *collId = 0;
-        const auto& id_str = rows.front().at(0).get_ref<const std::string&>();
-        std::from_chars(id_str.data(), id_str.data() + id_str.size(), *collId);
+        rows.cell_int(0, 0, *collId);
     }
 
     return 0;
@@ -181,11 +181,11 @@ isUser( rsComm_t *rsComm, char *objName ) {
                        .limit(1)
                        .build();
 
-    nlohmann::json rows;
-    if (const int status = gq2::try_execute(*rsComm, q, rows); status < 0) {
+    lite3cpp::Buffer rows_buf;
+    if (const int status = gq2::try_execute_buffer(*rsComm, q, rows_buf); status < 0) {
         return status;
     }
-    return rows.empty() ? CAT_NO_ROWS_FOUND : 0;
+    return gq2::rows_buffer_view{rows_buf}.empty() ? CAT_NO_ROWS_FOUND : 0;
 }
 
 int
@@ -199,11 +199,11 @@ isResc( rsComm_t *rsComm, char *objName ) {
                        .limit(1)
                        .build();
 
-    nlohmann::json rows;
-    if (const int status = gq2::try_execute(*rsComm, q, rows); status < 0) {
+    lite3cpp::Buffer rows_buf;
+    if (const int status = gq2::try_execute_buffer(*rsComm, q, rows_buf); status < 0) {
         return status;
     }
-    return rows.empty() ? CAT_NO_ROWS_FOUND : 0;
+    return gq2::rows_buffer_view{rows_buf}.empty() ? CAT_NO_ROWS_FOUND : 0;
 }
 
 int
@@ -378,17 +378,17 @@ getTokenId( rsComm_t *rsComm, char *tokenNameSpace, char *tokenName ) {
                        .limit(1)
                        .build();
 
-    nlohmann::json rows;
-    if (const int status = gq2::try_execute(*rsComm, q, rows); status < 0) {
+    lite3cpp::Buffer rows_buf;
+    if (const int status = gq2::try_execute_buffer(*rsComm, q, rows_buf); status < 0) {
         return status;
     }
+    const gq2::rows_buffer_view rows{rows_buf};
     if (rows.empty()) {
         return CAT_NO_ROWS_FOUND;
     }
 
-    const auto& id_str = rows.front().at(0).get_ref<const std::string&>();
     rodsLong_t token_id = 0;
-    std::from_chars(id_str.data(), id_str.data() + id_str.size(), token_id);
+    rows.cell_int(0, 0, token_id);
     return token_id;
 }
 
@@ -403,17 +403,17 @@ getUserId( rsComm_t *rsComm, char *userName, char *zoneName ) {
                        .limit(1)
                        .build();
 
-    nlohmann::json rows;
-    if (const int status = gq2::try_execute(*rsComm, q, rows); status < 0) {
+    lite3cpp::Buffer rows_buf;
+    if (const int status = gq2::try_execute_buffer(*rsComm, q, rows_buf); status < 0) {
         return status;
     }
+    const gq2::rows_buffer_view rows{rows_buf};
     if (rows.empty()) {
         return CAT_NO_ROWS_FOUND;
     }
 
-    const auto& id_str = rows.front().at(0).get_ref<const std::string&>();
     rodsLong_t user_id = 0;
-    std::from_chars(id_str.data(), id_str.data() + id_str.size(), user_id);
+    rows.cell_int(0, 0, user_id);
     return user_id;
 }
 
@@ -430,8 +430,8 @@ namespace
                            .limit(1)
                            .build();
 
-        const auto rows = gq2::try_execute(*rsComm, q);
-        return (rows && !rows->empty()) ? 1 : 0;
+        const auto rows_buf = gq2::try_execute_buffer(*rsComm, q);
+        return (rows_buf && !gq2::rows_buffer_view{*rows_buf}.empty()) ? 1 : 0;
     }
 
     int checkPermitForCollection(rsComm_t* rsComm, char* objName, rodsLong_t userId, rodsLong_t operId)
@@ -443,8 +443,8 @@ namespace
                            .limit(1)
                            .build();
 
-        const auto rows = gq2::try_execute(*rsComm, q);
-        return (rows && !rows->empty()) ? 1 : 0;
+        const auto rows_buf = gq2::try_execute_buffer(*rsComm, q);
+        return (rows_buf && !gq2::rows_buffer_view{*rows_buf}.empty()) ? 1 : 0;
     }
 
     int checkPermitForResource(rsComm_t* rsComm, char* objName, rodsLong_t userId, rodsLong_t operId)
@@ -456,8 +456,8 @@ namespace
                            .limit(1)
                            .build();
 
-        const auto rows = gq2::try_execute(*rsComm, q);
-        return (rows && !rows->empty()) ? 1 : 0;
+        const auto rows_buf = gq2::try_execute_buffer(*rsComm, q);
+        return (rows_buf && !gq2::rows_buffer_view{*rows_buf}.empty()) ? 1 : 0;
     }
 } // anonymous namespace
 
@@ -496,13 +496,11 @@ checkPermissionByObjType( rsComm_t *rsComm, char *objName, char *objType, char *
                            .where(col("USER_NAME") == user && col("USER_ZONE") == zone)
                            .build();
 
-        if (const auto rows = gq2::try_execute(*rsComm, q); rows) {
-            for (const auto& row : *rows) {
-                const auto& group_id_str = row.at(0).get_ref<const std::string&>();
+        if (const auto rows_buf = gq2::try_execute_buffer(*rsComm, q); rows_buf) {
+            const gq2::rows_buffer_view rows{*rows_buf};
+            for (std::size_t r = 0; r < rows.size(); ++r) {
                 rodsLong_t groupId = -1;
-                if (std::from_chars(group_id_str.data(), group_id_str.data() + group_id_str.size(), groupId).ec != std::errc{} ||
-                    groupId < 0 || groupId == userId)
-                {
+                if (!rows.cell_int(r, 0, groupId) || groupId < 0 || groupId == userId) {
                     continue;
                 }
 

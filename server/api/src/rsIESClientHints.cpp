@@ -85,14 +85,15 @@ irods::error get_query_array( rsComm_t* _comm, json& _queries )
                        .limit(MAX_SQL_ROWS)
                        .build();
 
-    json rows;
-    const int status = gq2::try_execute( *_comm, q, rows );
+    lite3cpp::Buffer rows_buf;
+    const int status = gq2::try_execute_buffer( *_comm, q, rows_buf );
     if ( status < 0 ) {
         return ERROR( status, "GenQuery2 query for specific queries failed" );
     }
 
-    for ( const auto& row : rows ) {
-        _queries.push_back( row.at(0).get_ref<const std::string&>() );
+    const gq2::rows_buffer_view rows{rows_buf};
+    for ( std::size_t r = 0; r < rows.size(); ++r ) {
+        _queries.push_back( rows.cell_str(r, 0) );
     }
 
     return SUCCESS();

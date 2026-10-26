@@ -187,11 +187,13 @@ int msiCheckHostAccessControl( ruleExecInfo_t *rei ) {
         .build();
 
     std::string groups;
-    nlohmann::json rows;
-    if (gq2::try_execute(*rsComm, q, rows) >= 0) {
-        for (const auto& row : rows) {
-            if (!row.empty()) {
-                groups += row[0].get_ref<const std::string&>();
+    lite3cpp::Buffer rows_buf;
+    if (gq2::try_execute_buffer(*rsComm, q, rows_buf) >= 0) {
+        const gq2::rows_buffer_view rows{rows_buf};
+        char scratch[64]{};
+        for (std::size_t r = 0; r < rows.size(); ++r) {
+            if (rows.col_count(r) > 0) {
+                groups.append(rows.cell(r, 0, scratch));
                 groups += ' ';
             }
         }

@@ -189,6 +189,22 @@ TEST_CASE("GenQuery2 Fluent Builder API", "[genquery2][builder]")
         REQUIRE(j.size() == 2);
         CHECK(j[0][0] == "1001");
         CHECK(j[1][2] == "8192");
+
+        char cbuf[32]{};
+        CHECK(view.copy_cell(0, 1, cbuf, sizeof(cbuf)) == 19);
+        CHECK(std::string_view{cbuf} == "/tempZone/home/rods");
+
+        long long id_val = 0;
+        long long size_val = 0;
+        CHECK(view.cell_int(0, 0, id_val));
+        CHECK(id_val == 1001);
+        CHECK(view.cell_int(1, 2, size_val));
+        CHECK(size_val == 8192);
+
+        char* dup_str = view.cell_strdup(1, 1);
+        REQUIRE(dup_str != nullptr);
+        CHECK(std::string_view{dup_str} == "/tempZone/home/alice");
+        std::free(dup_str);
     }
 #endif
 }

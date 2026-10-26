@@ -109,30 +109,27 @@ namespace {
             .limit(1)
             .build();
 
-        nlohmann::json rows;
-        if (const int ec = gq2::try_execute(*_comm, q, rows); ec < 0) {
+        lite3cpp::Buffer rows_buf;
+        if (const int ec = gq2::try_execute_buffer(*_comm, q, rows_buf); ec < 0) {
             THROW(ec, fmt::format("GenQuery2 failed for data_id [{}]: [{}]", _data_id, gq2::to_query_string(q)));
         }
+        const gq2::rows_buffer_view rows{rows_buf};
         if (rows.empty()) {
             THROW(CAT_NO_ROWS_FOUND, fmt::format("No good source replica found for data_id [{}]", _data_id));
         }
 
-        const auto& row = rows[0];
-        const auto& data_name = row[0].get_ref<const std::string&>();
-        const auto& coll_name = row[1].get_ref<const std::string&>();
-        const auto& data_mode_str = row[2].get_ref<const std::string&>();
-        const auto& resc_id_str = row[3].get_ref<const std::string&>();
+        const auto data_name = rows.cell_str(0, 0);
+        const auto coll_name = rows.cell_str(0, 1);
 
         rodsLong_t resc_id = 0;
-        if (const auto [ptr, ec] = std::from_chars(resc_id_str.data(), resc_id_str.data() + resc_id_str.size(), resc_id);
-            ec != std::errc{} || ptr != resc_id_str.data() + resc_id_str.size()) {
-            THROW(INVALID_LEXICAL_CAST, fmt::format("Failed to parse DATA_RESC_ID [{}]", resc_id_str));
+        if (!rows.cell_int(0, 3, resc_id)) {
+            THROW(INVALID_LEXICAL_CAST, fmt::format("Failed to parse DATA_RESC_ID [{}]", rows.cell_str(0, 3)));
         }
 
         // It is possible that some catalogs may contain invalid data modes (e.g. empty string, non-integer value).
         // In these cases, the system will interpret invalid strings as zero (0).
         int data_mode = 0;
-        std::from_chars(data_mode_str.data(), data_mode_str.data() + data_mode_str.size(), data_mode);
+        rows.cell_int(0, 2, data_mode);
 
         ReplicationSourceInfo ret;
         ret.object_path = (fs::path{coll_name} / data_name).string();
@@ -181,30 +178,30 @@ namespace {
             .limit(static_cast<std::size_t>(_batch_size), static_cast<std::size_t>(_offset))
             .build();
 
-        nlohmann::json rows;
-        if (const int ec = gq2::try_execute(*_comm, q, rows); ec < 0) {
+        lite3cpp::Buffer rows_buf;
+        if (const int ec = gq2::try_execute_buffer(*_comm, q, rows_buf); ec < 0) {
             if (CAT_NO_ROWS_FOUND == ec) {
                 return {};
             }
             THROW(ec, fmt::format("GenQuery2 failed: [{}]", gq2::to_query_string(q)));
         }
 
+        const gq2::rows_buffer_view rows{rows_buf};
         std::vector<ReplicaAndRescId> ret;
         ret.reserve(rows.size());
-        auto parse_long = [](const std::string& _s) -> rodsLong_t {
+        auto parse_long = [&rows](std::size_t _r, std::size_t _c) -> rodsLong_t {
             rodsLong_t val = 0;
-            if (const auto [ptr, ec] = std::from_chars(_s.data(), _s.data() + _s.size(), val);
-                ec != std::errc{} || ptr != _s.data() + _s.size()) {
-                THROW(INVALID_LEXICAL_CAST, fmt::format("Failed to parse integer [{}]", _s));
+            if (!rows.cell_int(_r, _c, val)) {
+                THROW(INVALID_LEXICAL_CAST, fmt::format("Failed to parse integer [{}]", rows.cell_str(_r, _c)));
             }
             return val;
         };
 
-        for (const auto& row : rows) {
+        for (std::size_t r = 0; r < rows.size(); ++r) {
             ReplicaAndRescId repl_and_resc{};
-            repl_and_resc.data_id        = parse_long(row[0].get_ref<const std::string&>());
-            repl_and_resc.replica_number = parse_long(row[1].get_ref<const std::string&>());
-            repl_and_resc.resource_id    = parse_long(row[2].get_ref<const std::string&>());
+            repl_and_resc.data_id        = parse_long(r, 0);
+            repl_and_resc.replica_number = parse_long(r, 1);
+            repl_and_resc.resource_id    = parse_long(r, 2);
             ret.push_back(repl_and_resc);
         }
         return ret;

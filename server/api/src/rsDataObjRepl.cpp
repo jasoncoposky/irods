@@ -502,12 +502,12 @@ namespace
                            .limit(1)
                            .build();
 
-        nlohmann::json rows;
-        if (gq2::try_execute(_comm, q, rows) < 0) {
+        lite3cpp::Buffer rows_buf;
+        if (gq2::try_execute_buffer(_comm, q, rows_buf) < 0) {
             return false;
         }
 
-        return !rows.empty();
+        return !gq2::rows_buffer_view{rows_buf}.empty();
     } // user_has_permission_to_replicate_object
 
     int replicate_data(RsComm& _comm, DataObjInp& _source_inp, DataObjInp& _destination_inp, transferStat_t** _stat)

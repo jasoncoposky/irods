@@ -1108,36 +1108,35 @@ syncCollPhyPath( rsComm_t *rsComm, char *collection ) {
                        .where(group(col("COLL_NAME") == collection || col("COLL_NAME").like(coll_prefix)))
                        .build();
 
-    nlohmann::json rows;
-    int status = gq2::try_execute(*rsComm, q, rows);
+    lite3cpp::Buffer rows_buf;
+    int status = gq2::try_execute_buffer(*rsComm, q, rows_buf);
     if ( status < 0 && status != CAT_NO_ROWS_FOUND ) {
         return status;
     }
 
+    const gq2::rows_buffer_view rows{rows_buf};
     int savedStatus = 0;
 
-    for ( const auto& row : rows ) {
-        const auto& tmpDataId = row.at(0).get_ref<const std::string&>();
-        const auto& tmpSubColl = row.at(1).get_ref<const std::string&>();
-        const auto& tmpDataName = row.at(2).get_ref<const std::string&>();
-        const auto& tmpReplNum = row.at(3).get_ref<const std::string&>();
-        const auto& tmpRescName = row.at(4).get_ref<const std::string&>();
-        const auto& tmpFilePath = row.at(5).get_ref<const std::string&>();
-        const auto& tmpRescId = row.at(6).get_ref<const std::string&>();
+    for ( std::size_t r = 0; r < rows.size(); ++r ) {
+        char scratch_coll[64]{};
+        char scratch_name[64]{};
+        const auto tmpSubColl = rows.cell(r, 1, scratch_coll);
+        const auto tmpDataName = rows.cell(r, 2, scratch_name);
 
         dataObjInfo_t dataObjInfo{};
-        std::from_chars(tmpDataId.data(), tmpDataId.data() + tmpDataId.size(), dataObjInfo.dataId);
-        snprintf( dataObjInfo.objPath, MAX_NAME_LEN, "%s/%s",
-                  tmpSubColl.c_str(), tmpDataName.c_str() );
-        std::from_chars(tmpReplNum.data(), tmpReplNum.data() + tmpReplNum.size(), dataObjInfo.replNum);
-        rstrcpy( dataObjInfo.rescName, tmpRescName.c_str(), NAME_LEN );
+        rows.cell_int(r, 0, dataObjInfo.dataId);
+        snprintf( dataObjInfo.objPath, MAX_NAME_LEN, "%.*s/%.*s",
+                  static_cast<int>(tmpSubColl.size()), tmpSubColl.data(),
+                  static_cast<int>(tmpDataName.size()), tmpDataName.data() );
+        rows.cell_int(r, 3, dataObjInfo.replNum);
+        rows.copy_cell(r, 4, dataObjInfo.rescName, NAME_LEN);
 
-        std::from_chars(tmpRescId.data(), tmpRescId.data() + tmpRescId.size(), dataObjInfo.rescId);
+        rows.cell_int(r, 6, dataObjInfo.rescId);
         std::string resc_hier;
         resc_mgr.leaf_id_to_hier(dataObjInfo.rescId, resc_hier);
 
         rstrcpy( dataObjInfo.rescHier, resc_hier.c_str(), MAX_NAME_LEN );
-        rstrcpy( dataObjInfo.filePath, tmpFilePath.c_str(), MAX_NAME_LEN );
+        rows.copy_cell(r, 5, dataObjInfo.filePath, MAX_NAME_LEN);
 
         status = syncDataObjPhyPathS( rsComm, NULL, &dataObjInfo, collection );
         if ( status < 0 ) {

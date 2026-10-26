@@ -71,8 +71,8 @@ namespace
             .limit(1)
             .build();
 
-        nlohmann::json rows;
-        return gq2::try_execute(_comm, q, rows) >= 0 && !rows.empty();
+        lite3cpp::Buffer rows_buf;
+        return gq2::try_execute_buffer(_comm, q, rows_buf) >= 0 && !gq2::rows_buffer_view{rows_buf}.empty();
     } // is_hostname_valid
 
     auto rs_set_delay_server_migration_info(RsComm* _comm, const DelayServerMigrationInput* _input) -> int

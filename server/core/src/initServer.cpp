@@ -376,26 +376,27 @@ initZone( rsComm_t *rsComm ) {
     namespace gq2 = irods::experimental::genquery2;
     const auto q = gq2::builder::select({"ZONE_NAME", "ZONE_TYPE", "ZONE_CONNECTION", "ZONE_COMMENT"}).build();
 
-    nlohmann::json rows;
-    status = gq2::try_execute(*rsComm, q, rows);
+    lite3cpp::Buffer rows_buf;
+    status = gq2::try_execute_buffer(*rsComm, q, rows_buf);
     if ( status < 0 ) {
         rodsLog( LOG_NOTICE,
                  "initZone: rs_genquery2 error, status = %d", status );
         return status;
     }
 
+    const gq2::rows_buffer_view rows{rows_buf};
     if ( rows.empty() ) {
         rodsLog( LOG_NOTICE,
                  "initZone: empty zone query result" );
         return CAT_NO_ROWS_FOUND;
     }
 
-    for ( const auto& row : rows ) {
+    for ( std::size_t r = 0; r < rows.size(); ++r ) {
         rodsHostAddr_t addr;
 
-        const auto& tmpZoneName = row.at(0).get_ref<const std::string&>();
-        const auto& tmpZoneType = row.at(1).get_ref<const std::string&>();
-        const auto& tmpZoneConn = row.at(2).get_ref<const std::string&>();
+        const auto tmpZoneName = rows.cell_str(r, 0);
+        const auto tmpZoneType = rows.cell_str(r, 1);
+        const auto tmpZoneConn = rows.cell_str(r, 2);
 
         if ( tmpZoneType == "local" ) {
             if ( *zone_name != tmpZoneName ) {

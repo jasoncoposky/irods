@@ -136,16 +136,17 @@ getDataObjInfo(
                        .limit(MAX_SQL_ROWS)
                        .build();
 
-    nlohmann::json rows;
+    lite3cpp::Buffer rows_buf;
     {
         irods::experimental::scoped_privileged_client spc{*rsComm};
-        status = gq2::try_execute( *rsComm, q, rows );
+        status = gq2::try_execute_buffer( *rsComm, q, rows_buf );
     }
 
+    const gq2::rows_buffer_view rows{rows_buf};
+
     if ( status >= 0 && !rows.empty() && accessPerm != NULL && getValByKey( &dataObjInp->condInput, ADMIN_KW ) == NULL ) {
-        const auto& data_id_str = rows.front().at(0).get_ref<const std::string&>();
         rodsLong_t data_id_val = 0;
-        std::from_chars(data_id_str.data(), data_id_str.data() + data_id_str.size(), data_id_val);
+        rows.cell_int(0, 0, data_id_val);
         status = chl_check_data_object_access( *rsComm, data_id_val, accessPerm );
     }
 
@@ -162,34 +163,19 @@ getDataObjInfo(
 
     writeFlag = getWriteFlag( dataObjInp->openFlags );
 
-    for ( const auto& row : rows ) {
+    for ( std::size_t r = 0; r < rows.size(); ++r ) {
         dataObjInfo = static_cast<dataObjInfo_t*>( std::malloc( sizeof( dataObjInfo_t ) ) );
         std::memset( dataObjInfo, 0, sizeof( dataObjInfo_t ) );
 
-        const auto& tmpDataId         = row[0].get_ref<const std::string&>();
-        const auto& tmpDataName       = row[1].get_ref<const std::string&>();
-        const auto& tmpCollName       = row[2].get_ref<const std::string&>();
-        const auto& tmpCollId         = row[3].get_ref<const std::string&>();
-        const auto& tmpReplNum        = row[4].get_ref<const std::string&>();
-        const auto& tmpVersion        = row[5].get_ref<const std::string&>();
-        const auto& tmpDataType       = row[6].get_ref<const std::string&>();
-        const auto& tmpDataSize       = row[7].get_ref<const std::string&>();
-        const auto& tmpFilePath       = row[8].get_ref<const std::string&>();
-        const auto& tmpDataOwnerName  = row[9].get_ref<const std::string&>();
-        const auto& tmpDataOwnerZone  = row[10].get_ref<const std::string&>();
-        const auto& tmpReplStatus     = row[11].get_ref<const std::string&>();
-        const auto& tmpStatusString   = row[12].get_ref<const std::string&>();
-        const auto& tmpChksum         = row[13].get_ref<const std::string&>();
-        const auto& tmpDataExpiry     = row[14].get_ref<const std::string&>();
-        const auto& tmpDataMapId      = row[15].get_ref<const std::string&>();
-        const auto& tmpDataComments   = row[16].get_ref<const std::string&>();
-        const auto& tmpDataAccessTime = row[17].get_ref<const std::string&>();
-        const auto& tmpDataCreate     = row[18].get_ref<const std::string&>();
-        const auto& tmpDataModify     = row[19].get_ref<const std::string&>();
-        const auto& tmpDataMode       = row[20].get_ref<const std::string&>();
-        const auto& tmpHierString     = row[21].get_ref<const std::string&>();
+        char scratch_coll[64]{};
+        char scratch_name[64]{};
+        const auto tmpCollName = rows.cell(r, 2, scratch_coll);
+        const auto tmpDataName = rows.cell(r, 1, scratch_name);
+        const auto tmpHierString = rows.cell_str(r, 21);
 
-        snprintf( dataObjInfo->objPath, MAX_NAME_LEN, "%s/%s", tmpCollName.c_str(), tmpDataName.c_str() );
+        snprintf( dataObjInfo->objPath, MAX_NAME_LEN, "%.*s/%.*s",
+                  static_cast<int>(tmpCollName.size()), tmpCollName.data(),
+                  static_cast<int>(tmpDataName.size()), tmpDataName.data() );
         rstrcpy( dataObjInfo->rescHier, tmpHierString.c_str(), MAX_NAME_LEN );
         irods::error ret = resc_mgr.hier_to_leaf_id( tmpHierString, dataObjInfo->rescId );
         if (!ret.ok()) {
@@ -204,25 +190,25 @@ getDataObjInfo(
         parser.last_resc( leaf );
         rstrcpy( dataObjInfo->rescName, leaf.c_str(), NAME_LEN );
 
-        rstrcpy( dataObjInfo->dataType, tmpDataType.c_str(), NAME_LEN );
-        std::from_chars( tmpDataSize.data(), tmpDataSize.data() + tmpDataSize.size(), dataObjInfo->dataSize );
-        rstrcpy( dataObjInfo->chksum, tmpChksum.c_str(), CHKSUM_LEN );
-        rstrcpy( dataObjInfo->version, tmpVersion.c_str(), NAME_LEN );
-        rstrcpy( dataObjInfo->filePath, tmpFilePath.c_str(), MAX_NAME_LEN );
-        rstrcpy( dataObjInfo->dataOwnerName, tmpDataOwnerName.c_str(), NAME_LEN );
-        rstrcpy( dataObjInfo->dataOwnerZone, tmpDataOwnerZone.c_str(), NAME_LEN );
-        std::from_chars( tmpReplNum.data(), tmpReplNum.data() + tmpReplNum.size(), dataObjInfo->replNum );
-        std::from_chars( tmpReplStatus.data(), tmpReplStatus.data() + tmpReplStatus.size(), dataObjInfo->replStatus );
-        rstrcpy( dataObjInfo->statusString, tmpStatusString.c_str(), NAME_LEN );
-        std::from_chars( tmpDataId.data(), tmpDataId.data() + tmpDataId.size(), dataObjInfo->dataId );
-        std::from_chars( tmpCollId.data(), tmpCollId.data() + tmpCollId.size(), dataObjInfo->collId );
-        std::from_chars( tmpDataMapId.data(), tmpDataMapId.data() + tmpDataMapId.size(), dataObjInfo->dataMapId );
-        rstrcpy( dataObjInfo->dataComments, tmpDataComments.c_str(), LONG_NAME_LEN );
-        rstrcpy( dataObjInfo->dataExpiry, tmpDataExpiry.c_str(), TIME_LEN );
-        rstrcpy( dataObjInfo->dataCreate, tmpDataCreate.c_str(), TIME_LEN );
-        rstrcpy( dataObjInfo->dataModify, tmpDataModify.c_str(), TIME_LEN );
-        rstrcpy( dataObjInfo->dataAccessTime, tmpDataAccessTime.c_str(), TIME_LEN );
-        rstrcpy( dataObjInfo->dataMode, tmpDataMode.c_str(), SHORT_STR_LEN );
+        rows.copy_cell(r, 6, dataObjInfo->dataType, NAME_LEN);
+        rows.cell_int(r, 7, dataObjInfo->dataSize);
+        rows.copy_cell(r, 13, dataObjInfo->chksum, CHKSUM_LEN);
+        rows.copy_cell(r, 5, dataObjInfo->version, NAME_LEN);
+        rows.copy_cell(r, 8, dataObjInfo->filePath, MAX_NAME_LEN);
+        rows.copy_cell(r, 9, dataObjInfo->dataOwnerName, NAME_LEN);
+        rows.copy_cell(r, 10, dataObjInfo->dataOwnerZone, NAME_LEN);
+        rows.cell_int(r, 4, dataObjInfo->replNum);
+        rows.cell_int(r, 11, dataObjInfo->replStatus);
+        rows.copy_cell(r, 12, dataObjInfo->statusString, NAME_LEN);
+        rows.cell_int(r, 0, dataObjInfo->dataId);
+        rows.cell_int(r, 3, dataObjInfo->collId);
+        rows.cell_int(r, 15, dataObjInfo->dataMapId);
+        rows.copy_cell(r, 16, dataObjInfo->dataComments, LONG_NAME_LEN);
+        rows.copy_cell(r, 14, dataObjInfo->dataExpiry, TIME_LEN);
+        rows.copy_cell(r, 18, dataObjInfo->dataCreate, TIME_LEN);
+        rows.copy_cell(r, 19, dataObjInfo->dataModify, TIME_LEN);
+        rows.copy_cell(r, 17, dataObjInfo->dataAccessTime, TIME_LEN);
+        rows.copy_cell(r, 20, dataObjInfo->dataMode, SHORT_STR_LEN);
         dataObjInfo->writeFlag = writeFlag;
 
         dataObjInfo->next = nullptr;
@@ -595,11 +581,11 @@ chkOrphanFile(
                        .limit(1)
                        .build();
 
-    nlohmann::json rows;
+    lite3cpp::Buffer rows_buf;
     int status = 0;
     {
         irods::experimental::scoped_privileged_client spc{*rsComm};
-        status = gq2::try_execute(*rsComm, q, rows);
+        status = gq2::try_execute_buffer(*rsComm, q, rows_buf);
     }
 
     if ( status < 0 ) {
@@ -615,6 +601,7 @@ chkOrphanFile(
         return status;
     }
 
+    const gq2::rows_buffer_view rows{rows_buf};
     if ( rows.empty() ) {
         rsComm->perfStat.orphanCnt ++;
         return 1;
@@ -623,16 +610,16 @@ chkOrphanFile(
     rsComm->perfStat.nonOrphanCnt++;
 
     if ( dataObjInfo != NULL ) {
-        const auto& row = rows.front();
-        const auto& data_id_str = row.at(0).get_ref<const std::string&>();
-        const auto& coll_name_str = row.at(1).get_ref<const std::string&>();
-        const auto& data_name_str = row.at(2).get_ref<const std::string&>();
-        const auto& repl_num_str = row.at(3).get_ref<const std::string&>();
+        char scratch_coll[64]{};
+        char scratch_name[64]{};
+        const auto coll_name_sv = rows.cell(0, 1, scratch_coll);
+        const auto data_name_sv = rows.cell(0, 2, scratch_name);
 
-        std::from_chars(data_id_str.data(), data_id_str.data() + data_id_str.size(), dataObjInfo->dataId);
-        std::from_chars(repl_num_str.data(), repl_num_str.data() + repl_num_str.size(), dataObjInfo->replNum);
-        snprintf( dataObjInfo->objPath, MAX_NAME_LEN, "%s/%s",
-                  coll_name_str.c_str(), data_name_str.c_str() );
+        rows.cell_int(0, 0, dataObjInfo->dataId);
+        rows.cell_int(0, 3, dataObjInfo->replNum);
+        snprintf( dataObjInfo->objPath, MAX_NAME_LEN, "%.*s/%.*s",
+                  static_cast<int>(coll_name_sv.size()), coll_name_sv.data(),
+                  static_cast<int>(data_name_sv.size()), data_name_sv.data() );
         rstrcpy( dataObjInfo->rescHier, resc_hier.c_str(), MAX_NAME_LEN );
     }
 

@@ -112,27 +112,29 @@ int getQuotaByResc(
                             .limit(1)
                             .build();
 
-    nlohmann::json user_rows;
-    if ( const int status = gq2::try_execute( *rsComm, q_user, user_rows ); status < 0 ) {
+    lite3cpp::Buffer user_rows_buf;
+    if ( const int status = gq2::try_execute_buffer( *rsComm, q_user, user_rows_buf ); status < 0 ) {
         return status;
     }
+    const gq2::rows_buffer_view user_rows{user_rows_buf};
     if ( user_rows.empty() ) {
         return CAT_NO_ROWS_FOUND;
     }
 
-    const auto& user_id = user_rows.front().at(0).get_ref<const std::string&>();
+    const auto user_id = user_rows.cell_str(0, 0);
     std::vector<std::string> subject_ids{user_id};
 
     const auto q_groups = gq2::builder::select({"GROUP_ID"})
                               .where(col("GROUP_MEMBER_ID") == user_id)
                               .build();
 
-    nlohmann::json group_rows;
-    if ( gq2::try_execute( *rsComm, q_groups, group_rows ) >= 0 ) {
-        for ( const auto& row : group_rows ) {
-            const auto& gid = row.at(0).get_ref<const std::string&>();
+    lite3cpp::Buffer group_rows_buf;
+    if ( gq2::try_execute_buffer( *rsComm, q_groups, group_rows_buf ) >= 0 ) {
+        const gq2::rows_buffer_view group_rows{group_rows_buf};
+        for ( std::size_t r = 0; r < group_rows.size(); ++r ) {
+            auto gid = group_rows.cell_str(r, 0);
             if ( std::find( subject_ids.begin(), subject_ids.end(), gid ) == subject_ids.end() ) {
-                subject_ids.push_back( gid );
+                subject_ids.push_back( std::move( gid ) );
             }
         }
     }
@@ -153,16 +155,17 @@ int getQuotaByResc(
                               .where(col("QUOTA_USER_ID").in(subject_ids) && col("QUOTA_RESC_ID") == "0")
                               .build();
 
-    nlohmann::json global_rows;
-    if ( gq2::try_execute( *rsComm, q_global, global_rows ) >= 0 ) {
+    lite3cpp::Buffer global_rows_buf;
+    if ( gq2::try_execute_buffer( *rsComm, q_global, global_rows_buf ) >= 0 ) {
+        const gq2::rows_buffer_view global_rows{global_rows_buf};
         const std::string global_resc_name = ( rescName != NULL && rescName[0] != '\0' ) ? rescName : "";
-        for ( const auto& row : global_rows ) {
+        for ( std::size_t r = 0; r < global_rows.size(); ++r ) {
             quota_row qr{
-                row.at(0).get<std::string>(),
+                global_rows.cell_str(r, 0),
                 global_resc_name,
-                row.at(1).get<std::string>(),
-                row.at(2).get<std::string>(),
-                row.at(3).get<std::string>(),
+                global_rows.cell_str(r, 1),
+                global_rows.cell_str(r, 2),
+                global_rows.cell_str(r, 3),
                 0};
             std::from_chars( qr.quota_over.data(), qr.quota_over.data() + qr.quota_over.size(), qr.over_val );
             collected.push_back( std::move( qr ) );
@@ -179,15 +182,16 @@ int getQuotaByResc(
                             .where(std::move(resc_cond))
                             .build();
 
-    nlohmann::json resc_rows;
-    if ( gq2::try_execute( *rsComm, q_resc, resc_rows ) >= 0 ) {
-        for ( const auto& row : resc_rows ) {
+    lite3cpp::Buffer resc_rows_buf;
+    if ( gq2::try_execute_buffer( *rsComm, q_resc, resc_rows_buf ) >= 0 ) {
+        const gq2::rows_buffer_view resc_rows{resc_rows_buf};
+        for ( std::size_t r = 0; r < resc_rows.size(); ++r ) {
             quota_row qr{
-                row.at(0).get<std::string>(),
-                row.at(1).get<std::string>(),
-                row.at(2).get<std::string>(),
-                row.at(3).get<std::string>(),
-                row.at(4).get<std::string>(),
+                resc_rows.cell_str(r, 0),
+                resc_rows.cell_str(r, 1),
+                resc_rows.cell_str(r, 2),
+                resc_rows.cell_str(r, 3),
+                resc_rows.cell_str(r, 4),
                 0};
             std::from_chars( qr.quota_over.data(), qr.quota_over.data() + qr.quota_over.size(), qr.over_val );
             collected.push_back( std::move( qr ) );
@@ -202,14 +206,19 @@ int getQuotaByResc(
         return a.over_val < b.over_val;
     } );
 
-    nlohmann::json combined = nlohmann::json::array();
+    lite3cpp::Buffer combined_buf;
+    combined_buf.init_array();
     for ( const auto& qr : collected ) {
-        combined.push_back( nlohmann::json::array(
-            {qr.user_id, qr.resc_name, qr.quota_limit, qr.quota_over, qr.resc_id} ) );
+        const std::size_t row_arr = combined_buf.arr_append_arr(0);
+        combined_buf.arr_append_str(row_arr, qr.user_id);
+        combined_buf.arr_append_str(row_arr, qr.resc_name);
+        combined_buf.arr_append_str(row_arr, qr.quota_limit);
+        combined_buf.arr_append_str(row_arr, qr.quota_over);
+        combined_buf.arr_append_str(row_arr, qr.resc_id);
     }
 
-    return gq2::rows_to_genquery_out(
-        combined,
+    return gq2::rows_buffer_to_genquery_out(
+        combined_buf,
         {COL_QUOTA_USER_ID, COL_R_RESC_NAME, COL_QUOTA_LIMIT, COL_QUOTA_OVER, COL_QUOTA_RESC_ID},
         genQueryOut );
 }

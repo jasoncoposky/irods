@@ -385,8 +385,9 @@ msiSetDataTypeFromExt( ruleExecInfo_t *rei ) {
         .limit(1)
         .build();
 
-    nlohmann::json rows;
-    const int ec = gq2::try_execute(*rei->rsComm, q, rows);
+    lite3cpp::Buffer rows_buf;
+    const int ec = gq2::try_execute_buffer(*rei->rsComm, q, rows_buf);
+    const gq2::rows_buffer_view rows{rows_buf};
     if (ec != 0 || rows.empty()) {
         return 0;
     }
@@ -396,7 +397,7 @@ msiSetDataTypeFromExt( ruleExecInfo_t *rei ) {
     /* register it */
     keyValPair_t regParam{};
     const irods::at_scope_exit clear_reg_param{[&regParam] { clearKeyVal(&regParam); }};
-    addKeyVal( &regParam, DATA_TYPE_KW, rows[0][0].get_ref<const std::string&>().c_str() );
+    addKeyVal( &regParam, DATA_TYPE_KW, rows.cell_str(0, 0).c_str() );
 
     if ( strcmp( dataObjInfoHead->rescHier, "" ) ) {
         addKeyVal( &regParam, IN_PDMO_KW, dataObjInfoHead->rescHier );

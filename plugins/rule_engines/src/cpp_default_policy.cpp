@@ -909,8 +909,8 @@ namespace
             .limit(1)
             .build();
 
-        nlohmann::json rows;
-        return gq2::try_execute(*comm, q, rows) >= 0 && rows.empty();
+        lite3cpp::Buffer rows_buf;
+        return gq2::try_execute_buffer(*comm, q, rows_buf) >= 0 && gq2::rows_buffer_view{rows_buf}.empty();
 
     } // rule_is_not_already_enqueued
 

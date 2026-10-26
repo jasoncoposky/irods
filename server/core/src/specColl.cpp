@@ -89,11 +89,11 @@ querySpecColl( rsComm_t *rsComm, const char *objPath, genQueryOut_t **genQueryOu
                        .limit(MAX_SQL_ROWS)
                        .build();
 
-    nlohmann::json rows;
-    int status = gq2::try_execute( *rsComm, q, rows );
+    lite3cpp::Buffer rows_buf;
+    int status = gq2::try_execute_buffer( *rsComm, q, rows_buf );
     if ( status >= 0 ) {
-        status = gq2::rows_to_genquery_out(
-            rows,
+        status = gq2::rows_buffer_to_genquery_out(
+            rows_buf,
             {COL_COLL_ID,
              COL_COLL_NAME,
              COL_COLL_OWNER_NAME,

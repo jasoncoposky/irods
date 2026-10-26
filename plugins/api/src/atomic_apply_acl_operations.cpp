@@ -200,11 +200,13 @@ namespace
             return CAT_NOT_A_DATAOBJ_AND_NOT_A_COLLECTION;
         }
 
-        if (const auto rows = gq2::try_execute(_comm, q); rows && !rows->empty()) {
-            const auto& id_str = rows->front().at(0).get_ref<const std::string&>();
-            id_type id = 0;
-            std::from_chars(id_str.data(), id_str.data() + id_str.size(), id);
-            return id;
+        if (const auto rows_buf = gq2::try_execute_buffer(_comm, q); rows_buf) {
+            const gq2::rows_buffer_view rows{*rows_buf};
+            if (!rows.empty()) {
+                id_type id = 0;
+                rows.cell_int(0, 0, id);
+                return id;
+            }
         }
 
         log::api::error("Failed to resolve path to an ID [path={}]", _logical_path);

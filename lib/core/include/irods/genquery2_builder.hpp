@@ -3,6 +3,7 @@
 
 #include "irods/genquery2_ast_types.hpp"
 
+#include <charconv>
 #include <cstdlib>
 #include <span>
 #include <string>
@@ -1042,6 +1043,49 @@ namespace irods::experimental::genquery2
             return std::string{cell(_row, _col, scratch)};
         }
 
+        auto copy_cell(std::size_t _row, std::size_t _col, char* _dst, std::size_t _dst_cap) const noexcept
+            -> std::size_t
+        {
+            if (!_dst || _dst_cap == 0) {
+                return 0;
+            }
+            char scratch[64]{};
+            const auto sv = cell(_row, _col, scratch);
+            const std::size_t copy_len = std::min(sv.size(), _dst_cap - 1);
+            if (copy_len > 0) {
+                std::memcpy(_dst, sv.data(), copy_len);
+            }
+            _dst[copy_len] = '\0';
+            return copy_len;
+        }
+
+        template <typename IntT>
+        auto cell_int(std::size_t _row, std::size_t _col, IntT& _out) const noexcept -> bool
+        {
+            char scratch[64]{};
+            const auto sv = cell(_row, _col, scratch);
+            if (sv.empty()) {
+                return false;
+            }
+            const auto [ptr, ec] = std::from_chars(sv.data(), sv.data() + sv.size(), _out);
+            return ec == std::errc{} && ptr == sv.data() + sv.size();
+        }
+
+        [[nodiscard]] auto cell_strdup(std::size_t _row, std::size_t _col) const noexcept -> char*
+        {
+            char scratch[64]{};
+            const auto sv = cell(_row, _col, scratch);
+            auto* out = static_cast<char*>(std::malloc(sv.size() + 1));
+            if (!out) {
+                return nullptr;
+            }
+            if (!sv.empty()) {
+                std::memcpy(out, sv.data(), sv.size());
+            }
+            out[sv.size()] = '\0';
+            return out;
+        }
+
         [[nodiscard]] auto to_json() const -> nlohmann::json
         {
             auto out = nlohmann::json::array();
@@ -1160,6 +1204,26 @@ namespace irods::experimental::genquery2
     {
         return rows_buffer_to_genquery_out(_rows_buf, _col_indices, &_out, _continue_inx, _max_rows);
     }
+
+    inline auto rows_buffer_to_genquery_out(const lite3cpp::Buffer& _rows_buf,
+                                            std::initializer_list<int> _col_indices,
+                                            GenQueryOut** _out,
+                                            int _continue_inx = 0,
+                                            std::size_t _max_rows = MAX_SQL_ROWS) -> int
+    {
+        return rows_buffer_to_genquery_out(
+            _rows_buf, std::span<const int>{_col_indices.begin(), _col_indices.size()}, _out, _continue_inx, _max_rows);
+    }
+
+    inline auto rows_buffer_to_genquery_out(const lite3cpp::Buffer& _rows_buf,
+                                            std::initializer_list<int> _col_indices,
+                                            GenQueryOut*& _out,
+                                            int _continue_inx = 0,
+                                            std::size_t _max_rows = MAX_SQL_ROWS) -> int
+    {
+        return rows_buffer_to_genquery_out(
+            _rows_buf, std::span<const int>{_col_indices.begin(), _col_indices.size()}, &_out, _continue_inx, _max_rows);
+    }
 #    endif
 #  endif
     int rs_genquery2(RsComm* _comm,
@@ -1195,6 +1259,24 @@ namespace irods::experimental::genquery2
                                    std::string_view _zone_hint = {}) -> int
     {
         return try_execute_buffer(_comm, _sb.build(), _rows_buf, _zone_hint);
+    }
+
+    inline auto try_execute_buffer(RsComm& _comm,
+                                   const select& _sel,
+                                   std::string_view _zone_hint = {}) -> std::optional<lite3cpp::Buffer>
+    {
+        lite3cpp::Buffer rows_buf;
+        if (try_execute_buffer(_comm, _sel, rows_buf, _zone_hint) < 0) {
+            return std::nullopt;
+        }
+        return rows_buf;
+    }
+
+    inline auto try_execute_buffer(RsComm& _comm,
+                                   const builder::select_builder& _sb,
+                                   std::string_view _zone_hint = {}) -> std::optional<lite3cpp::Buffer>
+    {
+        return try_execute_buffer(_comm, _sb.build(), _zone_hint);
     }
 #  endif
 
