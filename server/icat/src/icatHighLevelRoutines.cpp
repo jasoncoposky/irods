@@ -24,10 +24,13 @@
 #include "irods/irods_database_constants.hpp"
 #include "irods/irods_server_properties.hpp"
 #include "irods/logical_quota_utilities.hpp"
+#include "irods/genquery2_builder.hpp"
 #include "irods/private/genquery2_ast_types.hpp"
 #include "irods/private/genquery2_sql.hpp"
 #include "buffer.hpp"
 #include <nlohmann/json.hpp>
+#include <charconv>
+#include <ctime>
 #include <memory>
 
 // =-=-=-=-=-=-=-
@@ -296,6 +299,16 @@ int chlGetLocalZone(
 
     // =-=-=-=-=-=-=-
     // call the get local zone operation on the plugin
+    if (!db->has_operation(irods::DATABASE_OP_GET_LOCAL_ZONE)) {
+        try {
+            _zone = irods::get_server_property<const std::string>(irods::KW_CFG_ZONE_NAME);
+            return 0;
+        }
+        catch (...) {
+            return SYS_NOT_SUPPORTED;
+        }
+    }
+
     ret = db->call <
           std::string* > ( 0,
                                  irods::DATABASE_OP_GET_LOCAL_ZONE,
@@ -787,6 +800,15 @@ int chlDelRuleExec(
 
     // =-=-=-=-=-=-=-
     // call the operation on the plugin
+    if (!db->has_operation(irods::DATABASE_OP_DEL_RULE_EXEC)) {
+        if (!_re_id) {
+            return SYS_INTERNAL_NULL_INPUT_ERR;
+        }
+        namespace dml = irods::experimental::dml;
+        return chl_atomic_apply_operations(
+            _comm, {dml::delete_op{"R_RULE_EXEC", {dml::condition{"rule_exec_id", "=", {_re_id}}}}});
+    }
+
     ret = db->call <
           const char* > (
               _comm,
@@ -2921,6 +2943,18 @@ int chlDelToken(
 
     // =-=-=-=-=-=-=-
     // call the operation on the plugin
+    if (!db->has_operation(irods::DATABASE_OP_DEL_TOKEN)) {
+        if (!_name_space || !_name) {
+            return SYS_INTERNAL_NULL_INPUT_ERR;
+        }
+        namespace dml = irods::experimental::dml;
+        return chl_atomic_apply_operations(
+            _comm,
+            {dml::delete_op{"R_TOKN_MAIN",
+                            {dml::condition{"token_namespace", "=", {_name_space}},
+                             dml::condition{"token_name", "=", {_name}}}}});
+    }
+
     ret = db->call <
           const char*,
           const char* > (
@@ -3288,6 +3322,19 @@ int chlSetGridConfigurationValue(rsComm_t*   _comm,
 
     // =-=-=-=-=-=-=-
     // call the operation on the plugin
+    if (!db->has_operation(irods::DATABASE_OP_SET_GRID_CONFIGURATION_VALUE)) {
+        if (!_namespace || !_optionName || !_optionValue) {
+            return SYS_INTERNAL_NULL_INPUT_ERR;
+        }
+        namespace dml = irods::experimental::dml;
+        return chl_atomic_apply_operations(
+            _comm,
+            {dml::update_op{"R_GRID_CONFIGURATION",
+                            {{"option_value", _optionValue}},
+                            {dml::condition{"namespace", "=", {_namespace}},
+                             dml::condition{"option_name", "=", {_optionName}}}}});
+    }
+
     ret = db->call<const char*, const char*, const char*>(_comm,
                                                           irods::DATABASE_OP_SET_GRID_CONFIGURATION_VALUE,
                                                           ptr,
@@ -4087,6 +4134,33 @@ int chlGetDistinctDataObjCountOnResource(
 
     // =-=-=-=-=-=-=-
     // call the operation on the plugin
+    if (!db->has_operation(irods::DATABASE_OP_GET_DISTINCT_DATA_OBJ_COUNT_ON_RESOURCE)) {
+        namespace gq2 = irods::experimental::genquery2;
+        using gq2::builder::col;
+        const auto q = gq2::builder::select({gq2::builder::count("DATA_ID")})
+                           .where(col("RESC_NAME") == _resc_name)
+                           .build();
+        RsComm dummy_comm{};
+        dummy_comm.clientUser.authInfo.authFlag = LOCAL_PRIV_USER_AUTH;
+        gq2::options opts{};
+        opts.database = database_plugin_type;
+        opts.admin_mode = true;
+        lite3cpp::Buffer rows_buf;
+        const gq2::statement stmt = q;
+        const int ec = chl_execute_genquery2_buffer(dummy_comm, stmt, opts, rows_buf);
+        if (ec < 0) {
+            return ec;
+        }
+        const gq2::rows_buffer_view view{rows_buf};
+        _count = 0;
+        if (!view.empty() && view.col_count(0) > 0) {
+            char scratch[64]{};
+            const auto sv = view.cell(0, 0, scratch);
+            std::from_chars(sv.data(), sv.data() + sv.size(), _count);
+        }
+        return 0;
+    }
+
     ret = db->call <
           const char*,
           long long* > ( 0,
@@ -4463,6 +4537,49 @@ auto chl_get_delay_rule_info(RsComm& _comm, const char* _rule_id, std::vector<st
     irods::first_class_object_ptr ptr = db_obj_ptr;
     irods::database_ptr db = std::dynamic_pointer_cast<irods::database>(db_plug_ptr);
 
+    if (!db->has_operation(irods::DATABASE_OP_GET_DELAY_RULE_INFO)) {
+        if (!_rule_id || !_info) {
+            return SYS_INTERNAL_NULL_INPUT_ERR;
+        }
+        namespace gq2 = irods::experimental::genquery2;
+        using gq2::builder::col;
+        const auto q = gq2::builder::select({"RULE_EXEC_NAME",
+                                             "RULE_EXEC_REI_FILE_PATH",
+                                             "RULE_EXEC_USER_NAME",
+                                             "RULE_EXEC_ADDRESS",
+                                             "RULE_EXEC_TIME",
+                                             "RULE_EXEC_FREQUENCY",
+                                             "RULE_EXEC_PRIORITY",
+                                             "RULE_EXEC_LAST_EXE_TIME",
+                                             "RULE_EXEC_STATUS",
+                                             "RULE_EXEC_ESTIMATED_EXE_TIME",
+                                             "RULE_EXEC_NOTIFICATION_ADDR",
+                                             "RULE_EXEC_CONTEXT"})
+                           .where(col("RULE_EXEC_ID") == _rule_id)
+                           .limit(1)
+                           .build();
+        gq2::options opts{};
+        opts.database = database_plugin_type;
+        opts.admin_mode = true;
+        lite3cpp::Buffer rows_buf;
+        const gq2::statement stmt = q;
+        const int ec = chl_execute_genquery2_buffer(_comm, stmt, opts, rows_buf);
+        if (ec < 0) {
+            return ec;
+        }
+        const gq2::rows_buffer_view view{rows_buf};
+        if (view.empty()) {
+            return CAT_NO_ROWS_FOUND;
+        }
+        _info->clear();
+        const std::size_t cols = view.col_count(0);
+        _info->reserve(cols);
+        for (std::size_t c = 0; c < cols; ++c) {
+            _info->push_back(view.cell_str(0, c));
+        }
+        return 0;
+    }
+
     const auto ret = db->call<const char*, std::vector<std::string>*>(
         &_comm, irods::DATABASE_OP_GET_DELAY_RULE_INFO, ptr, _rule_id, _info);
 
@@ -4755,6 +4872,20 @@ auto chl_delay_rule_lock(RsComm& _comm, const char* _rule_id, const char* _lock_
     irods::first_class_object_ptr ptr = db_obj_ptr;
     irods::database_ptr db = std::dynamic_pointer_cast<irods::database>(db_plug_ptr);
 
+    if (!db->has_operation(irods::DATABASE_OP_DELAY_RULE_LOCK)) {
+        if (!_rule_id || !_lock_host) {
+            return SYS_INTERNAL_NULL_INPUT_ERR;
+        }
+        namespace dml = irods::experimental::dml;
+        return chl_atomic_apply_operations(
+            &_comm,
+            {dml::update_op{"R_RULE_EXEC",
+                            {{"exe_lock_host", _lock_host},
+                             {"exe_lock_host_pid", std::to_string(_lock_host_pid)},
+                             {"exe_lock_time", std::to_string(std::time(nullptr))}},
+                            {dml::condition{"rule_exec_id", "=", {_rule_id}}}}});
+    }
+
     const auto ret = db->call(&_comm, irods::DATABASE_OP_DELAY_RULE_LOCK, ptr, _rule_id, _lock_host, _lock_host_pid);
 
     // NOLINTNEXTLINE(bugprone-narrowing-conversions,cppcoreguidelines-narrowing-conversions)
@@ -4779,6 +4910,32 @@ auto chl_delay_rule_unlock(RsComm& _comm, const char* _rule_ids) -> int
 
     irods::first_class_object_ptr ptr = db_obj_ptr;
     irods::database_ptr db = std::dynamic_pointer_cast<irods::database>(db_plug_ptr);
+
+    if (!db->has_operation(irods::DATABASE_OP_DELAY_RULE_UNLOCK)) {
+        if (!_rule_ids) {
+            return SYS_INTERNAL_NULL_INPUT_ERR;
+        }
+        try {
+            namespace dml = irods::experimental::dml;
+            const auto ids = nlohmann::json::parse(_rule_ids);
+            if (!ids.is_array()) {
+                return SYS_INVALID_INPUT_PARAM;
+            }
+            std::vector<dml::operation_type> ops;
+            ops.reserve(ids.size());
+            for (const auto& id : ids) {
+                std::string id_str = id.is_string() ? id.get<std::string>() : id.dump();
+                ops.emplace_back(dml::update_op{
+                    "R_RULE_EXEC",
+                    {{"exe_lock_host", ""}, {"exe_lock_host_pid", "0"}, {"exe_lock_time", ""}},
+                    {dml::condition{"rule_exec_id", "=", {std::move(id_str)}}}});
+            }
+            return chl_atomic_apply_operations(&_comm, ops);
+        }
+        catch (...) {
+            return SYS_LIBRARY_ERROR;
+        }
+    }
 
     const auto ret = db->call(&_comm, irods::DATABASE_OP_DELAY_RULE_UNLOCK, ptr, _rule_ids);
 

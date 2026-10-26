@@ -163,4 +163,33 @@ TEST_CASE("irods::protocol::DataObjInfoList contiguous replica list & other faca
     addKeyVal(&standalone_kvp, "k3", "v3");
     CHECK(standalone_kvp.size() == 1);
     CHECK(standalone_kvp["k3"] == "v3");
+
+    // Verify active_api_buffer_scope zero-copy LITE3_PROT request/reply pass-through
+    {
+        irods::protocol::active_api_buffer_scope scope{api_bbuf, LITE3_PROT};
+        REQUIRE(irods::protocol::active_api_buffer_scope::has_active_request_buffer());
+
+        auto active_req = irods::protocol::active_api_buffer_scope::try_get_active_request<irods::protocol::DataObjInp>();
+        REQUIRE(active_req.has_value());
+        CHECK(active_req->obj_path() == "/tempZone/home/rods/src.txt");
+
+        irods::protocol::RodsObjStat stat_reply;
+        stat_reply.obj_size(8192);
+        stat_reply.obj_type(DATA_OBJ_T);
+        stat_reply.data_id("42001");
+        stat_reply.owner_name("rods");
+        stat_reply.owner_zone("tempZone");
+        irods::protocol::active_api_buffer_scope::set_active_reply(std::move(stat_reply));
+        REQUIRE(irods::protocol::active_api_buffer_scope::has_active_reply_buffer());
+
+        auto taken_reply = irods::protocol::active_api_buffer_scope::take_active_reply_buffer();
+        REQUIRE(taken_reply.has_value());
+        CHECK_FALSE(irods::protocol::active_api_buffer_scope::has_active_reply_buffer());
+
+        irods::protocol::RodsObjStat verify_reply{std::move(*taken_reply)};
+        CHECK(verify_reply.obj_size() == 8192);
+        CHECK(verify_reply.data_id() == "42001");
+        CHECK(verify_reply.owner_name() == "rods");
+    }
+    CHECK_FALSE(irods::protocol::active_api_buffer_scope::has_active_request_buffer());
 }

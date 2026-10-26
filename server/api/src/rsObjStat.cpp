@@ -19,6 +19,7 @@
 #include "irods/irods_configuration_keywords.hpp"
 #include "irods/filesystem/path.hpp"
 #include "irods/genquery2_builder.hpp"
+#include "irods/protocol/lite3_structs.hpp"
 #include "irods/rs_genquery2.hpp"
 #include "irods/irods_resource_backport.hpp"
 #include "irods/collection_driver.hpp"
@@ -112,6 +113,12 @@ int rsObjStat(rsComm_t *rsComm,
         rstrcpy( ( *rodsObjStatOut )->specColl->objPath, dataObjInp->objPath, MAX_NAME_LEN );
 
     }
+
+    if (status >= 0 && rsComm && rsComm->irodsProt == LITE3_PROT && *rodsObjStatOut != nullptr) {
+        if (auto stat_buf = irods::protocol::RodsObjStat::from_legacy(**rodsObjStatOut)) {
+            irods::protocol::active_api_buffer_scope::set_active_reply(std::move(*stat_buf));
+        }
+    }
     return status;
 }
 
@@ -190,11 +197,12 @@ dataObjStat( rsComm_t *rsComm, dataObjInp_t *dataObjInp,
                        .limit(MAX_SQL_ROWS)
                        .build();
 
-    nlohmann::json rows;
-    if (const int ec = gq2::try_execute(*rsComm, q, rows); ec < 0) {
+    lite3cpp::Buffer rows_buf;
+    if (const int ec = gq2::try_execute_buffer(*rsComm, q, rows_buf); ec < 0) {
         return ec;
     }
 
+    const gq2::rows_buffer_view rows{rows_buf};
     if (rows.empty()) {
         return CAT_NO_ROWS_FOUND;
     }
@@ -203,42 +211,50 @@ dataObjStat( rsComm_t *rsComm, dataObjInp_t *dataObjInp,
     std::memset(*rodsObjStatOut, 0, sizeof(rodsObjStat_t));
     (*rodsObjStatOut)->objType = DATA_OBJ_T;
 
-    const auto populate_stat = [](rodsObjStat_t& _stat, const nlohmann::json& _row, const bool _include_mode) {
-        const auto& data_id = _row[0].get_ref<const std::string&>();
-        const auto& data_size = _row[1].get_ref<const std::string&>();
-        const auto& data_mode = _row[2].get_ref<const std::string&>();
-        const auto& chksum = _row[4].get_ref<const std::string&>();
-        const auto& owner_name = _row[5].get_ref<const std::string&>();
-        const auto& owner_zone = _row[6].get_ref<const std::string&>();
-        const auto& create_time = _row[7].get_ref<const std::string&>();
-        const auto& modify_time = _row[8].get_ref<const std::string&>();
-        const auto& resc_hier = _row[9].get_ref<const std::string&>();
+    const auto populate_stat = [&rows](rodsObjStat_t& _stat, const std::size_t _r, const bool _include_mode) {
+        char scratch[64]{};
+        const auto copy_sv = [](char* _dst, std::string_view _sv, std::size_t _cap) noexcept {
+            const std::size_t n = std::min(_sv.size(), _cap > 0 ? _cap - 1 : 0);
+            if (n > 0) {
+                std::memcpy(_dst, _sv.data(), n);
+            }
+            if (_cap > 0) {
+                _dst[n] = '\0';
+            }
+        };
 
-        rstrcpy(_stat.dataId, data_id.c_str(), NAME_LEN);
+        const auto data_id = rows.cell(_r, 0, scratch);
+        copy_sv(_stat.dataId, data_id, NAME_LEN);
+
+        const auto data_size = rows.cell(_r, 1, scratch);
         std::from_chars(data_size.data(), data_size.data() + data_size.size(), _stat.objSize);
+
         if (_include_mode) {
+            const auto data_mode = rows.cell(_r, 2, scratch);
             std::from_chars(data_mode.data(), data_mode.data() + data_mode.size(), _stat.dataMode);
         }
-        rstrcpy(_stat.chksum, chksum.c_str(), CHKSUM_LEN);
-        rstrcpy(_stat.ownerName, owner_name.c_str(), NAME_LEN);
-        rstrcpy(_stat.ownerZone, owner_zone.c_str(), NAME_LEN);
-        rstrcpy(_stat.createTime, create_time.c_str(), TIME_LEN);
-        rstrcpy(_stat.modifyTime, modify_time.c_str(), TIME_LEN);
-        rstrcpy(_stat.rescHier, resc_hier.c_str(), MAX_NAME_LEN);
+
+        copy_sv(_stat.chksum, rows.cell(_r, 4, scratch), CHKSUM_LEN);
+        copy_sv(_stat.ownerName, rows.cell(_r, 5, scratch), NAME_LEN);
+        copy_sv(_stat.ownerZone, rows.cell(_r, 6, scratch), NAME_LEN);
+        copy_sv(_stat.createTime, rows.cell(_r, 7, scratch), TIME_LEN);
+        copy_sv(_stat.modifyTime, rows.cell(_r, 8, scratch), TIME_LEN);
+        copy_sv(_stat.rescHier, rows.cell(_r, 9, scratch), MAX_NAME_LEN);
     };
 
-    for (const auto& row : rows) {
-        const auto& repl_status_str = row[3].get_ref<const std::string&>();
+    char scratch[64]{};
+    for (std::size_t r = 0; r < rows.size(); ++r) {
+        const auto repl_status_str = rows.cell(r, 3, scratch);
         int repl_status = 0;
         std::from_chars(repl_status_str.data(), repl_status_str.data() + repl_status_str.size(), repl_status);
         if (repl_status == 1) {
-            populate_stat(**rodsObjStatOut, row, true);
+            populate_stat(**rodsObjStatOut, r, true);
             break;
         }
     }
 
     if (std::strlen((*rodsObjStatOut)->dataId) == 0) {
-        populate_stat(**rodsObjStatOut, rows[0], false);
+        populate_stat(**rodsObjStatOut, 0, false);
     }
 
     return static_cast<int>(DATA_OBJ_T);

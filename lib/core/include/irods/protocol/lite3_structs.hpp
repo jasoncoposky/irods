@@ -1748,6 +1748,107 @@ namespace irods::protocol
         return 0;
     }
 
+    /// Scoped active `lite3cpp::Buffer` request/reply context for `rsApiHandler` when `LITE3_PROT` is active.
+    /// Exposes the raw `LITE3_PROT` request buffer directly to `rs*` API handlers via typed
+    /// `struct_buffer` facades (`DataObjInp`, `CollInp`, etc.) and allows handlers to emit a
+    /// pre-built `lite3cpp::Buffer` reply directly to `sendApiReply` without legacy struct packing.
+    class active_api_buffer_scope
+    {
+    public:
+        active_api_buffer_scope(const bytesBuf_t* _in_bbuf, irodsProt_t _prot) noexcept
+            : prev_{current_scope_()}
+            , prot_{_prot}
+        {
+            if (_in_bbuf && _in_bbuf->buf && _in_bbuf->len >= static_cast<int>(lite3cpp::config::node_size) &&
+                _prot == LITE3_PROT)
+            {
+                try {
+                    req_buf_.emplace(static_cast<const std::uint8_t*>(_in_bbuf->buf),
+                                     static_cast<std::size_t>(_in_bbuf->len));
+                }
+                catch (...) {
+                }
+            }
+            current_scope_() = this;
+        }
+
+        ~active_api_buffer_scope() noexcept
+        {
+            current_scope_() = prev_;
+        }
+
+        active_api_buffer_scope(const active_api_buffer_scope&) = delete;
+        auto operator=(const active_api_buffer_scope&) -> active_api_buffer_scope& = delete;
+        active_api_buffer_scope(active_api_buffer_scope&&) = delete;
+        auto operator=(active_api_buffer_scope&&) -> active_api_buffer_scope& = delete;
+
+        [[nodiscard]] static auto has_active_request_buffer() noexcept -> bool
+        {
+            const auto* s = current_scope_();
+            return s && s->req_buf_.has_value();
+        }
+
+        [[nodiscard]] static auto active_request_buffer() noexcept -> const lite3cpp::Buffer*
+        {
+            const auto* s = current_scope_();
+            return (s && s->req_buf_.has_value()) ? &(*s->req_buf_) : nullptr;
+        }
+
+        template <typename StructBufT>
+        [[nodiscard]] static auto try_get_active_request() -> std::optional<StructBufT>
+        {
+            if (const auto* buf = active_request_buffer()) {
+                try {
+                    return StructBufT{lite3cpp::Buffer{buf->data(), buf->size()}};
+                }
+                catch (...) {
+                }
+            }
+            return std::nullopt;
+        }
+
+        static void set_active_reply_buffer(lite3cpp::Buffer&& _reply) noexcept
+        {
+            if (auto* s = current_scope_(); s && s->prot_ == LITE3_PROT) {
+                s->reply_buf_ = std::move(_reply);
+            }
+        }
+
+        template <typename StructBufT>
+        static void set_active_reply(StructBufT&& _reply) noexcept
+        {
+            set_active_reply_buffer(std::move(_reply.buffer()));
+        }
+
+        [[nodiscard]] static auto has_active_reply_buffer() noexcept -> bool
+        {
+            const auto* s = current_scope_();
+            return s && s->reply_buf_.has_value();
+        }
+
+        [[nodiscard]] static auto take_active_reply_buffer() noexcept -> std::optional<lite3cpp::Buffer>
+        {
+            if (auto* s = current_scope_(); s && s->reply_buf_.has_value()) {
+                auto out = std::move(*s->reply_buf_);
+                s->reply_buf_.reset();
+                return out;
+            }
+            return std::nullopt;
+        }
+
+    private:
+        static auto current_scope_() noexcept -> active_api_buffer_scope*&
+        {
+            thread_local active_api_buffer_scope* scope = nullptr;
+            return scope;
+        }
+
+        active_api_buffer_scope* prev_{nullptr};
+        irodsProt_t prot_{NATIVE_PROT};
+        std::optional<lite3cpp::Buffer> req_buf_;
+        std::optional<lite3cpp::Buffer> reply_buf_;
+    };
+
 } // namespace irods::protocol
 
 #endif // IRODS_PROTOCOL_LITE3_STRUCTS_HPP

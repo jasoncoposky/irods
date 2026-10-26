@@ -16,6 +16,7 @@
 #include "irods/plugins/api/api_plugin_number.h"
 #include "irods/client_api_allowlist.hpp"
 #include "irods/key_value_proxy.hpp"
+#include "irods/protocol/lite3_structs.hpp"
 
 #include <mutex>
 
@@ -167,6 +168,8 @@ int rsApiHandler(rsComm_t*   rsComm,
         }
     }};
 
+    irods::protocol::active_api_buffer_scope active_lite3_scope{inputStructBBuf, rsComm->irodsProt};
+
     if ( inputStructBBuf->len > 0 ) {
         log_agent::debug("Unpacking byte buffer based on packing instruction [{}]", RsApiTable[apiInx]->inPackInstruct);
         status = unpack_struct( inputStructBBuf->buf, ( void ** )( static_cast< void * >( &myInStruct ) ),
@@ -302,20 +305,40 @@ int sendApiReply(rsComm_t* rsComm, int apiInx, int retVal, void*& myOutStruct, b
 
     irods::api_entry_table& RsApiTable = irods::get_server_api_table();
 
-    if (RsApiTable[apiInx]->outPackInstruct && myOutStruct) {
-        status = pack_struct(static_cast<char*>(myOutStruct),
-                             &outStructBBuf,
-                             RsApiTable[apiInx]->outPackInstruct,
-                             RodsPackTable,
-                             0,
-                             rsComm->irodsProt,
-                             rsComm->cliVersion.relVersion);
+    if (RsApiTable[apiInx]->outPackInstruct) {
+        if (rsComm->irodsProt == LITE3_PROT) {
+            if (auto reply_buf = irods::protocol::active_api_buffer_scope::take_active_reply_buffer()) {
+                auto encoded = irods::wire::encode_from_lite3(*reply_buf,
+                                                              RsApiTable[apiInx]->outPackInstruct,
+                                                              rsComm->irodsProt,
+                                                              rsComm->cliVersion.relVersion,
+                                                              RodsPackTable);
+                if (!encoded) {
+                    status = encoded.error();
+                    log_agent::info("{}: encode_from_lite3 error, status = [{}]", __func__, status);
+                    sendRodsMsg(net_obj, RODS_API_REPLY_T, nullptr, nullptr, nullptr, status, rsComm->irodsProt);
+                    svrChkReconnAtSendEnd(rsComm);
+                    return status;
+                }
+                outStructBBuf = *encoded;
+            }
+        }
 
-        if ( status < 0 ) {
-            log_agent::info("{}: packStruct error, status = [{}]", __func__, status);
-            sendRodsMsg(net_obj, RODS_API_REPLY_T, nullptr, nullptr, nullptr, status, rsComm->irodsProt);
-            svrChkReconnAtSendEnd(rsComm);
-            return status;
+        if (!outStructBBuf && myOutStruct) {
+            status = pack_struct(static_cast<char*>(myOutStruct),
+                                 &outStructBBuf,
+                                 RsApiTable[apiInx]->outPackInstruct,
+                                 RodsPackTable,
+                                 0,
+                                 rsComm->irodsProt,
+                                 rsComm->cliVersion.relVersion);
+
+            if ( status < 0 ) {
+                log_agent::info("{}: packStruct error, status = [{}]", __func__, status);
+                sendRodsMsg(net_obj, RODS_API_REPLY_T, nullptr, nullptr, nullptr, status, rsComm->irodsProt);
+                svrChkReconnAtSendEnd(rsComm);
+                return status;
+            }
         }
 
         myOutStructBBuf = outStructBBuf;

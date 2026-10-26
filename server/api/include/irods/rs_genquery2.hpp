@@ -5,6 +5,11 @@
 
 #include "irods/genquery2.h"
 
+namespace lite3cpp
+{
+    class Buffer;
+} // namespace lite3cpp
+
 struct RsComm;
 
 /// Query the catalog using the GenQuery2 parser.
@@ -96,6 +101,13 @@ namespace irods::experimental::genquery2
                      const select& _select,
                      const char* _zone,
                      char** _output);
+
+    /// Executes a pre-built GenQuery2 \p select AST directly on the catalog provider into a
+    /// zero-copy `lite3cpp::Buffer` without JSON serialization or Bison/Flex parsing.
+    int rs_genquery2_buffer(RsComm* _comm,
+                            const select& _select,
+                            const char* _zone,
+                            lite3cpp::Buffer& _output);
 } // namespace irods::experimental::genquery2
 
 #endif // IRODS_RS_GENQUERY2_HPP

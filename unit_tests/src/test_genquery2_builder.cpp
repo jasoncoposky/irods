@@ -156,6 +156,41 @@ TEST_CASE("GenQuery2 Fluent Builder API", "[genquery2][builder]")
                 "select COLL_ID, COLL_NAME where COLL_NAME in ('/', '/tempZone', '/tempZone/home', "
                 "'/tempZone/home/alice', '/tempZone/home/alice/sub') and COLL_TYPE like '_%'");
     }
+
+#if __has_include("buffer.hpp")
+    SECTION("rows_buffer_view zero-copy cell access and JSON conversion")
+    {
+        lite3cpp::Buffer buf;
+        buf.init_array();
+        const std::size_t row0 = buf.arr_append_obj(0);
+        const std::size_t proj0 = buf.set_arr(row0, "proj");
+        buf.arr_append_str(proj0, "1001");
+        buf.arr_append_str(proj0, "/tempZone/home/rods");
+        buf.arr_append_i64(proj0, 4096);
+
+        const std::size_t row1 = buf.arr_append_obj(0);
+        const std::size_t proj1 = buf.set_arr(row1, "proj");
+        buf.arr_append_str(proj1, "1002");
+        buf.arr_append_str(proj1, "/tempZone/home/alice");
+        buf.arr_append_i64(proj1, 8192);
+
+        const gq2::rows_buffer_view view{buf};
+        REQUIRE_FALSE(view.empty());
+        REQUIRE(view.size() == 2);
+        REQUIRE(view.col_count(0) == 3);
+        CHECK(view.cell_str(0, 0) == "1001");
+        CHECK(view.cell_str(0, 1) == "/tempZone/home/rods");
+        CHECK(view.cell_str(0, 2) == "4096");
+        CHECK(view.cell_str(1, 0) == "1002");
+        CHECK(view.cell_str(1, 2) == "8192");
+
+        const auto j = view.to_json();
+        REQUIRE(j.is_array());
+        REQUIRE(j.size() == 2);
+        CHECK(j[0][0] == "1001");
+        CHECK(j[1][2] == "8192");
+    }
+#endif
 }
 
 

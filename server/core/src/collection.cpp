@@ -93,25 +93,25 @@ collStat( rsComm_t *rsComm, const dataObjInp_t *dataObjInp,
                        .limit(1)
                        .build();
 
-    nlohmann::json rows;
-    int status = gq2::try_execute(*rsComm, q, rows);
+    lite3cpp::Buffer rows_buf;
+    int status = gq2::try_execute_buffer(*rsComm, q, rows_buf);
     if ( status < 0 ) {
         return status;
     }
+    const gq2::rows_buffer_view rows{rows_buf};
     if ( rows.empty() ) {
         return CAT_NO_ROWS_FOUND;
     }
 
-    const auto& row = rows.front();
-    const auto& data_id_str = row.at(0).get_ref<const std::string&>();
-    const auto& coll_name_str = row.at(1).get_ref<const std::string&>();
-    const auto& owner_name_str = row.at(2).get_ref<const std::string&>();
-    const auto& owner_zone_str = row.at(3).get_ref<const std::string&>();
-    const auto& create_time_str = row.at(4).get_ref<const std::string&>();
-    const auto& modify_time_str = row.at(5).get_ref<const std::string&>();
-    const auto& coll_type_str = row.at(6).get_ref<const std::string&>();
-    const auto& coll_info1_str = row.at(7).get_ref<const std::string&>();
-    const auto& coll_info2_str = row.at(8).get_ref<const std::string&>();
+    const auto data_id_str = rows.cell_str(0, 0);
+    const auto coll_name_str = rows.cell_str(0, 1);
+    const auto owner_name_str = rows.cell_str(0, 2);
+    const auto owner_zone_str = rows.cell_str(0, 3);
+    const auto create_time_str = rows.cell_str(0, 4);
+    const auto modify_time_str = rows.cell_str(0, 5);
+    const auto coll_type_str = rows.cell_str(0, 6);
+    const auto coll_info1_str = rows.cell_str(0, 7);
+    const auto coll_info2_str = rows.cell_str(0, 8);
 
     *rodsObjStatOut = ( rodsObjStat_t * ) malloc( sizeof( rodsObjStat_t ) );
     memset( *rodsObjStatOut, 0, sizeof( rodsObjStat_t ) );

@@ -896,7 +896,9 @@ namespace irods::experimental::genquery2
         return rows_to_genquery_out(_json_rows, _col_indices, &_out, _continue_inx);
     }
 
-#    if __has_include("buffer.hpp")
+#  endif
+
+#  if __has_include("buffer.hpp")
     namespace detail
     {
         inline auto resolve_rows_array_offset(const lite3cpp::Buffer& _rows_buf) noexcept -> std::optional<std::size_t>
@@ -969,6 +971,103 @@ namespace irods::experimental::genquery2
         return arr_nv.size();
     }
 
+    /// Zero-copy random-access view over a `lite3cpp::Buffer` GenQuery2 result row array.
+    class rows_buffer_view
+    {
+    public:
+        struct row_proj_info
+        {
+            std::size_t ofs = 0;
+            std::uint32_t count = 0;
+        };
+
+        explicit rows_buffer_view(const lite3cpp::Buffer& _buf)
+            : buf_{&_buf}
+        {
+            const auto rows_arr_ofs_opt = detail::resolve_rows_array_offset(_buf);
+            if (!rows_arr_ofs_opt) {
+                return;
+            }
+            const std::size_t rows_arr_ofs = *rows_arr_ofs_opt;
+            const std::size_t total_rows = rows_buffer_get_row_count(_buf);
+            rows_.resize(total_rows);
+            for (std::size_t r = 0; r < total_rows; ++r) {
+                const auto elem_type = _buf.arr_get_type(rows_arr_ofs, static_cast<std::uint32_t>(r));
+                std::size_t proj_ofs = 0;
+                if (elem_type == lite3cpp::Type::Object) {
+                    const std::size_t row_ofs = _buf.arr_get_obj(rows_arr_ofs, static_cast<std::uint32_t>(r));
+                    if (_buf.get_type(row_ofs, "proj") == lite3cpp::Type::Array) {
+                        proj_ofs = _buf.get_arr(row_ofs, "proj");
+                    }
+                }
+                else if (elem_type == lite3cpp::Type::Array) {
+                    proj_ofs = _buf.arr_get_arr(rows_arr_ofs, static_cast<std::uint32_t>(r));
+                }
+
+                if (proj_ofs != 0 && proj_ofs + sizeof(lite3cpp::PackedNodeLayout) <= _buf.size()) {
+                    const lite3cpp::NodeView pnv{
+                        reinterpret_cast<const lite3cpp::PackedNodeLayout*>(_buf.data() + proj_ofs)};
+                    rows_[r] = row_proj_info{proj_ofs, pnv.size()};
+                }
+            }
+        }
+
+        [[nodiscard]] auto empty() const noexcept -> bool
+        {
+            return rows_.empty();
+        }
+
+        [[nodiscard]] auto size() const noexcept -> std::size_t
+        {
+            return rows_.size();
+        }
+
+        [[nodiscard]] auto col_count(std::size_t _row) const noexcept -> std::size_t
+        {
+            return _row < rows_.size() ? rows_[_row].count : 0;
+        }
+
+        [[nodiscard]] auto cell(std::size_t _row, std::size_t _col, char (&_scratch)[64]) const noexcept
+            -> std::string_view
+        {
+            if (!buf_ || _row >= rows_.size() || rows_[_row].ofs == 0 || _col >= rows_[_row].count) {
+                return {};
+            }
+            return detail::format_cell_value(*buf_, rows_[_row].ofs, static_cast<std::uint32_t>(_col), _scratch);
+        }
+
+        [[nodiscard]] auto cell_str(std::size_t _row, std::size_t _col) const -> std::string
+        {
+            char scratch[64]{};
+            return std::string{cell(_row, _col, scratch)};
+        }
+
+        [[nodiscard]] auto to_json() const -> nlohmann::json
+        {
+            auto out = nlohmann::json::array();
+            char scratch[64]{};
+            for (std::size_t r = 0; r < rows_.size(); ++r) {
+                auto jrow = nlohmann::json::array();
+                for (std::uint32_t c = 0; c < rows_[r].count; ++c) {
+                    const auto sv = detail::format_cell_value(*buf_, rows_[r].ofs, c, scratch);
+                    jrow.push_back(std::string{sv});
+                }
+                out.push_back(std::move(jrow));
+            }
+            return out;
+        }
+
+        [[nodiscard]] auto rows_info() const noexcept -> std::span<const row_proj_info>
+        {
+            return rows_;
+        }
+
+    private:
+        const lite3cpp::Buffer* buf_{nullptr};
+        std::vector<row_proj_info> rows_;
+    };
+
+#    if __has_include("irods/rodsGenQuery.h")
     /// Populates a legacy `GenQueryOut*` C structure directly from a `lite3cpp::Buffer`
     /// of GenQuery2 result rows (either `{"proj": ["col0", ...]}` objects or `["col0", ...]` arrays)
     /// using zero-copy `std::string_view` slices without intermediate `std::string` or JSON allocations.
@@ -990,50 +1089,19 @@ namespace irods::experimental::genquery2
             *_out = nullptr;
         }
 
-        const auto rows_arr_ofs_opt = detail::resolve_rows_array_offset(_rows_buf);
-        if (!rows_arr_ofs_opt) {
-            return CAT_NO_ROWS_FOUND;
-        }
-        const std::size_t rows_arr_ofs = *rows_arr_ofs_opt;
-
-        const std::size_t total_rows = rows_buffer_get_row_count(_rows_buf);
-        if (total_rows == 0 || _max_rows == 0) {
+        const rows_buffer_view view{_rows_buf};
+        if (view.empty() || _max_rows == 0) {
             return CAT_NO_ROWS_FOUND;
         }
 
         const std::size_t row_count =
-            std::min({total_rows, _max_rows, static_cast<std::size_t>(MAX_SQL_ROWS)});
+            std::min({view.size(), _max_rows, static_cast<std::size_t>(MAX_SQL_ROWS)});
         const auto num_cols = _col_indices.size();
         if (num_cols > MAX_SQL_ATTR) {
             return SYS_INVALID_INPUT_PARAM;
         }
 
-        struct row_proj_info
-        {
-            std::size_t ofs = 0;
-            std::uint32_t count = 0;
-        };
-        std::vector<row_proj_info> proj_rows(row_count);
-
-        for (std::size_t r = 0; r < row_count; ++r) {
-            const auto elem_type = _rows_buf.arr_get_type(rows_arr_ofs, static_cast<std::uint32_t>(r));
-            std::size_t proj_ofs = 0;
-            if (elem_type == lite3cpp::Type::Object) {
-                const std::size_t row_ofs = _rows_buf.arr_get_obj(rows_arr_ofs, static_cast<std::uint32_t>(r));
-                if (_rows_buf.get_type(row_ofs, "proj") == lite3cpp::Type::Array) {
-                    proj_ofs = _rows_buf.get_arr(row_ofs, "proj");
-                }
-            }
-            else if (elem_type == lite3cpp::Type::Array) {
-                proj_ofs = _rows_buf.arr_get_arr(rows_arr_ofs, static_cast<std::uint32_t>(r));
-            }
-
-            if (proj_ofs != 0 && proj_ofs + sizeof(lite3cpp::PackedNodeLayout) <= _rows_buf.size()) {
-                const lite3cpp::NodeView pnv{
-                    reinterpret_cast<const lite3cpp::PackedNodeLayout*>(_rows_buf.data() + proj_ofs)};
-                proj_rows[r] = row_proj_info{proj_ofs, pnv.size()};
-            }
-        }
+        const auto proj_rows = view.rows_info();
 
         auto* res = static_cast<GenQueryOut*>(std::calloc(1, sizeof(GenQueryOut)));
         if (!res) {
@@ -1099,9 +1167,41 @@ namespace irods::experimental::genquery2
                      const char* _zone,
                      char** _output);
 
+#  if __has_include("buffer.hpp")
+    int rs_genquery2_buffer(RsComm* _comm,
+                            const select& _select,
+                            const char* _zone,
+                            lite3cpp::Buffer& _output);
+
+    /// Zero-copy server-side GenQuery2 AST execution helper populating a `lite3cpp::Buffer` directly
+    /// without JSON serialization or parsing.
+    inline auto try_execute_buffer(RsComm& _comm,
+                                   const select& _sel,
+                                   lite3cpp::Buffer& _rows_buf,
+                                   std::string_view _zone_hint = {}) -> int
+    {
+        std::string zone_buf;
+        const char* zone_ptr = nullptr;
+        if (!_zone_hint.empty()) {
+            zone_buf.assign(_zone_hint);
+            zone_ptr = zone_buf.c_str();
+        }
+        return rs_genquery2_buffer(&_comm, _sel, zone_ptr, _rows_buf);
+    }
+
+    inline auto try_execute_buffer(RsComm& _comm,
+                                   const builder::select_builder& _sb,
+                                   lite3cpp::Buffer& _rows_buf,
+                                   std::string_view _zone_hint = {}) -> int
+    {
+        return try_execute_buffer(_comm, _sb.build(), _rows_buf, _zone_hint);
+    }
+#  endif
+
     /// Non-throwing GenQuery2 AST execution helper.
-    /// On the server (`RsComm`), executes the in-memory `select` AST directly without string
-    /// serialization or Bison/Flex parsing when connected to the local catalog provider.
+    /// On the server (`RsComm`), executes the in-memory `select` AST directly via the zero-copy
+    /// `lite3cpp::Buffer` pipeline (`rs_genquery2_buffer`) without string serialization, Bison/Flex
+    /// parsing, or JSON text round-tripping when connected to the local catalog provider.
     /// On the client (`RcComm`), serializes the AST via `to_query_string` and invokes `rc_genquery2`.
     template <typename RxComm>
     auto try_execute(RxComm& _comm,
@@ -1109,49 +1209,79 @@ namespace irods::experimental::genquery2
                      nlohmann::json& _rows,
                      std::string_view _zone_hint = {}) -> int
     {
-        char* output = nullptr;
-        at_scope_exit free_output{[&output] { std::free(output); }};
-
-        std::string zone_buf;
-        const char* zone_ptr = nullptr;
-        if (!_zone_hint.empty()) {
-            zone_buf.assign(_zone_hint);
-            zone_ptr = zone_buf.c_str();
-        }
-
-        int ec = 0;
         if constexpr (std::is_same_v<std::remove_cv_t<RxComm>, RsComm>) {
-            ec = rs_genquery2(&_comm, _sel, zone_ptr, &output);
+#  if __has_include("buffer.hpp")
+            lite3cpp::Buffer rows_buf;
+            const int ec = try_execute_buffer(_comm, _sel, rows_buf, _zone_hint);
+            if (ec < 0) {
+                return ec;
+            }
+            try {
+                _rows = rows_buffer_view{rows_buf}.to_json();
+                return 0;
+            }
+            catch (...) {
+                return SYS_LIBRARY_ERROR;
+            }
+#  else
+            char* output = nullptr;
+            at_scope_exit free_output{[&output] { std::free(output); }};
+
+            std::string zone_buf;
+            const char* zone_ptr = nullptr;
+            if (!_zone_hint.empty()) {
+                zone_buf.assign(_zone_hint);
+                zone_ptr = zone_buf.c_str();
+            }
+
+            const int ec = rs_genquery2(&_comm, _sel, zone_ptr, &output);
+            if (ec < 0) {
+                return ec;
+            }
+            if (!output) {
+                _rows = nlohmann::json::array();
+                return 0;
+            }
+            try {
+                _rows = nlohmann::json::parse(output);
+            }
+            catch (...) {
+                return SYS_LIBRARY_ERROR;
+            }
+            return _rows.is_array() ? 0 : SYS_LIBRARY_ERROR;
+#  endif
         }
         else {
+            char* output = nullptr;
+            at_scope_exit free_output{[&output] { std::free(output); }};
+
+            std::string zone_buf;
+            const char* zone_ptr = nullptr;
+            if (!_zone_hint.empty()) {
+                zone_buf.assign(_zone_hint);
+                zone_ptr = zone_buf.c_str();
+            }
+
             auto query_str = to_query_string(_sel);
             Genquery2Input input{};
             input.query_string = query_str.data();
             input.zone = const_cast<char*>(zone_ptr);
-            ec = rc_genquery2(&_comm, &input, &output);
+            const int ec = rc_genquery2(&_comm, &input, &output);
+            if (ec < 0) {
+                return ec;
+            }
+            if (!output) {
+                _rows = nlohmann::json::array();
+                return 0;
+            }
+            try {
+                _rows = nlohmann::json::parse(output);
+            }
+            catch (...) {
+                return SYS_LIBRARY_ERROR;
+            }
+            return _rows.is_array() ? 0 : SYS_LIBRARY_ERROR;
         }
-
-        if (ec < 0) {
-            return ec;
-        }
-
-        if (!output) {
-            _rows = nlohmann::json::array();
-            return 0;
-        }
-
-        try {
-            _rows = nlohmann::json::parse(output);
-        }
-        catch (...) {
-            return SYS_LIBRARY_ERROR;
-        }
-
-        if (!_rows.is_array()) {
-            return SYS_LIBRARY_ERROR;
-        }
-
-        return 0;
     }
 
     /// Non-throwing GenQuery2 AST execution helper returning `std::optional<nlohmann::json>`.
