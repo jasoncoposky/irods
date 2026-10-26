@@ -16,6 +16,7 @@
 #include "irods/dstream.hpp"
 #include "irods/transport/default_transport.hpp"
 #include "irods/irods_at_scope_exit.hpp"
+#include "irods/zero_copy_io.hpp"
 
 #include <cstring>
 #include <filesystem>
@@ -90,7 +91,7 @@ fillBBufWithFile( rcComm_t *conn, bytesBuf_t *myBBuf, char *locFilePath,
 
     rodsEnv rods_env;
     if ( int status = getRodsEnv( &rods_env ) ) {
-        rodsLog( LOG_ERROR, "getRodsEnv failed in %s with status %s", __FUNCTION__, status );
+        rodsLog( LOG_ERROR, "getRodsEnv failed in %s with status %d", __FUNCTION__, status );
         return status;
     }
     int single_buff_sz = rods_env.irodsMaxSizeForSingleBuffer * 1024 * 1024;
@@ -361,10 +362,10 @@ rcPartialDataPut( rcPortalTransferInp_t *myInput ) {
     }
 
     // =-=-=-=-=-=-=-
-    // allocate a buffer for writing
+    // allocate a buffer for writing only when user-space encryption is active
     rodsLong_t trans_buff_sz = ( rodsLong_t )rods_env.irodsTransBufferSizeForParaTrans * 1024 * 1024;
     rodsLong_t buf_size = 2 * trans_buff_sz * sizeof( unsigned char );
-    unsigned char* buf = ( unsigned char* )malloc( buf_size );
+    unsigned char* buf = use_encryption_flg ? ( unsigned char* )malloc( buf_size ) : nullptr;
     transferHeader_t myHeader;
 
     while ( myInput->status >= 0 ) {
@@ -405,25 +406,36 @@ rcPartialDataPut( rcPortalTransferInp_t *myInput ) {
                 toRead = toPut;
             }
 
-            bytesRead = myRead(
-                            srcFd,
-                            buf,
-                            toRead,
-                            &bytesRead,
-                            NULL );
-            if ( bytesRead != toRead ) {
-                myInput->status = SYS_COPY_LEN_ERR - errno;
-                rodsLogError( LOG_ERROR, myInput->status,
-                              "rcPartialDataPut: toPut %lld, bytesRead %d",
-                              toPut, bytesRead );
-                break;
+            if ( !use_encryption_flg ) {
+                const std::int64_t sent = irods::io::sendfile_to_socket( destFd, srcFd, toRead );
+                if ( sent != toRead ) {
+                    myInput->status = ( sent < 0 ) ? static_cast<int>( sent ) : ( SYS_COPY_LEN_ERR - errno );
+                    rodsLogError( LOG_ERROR, myInput->status,
+                                  "rcPartialDataPut: toPut %lld, sent %lld",
+                                  toPut, sent );
+                    break;
+                }
+                bytesRead = static_cast<int>( sent );
             }
+            else {
+                bytesRead = myRead(
+                                srcFd,
+                                buf,
+                                toRead,
+                                &bytesRead,
+                                NULL );
+                if ( bytesRead != toRead ) {
+                    myInput->status = SYS_COPY_LEN_ERR - errno;
+                    rodsLogError( LOG_ERROR, myInput->status,
+                                  "rcPartialDataPut: toPut %lld, bytesRead %d",
+                                  toPut, bytesRead );
+                    break;
+                }
 
-            // =-=-=-=-=-=-=-
-            // compute an iv for this particular transmission and use
-            // it to encrypt this buffer
-            int new_size = bytesRead;
-            if ( use_encryption_flg ) {
+                // =-=-=-=-=-=-=-
+                // compute an iv for this particular transmission and use
+                // it to encrypt this buffer
+                int new_size = bytesRead;
                 irods::error ret = crypt.initialization_vector( iv );
                 if ( !ret.ok() ) {
                     ret = PASS( ret );
@@ -470,22 +482,21 @@ rcPartialDataPut( rcPortalTransferInp_t *myInput ) {
                                    sizeof( int ),
                                    &bytesWritten );
 
-            }
+                // =-=-=-=-=-=-=-
+                // then write the actual buffer
+                bytesWritten = myWrite(
+                                   destFd,
+                                   buf,
+                                   new_size,
+                                   &bytesWritten );
 
-            // =-=-=-=-=-=-=-
-            // then write the actual buffer
-            bytesWritten = myWrite(
-                               destFd,
-                               buf,
-                               new_size,
-                               &bytesWritten );
-
-            if ( bytesWritten != new_size ) {
-                myInput->status = SYS_COPY_LEN_ERR - errno;
-                rodsLogError( LOG_ERROR, myInput->status,
-                              "rcPartialDataPut: toWrite %d, bytesWritten %d, errno = %d",
-                              bytesRead, bytesWritten, errno );
-                break;
+                if ( bytesWritten != new_size ) {
+                    myInput->status = SYS_COPY_LEN_ERR - errno;
+                    rodsLogError( LOG_ERROR, myInput->status,
+                                  "rcPartialDataPut: toWrite %d, bytesWritten %d, errno = %d",
+                                  bytesRead, bytesWritten, errno );
+                    break;
+                }
             }
 
             toPut -= bytesRead;
@@ -556,7 +567,8 @@ putFile( rcComm_t *conn, int l1descInx, char *locFilePath, char *objPath,
 
     rodsEnv rods_env;
     if ( int status = getRodsEnv( &rods_env ) ) {
-        rodsLog( LOG_ERROR, "getRodsEnv failed in %s with status %s", __FUNCTION__, status );
+        rodsLog( LOG_ERROR, "getRodsEnv failed in %s with status %d", __FUNCTION__, status );
+        close( in_fd );
         return status;
     }
     size_t trans_buff_sz = rods_env.irodsTransBufferSizeForParaTrans * 1024 * 1024;
@@ -721,7 +733,10 @@ getFile( rcComm_t *conn, int l1descInx, char *locFilePath, char *objPath,
 
     rodsEnv rods_env;
     if ( int status = getRodsEnv( &rods_env ) ) {
-        rodsLog( LOG_ERROR, "getRodsEnv failed in %s with status %s", __FUNCTION__, status );
+        rodsLog( LOG_ERROR, "getRodsEnv failed in %s with status %d", __FUNCTION__, status );
+        if ( out_fd != 1 ) {
+            close( out_fd );
+        }
         return status;
     }
     size_t trans_buff_sz = rods_env.irodsTransBufferSizeForParaTrans * 1024 * 1024;
@@ -1061,7 +1076,7 @@ rcPartialDataGet( rcPortalTransferInp_t *myInput ) {
 
     rodsLong_t trans_buff_sz = ( rodsLong_t )rods_env.irodsTransBufferSizeForParaTrans * 1024 * 1024;
     rodsLong_t buf_size = ( 2 * trans_buff_sz ) * sizeof( unsigned char );
-    buf = ( unsigned char* )malloc( buf_size );
+    buf = use_encryption_flg ? ( unsigned char* )malloc( buf_size ) : nullptr;
 
     while ( myInput->status >= 0 ) {
 
@@ -1099,10 +1114,21 @@ rcPartialDataGet( rcPortalTransferInp_t *myInput ) {
                 toRead = toGet;
             }
 
-            // =-=-=-=-=-=-=-
-            // read the incoming size as it might differ due to encryption
-            int new_size = toRead;
-            if ( use_encryption_flg ) {
+            if ( !use_encryption_flg ) {
+                const std::int64_t spliced = irods::io::splice_from_socket( srcFd, destFd, toRead );
+                if ( spliced != toRead ) {
+                    myInput->status = ( spliced < 0 ) ? static_cast<int>( spliced ) : ( SYS_COPY_LEN_ERR - errno );
+                    rodsLogError( LOG_ERROR, myInput->status,
+                                  "rcPartialDataGet: toGet %lld, spliced %lld",
+                                  toGet, spliced );
+                    break;
+                }
+                bytesWritten = static_cast<int>( spliced );
+            }
+            else {
+                // =-=-=-=-=-=-=-
+                // read the incoming size as it might differ due to encryption
+                int new_size = toRead;
                 bytesRead = myRead(
                                 srcFd,
                                 &new_size,
@@ -1115,30 +1141,28 @@ rcPartialDataGet( rcPortalTransferInp_t *myInput ) {
                         sizeof( int ) );
                     break;
                 }
-            }
 
-            // =-=-=-=-=-=-=-
-            // now read the provided number of bytes as suggested by
-            // the incoming size
-            bytesRead = myRead(
-                            srcFd,
-                            buf,
-                            new_size,
-                            &bytesRead,
-                            NULL );
-            if ( bytesRead != new_size ) {
-                myInput->status = SYS_COPY_LEN_ERR - errno;
-                rodsLogError( LOG_ERROR, myInput->status,
-                              "rcPartialDataGet: toGet %lld, bytesRead %d",
-                              toGet, bytesRead );
-                break;
-            }
+                // =-=-=-=-=-=-=-
+                // now read the provided number of bytes as suggested by
+                // the incoming size
+                bytesRead = myRead(
+                                srcFd,
+                                buf,
+                                new_size,
+                                &bytesRead,
+                                NULL );
+                if ( bytesRead != new_size ) {
+                    myInput->status = SYS_COPY_LEN_ERR - errno;
+                    rodsLogError( LOG_ERROR, myInput->status,
+                                  "rcPartialDataGet: toGet %lld, bytesRead %d",
+                                  toGet, bytesRead );
+                    break;
+                }
 
-            // =-=-=-=-=-=-=-
-            // if using encryption, strip off the iv
-            // and decrypt before writing
-            int plain_size = bytesRead;
-            if ( use_encryption_flg ) {
+                // =-=-=-=-=-=-=-
+                // if using encryption, strip off the iv
+                // and decrypt before writing
+                int plain_size = bytesRead;
                 this_iv.assign(
                     &buf[ 0 ],
                     &buf[ iv_size ] );
@@ -1163,19 +1187,18 @@ rcPartialDataGet( rcPortalTransferInp_t *myInput ) {
                     &buf[0] );
                 plain_size = plain.size();
 
-            }
-
-            bytesWritten = myWrite(
-                               destFd,
-                               buf,
-                               plain_size,
-                               &bytesWritten );
-            if ( bytesWritten != plain_size ) {
-                myInput->status = SYS_COPY_LEN_ERR - errno;
-                rodsLogError( LOG_ERROR, myInput->status,
-                              "rcPartialDataGet: toWrite %d, bytesWritten %d",
-                              plain_size, bytesWritten );
-                break;
+                bytesWritten = myWrite(
+                                   destFd,
+                                   buf,
+                                   plain_size,
+                                   &bytesWritten );
+                if ( bytesWritten != plain_size ) {
+                    myInput->status = SYS_COPY_LEN_ERR - errno;
+                    rodsLogError( LOG_ERROR, myInput->status,
+                                  "rcPartialDataGet: toWrite %d, bytesWritten %d",
+                                  plain_size, bytesWritten );
+                    break;
+                }
             }
 
             toGet -= bytesWritten;
@@ -1391,7 +1414,8 @@ lfRestartPutWithInfo( rcComm_t *conn, fileRestartInfo_t *info ) {
 
     rodsEnv rods_env;
     if ( int status = getRodsEnv( &rods_env ) ) {
-        rodsLog( LOG_ERROR, "getRodsEnv failed in %s with status %s", __FUNCTION__, status );
+        rodsLog( LOG_ERROR, "getRodsEnv failed in %s with status %d", __FUNCTION__, status );
+        close( localFd );
         return status;
     }
     size_t trans_buff_sz = rods_env.irodsTransBufferSizeForParaTrans * 1024 * 1024;
@@ -1556,7 +1580,8 @@ lfRestartGetWithInfo( rcComm_t *conn, fileRestartInfo_t *info ) {
 
     rodsEnv rods_env;
     if ( int status = getRodsEnv( &rods_env ) ) {
-        rodsLog( LOG_ERROR, "getRodsEnv failed in %s with status %s", __FUNCTION__, status );
+        rodsLog( LOG_ERROR, "getRodsEnv failed in %s with status %d", __FUNCTION__, status );
+        close( localFd );
         return status;
     }
     size_t trans_buff_sz = rods_env.irodsTransBufferSizeForParaTrans * 1024 * 1024;

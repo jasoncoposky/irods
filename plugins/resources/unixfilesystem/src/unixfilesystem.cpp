@@ -21,6 +21,7 @@
 #include "irods/irods_kvp_string_parser.hpp"
 #include "irods/irods_logger.hpp"
 #include "irods/voting.hpp"
+#include "irods/zero_copy_io.hpp"
 #include "irods/private/irods_is_in_host_list.hpp"
 #include "irods/filesystem/path.hpp"
 
@@ -223,28 +224,11 @@ static irods::error unix_file_copy(
             destFileName, err_status));
     }
 
-    size_t trans_buff_size;
-    try {
-        trans_buff_size = irods::get_advanced_setting<const int>(irods::KW_CFG_TRANS_BUFFER_SIZE_FOR_PARA_TRANS) * 1024 * 1024;
-    }
-    catch ( const irods::exception& e ) {
-        return irods::error(e);
-    }
-
-    std::vector<char> myBuf( trans_buff_size );
-    int bytesRead{};
-    rodsLong_t bytesCopied = 0;
-    while ( ( bytesRead = read( inFd, ( void * ) myBuf.data(), trans_buff_size ) ) > 0 ) {
-        int bytesWritten = write( outFd, ( void * ) myBuf.data(), bytesRead );
-        err_status = UNIX_FILE_WRITE_ERR - errno;
-        if (bytesWritten <= 0) {
-            irods::log(ERROR(
-                err_status, fmt::format(
-                    "Write error for destFileName {}, status = {}",
-                    destFileName, status)));
-            break;
-        }
-        bytesCopied += bytesWritten;
+    const std::int64_t bytesCopied = irods::io::copy_file_descriptors(inFd, outFd, statbuf.st_size);
+    if (bytesCopied < 0) {
+        return ERROR(static_cast<int>(bytesCopied), fmt::format(
+            "Write error for destFileName {}, status = {}",
+            destFileName, bytesCopied));
     }
 
     if (bytesCopied != statbuf.st_size) {

@@ -155,6 +155,7 @@ set(
   "${CMAKE_CURRENT_SOURCE_DIR}/include/irods/version.hpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/include/irods/wire_transcoder.hpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/include/irods/with_durability.hpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/include/irods/zero_copy_io.hpp"
 )
 set(
   IRODS_LIB_CORE_HEADERS_TRANSPORT_PUBLIC
@@ -217,6 +218,7 @@ set(
   "${CMAKE_CURRENT_SOURCE_DIR}/src/system_error.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/version.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/wire_transcoder.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/zero_copy_io.cpp"
 )
 
 set(IRODS_LITE3_CPP_SOURCE_DIR "${CMAKE_IRODS_SOURCE_DIR}/../lib/lite3-cpp" CACHE PATH "Path to lite3-cpp source directory")

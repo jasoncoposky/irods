@@ -137,6 +137,7 @@ set(
   user_administration
   version
   with_durability
+  zero_copy_io
   zone_administration
   zone_report
 )
