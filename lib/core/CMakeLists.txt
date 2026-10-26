@@ -153,6 +153,7 @@ set(
   "${CMAKE_CURRENT_SOURCE_DIR}/include/irods/thread_pool.hpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/include/irods/trimUtil.h"
   "${CMAKE_CURRENT_SOURCE_DIR}/include/irods/version.hpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/include/irods/wire_transcoder.hpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/include/irods/with_durability.hpp"
 )
 set(
@@ -215,6 +216,34 @@ set(
   "${CMAKE_CURRENT_SOURCE_DIR}/src/stringOpr.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/system_error.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/version.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/wire_transcoder.cpp"
+)
+
+set(IRODS_LITE3_CPP_SOURCE_DIR "${CMAKE_IRODS_SOURCE_DIR}/../lib/lite3-cpp" CACHE PATH "Path to lite3-cpp source directory")
+set(IRODS_YYJSON_SOURCE_DIR "${CMAKE_IRODS_SOURCE_DIR}/../yyjson" CACHE PATH "Path to yyjson source directory")
+
+set(
+  IRODS_LITE3_CPP_SOURCES
+  "${IRODS_LITE3_CPP_SOURCE_DIR}/src/buffer.cpp"
+  "${IRODS_LITE3_CPP_SOURCE_DIR}/src/iterator.cpp"
+  "${IRODS_LITE3_CPP_SOURCE_DIR}/src/json.cpp"
+  "${IRODS_LITE3_CPP_SOURCE_DIR}/src/node.cpp"
+  "${IRODS_LITE3_CPP_SOURCE_DIR}/src/value.cpp"
+  "${IRODS_LITE3_CPP_SOURCE_DIR}/src/document.cpp"
+  "${IRODS_LITE3_CPP_SOURCE_DIR}/src/object.cpp"
+  "${IRODS_LITE3_CPP_SOURCE_DIR}/src/array.cpp"
+  "${IRODS_LITE3_CPP_SOURCE_DIR}/src/utils/hash.cpp"
+  "${IRODS_LITE3_CPP_SOURCE_DIR}/src/utils/hex.cpp"
+  "${IRODS_LITE3_CPP_SOURCE_DIR}/src/observability.cpp"
+  "${IRODS_YYJSON_SOURCE_DIR}/src/yyjson.c"
+)
+
+list(APPEND IRODS_LIB_CORE_SOURCES_COMMON ${IRODS_LITE3_CPP_SOURCES})
+
+set_source_files_properties(
+  ${IRODS_LITE3_CPP_SOURCES}
+  PROPERTIES
+  COMPILE_OPTIONS "-Wno-sign-compare;-Wno-reorder-ctor;-Wno-unused-variable;-Wno-unused-parameter"
 )
 
 set(
@@ -289,6 +318,9 @@ target_include_directories(
   "$<BUILD_INTERFACE:${CMAKE_IRODS_SOURCE_DIR}/server/core/include>"
   "$<BUILD_INTERFACE:${CMAKE_IRODS_SOURCE_DIR}/server/re/include>"
   "$<BUILD_INTERFACE:${CMAKE_IRODS_SOURCE_DIR}/server/icat/include>"
+  "$<BUILD_INTERFACE:${IRODS_LITE3_CPP_SOURCE_DIR}/include>"
+  "$<BUILD_INTERFACE:${IRODS_LITE3_CPP_SOURCE_DIR}/include/utils>"
+  "$<BUILD_INTERFACE:${IRODS_YYJSON_SOURCE_DIR}/src>"
   PRIVATE
   "${IRODS_EXTERNALS_FULLPATH_BOOST}/include"
 )
@@ -348,6 +380,9 @@ target_include_directories(
   "$<BUILD_INTERFACE:${CMAKE_IRODS_SOURCE_DIR}/server/icat/include>"
   "$<BUILD_INTERFACE:${CMAKE_IRODS_SOURCE_DIR}/server/re/include>"
   "$<BUILD_INTERFACE:${CMAKE_IRODS_SOURCE_DIR}/server/drivers/include>"
+  "$<BUILD_INTERFACE:${IRODS_LITE3_CPP_SOURCE_DIR}/include>"
+  "$<BUILD_INTERFACE:${IRODS_LITE3_CPP_SOURCE_DIR}/include/utils>"
+  "$<BUILD_INTERFACE:${IRODS_YYJSON_SOURCE_DIR}/src>"
   PRIVATE
   "${IRODS_EXTERNALS_FULLPATH_BOOST}/include"
 )
@@ -468,6 +503,9 @@ foreach(variant IN ITEMS client server)
     "$<BUILD_INTERFACE:${CMAKE_IRODS_SOURCE_DIR}/server/icat/include>"
     "$<BUILD_INTERFACE:${CMAKE_IRODS_SOURCE_DIR}/server/re/include>"
     "$<BUILD_INTERFACE:${CMAKE_IRODS_SOURCE_DIR}/server/drivers/include>"
+    "$<BUILD_INTERFACE:${IRODS_LITE3_CPP_SOURCE_DIR}/include>"
+    "$<BUILD_INTERFACE:${IRODS_LITE3_CPP_SOURCE_DIR}/include/utils>"
+    "$<BUILD_INTERFACE:${IRODS_YYJSON_SOURCE_DIR}/src>"
     PRIVATE
     "${IRODS_EXTERNALS_FULLPATH_BOOST}/include"
   )
@@ -500,5 +538,11 @@ install(
 install(
   FILES ${IRODS_LIB_CORE_HEADERS_TRANSPORT_PUBLIC}
   DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/irods/transport"
+  COMPONENT ${IRODS_PACKAGE_COMPONENT_DEVELOPMENT_NAME}
+)
+
+install(
+  DIRECTORY "${IRODS_LITE3_CPP_SOURCE_DIR}/include/"
+  DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}"
   COMPONENT ${IRODS_PACKAGE_COMPONENT_DEVELOPMENT_NAME}
 )

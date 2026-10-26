@@ -23,6 +23,7 @@
 #include "irods/rsModDataObjMeta.hpp"
 #include "irods/rs_replica_close.hpp"
 #include "irods/sockComm.h"
+#include "irods/wire_transcoder.hpp"
 #include "irods/objMetaOpr.hpp"
 #include "irods/finalize_utilities.hpp"
 #include "irods/irods_configuration_parser.hpp"
@@ -645,10 +646,8 @@ initRsComm( rsComm_t *rsComm ) {
 int initRsCommWithStartupPack(rsComm_t& rsComm, const startupPack_t& startupPack, bool& require_cs_neg)
 {
     char *tmpStr;
-    static char tmpStr2[LONG_NAME_LEN];
-    /* always use NATIVE_PROT as a client. e.g., server to server comm */
-    snprintf( tmpStr2, LONG_NAME_LEN, "%s=%d", IRODS_PROT, NATIVE_PROT );
-    putenv( tmpStr2 );
+    /* Clear any inherited protocol override so server-to-server connections negotiate normally. */
+    unsetenv(IRODS_PROT);
 
     // The connect count is incremented to detect imminent infinite loops in server redirection. This can
     // happen when the following is true:
@@ -659,7 +658,15 @@ int initRsCommWithStartupPack(rsComm_t& rsComm, const startupPack_t& startupPack
     // Once the connect count exceeds a certain threshold, the server will terminate the request.
     rsComm.connectCnt = startupPack.connectCnt + 1;
 
-    rsComm.irodsProt = startupPack.irodsProt;
+    std::string_view opt_str = startupPack.option;
+    const auto native_prot_pos = opt_str.find(REQ_NATIVE_PROT);
+    const bool explicit_native_prot = (std::string_view::npos != native_prot_pos);
+
+    rsComm.irodsProt = irods::wire::negotiate_protocol(
+        startupPack.relVersion,
+        RODS_REL_VERSION,
+        startupPack.irodsProt,
+        explicit_native_prot);
     rsComm.reconnFlag = startupPack.reconnFlag;
     rstrcpy(rsComm.proxyUser.userName, startupPack.proxyUser, NAME_LEN);
     if (strcmp(startupPack.proxyUser, PUBLIC_USER_NAME) == 0) {
@@ -674,11 +681,11 @@ int initRsCommWithStartupPack(rsComm_t& rsComm, const startupPack_t& startupPack
     rstrcpy(rsComm.cliVersion.relVersion, startupPack.relVersion, NAME_LEN);
     rstrcpy(rsComm.cliVersion.apiVersion, startupPack.apiVersion, NAME_LEN);
 
-    std::string_view opt_str = startupPack.option;
     const auto pos = opt_str.find(REQ_SVR_NEG);
     require_cs_neg = (std::string_view::npos != pos);
-    if (require_cs_neg) {
-        const auto client_app_name = opt_str.substr(0, pos);
+    const auto end_of_app_name = std::min(pos, native_prot_pos);
+    if (std::string_view::npos != end_of_app_name) {
+        const auto client_app_name = opt_str.substr(0, end_of_app_name);
         client_app_name.copy(rsComm.option, sizeof(RsComm::option) - 1);
     }
     else {

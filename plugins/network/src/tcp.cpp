@@ -480,6 +480,7 @@ irods::error tcp_read_msg_body(
             if ( !ret.ok() ) {
                 return PASS( ret );
             }
+            static_cast<char*>(_input_struct_buf->buf)[_input_struct_buf->len] = '\0';
 
         }
         else {
@@ -506,6 +507,7 @@ irods::error tcp_read_msg_body(
             if ( !ret.ok() ) {
                 return PASS( ret );
             }
+            static_cast<char*>(_error_buf->buf)[_error_buf->len] = '\0';
         }
         else {
             _error_buf->len = 0;

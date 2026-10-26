@@ -79,11 +79,19 @@ rcComm_t* _rcConnect(
     }
 
     if ( ( tmpStr = getenv( IRODS_PROT ) ) != NULL ) {
-        int prot{};
-        std::from_chars(tmpStr, tmpStr + std::strlen(tmpStr), prot);
+        int prot = -1;
+        const auto* end = tmpStr + std::strlen(tmpStr);
+        const auto [ptr, ec] = std::from_chars(tmpStr, end, prot);
+        if (ec != std::errc{} || ptr != end) {
+            prot = -1;
+        }
         conn->irodsProt = static_cast<irodsProt_t>(prot);
 
-        if (conn->irodsProt != NATIVE_PROT && conn->irodsProt != XML_PROT) {
+        if (conn->irodsProt != NATIVE_PROT &&
+            conn->irodsProt != XML_PROT &&
+            conn->irodsProt != JSON_PROT &&
+            conn->irodsProt != LITE3_PROT)
+        {
             rodsLog(LOG_ERROR, "Invalid protocol value.");
             freeRcComm(conn);
             return nullptr;

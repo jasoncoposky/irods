@@ -21,6 +21,7 @@
 #include "irods/irods_server_properties.hpp"
 #include "irods/irods_stacktrace.hpp"
 #include "irods/sockCommNetworkInterface.hpp"
+#include "irods/wire_transcoder.hpp"
 #include "irods/with_durability.hpp"
 
 #include <nlohmann/json.hpp>
@@ -871,6 +872,12 @@ connectToRhost( rcComm_t *conn, int connectCnt, int reconnFlag ) {
         return conn->svrVersion->status;
     }
 
+    conn->irodsProt = irods::wire::negotiate_protocol(
+        RODS_REL_VERSION,
+        conn->svrVersion->relVersion,
+        conn->irodsProt,
+        std::getenv(IRODS_PROT) != nullptr);
+
     // =-=-=-=-=-=-=-
     // call initialization for network plugin as negotiated
     irods::network_object_ptr new_net_obj;
@@ -1168,6 +1175,15 @@ sendStartupPack( rcComm_t *conn, int connectCnt, int reconnFlag ) {
     }
     else {
         startupPack.option[0] = '\0';
+    }
+
+    if (std::getenv(IRODS_PROT) != nullptr && conn->irodsProt == NATIVE_PROT) {
+        const std::size_t opt_sz = sizeof(startupPack.option);
+        const std::size_t opt_len = std::strlen(startupPack.option);
+        const std::size_t tok_len = std::strlen(REQ_NATIVE_PROT);
+        if (opt_sz - opt_len > tok_len) {
+            std::strncat(startupPack.option, REQ_NATIVE_PROT, opt_sz - opt_len - 1);
+        }
     }
 
     // =-=-=-=-=-=-=-

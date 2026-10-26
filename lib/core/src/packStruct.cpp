@@ -7,6 +7,7 @@
 #include "irods/rcMisc.h"
 #include "irods/version.hpp"
 #include "irods/irods_pack_table.hpp"
+#include "irods/wire_transcoder.hpp"
 
 #include <cctype>
 #include <charconv>
@@ -3363,40 +3364,7 @@ int packStruct(const void *inStruct,
                int packFlag,
                irodsProt_t irodsProt)
 {
-    if (!inStruct || !packedResult || !packInstName) {
-        rodsLog( LOG_ERROR, "packStruct: Input error. One of the input is NULL" );
-        return USER_PACKSTRUCT_INPUT_ERR;
-    }
-
-    /* Initialize the packedOutput */
-    packedOutput_t packedOutput = initPackedOutput(MAX_PACKED_OUT_ALLOC_SZ);
-
-    packItem_t rootPackedItem{};
-    rootPackedItem.name = strdup( packInstName );
-    int status = packChildStruct(inStruct, packedOutput, rootPackedItem,
-                                 myPackTable, 1, packFlag, irodsProt, nullptr, std::nullopt);
-    free( rootPackedItem.name );
-
-    if ( status < 0 ) {
-        free( packedOutput.bBuf.buf );
-        return status;
-    }
-
-    if ( irodsProt == XML_PROT ) {
-        void *outPtr;
-        status = extendPackedOutput( packedOutput, 1, outPtr ); 
-        if ( SYS_MALLOC_ERR == status ) {
-            return status;
-        }
-
-        /* add a NULL termination */
-        *static_cast<char*>(outPtr) = '\0';
-    }
-
-    *packedResult = (bytesBuf_t*)malloc(sizeof(**packedResult));
-    **packedResult = packedOutput.bBuf;
-
-    return 0;
+    return pack_struct(inStruct, packedResult, packInstName, myPackTable, packFlag, irodsProt, nullptr);
 }
 
 int unpackStruct(const void *inPackedStr,
@@ -3405,28 +3373,7 @@ int unpackStruct(const void *inPackedStr,
                  const packInstruct_t *myPackTable,
                  irodsProt_t irodsProt)
 {
-    if ( inPackedStr == NULL || packInstName == NULL ) {
-        rodsLog( LOG_ERROR, "unpackStruct: Input error. One of the input is NULL" );
-        return USER_PACKSTRUCT_INPUT_ERR;
-    }
-
-    /* Initialize the unpackedOutput */
-    packedOutput_t unpackedOutput = initPackedOutput(PACKED_OUT_ALLOC_SZ);
-
-    packItem_t rootPackedItem{};
-    rootPackedItem.name = strdup( packInstName );
-    int status = unpackChildStruct(inPackedStr, unpackedOutput, rootPackedItem,
-                                   myPackTable, 1, irodsProt, nullptr, std::nullopt);
-    free( rootPackedItem.name );
-
-    if ( status < 0 ) {
-        free( unpackedOutput.bBuf.buf );
-        return status;
-    }
-
-    *outStruct = unpackedOutput.bBuf.buf;
-
-    return 0;
+    return unpack_struct(inPackedStr, outStruct, packInstName, myPackTable, irodsProt, nullptr);
 }
 
 int pack_struct(const void *inStruct,
@@ -3440,6 +3387,24 @@ int pack_struct(const void *inStruct,
     if (!inStruct || !packedResult || !packInstName) {
         rodsLog(LOG_ERROR, "packStruct: Input error. One of the input is null.");
         return USER_PACKSTRUCT_INPUT_ERR;
+    }
+
+    if (irodsProt == LITE3_PROT || irodsProt == JSON_PROT) {
+        auto buf_res = irods::wire::struct_to_lite3(inStruct, packInstName, myPackTable, packFlag);
+        if (!buf_res) {
+            return buf_res.error();
+        }
+        auto enc_res = irods::wire::encode_from_lite3(
+            *buf_res,
+            packInstName,
+            irodsProt,
+            peer_version ? std::string_view{peer_version} : std::string_view{},
+            myPackTable);
+        if (!enc_res) {
+            return enc_res.error();
+        }
+        *packedResult = *enc_res;
+        return 0;
     }
 
     std::optional<irods::version> peer_vers;
@@ -3488,6 +3453,23 @@ int unpack_struct(const void *inPackedStr,
     if (!inPackedStr || !packInstName) {
         rodsLog(LOG_ERROR, "unpackStruct: Input error. One of the input is null.");
         return USER_PACKSTRUCT_INPUT_ERR;
+    }
+
+    if (irodsProt == LITE3_PROT || irodsProt == JSON_PROT) {
+        const std::size_t wire_len =
+            (irodsProt == LITE3_PROT)
+                ? irods::wire::compute_lite3_buffer_size(static_cast<const std::uint8_t*>(inPackedStr))
+                : std::strlen(static_cast<const char*>(inPackedStr));
+        auto dec_res = irods::wire::decode_to_lite3(
+            {reinterpret_cast<const std::byte*>(inPackedStr), wire_len},
+            packInstName,
+            irodsProt,
+            peer_version ? std::string_view{peer_version} : std::string_view{},
+            myPackTable);
+        if (!dec_res) {
+            return dec_res.error();
+        }
+        return irods::wire::lite3_to_struct(*dec_res, outStruct, packInstName, myPackTable);
     }
 
     std::optional<irods::version> peer_vers;

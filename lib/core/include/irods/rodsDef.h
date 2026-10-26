@@ -128,8 +128,10 @@
 
 /* protocol */
 typedef enum iRODSProtocol {
-    NATIVE_PROT,
-    XML_PROT
+    NATIVE_PROT = 0,
+    XML_PROT    = 1,
+    JSON_PROT   = 2,
+    LITE3_PROT  = 3
 } irodsProt_t;
 
 /* myRead/myWrite type */
@@ -252,6 +254,7 @@ typedef struct startupPack {
 // magic token to assign to startup pack option variable
 // in order to request a client-server negotiation
 #define REQ_SVR_NEG             "request_server_negotiation"
+#define REQ_NATIVE_PROT         "-irodsProt=0"
 
 /* Definition for resource status. If it is empty (strlen == 0), it is
  * assumed to be up */
