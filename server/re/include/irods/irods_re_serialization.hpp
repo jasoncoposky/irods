@@ -6,6 +6,7 @@
 #include "irods/irods_hierarchy_parser.hpp"
 #include "irods/apiHeaderAll.h"
 #include "irods/icatStructs.hpp"
+#include "irods/protocol/lite3_structs.hpp"
 
 #include <any>
 #include <functional>
@@ -30,6 +31,12 @@ namespace irods {
         error serialize_parameter(
             std::any                 _in_param,
             serialized_parameter_t&  _out_param );
+
+        void serialize_lite3_buffer(
+            const lite3cpp::Buffer& _buf,
+            std::size_t             _ofs,
+            serialized_parameter_t& _out_param,
+            std::string_view        _prefix = {});
 
     }; // re_serialization
 

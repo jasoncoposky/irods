@@ -1479,6 +1479,89 @@ namespace irods::re_serialization
         return SUCCESS();
     }
 
+    void serialize_lite3_buffer(
+        const lite3cpp::Buffer& _buf,
+        std::size_t             _ofs,
+        serialized_parameter_t& _out_param,
+        std::string_view        _prefix)
+    {
+        if (_buf.size() < lite3cpp::config::node_size || _ofs + lite3cpp::config::node_size > _buf.size()) {
+            return;
+        }
+        for (auto it = _buf.begin(_ofs); it != _buf.end(_ofs); ++it) {
+            const std::string full_key =
+                _prefix.empty() ? std::string{it->key} : fmt::format("{}.{}", _prefix, it->key);
+            switch (it->value_type) {
+            case lite3cpp::Type::String:
+                _out_param[std::string{it->key}] = std::string{_buf.get_str(_ofs, it->key)};
+                if (!_prefix.empty()) {
+                    _out_param[full_key] = std::string{_buf.get_str(_ofs, it->key)};
+                }
+                break;
+            case lite3cpp::Type::Int64:
+                _out_param[std::string{it->key}] = std::to_string(_buf.get_i64(_ofs, it->key));
+                if (!_prefix.empty()) {
+                    _out_param[full_key] = std::to_string(_buf.get_i64(_ofs, it->key));
+                }
+                break;
+            case lite3cpp::Type::Float64:
+                _out_param[std::string{it->key}] = std::to_string(_buf.get_f64(_ofs, it->key));
+                if (!_prefix.empty()) {
+                    _out_param[full_key] = std::to_string(_buf.get_f64(_ofs, it->key));
+                }
+                break;
+            case lite3cpp::Type::Bool:
+                _out_param[std::string{it->key}] = _buf.get_bool(_ofs, it->key) ? "true" : "false";
+                if (!_prefix.empty()) {
+                    _out_param[full_key] = _buf.get_bool(_ofs, it->key) ? "true" : "false";
+                }
+                break;
+            case lite3cpp::Type::Object: {
+                const std::size_t sub_ofs = _buf.get_obj(_ofs, it->key);
+                serialize_lite3_buffer(_buf, sub_ofs, _out_param, full_key);
+                break;
+            }
+            default:
+                break;
+            }
+        }
+    }
+
+    template <typename T>
+    static error serialize_lite3_facade_ptr(std::any _p, serialized_parameter_t& _out)
+    {
+        try {
+            const T* ptr = std::any_cast<T*>(_p);
+            if (ptr) {
+                serialize_lite3_buffer(ptr->buffer(), ptr->offset(), _out);
+            }
+            else {
+                _out["null_value"] = "null_value";
+            }
+            return SUCCESS();
+        }
+        catch (const std::exception& e) {
+            return ERROR(INVALID_ANY_CAST, e.what());
+        }
+    }
+
+    static error serialize_lite3_raw_buffer_ptr(std::any _p, serialized_parameter_t& _out)
+    {
+        try {
+            const lite3cpp::Buffer* ptr = std::any_cast<lite3cpp::Buffer*>(_p);
+            if (ptr) {
+                serialize_lite3_buffer(*ptr, 0, _out);
+            }
+            else {
+                _out["null_value"] = "null_value";
+            }
+            return SUCCESS();
+        }
+        catch (const std::exception& e) {
+            return ERROR(INVALID_ANY_CAST, e.what());
+        }
+    }
+
 #if 0
     static error serialize_XXXX_ptr(
             std::any                 _p,
@@ -1541,7 +1624,30 @@ namespace irods::re_serialization
             {std::type_index(typeid(msParamArray_t**)), serialize_msParamArray_ptr_ptr},
             {std::type_index(typeid(TicketAdminInput*)), serialize_ticketAdminInp_ptr},
             {std::type_index(typeid(irods::logical_quotas::quota_vector*)),
-             serialize_ptr_to_vector_of_tuples_of_std_string_four_int64s_and_std_string}};
+             serialize_ptr_to_vector_of_tuples_of_std_string_four_int64s_and_std_string},
+            {std::type_index(typeid(lite3cpp::Buffer*)), serialize_lite3_raw_buffer_ptr},
+            {std::type_index(typeid(irods::protocol::DataObjInp*)),
+             serialize_lite3_facade_ptr<irods::protocol::DataObjInp>},
+            {std::type_index(typeid(irods::protocol::OpenedDataObjInp*)),
+             serialize_lite3_facade_ptr<irods::protocol::OpenedDataObjInp>},
+            {std::type_index(typeid(irods::protocol::DataObjCopyInp*)),
+             serialize_lite3_facade_ptr<irods::protocol::DataObjCopyInp>},
+            {std::type_index(typeid(irods::protocol::CollInp*)),
+             serialize_lite3_facade_ptr<irods::protocol::CollInp>},
+            {std::type_index(typeid(irods::protocol::DataObjInfo*)),
+             serialize_lite3_facade_ptr<irods::protocol::DataObjInfo>},
+            {std::type_index(typeid(irods::protocol::RodsObjStat*)),
+             serialize_lite3_facade_ptr<irods::protocol::RodsObjStat>},
+            {std::type_index(typeid(irods::protocol::ModAVUMetadataInp*)),
+             serialize_lite3_facade_ptr<irods::protocol::ModAVUMetadataInp>},
+            {std::type_index(typeid(irods::protocol::KeyValPair*)),
+             serialize_lite3_facade_ptr<irods::protocol::KeyValPair>},
+            {std::type_index(typeid(irods::protocol::SpecColl*)),
+             serialize_lite3_facade_ptr<irods::protocol::SpecColl>},
+            {std::type_index(typeid(irods::protocol::ExecCmdInp*)),
+             serialize_lite3_facade_ptr<irods::protocol::ExecCmdInp>},
+            {std::type_index(typeid(irods::protocol::ExecCmdOut*)),
+             serialize_lite3_facade_ptr<irods::protocol::ExecCmdOut>}};
         return the_map;
     } // get_serialization_map
 

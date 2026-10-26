@@ -1145,6 +1145,32 @@ namespace irods::wire
                     return ec;
                 }
             }
+
+            if (_parent_item.name && std::strcmp(_parent_item.name, "KeyValPair_PI") == 0 &&
+                _buf.get_type(_obj_ofs, "ssLen") == lite3cpp::Type::Int64)
+            {
+                const auto ss_len = _buf.get_i64(_obj_ofs, "ssLen");
+                if (ss_len > 0 &&
+                    _buf.get_type(_obj_ofs, "keyWord") == lite3cpp::Type::Array &&
+                    _buf.get_type(_obj_ofs, "svalue") == lite3cpp::Type::Array)
+                {
+                    const std::size_t kw_arr = _buf.get_arr(_obj_ofs, "keyWord");
+                    const std::size_t val_arr = _buf.get_arr(_obj_ofs, "svalue");
+                    const std::size_t kv_ofs = _buf.set_obj(_obj_ofs, "kv");
+                    for (std::int64_t i = 0; i < ss_len; ++i) {
+                        const auto idx = static_cast<std::uint32_t>(i);
+                        if (_buf.arr_get_type(kw_arr, idx) == lite3cpp::Type::String) {
+                            const std::string key_str{_buf.arr_get_str(kw_arr, idx)};
+                            const std::string val_str =
+                                (_buf.arr_get_type(val_arr, idx) == lite3cpp::Type::String)
+                                    ? std::string{_buf.arr_get_str(val_arr, idx)}
+                                    : std::string{};
+                            _buf.set_str(kv_ofs, key_str, val_str);
+                        }
+                    }
+                }
+            }
+
             return 0;
         }
 
@@ -1372,13 +1398,18 @@ namespace irods::wire
                 out_ptr = alignInt(out_ptr);
                 int* dst = static_cast<int*>(out_ptr);
                 if (_item.dim == 0) {
-                    dst[0] = static_cast<int>(_buf.get_i64(_obj_ofs, _key));
+                    dst[0] = (_buf.get_type(_obj_ofs, _key) == lite3cpp::Type::Int64)
+                                 ? static_cast<int>(_buf.get_i64(_obj_ofs, _key))
+                                 : 0;
                 }
-                else {
+                else if (_buf.get_type(_obj_ofs, _key) == lite3cpp::Type::Array) {
                     const std::size_t arr_ofs = _buf.get_arr(_obj_ofs, _key);
                     for (int i = 0; i < num_element; ++i) {
                         dst[i] = static_cast<int>(_buf.arr_get_i64(arr_ofs, static_cast<std::uint32_t>(i)));
                     }
+                }
+                else {
+                    std::memset(dst, 0, sizeof(int) * static_cast<std::size_t>(num_element));
                 }
                 _unpacked_output.bBuf.len =
                     static_cast<int>(static_cast<char*>(out_ptr) - static_cast<char*>(_unpacked_output.bBuf.buf)) +
@@ -1400,13 +1431,18 @@ namespace irods::wire
                 out_ptr = alignInt16(out_ptr);
                 short* dst = static_cast<short*>(out_ptr);
                 if (_item.dim == 0) {
-                    dst[0] = static_cast<short>(_buf.get_i64(_obj_ofs, _key));
+                    dst[0] = (_buf.get_type(_obj_ofs, _key) == lite3cpp::Type::Int64)
+                                 ? static_cast<short>(_buf.get_i64(_obj_ofs, _key))
+                                 : 0;
                 }
-                else {
+                else if (_buf.get_type(_obj_ofs, _key) == lite3cpp::Type::Array) {
                     const std::size_t arr_ofs = _buf.get_arr(_obj_ofs, _key);
                     for (int i = 0; i < num_element; ++i) {
                         dst[i] = static_cast<short>(_buf.arr_get_i64(arr_ofs, static_cast<std::uint32_t>(i)));
                     }
+                }
+                else {
+                    std::memset(dst, 0, sizeof(short) * static_cast<std::size_t>(num_element));
                 }
                 _unpacked_output.bBuf.len =
                     static_cast<int>(static_cast<char*>(out_ptr) - static_cast<char*>(_unpacked_output.bBuf.buf)) +
@@ -1428,13 +1464,18 @@ namespace irods::wire
                 out_ptr = alignDouble(out_ptr);
                 rodsLong_t* dst = static_cast<rodsLong_t*>(out_ptr);
                 if (_item.dim == 0) {
-                    dst[0] = static_cast<rodsLong_t>(_buf.get_i64(_obj_ofs, _key));
+                    dst[0] = (_buf.get_type(_obj_ofs, _key) == lite3cpp::Type::Int64)
+                                 ? static_cast<rodsLong_t>(_buf.get_i64(_obj_ofs, _key))
+                                 : 0;
                 }
-                else {
+                else if (_buf.get_type(_obj_ofs, _key) == lite3cpp::Type::Array) {
                     const std::size_t arr_ofs = _buf.get_arr(_obj_ofs, _key);
                     for (int i = 0; i < num_element; ++i) {
                         dst[i] = static_cast<rodsLong_t>(_buf.arr_get_i64(arr_ofs, static_cast<std::uint32_t>(i)));
                     }
+                }
+                else {
+                    std::memset(dst, 0, sizeof(rodsLong_t) * static_cast<std::size_t>(num_element));
                 }
                 _unpacked_output.bBuf.len =
                     static_cast<int>(static_cast<char*>(out_ptr) - static_cast<char*>(_unpacked_output.bBuf.buf)) +
@@ -1443,8 +1484,13 @@ namespace irods::wire
             }
             case PACK_STRUCT_TYPE: {
                 if (_item.dim == 0) {
-                    const std::size_t child_ofs = _buf.get_obj(_obj_ofs, _key);
-                    return unpack_lite3_obj_to_struct(_buf, child_ofs, _unpacked_output, _item, _pack_table, nullptr);
+                    if (_buf.get_type(_obj_ofs, _key) == lite3cpp::Type::Object) {
+                        const std::size_t child_ofs = _buf.get_obj(_obj_ofs, _key);
+                        return unpack_lite3_obj_to_struct(_buf, child_ofs, _unpacked_output, _item, _pack_table, nullptr);
+                    }
+                    lite3cpp::Buffer empty_buf;
+                    empty_buf.init_object();
+                    return unpack_lite3_obj_to_struct(empty_buf, 0, _unpacked_output, _item, _pack_table, nullptr);
                 }
                 const std::size_t arr_ofs = _buf.get_arr(_obj_ofs, _key);
                 for (int i = 0; i < num_element; ++i) {
@@ -1800,6 +1846,51 @@ namespace irods::wire
                                         const packInstruct_t* _pack_table,
                                         const char* _pack_instruct_override) -> int
         {
+            if (_parent_item.name && std::strcmp(_parent_item.name, "KeyValPair_PI") == 0 &&
+                _buf.get_type(_obj_ofs, "kv") == lite3cpp::Type::Object)
+            {
+                const std::size_t kv_ofs = _buf.get_obj(_obj_ofs, "kv");
+                std::vector<std::pair<std::string_view, std::string_view>> entries;
+                for (auto it = _buf.begin(kv_ofs); it != _buf.end(kv_ofs); ++it) {
+                    if (it->value_type == lite3cpp::Type::String) {
+                        entries.emplace_back(it->key, _buf.get_str(kv_ofs, it->key));
+                    }
+                }
+
+                void* out_ptr = nullptr;
+                if (const int ec = extend_packed_output(_unpacked_output, static_cast<int>(sizeof(int)) * 2, out_ptr);
+                    ec < 0)
+                {
+                    return ec;
+                }
+                out_ptr = alignInt(out_ptr);
+                const int n = static_cast<int>(entries.size());
+                *static_cast<int*>(out_ptr) = n;
+                _unpacked_output.bBuf.len =
+                    static_cast<int>(static_cast<char*>(out_ptr) - static_cast<char*>(_unpacked_output.bBuf.buf)) +
+                    static_cast<int>(sizeof(int));
+
+                if (n == 0) {
+                    add_pointer_to_packed_out(_unpacked_output, 0, nullptr);
+                    add_pointer_to_packed_out(_unpacked_output, 0, nullptr);
+                }
+                else {
+                    const int my_modu = n % PTR_ARRAY_MALLOC_LEN;
+                    const int alloc_len = (my_modu == 0) ? n : (n + PTR_ARRAY_MALLOC_LEN - my_modu);
+                    auto** kw_arr = static_cast<char**>(add_pointer_to_packed_out(
+                        _unpacked_output, alloc_len * static_cast<int>(sizeof(void*)), nullptr));
+                    for (int i = 0; i < n; ++i) {
+                        kw_arr[i] = strdup(std::string{entries[i].first}.c_str());
+                    }
+                    auto** val_arr = static_cast<char**>(add_pointer_to_packed_out(
+                        _unpacked_output, alloc_len * static_cast<int>(sizeof(void*)), nullptr));
+                    for (int i = 0; i < n; ++i) {
+                        val_arr[i] = strdup(std::string{entries[i].second}.c_str());
+                    }
+                }
+                return 0;
+            }
+
             const char* pi = _pack_instruct_override ? _pack_instruct_override
                                                      : match_pack_instruct(_parent_item.name, _pack_table);
             if (!pi) {

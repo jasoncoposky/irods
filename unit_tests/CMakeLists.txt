@@ -98,6 +98,7 @@ set(
   key_value_proxy
   lifetime_manager
   linked_list_iterator
+  lite3_internal_structs
   lite3_wire_transcoder
   logical_locking
   logical_paths_and_special_characters
