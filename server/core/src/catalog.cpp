@@ -89,6 +89,9 @@ namespace irods::experimental::catalog {
             const auto& config{config_handle.get_json()};
             const auto& db_instance =
                 config.at(irods::KW_CFG_PLUGIN_CONFIGURATION).at(irods::KW_CFG_PLUGIN_TYPE_DATABASE);
+            if (db_instance.contains("uses_odbc") && db_instance.at("uses_odbc").is_boolean()) {
+                return db_instance.at("uses_odbc").get<bool>();
+            }
             std::string tech;
             if (db_instance.contains(irods::KW_CFG_DB_TECHNOLOGY)) {
                 tech = db_instance.at(irods::KW_CFG_DB_TECHNOLOGY).get<std::string>();

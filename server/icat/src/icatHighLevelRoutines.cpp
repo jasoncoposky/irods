@@ -1643,6 +1643,10 @@ int chlModZoneCollAcl(
 
     // =-=-=-=-=-=-=-
     // call the operation on the plugin
+    if (!db->has_operation(irods::DATABASE_OP_MOD_ZONE_COLL_ACL)) {
+        return chlModAccessControl(_comm, 0, _access_level, _user_name, "", _path_name);
+    }
+
     ret = db->call <
           const char*,
           const char*,
@@ -2784,6 +2788,10 @@ int chlModAccessControlResc(
 
     // =-=-=-=-=-=-=-
     // call the operation on the plugin
+    if (!db->has_operation(irods::DATABASE_OP_MOD_ACCESS_CONTROL_RESC)) {
+        return chlModAccessControl(_comm, _recursive_flag, _access_level, _user_name, _zone, _resc_name);
+    }
+
     ret = db->call <
           int,
           const char*,
@@ -3046,6 +3054,10 @@ int chlRegToken(
               _value2,
               _value3,
               _comment );
+    if (ret.code() == INVALID_ANY_CAST) {
+        ret = db->call<const char*, const char*, const char*>(
+            _comm, irods::DATABASE_OP_REG_TOKEN, ptr, _name, _value, _name_space);
+    }
 
     return ret.code();
 
@@ -3564,6 +3576,14 @@ int chlSetQuota(
               _name,
               _resc_name,
               _limit );
+    if (ret.code() == INVALID_ANY_CAST) {
+        rodsLong_t limit_val = 0;
+        if (_limit) {
+            std::from_chars(_limit, _limit + std::strlen(_limit), limit_val);
+        }
+        ret = db->call<const char*, const char*, rodsLong_t>(
+            _comm, irods::DATABASE_OP_SET_QUOTA, ptr, _name, _resc_name, limit_val);
+    }
 
     return ret.code();
 
@@ -4474,6 +4494,15 @@ int chlGetHierarchyForResc(
                            &_resc_name,
                            &_zone_name,
                            &_hierarchy );
+    if (ret.code() == INVALID_ANY_CAST) {
+        char* hier_cstr = nullptr;
+        ret = db->call<const char*, char**>(
+            nullptr, irods::DATABASE_OP_GET_HIERARCHY_FOR_RESC, ptr, _resc_name.c_str(), &hier_cstr);
+        if (ret.ok() && hier_cstr) {
+            _hierarchy = hier_cstr;
+            std::free(hier_cstr);
+        }
+    }
 
     return ret.code();
 
@@ -4676,6 +4705,15 @@ auto chl_check_data_object_access(RsComm& _comm, const rodsLong_t _data_id, cons
 
     irods::first_class_object_ptr ptr = db_obj_ptr;
     irods::database_ptr           db = std::dynamic_pointer_cast<irods::database>(db_plug_ptr);
+
+    if (!db->has_operation(irods::DATABASE_OP_CHECK_DATA_OBJECT_ACCESS)) {
+        if (db->has_operation(irods::DATABASE_OP_CHECK_PERMISSION_TO_MODIFY_DATA_OBJECT)) {
+            const auto ret = db->call<const rodsLong_t>(
+                &_comm, irods::DATABASE_OP_CHECK_PERMISSION_TO_MODIFY_DATA_OBJECT, ptr, _data_id);
+            return ret.code();
+        }
+        return 0;
+    }
 
     const auto ret = db->call<const rodsLong_t, const char*>(&_comm,
                                                              irods::DATABASE_OP_CHECK_DATA_OBJECT_ACCESS,
@@ -5117,9 +5155,14 @@ auto chl_delay_rule_unlock(RsComm& _comm, const char* _rule_ids) -> int
             ops.reserve(ids.size());
             for (const auto& id : ids) {
                 std::string id_str = id.is_string() ? id.get<std::string>() : id.dump();
+                std::int64_t parsed_id = 0;
+                const auto [ptr, ec] = std::from_chars(id_str.data(), id_str.data() + id_str.size(), parsed_id);
+                if (ec != std::errc{} || ptr != id_str.data() + id_str.size() || parsed_id <= 0) {
+                    return SYS_INVALID_INPUT_PARAM;
+                }
                 ops.emplace_back(dml::update_op{
                     "R_RULE_EXEC",
-                    {{"exe_lock_host", ""}, {"exe_lock_host_pid", "0"}, {"exe_lock_time", ""}},
+                    {{"exe_lock_host", ""}, {"exe_lock_host_pid", ""}, {"exe_lock_time", ""}},
                     {dml::condition{"rule_exec_id", "=", {std::move(id_str)}}}});
             }
             return chl_atomic_apply_operations(&_comm, ops);
@@ -5331,7 +5374,13 @@ auto chl_calc_logical_usage_and_quota(RsComm* _comm, const char* _coll_name) -> 
     irods::first_class_object_ptr ptr = db_obj_ptr;
     // NOLINTNEXTLINE(misc-const-correctness)
     irods::database_ptr db = std::dynamic_pointer_cast<irods::database>(db_plug_ptr);
-    const auto ret = db->call(_comm, irods::DATABASE_OP_CALC_LOGICAL_USAGE_AND_QUOTA, ptr, _coll_name);
+    auto ret = db->call(_comm, irods::DATABASE_OP_CALC_LOGICAL_USAGE_AND_QUOTA, ptr, _coll_name);
+    if (ret.code() == INVALID_ANY_CAST) {
+        rodsLong_t usage = 0;
+        rodsLong_t limit = 0;
+        ret = db->call<const char*, rodsLong_t*, rodsLong_t*>(
+            _comm, irods::DATABASE_OP_CALC_LOGICAL_USAGE_AND_QUOTA, ptr, _coll_name, &usage, &limit);
+    }
     return static_cast<int>(ret.code());
 } // chl_calc_logical_usage_and_quota
 
@@ -5352,7 +5401,15 @@ auto chl_set_logical_quota(RsComm* _comm, const char* _coll_name, const char* _b
     irods::first_class_object_ptr ptr = db_obj_ptr;
     // NOLINTNEXTLINE(misc-const-correctness)
     irods::database_ptr db = std::dynamic_pointer_cast<irods::database>(db_plug_ptr);
-    const auto ret = db->call(_comm, irods::DATABASE_OP_SET_LOGICAL_QUOTA, ptr, _coll_name, _byte_limit, _object_limit);
+    auto ret = db->call(_comm, irods::DATABASE_OP_SET_LOGICAL_QUOTA, ptr, _coll_name, _byte_limit, _object_limit);
+    if (ret.code() == INVALID_ANY_CAST) {
+        rodsLong_t limit_val = 0;
+        if (_byte_limit) {
+            std::from_chars(_byte_limit, _byte_limit + std::strlen(_byte_limit), limit_val);
+        }
+        ret = db->call<const char*, rodsLong_t>(
+            _comm, irods::DATABASE_OP_SET_LOGICAL_QUOTA, ptr, _coll_name, limit_val);
+    }
     return static_cast<int>(ret.code());
 } // chl_set_logical_quota
 
@@ -5373,6 +5430,17 @@ auto chl_check_logical_quota(RsComm* _comm, const char* _coll_name, irods::logic
     irods::first_class_object_ptr ptr = db_obj_ptr;
     // NOLINTNEXTLINE(misc-const-correctness)
     irods::database_ptr db = std::dynamic_pointer_cast<irods::database>(db_plug_ptr);
-    const auto ret = db->call(_comm, irods::DATABASE_OP_CHECK_LOGICAL_QUOTA, ptr, _coll_name, _quota_values);
+    auto ret = db->call(_comm, irods::DATABASE_OP_CHECK_LOGICAL_QUOTA, ptr, _coll_name, _quota_values);
+    if (ret.code() == INVALID_ANY_CAST && _quota_values) {
+        std::vector<std::tuple<std::string, std::int64_t, std::int64_t, std::int64_t, std::int64_t>> alt_values;
+        ret = db->call<const char*,
+                       std::vector<std::tuple<std::string, std::int64_t, std::int64_t, std::int64_t, std::int64_t>>*>(
+            _comm, irods::DATABASE_OP_CHECK_LOGICAL_QUOTA, ptr, _coll_name, &alt_values);
+        if (ret.ok()) {
+            for (const auto& [coll, usage, limit, obj_usage, obj_limit] : alt_values) {
+                _quota_values->emplace_back(coll, usage, limit, obj_usage, obj_limit, "");
+            }
+        }
+    }
     return static_cast<int>(ret.code());
 } // chl_check_logical_quota

@@ -540,39 +540,51 @@ namespace
                 const auto& operations = input.at("operations");
                 for (json::size_type i = 0; i < operations.size(); ++i) {
                     const auto& op_item = operations[i];
-                    const auto op_code = op_item.at("operation").get<std::string>();
-                    const auto attr = op_item.at("attribute").get<std::string>();
-                    const auto val = op_item.at("value").get<std::string>();
-                    std::string units;
-                    if (const auto u_iter = op_item.find("units"); u_iter != std::end(op_item)) {
-                        units = u_iter->get<std::string>();
-                    }
-                    if (attr.empty() || val.empty()) {
-                        *_output = irods::to_bytes_buffer(
-                            make_error_object(op_item, i, "Attribute and value cannot be empty.").dump());
-                        return SYS_INVALID_INPUT_PARAM;
-                    }
-                    int ec = 0;
-                    if (op_code == "add") {
-                        ec = chlAddAVUMetadata(
-                            _comm, chl_type, entity_name.c_str(), attr.c_str(), val.c_str(), units.c_str(), &cond_input);
-                        if (ec == CATALOG_ALREADY_HAS_ITEM_BY_THAT_NAME) {
-                            ec = 0;
+                    try {
+                        const auto op_code = op_item.at("operation").get<std::string>();
+                        const auto attr = op_item.at("attribute").get<std::string>();
+                        const auto val = op_item.at("value").get<std::string>();
+                        std::string units;
+                        if (const auto u_iter = op_item.find("units"); u_iter != std::end(op_item)) {
+                            units = u_iter->get<std::string>();
+                        }
+                        if (attr.empty() || val.empty()) {
+                            *_output = irods::to_bytes_buffer(
+                                make_error_object(op_item, i, "Attribute and value cannot be empty.").dump());
+                            return SYS_INVALID_INPUT_PARAM;
+                        }
+                        int ec = 0;
+                        if (op_code == "add") {
+                            ec = chlAddAVUMetadata(
+                                _comm, chl_type, entity_name.c_str(), attr.c_str(), val.c_str(), units.c_str(), &cond_input);
+                            if (ec == CATALOG_ALREADY_HAS_ITEM_BY_THAT_NAME) {
+                                ec = 0;
+                            }
+                        }
+                        else if (op_code == "remove") {
+                            ec = chlDeleteAVUMetadata(
+                                _comm, 0, chl_type, entity_name.c_str(), attr.c_str(), val.c_str(), units.c_str(), 0, &cond_input);
+                        }
+                        else {
+                            *_output = irods::to_bytes_buffer(
+                                make_error_object(op_item, i, "Invalid metadata operation.").dump());
+                            return INVALID_OPERATION;
+                        }
+                        if (ec < 0) {
+                            *_output = irods::to_bytes_buffer(
+                                make_error_object(op_item, i, "Failed to apply metadata operation.").dump());
+                            return ec;
                         }
                     }
-                    else if (op_code == "remove") {
-                        ec = chlDeleteAVUMetadata(
-                            _comm, 0, chl_type, entity_name.c_str(), attr.c_str(), val.c_str(), units.c_str(), 0, &cond_input);
-                    }
-                    else {
+                    catch (const json::out_of_range& e) {
                         *_output = irods::to_bytes_buffer(
-                            make_error_object(op_item, i, "Invalid metadata operation.").dump());
-                        return INVALID_OPERATION;
+                            make_error_object(op_item, i, e.what()).dump());
+                        return JSON_VALIDATION_ERROR;
                     }
-                    if (ec < 0) {
+                    catch (const json::type_error& e) {
                         *_output = irods::to_bytes_buffer(
-                            make_error_object(op_item, i, "Failed to apply metadata operation.").dump());
-                        return ec;
+                            make_error_object(op_item, i, e.what()).dump());
+                        return JSON_VALIDATION_ERROR;
                     }
                 }
                 *_output = irods::to_bytes_buffer("{}");

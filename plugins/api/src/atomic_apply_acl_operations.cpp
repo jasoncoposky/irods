@@ -489,23 +489,38 @@ namespace
                 const auto& operations = input.at("operations");
                 for (json::size_type i = 0; i < operations.size(); ++i) {
                     const auto& op_item = operations[i];
-                    const auto acl = op_item.at("acl").get<std::string>();
-                    throw_if_invalid_acl(acl);
-                    std::string zone = getLocalZoneName();
-                    if (const auto iter = op_item.find("zone"); iter != std::end(op_item)) {
-                        zone = iter->get<std::string>();
+                    try {
+                        const auto acl = op_item.at("acl").get<std::string>();
+                        throw_if_invalid_acl(acl);
+                        std::string zone = getLocalZoneName();
+                        if (const auto iter = op_item.find("zone"); iter != std::end(op_item)) {
+                            zone = iter->get<std::string>();
+                        }
+                        const auto entity_name = op_item.at("entity_name").get<std::string>();
+                        std::string access_level = (acl == "admin") ? "own" : acl;
+                        if (admin_mode) {
+                            access_level = std::string{MOD_ADMIN_MODE_PREFIX} + access_level;
+                        }
+                        const int ec = chlModAccessControl(
+                            _comm, 0, access_level.c_str(), entity_name.c_str(), zone.c_str(), logical_path.c_str());
+                        if (ec == -1 || ec == CAT_INVALID_USER) {
+                            THROW(SYS_INVALID_INPUT_PARAM, "Invalid entity");
+                        }
+                        if (ec < 0) {
+                            *_output = irods::to_bytes_buffer(
+                                make_error_object(op_item, i, "Failed to apply ACL operation").dump());
+                            return ec;
+                        }
                     }
-                    const auto entity_name = op_item.at("entity_name").get<std::string>();
-                    std::string access_level = (acl == "admin") ? "own" : acl;
-                    if (admin_mode) {
-                        access_level = std::string{MOD_ADMIN_MODE_PREFIX} + access_level;
-                    }
-                    const int ec = chlModAccessControl(
-                        _comm, 0, access_level.c_str(), entity_name.c_str(), zone.c_str(), logical_path.c_str());
-                    if (ec < 0) {
+                    catch (const irods::exception& e) {
                         *_output = irods::to_bytes_buffer(
-                            make_error_object(op_item, i, "Failed to apply ACL operation").dump());
-                        return ec;
+                            make_error_object(op_item, i, e.client_display_what()).dump());
+                        return e.code();
+                    }
+                    catch (const json::exception& e) {
+                        *_output = irods::to_bytes_buffer(
+                            make_error_object(op_item, i, e.what()).dump());
+                        return SYS_INTERNAL_ERR;
                     }
                 }
                 *_output = irods::to_bytes_buffer("{}");

@@ -1488,6 +1488,11 @@ namespace irods::re_serialization
         if (_buf.size() < lite3cpp::config::node_size || _ofs + lite3cpp::config::node_size > _buf.size()) {
             return;
         }
+        const lite3cpp::NodeView nv{
+            reinterpret_cast<const lite3cpp::PackedNodeLayout*>(_buf.data() + _ofs)};
+        if (nv.type() != lite3cpp::Type::Object) {
+            return;
+        }
         for (auto it = _buf.begin(_ofs); it != _buf.end(_ofs); ++it) {
             const std::string full_key =
                 _prefix.empty() ? std::string{it->key} : fmt::format("{}.{}", _prefix, it->key);
